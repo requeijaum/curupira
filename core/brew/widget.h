@@ -162,6 +162,11 @@ struct ResumoDeWidget {
   std::uint32_t pai = 0;
   std::uint32_t cor_de_fundo = 0;
   std::uint32_t modelo = 0;
+  // A EXTENSAO (`WidgetExtent`: width e height). Existe aqui porque a leitura
+  // errada da struct do guest -- 16 bytes em vez de 8 -- so aparecia no VALOR
+  // guardado, e um teste nao pode afirmar sobre o que nao consegue ler.
+  std::uint32_t largura = 0;
+  std::uint32_t altura = 0;
   bool tem_handler = false;
   std::uint32_t handler_pfn = 0;
   std::uint32_t handler_pcxt = 0;

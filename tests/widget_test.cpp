@@ -297,22 +297,94 @@ TEST(Widget, OHandleEventDoWidgetGuardaACorDeFundo) {
   EXPECT_EQ(resumo.cor_de_fundo, 0xFFu);
 }
 
-TEST(Widget, OExtentDoWidgetEEscritoELido) {
+// ---------------------------------------------------------------------------
+// 4b. AS STRUCTS DO GUEST TEM O TAMANHO DO CABECALHO -- E NAO O DOBRO
+// ---------------------------------------------------------------------------
+//
+// MEDIDO NO SDK, e este era o defeito mais caro destes ficheiros:
+//
+//   `WidgetExtent` (`platform/ui/inc/AEEIWidget.h:38-43`):
+//       typedef struct { int width; int height; } WidgetExtent;   -> 8 BYTES
+//   `AEERect` (`platform/ui/inc/AEERect.h:23-26`):
+//       typedef struct { int16 x,y; int16 dx,dy; } AEERect;       -> 8 BYTES
+//
+// O modulo escrevia QUATRO palavras de 32 bits (16 bytes) nas duas, e lia quatro
+// da `WidgetExtent`. A `AEERect` era lida como quatro `uint32` no
+// `core/brew/widget.cpp` e no `core/brew/despacho.cpp` (SetClipRect, GetClipRect,
+// DrawRect).
+//
+// O SINTOMA TEM DUAS METADES, e as duas sao mudas:
+//   1. a struct do guest sai com ZEROS onde o titulo espera valores (a largura
+//      lia o par (x,y) empacotado, e o `GetExtent` devolvia o que la estava);
+//   2. os 8 bytes SEGUINTES sao SOBRESCRITOS -- a struct do guest pode estar em
+//      qualquer sitio (pilha, dentro de outro objecto), e o vizinho e que paga.
+//
+// O teste antigo (`OExtentDoWidgetEEscritoELido`) escrevia e lia quatro `uint32`
+// e passava: **ele encodava a mesma suposicao errada**, e uma suite que encoda a
+// suposicao nao a pode refutar. Estes dois poem uma SENTINELA nos 8 bytes a
+// seguir a struct, que e a unica forma de a escrita fora do sitio aparecer.
+constexpr std::uint32_t kSentinelaA = 0x11111111u;
+constexpr std::uint32_t kSentinelaB = 0x22222222u;
+
+TEST(Widget, OGetExtentEscreveUmaWidgetExtentDeOitoBytes) {
   Bancada b;
   const std::uint32_t widget = b.D().WidgetsRef().Widget(kWidgetDoTitulo);
-  const std::uint32_t rect = kArg0;
-  b.Mem().Escrever32(rect + 0, 10);
-  b.Mem().Escrever32(rect + 4, 20);
-  b.Mem().Escrever32(rect + 8, 300);
-  b.Mem().Escrever32(rect + 12, 30);
-  b.ChamaWidget(kWidgetDoTitulo, brew_slots::kIWidget_SetExtent, widget, rect);
-  b.Mem().Escrever32(rect + 0, 0);
-  b.Mem().Escrever32(rect + 8, 0);
-  b.ChamaWidget(kWidgetDoTitulo, brew_slots::kIWidget_GetExtent, widget, rect);
-  EXPECT_EQ(b.Mem().Ler32(rect + 0), 10u);
-  EXPECT_EQ(b.Mem().Ler32(rect + 4), 20u);
-  EXPECT_EQ(b.Mem().Ler32(rect + 8), 300u);
-  EXPECT_EQ(b.Mem().Ler32(rect + 12), 30u);
+  // O widget nasce com o rect do ecra inteiro (`widget.cpp`, `Construir`), e o
+  // `WidgetExtent` so tem width e height -- logo 320 e 240.
+  b.Mem().Escrever32(kArg0 + 8, kSentinelaA);
+  b.Mem().Escrever32(kArg0 + 12, kSentinelaB);
+  b.ChamaWidget(kWidgetDoTitulo, brew_slots::kIWidget_GetExtent, widget, kArg0);
+  EXPECT_EQ(b.Mem().Ler32(kArg0 + 0), 320u) << "width";
+  EXPECT_EQ(b.Mem().Ler32(kArg0 + 4), 240u) << "height";
+  EXPECT_EQ(b.Mem().Ler32(kArg0 + 8), kSentinelaA)
+      << "o `GetExtent` escreveu 16 bytes numa struct de 8";
+  EXPECT_EQ(b.Mem().Ler32(kArg0 + 12), kSentinelaB)
+      << "o `GetExtent` escreveu 16 bytes numa struct de 8";
+}
+
+TEST(Widget, OSetExtentLeUmaWidgetExtentDeOitoBytes) {
+  Bancada b;
+  const std::uint32_t widget = b.D().WidgetsRef().Widget(kWidgetDoTitulo);
+  b.Mem().Escrever32(kArg0 + 0, 321u);
+  b.Mem().Escrever32(kArg0 + 4, 123u);
+  b.Mem().Escrever32(kArg0 + 8, kSentinelaA);
+  b.Mem().Escrever32(kArg0 + 12, kSentinelaB);
+  b.ChamaWidget(kWidgetDoTitulo, brew_slots::kIWidget_SetExtent, widget, kArg0);
+  // ANTES DE TUDO: O QUE FICOU GUARDADO. O codigo antigo lia 16 bytes, logo a
+  // largura guardada vinha de `[prc+8]` (fora da struct) e o teste antigo nao
+  // olhava para ela.
+  const ResumoDeWidget depois = b.D().WidgetsRef().Resumo(kWidgetDoTitulo);
+  EXPECT_EQ(depois.largura, 321u) << "a largura vem de [prc+0], e nao de fora da struct";
+  EXPECT_EQ(depois.altura, 123u) << "a altura vem de [prc+4], e nao de fora da struct";
+  // E o que foi guardado e o que o `GetExtent` devolve -- width e height.
+  b.Mem().Escrever32(kArg0 + 0, 0);
+  b.Mem().Escrever32(kArg0 + 4, 0);
+  b.ChamaWidget(kWidgetDoTitulo, brew_slots::kIWidget_GetExtent, widget, kArg0);
+  EXPECT_EQ(b.Mem().Ler32(kArg0 + 0), 321u) << "width posto pelo `SetExtent`";
+  EXPECT_EQ(b.Mem().Ler32(kArg0 + 4), 123u) << "height posto pelo `SetExtent`";
+  EXPECT_EQ(b.Mem().Ler32(kArg0 + 8), kSentinelaA)
+      << "a struct do cabecalho tem 8 bytes, e nao 16";
+  EXPECT_EQ(b.Mem().Ler32(kArg0 + 12), kSentinelaB)
+      << "a struct do cabecalho tem 8 bytes, e nao 16";
+}
+
+TEST(Widget, OGetClientRectEscreveUmaAEERectDeOitoBytes) {
+  Bancada b;
+  // `AEERect`: x, y, dx, dy -- quatro `int16`, 8 bytes (`AEERect.h:23-26`).
+  b.Mem().Escrever32(kArg0 + 0, kSentinelaA);
+  b.Mem().Escrever32(kArg0 + 4, kSentinelaA);
+  b.Mem().Escrever32(kArg0 + 8, kSentinelaA);
+  b.Mem().Escrever32(kArg0 + 12, kSentinelaB);
+  b.ChamaRootFormSlot(brew_slots::kIRootForm_GetClientRect,
+                      ObjGenerico(kIndiceDoRootForm), 0u, kArg0);
+  EXPECT_EQ(b.Mem().Ler16(kArg0 + 0), 0u) << "x";
+  EXPECT_EQ(b.Mem().Ler16(kArg0 + 2), 0u) << "y";
+  EXPECT_EQ(b.Mem().Ler16(kArg0 + 4), static_cast<std::uint16_t>(kLarguraDoEcra)) << "dx";
+  EXPECT_EQ(b.Mem().Ler16(kArg0 + 6), static_cast<std::uint16_t>(kAlturaDoEcra)) << "dy";
+  EXPECT_EQ(b.Mem().Ler32(kArg0 + 8), kSentinelaA)
+      << "o `GetClientRect` escreveu 16 bytes numa struct de 8";
+  EXPECT_EQ(b.Mem().Ler32(kArg0 + 12), kSentinelaB)
+      << "o `GetClientRect` escreveu 16 bytes numa struct de 8";
 }
 
 // ---------------------------------------------------------------------------
@@ -432,6 +504,44 @@ TEST(Widget, OSetTimerComARelacaoTrocadaNaoArmaOLaco) {
   EXPECT_EQ(b.D().CallbackDoTemporizador(), 100u)
       << "se isto passar a ser a funcao, a assinatura foi trocada outra vez";
   EXPECT_EQ(b.D().ContextoDoTemporizador(), 0u);
+}
+
+
+// ---------------------------------------------------------------------------
+// 8. O `FID_ACTIVE` E O `FID_VISIBLE`: ACEITAR SEM APLICAR TEM DE DEIXAR RASTO
+// ---------------------------------------------------------------------------
+//
+// MEDIDO em `core/brew/widget.cpp`, e o defeito e de INCONSISTENCIA DENTRO DA
+// MESMA FUNCAO: o `FID_THEME` (linhas seguintes no mesmo `if`) REGISTA que o tema
+// ficou por aplicar -- "um TRUE com o tema por aplicar e uma meia-verdade que fica
+// escrita" -- e o `FID_ACTIVE`/`FID_VISIBLE`, seis linhas acima, devolviam TRUE e
+// nao deixavam rasto NENHUM com o nome da propriedade.
+//
+// O SINTOMA: `escritas_` e um contador AGREGADO. Quem le a bateria sabe que
+// "alguma propriedade foi escrita", e nao QUAL. E um titulo que ligue a
+// visibilidade de uma forma fica a acreditar que ela esta visivel num emulador
+// que nao tem rasterizador de widgets -- sem uma linha que o diga.
+//
+// Este e o caso de teste do `imedia` (P2): o que se aceita e NAO se aplica tem de
+// deixar um evento com o NOME.
+TEST(Widget, OSetPropertyDeFidActiveDeixaRastoComONome) {
+  Bancada b;
+  const std::uint32_t r =
+      b.PedeAoRootForm(brew_slots::EVT_WDG_SETPROPERTY, brew_slots::FID_ACTIVE, nullptr);
+  // TRUE e a resposta do contrato (o pedido foi entendido), como no tema.
+  EXPECT_NE(r, 0u);
+  EXPECT_GE(b.Faltas("IRootForm FID_ACTIVE nao aplicado"), 1u)
+      << "TRUE sem rasto: e a meia-verdade que o FID_THEME, no mesmo `if`, ja nao "
+         "pode ser";
+}
+
+TEST(Widget, OSetPropertyDeFidVisibleDeixaRastoComONome) {
+  Bancada b;
+  const std::uint32_t r =
+      b.PedeAoRootForm(brew_slots::EVT_WDG_SETPROPERTY, brew_slots::FID_VISIBLE, nullptr);
+  EXPECT_NE(r, 0u);
+  EXPECT_GE(b.Faltas("IRootForm FID_VISIBLE nao aplicado"), 1u)
+      << "TRUE sem rasto: o emulador nao tem modelo de visibilidade e nao o diz";
 }
 
 }  // namespace
