@@ -4,7 +4,9 @@
 #include <cstring>
 #include <set>
 
+#include "core/audio/misturador.h"
 #include "core/brew/formato.h"
+#include "core/brew/imedia.h"
 
 namespace zb2::brew {
 
@@ -40,6 +42,11 @@ constexpr std::uint32_t kSentinela = 0xFFFFFFF0u;
 // A base do modulo. MEDIDA: ver `tests/mod_base_test.cpp` e o `bateria.cpp`.
 constexpr std::uint32_t kBase = 0x00000000u;
 constexpr int kOrcamentoSegundos = 25;
+// Quanto a MIDIA anda por milissegundo do relogio virtual. O valor e o do modulo
+// de midia (`Media::kAmostrasPorMs`, 22 = 22050/1000 truncado); escreve-se por
+// extenso aqui para a constante do motor e a do modulo nao poderem divergir sem
+// alguem ler isto.
+constexpr std::uint32_t kAmostrasDeMidiaPorMs = zb2::brew::Media::kAmostrasPorMs;
 constexpr std::uint32_t kSlotIdStrlen = 1503, kSlotIdMemset = 1504, kSlotIdStrcpy = 1505;
 constexpr std::uint32_t kSlotIdMemmove = 1506, kSlotIdStrcmp = 1507, kSlotIdStrchr = 1508;
 constexpr std::uint32_t kSlotIdStrtowstr = 1500, kSlotIdGetAeeVersion = 1501,
@@ -155,6 +162,14 @@ bool Despacho::AtenderEntrada(ICpu& cpu, std::uint32_t indice) {
 }
 
 void Despacho::InstalarAjudantes(const Saidas& saidas, Endereco tabela) {
+  // A FAIXA DE SAIDA DO IMEDIA, e a vtable dele: escrita UMA vez, aqui, antes
+  // do primeiro `Criar`. O `Media` guarda uma COPIA da faixa, logo ela tem de
+  // estar configurada neste momento -- o `Instalar` recusa se nao estiver.
+  media_ = std::make_unique<Media>(mem_, traco_, saidas, misturador_, &vfs_);
+  const auto instalacao = media_->Instalar();
+  if (!instalacao.ok) {
+    traco_.Emitir(Area::Audio, Nivel::Erro, "IMEDIA_NAO_INSTALADO", instalacao.motivo);
+  }
   // A TABELA UNICA: offset no `AEEHelperFuncs` x endereco de saida da
   // implementacao.
   //
@@ -306,6 +321,14 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         const std::uint32_t iid = cpu.Get(kR1);
         const std::uint32_t ppo = cpu.Get(kR2);
         std::uint32_t devolver = 0;
+        if (media_ && zb2::brew::ClasseDeMidia(iid)) {
+          // A FAMILIA AEECLSID_MULTIMEDIA (0x01005500): o objecto de midia, a
+          // tabela do IMedia e o ciclo de vida vivem em core/brew/imedia.
+          if (ppo != 0) mem_.Escrever32(ppo, 0);
+          cpu.Set(kR0, static_cast<std::uint32_t>(media_->Criar(iid, ppo)));
+          cpu.Set(kPC, lr);
+          continue;
+        }
         if (iid == kIidDisplay) devolver = zb2::brew::kObjDisplay;
         else if (iid == kIidFileMgr) devolver = zb2::brew::kObjFileMgr;
         // A ENTRADA. O `AEECLSID_HID` deixou de ser um objecto GENERICO: existe um
@@ -330,6 +353,8 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           std::snprintf(det, sizeof(det), "iid=0x%08x ppo=0x%08x", iid, ppo);
           traco_.RegistarFalta(Area::Brew, "IShell::CreateInstance CLSID desconhecido", det);
         }
+      } else if (media_ && media_->Atender(idx, cpu)) {
+        // O IMedia (core/brew/imedia) atendeu este indice de saida.
       } else if (idx >= kBaseDoShell) {
         // O NOME tem de dizer de QUE interface e o slot. Um so "IShell::slot"
         // para tudo dava `IShell::slot4004` para um metodo do IDisplay -- numero
@@ -946,6 +971,19 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
       continue;
     }
 
+    // A MIDIA ANDA COM O RELOGIO VIRTUAL DO LACO (P4), e o aviso e entregue aqui.
+    //
+    // As duas coisas juntas, e NAO dentro de um handler: a entrega reentra no
+    // codigo do guest, e o `EntregarAviso` guarda e repoe os 16 registradores, o
+    // CPSR e o PC -- o que so e seguro no passo, onde o guest esta numa fronteira
+    // de instrucao.
+    //
+    // Sem o avanco, o `Play` de um titulo nunca chega ao fim e o aviso DONE -- o
+    // que o `cnk2` conta para so tocar a musica da pista -- nunca nasce.
+    if (media_ != nullptr) {
+      media_->Avancar(kAmostrasDeMidiaPorMs);
+      media_->EntregarAviso(cpu, kSentinela, 200000);
+    }
     if (saidas > 200) { resultado.motivo = "parou_em_slot_nao_implementado"; return resultado; }
     cpu.Passo();
     ++resultado.passos;

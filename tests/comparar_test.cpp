@@ -47,6 +47,7 @@ struct Ficha {
   bool applet = true;
   long passos_carga = 60;
   long passos_create = 340;
+  long passos_start = 0;
   long recusadas = 0;
   std::string motivo = "retornou | create:retornou";
   long pixels = 0;
@@ -69,7 +70,8 @@ std::string Corpo(const std::vector<Ficha>& fichas) {
       << "\",\"tamanho\":" << f.tamanho << ",\"carga\":" << B(f.carga)
       << ",\"modulo\":" << B(f.modulo) << ",\"vtable\":" << B(f.vtable)
       << ",\"applet\":" << B(f.applet) << ",\"passos_carga\":" << f.passos_carga
-      << ",\"passos_create\":" << f.passos_create << ",\"recusadas\":" << f.recusadas
+      << ",\"passos_create\":" << f.passos_create << ",\"passos_start\":" << f.passos_start
+      << ",\"recusadas\":" << f.recusadas
       << ",\"motivo\":\"" << f.motivo << "\",\"pixels\":" << f.pixels
       << ",\"cores\":" << f.cores << ",\"textos\":" << f.textos
       << ",\"blits\":" << f.blits << ",\"faltas\":" << f.faltas << "}";
@@ -234,6 +236,7 @@ TEST(Comparar, CampoDesconhecidoERecusado) {
   const std::string doc =
       "[{\"mod\":\"m\",\"pasta\":\"1\",\"tamanho\":0,\"carga\":true,\"modulo\":true,"
       "\"vtable\":false,\"applet\":true,\"passos_carga\":1,\"passos_create\":1,"
+      "\"passos_start\":0,"
       "\"recusadas\":0,\"motivo\":\"x\",\"pixels\":0,\"cores\":1,\"textos\":0,"
       "\"blits\":0,\"faltas\":{},\"campo_novo_da_bateria\":7}]";
   const auto r = CompararTextos(doc, doc, "a.json", "b.json");
@@ -247,6 +250,7 @@ TEST(Comparar, CampoEmFaltaERecusado) {
   const std::string doc =
       "[{\"mod\":\"m\",\"pasta\":\"1\",\"tamanho\":0,\"carga\":true,\"modulo\":true,"
       "\"vtable\":false,\"applet\":true,\"passos_carga\":1,\"passos_create\":1,"
+      "\"passos_start\":0,"
       "\"recusadas\":0,\"motivo\":\"x\",\"pixels\":0,\"textos\":0,\"blits\":0,"
       "\"faltas\":{}}]";  // sem o campo "cores"
   const auto r = CompararTextos(doc, doc, "a.json", "b.json");
@@ -334,16 +338,21 @@ TEST(Comparar, DegrausDaReferenciaEestaoNoRelatorio) {
 
 // O CONTRATO DO FORMATO, DOS DOIS LADOS. A lista abaixo e a lista de campos que
 // o `tools/bateria.cpp` escreve, transcrita do bloco `json +=` daquele ficheiro
-// (16 campos, na ordem em que sao escritos). Uma ficha com estes campos tem de
-// ser ACEITE; um 17.o campo tem de ser RECUSADO (o teste seguinte prova-o). Se a
-// bateria ganhar um campo, e o teste `CampoDesconhecidoERecusado` que diz o nome
-// do campo que falta declarar em `kCampos`.
+// (**17 campos**, na ordem em que sao escritos). Uma ficha com estes campos tem de
+// ser ACEITE; um 18.o campo tem de ser RECUSADO (o teste seguinte prova-o). Se a
+// bateria ganhar um campo, e o teste `CampoDesconhecidoERecusado` que diz o nome do
+// campo que falta declarar em `kCampos`.
+//
+// A CONTAGEM E AFIRMADA de proposito. Quando o `passos_start` entrou, este ASSERT
+// ficou vermelho -- e foi ele que obrigou a actualizar as fichas de teste e o
+// `comparar_guarda.sh` no MESMO commit. **Sem ele, o campo novo entrava na tabela e
+// as fichas antigas passavam a ser recusadas em silencio.**
 TEST(Comparar, FichaComOsCamposDaBateriaEhAceite) {
   const char* campos[] = {"pasta",         "mod",      "tamanho",  "carga",
                           "modulo",        "vtable",   "applet",   "passos_carga",
-                          "passos_create", "recusadas", "motivo",  "pixels",
+                          "passos_create", "passos_start", "recusadas", "motivo", "pixels",
                           "cores",         "textos",   "blits",    "faltas"};
-  ASSERT_EQ(sizeof(campos) / sizeof(campos[0]), 16u);
+  ASSERT_EQ(sizeof(campos) / sizeof(campos[0]), 17u);
   const std::string doc = Montar({{}});
   for (const char* c : campos) {
     EXPECT_TRUE(Contem(doc, std::string("\"") + c + "\":"))

@@ -16,12 +16,15 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "core/audio/misturador.h"
 #include "core/brew/ajudantes.h"
 #include "core/brew/ihiddevice.h"
 #include "core/brew/arquivo.h"
+#include "core/brew/imedia.h"
 #include "core/brew/interface.h"
 #include "core/brew/tela.h"
 #include "core/brew/vfs.h"
@@ -146,6 +149,11 @@ class Despacho {
   Vfs& vfs_;
   Arquivos arquivos_;
   Tela tela_;
+  // O MISTURADOR e o IMedia. O `Media` tem referencias dentro, logo NAO e
+  // atribuivel: nasce no `InstalarAjudantes`, quando a faixa de saida ja esta
+  // configurada (ele guarda uma COPIA dela).
+  audio::Misturador misturador_;
+  std::unique_ptr<Media> media_;
 
   // A ENTRADA. `sinais_` antes de `ihid_`, porque o `Ihid` guarda a referencia
   // ao `Sinais` -- e a ordem de declaracao e a ordem de construcao.
