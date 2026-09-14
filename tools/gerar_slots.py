@@ -62,6 +62,17 @@ INTERFACES = [
     #     INHERIT_IWidget    = IHandler + 9       = 14
     #     INHERIT_IDecorator = IWidget + 2        = 16
     #     INHERIT_IDrawDecorator = IDecorator + 1 = 17
+    # AS TRES CLASSES DO ARRANQUE (o `CreateInstance` do corpus). Ver
+    # `core/brew/classes.{h,cpp}`: o `tectoy` cria `AEECLSID_AppHistory` e
+    # `AEECLSID_VALUEMODEL_1`, o `zenonia` cria `AEECLSID_TEXTCTL`.
+    #
+    # O `AEEText.h` NAO tem `INHERIT_`: a cabeca do `ITextCtl` e a forma antiga
+    # (`QINTERFACE` + `DECLARE_IBASE` + `DECLARE_ICONTROL`), e o `metodos` sabe
+    # le-la -- o nome do macro aqui e um marcador, porque o que ele procura e o
+    # `QINTERFACE(ITextCtl)`.
+    ("AppHistory", "platform/system/inc/AEEIAppHistory.h", "#define INHERIT_IAppHistory("),
+    ("ValueModel", "platform/ui/inc/AEEIValueModel.h",     "#define INHERIT_IValueModel("),
+    ("TextCtl",    "platform/deprecated/inc/AEEText.h",    "#define INHERIT_ITextCtl("),
     ("IHandler",  "platform/ui/inc/AEEIHandler.h",      "#define INHERIT_IHandler("),
     ("IForm",     "platform/ui/inc/AEEIForm.h",         "#define INHERIT_IForm("),
     ("IRootForm", "platform/ui/inc/AEEIRootForm.h",     "#define INHERIT_IRootForm("),
@@ -226,6 +237,27 @@ def _linhas_do_macro(t: str, i: int):
     return out
 
 
+# Os macros de CABECA da forma antiga (`AEE.h`). Os nomes que eles ocupam sao
+# LIDOS do cabecalho, e nao escritos aqui -- pela mesma razao de tudo o resto
+# neste ficheiro.
+MACROS_DE_CABECA = [
+    "DECLARE_IBASE",       # AddRef, Release        -- AEE.h:175
+    "DECLARE_ICONTROL",    # HandleEvent .. Reset   -- AEE.h:297
+]
+
+
+def membros_de_macro(nome: str):
+    """Os nomes dos membros de um macro de cabeca de `AEE.h`, na ordem."""
+    t = (SDK / "platform/system/inc/AEE.h").read_text(errors="replace")
+    i = t.find(f"#define {nome}(")
+    if i < 0:
+        raise SystemExit(f"#define {nome}( nao esta em platform/system/inc/AEE.h")
+    nomes = _membros("".join(_linhas_do_macro(t, i)))
+    if not nomes:
+        raise SystemExit(f"{nome}: nenhum membro lido -- o macro mudou de forma")
+    return nomes
+
+
 def metodos(caminho: Path, macro: str):
     """(membros, slots_de_cabeca, nota) de uma interface.
 
@@ -236,6 +268,44 @@ def metodos(caminho: Path, macro: str):
     i = t.find(macro)
     if i < 0:
         nome_if = macro.replace("#define INHERIT_", "").replace("(", "")
+        # A FORMA ANTIGA: `QINTERFACE(ITextCtl)` + `DECLARE_IBASE` +
+        # `DECLARE_ICONTROL`.
+        #
+        # PORQUE ISTO EXISTE, e o `AEEText.h` que o obrigou. As interfaces
+        # anteriores a BREW 3.x (o `ITextCtl`, que o `zenonia` cria por
+        # `AEECLSID_TEXTCTL`) NAO usam `INHERIT_I...`: escrevem a cabeca com dois
+        # macros de `AEE.h`,
+        #
+        #     QINTERFACE(ITextCtl) {
+        #        DECLARE_IBASE(ITextCtl)     // AddRef, Release
+        #        DECLARE_ICONTROL(ITextCtl)  // HandleEvent .. Reset
+        #        boolean (*SetTitle)(...)    // e os proprios
+        #     };
+        #
+        # e o `_membros` so ve os PROPRIOS (nao ha `(*` dentro de
+        # `DECLARE_IBASE(ITextCtl)`). Os nomes da cabeca sao LIDOS DESSES DOIS
+        # MACROS em `AEE.h`, e nao escritos aqui: e a mesma regra que resolve a
+        # cadeia dos `INHERIT_` -- o cabecalho e a fonte, e uma lista escrita a
+        # mao ja divergiu neste trabalho.
+        mq = re.search(r"QINTERFACE\s*\(\s*" + re.escape(nome_if) + r"\s*\)", t)
+        if mq:
+            i = mq.start()
+            j = t.find("};", i)
+            bloco = t[i:j] if j > 0 else t[i:i + 8000]
+            nomes_cabeca = []
+            contagens = []
+            for mc in MACROS_DE_CABECA:
+                if re.search(r"\b" + mc + r"\s*\(", bloco):
+                    quantos_este = membros_de_macro(mc)
+                    nomes_cabeca += quantos_este
+                    contagens.append(f"{mc} = {len(quantos_este)}")
+            fns = [f for f in _membros(bloco) if f != "pfn"]
+            repetidos = [f for f in fns if f in nomes_cabeca]
+            if repetidos:
+                raise SystemExit(f"{nome_if}: {repetidos} aparecem na cabeca E na interface")
+            return (fns, len(nomes_cabeca),
+                    f"QINTERFACE + {', '.join(contagens)}",
+                    nomes_cabeca)
         # O ESPACO ANTES DO PARENTESES NAO E COSMETICO.
         #
         # `AEEGL.h` (a extensao OpenGL ES 1.5.3 do Zeebo) escreve
@@ -299,6 +369,24 @@ for nome, cab, macro in INTERFACES:
         if fn in ("pfn",):
             continue
         linhas.append(f"constexpr unsigned k{nome}_{fn} = {k + base_off};")
+    # E O NOME DE CADA SLOT, indexado pelo proprio slot.
+    #
+    # Um slot sem nome e uma recusa anonima: o despacho registaria `ITextCtl::slot6`
+    # e a lista de demanda voltaria a obrigar a ir ao cabecalho CONTAR em cada
+    # ronda -- que e o defeito que este trabalho existe para tirar do caminho. A
+    # tabela do IGL ja e assim (`NomeIgl`), e a razao e a mesma (P2/P7).
+    todos = nomes_cabeca + [f for f in fns if f != "pfn"]
+    linhas.append(f"// Quantos slots esta interface TEM, lido do cabecalho. E o limite da")
+    linhas.append(f"// cablagem e o do `NomeDe{nome}` -- uma so constante, para os dois nao")
+    linhas.append(f"// poderem divergir.")
+    linhas.append(f"constexpr unsigned k{nome}Slots = {len(todos)};")
+    linhas.append("")
+    linhas.append(f"inline const char* NomeDe{nome}(unsigned slot) {{")
+    linhas.append("  static const char* k[] = {")
+    linhas.append("      " + ", ".join(f'"{n}"' for n in todos) + ",")
+    linhas.append("  };")
+    linhas.append(f"  return slot < {len(todos)} ? k[slot] : \"slot_fora_da_tabela\";")
+    linhas.append("}")
     linhas.append("")
 # ---------------------------------------------------------------------------
 # AS CONSTANTES DAS PROPRIEDADES DA INTERFACE DE WIDGETS.
