@@ -33,6 +33,25 @@ class ArmInterpreter : public ICpu {
   std::uint32_t UltimaRecusada() const { return ultima_recusada_; }
   std::uint32_t PcDaUltimaRecusada() const { return pc_da_recusada_; }
 
+  // --- sonda do descodificador (P7) -------------------------------------
+  // O NOME da instrucao que o executor ACABOU de tratar, escrito no ramo que a
+  // tratou. Existe para o auditor diferencial
+  // (`tools/auditar_descodificador.py`) comparar a NOSSA descodificacao com a do
+  // `arm-none-eabi-objdump` palavra a palavra, sobre o corpus inteiro.
+  //
+  // PORQUE O NOME VEM DO EXECUTOR, e nao de uma segunda descodificacao: uma
+  // segunda descodificacao (em Python, ou uma tabela escrita de memoria) pode
+  // divergir da primeira e concordar consigo mesma -- que e exactamente o defeito
+  // que esta sonda existe para encontrar. Aqui nao ha duas respostas possiveis:
+  // o nome que sai e o ramo que correu.
+  //
+  // Vazio antes do primeiro passo. Com condicao FALSA vale `-`: nesse caso nada
+  // correu, e dizer um nome seria mentir.
+  const char* FamiliaDaUltima() const { return familia_; }
+  // O motivo pelo qual o executor RECUSOU a ultima instrucao, ou `nullptr` quando
+  // nao recusou. `FamiliaDaUltima()` diz O QUE era; isto diz o que faltou.
+  const char* MotivoDaRecusa() const { return motivo_recusa_; }
+
   // Modo actual. Recusa-se a devolver um modo invalido: se o CPSR tiver lixo,
   // isto denuncia.
   Modo ModoAtual() const;
@@ -78,6 +97,16 @@ class ArmInterpreter : public ICpu {
   // familia propria porque os bits 27-25 destas instrucoes sao 000 -- os mesmos
   // do grupo de dados processados.
   void TransferenciaExtra(std::uint32_t instr, std::uint32_t pc);
+  // ARMv6: as instrucoes "media" -- extensao de sinal/zero (SXTB/UXTH e a
+  // familia "A"), reversao de bytes (REV/REV16/REVSH). Vivem em bits 27-24 =
+  // 0110, que o primeiro nivel le como TRANSFERENCIA SIMPLES: sem este ramo, um
+  // `uxth r3, r5` e executado como `strb` e um `sxth` como `ldr`. Ver a medicao
+  // em `tools/auditar_descodificador.py`.
+  void MediaArmv6(std::uint32_t instr, std::uint32_t pc);
+  // ARMv5TE: a aritmetica DSP (SMULxy/SMLAxy/SMULWy/SMLAWy/SMLALxy), as somas
+  // com saturacao (QADD/QSUB/QDADD/QDSUB) e o CLZ. Vive em bits 27-24 = 0001,
+  // que o primeiro nivel le como DADOS PROCESSADOS.
+  void AritmeticaDsp(std::uint32_t instr, std::uint32_t pc);
   void TransferenciaSimples(std::uint32_t instr, std::uint32_t pc);
   void Bloco(std::uint32_t instr, std::uint32_t pc);
   void Bifurcar(std::uint32_t instr, std::uint32_t pc);
@@ -92,6 +121,10 @@ class ArmInterpreter : public ICpu {
   std::uint64_t recusadas_ = 0;
   std::uint32_t ultima_recusada_ = 0;
   std::uint32_t pc_da_recusada_ = 0;
+  // Sonda do descodificador. Apontam para literais estaticos: nao ha alocacao, e
+  // o custo por instrucao e uma escrita de ponteiro.
+  const char* familia_ = "-";
+  const char* motivo_recusa_ = nullptr;
 };
 
 }  // namespace zb2

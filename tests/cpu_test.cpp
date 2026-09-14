@@ -854,3 +854,524 @@ TEST(Cpu, ExtraComRtIgualAoPcERecusado) {
   EXPECT_EQ(b.Cpu().InstruscoesRecusadas(), antes + 1);
   EXPECT_EQ(b.Cpu().UltimaRecusada(), LdrhImediato(15, 0, 0));
 }
+
+// ===========================================================================
+// O GRUPO "MEDIA" DO ARMv6 (SXTB/UXTH/REV) E A ARITMETICA DSP DO ARMv5TE
+// ===========================================================================
+//
+// PORQUE ESTES TESTES EXISTEM: o auditor diferencial
+// (`tools/auditar_descodificador.py`) mediu, no corpus dos 62 titulos, 46 000
+// palavras em que a NOSSA descodificacao executava OUTRA INSTRUCAO sem recusar:
+// 17 295 `uxth` corriam como `ldrb`, 12 764 `uxtb` como `strb`, 6 432 `sxtab`
+// como `str`, 2 183 `sxth` como `ldr`, 1 105 `smulbb` como `cmn`, 1 013 `smlabb`
+// como `tst`, 259 `clz` como `cmn`.
+//
+// AS PALAVRAS DOS TESTES SAO AS DO CORPUS, lidas dos `.mod` e conferidas com o
+// `arm-none-eabi-objdump` -- nao foram escritas de memoria. O endereco vem no
+// comentario para quem quiser repetir a leitura.
+
+// --- construtores das formas "media" ----------------------------------------
+//
+// `SEM_ACUMULACAO` tem os bits 19-16 = 1111 DENTRO da constante (e por isso nao
+// leva `Rn`); as formas "A" tem os bits 19-16 livres e levam `Rn`. A primeira
+// versao do construtor somava os dois e produzia `uxtah` onde se pedia `uxth`.
+constexpr std::uint32_t ExtensaoSemAcumulacao(std::uint32_t base, std::uint32_t rd,
+                                              std::uint32_t rm, std::uint32_t rodagem = 0) {
+  return (kAl << 28) | base | ((rd & 0xF) << 12) | ((rodagem & 3) << 10) | (rm & 0xF);
+}
+constexpr std::uint32_t Sxtb(std::uint32_t rd, std::uint32_t rm) {
+  return ExtensaoSemAcumulacao(0x06AF0070u, rd, rm);
+}
+constexpr std::uint32_t Sxth(std::uint32_t rd, std::uint32_t rm, std::uint32_t rodagem = 0) {
+  return ExtensaoSemAcumulacao(0x06BF0070u, rd, rm, rodagem);
+}
+constexpr std::uint32_t Uxtb(std::uint32_t rd, std::uint32_t rm) {
+  return ExtensaoSemAcumulacao(0x06EF0070u, rd, rm);
+}
+constexpr std::uint32_t Uxth(std::uint32_t rd, std::uint32_t rm) {
+  return ExtensaoSemAcumulacao(0x06FF0070u, rd, rm);
+}
+constexpr std::uint32_t Sxtab(std::uint32_t rd, std::uint32_t rn, std::uint32_t rm,
+                              std::uint32_t rodagem = 0) {
+  return (kAl << 28) | 0x06A00070u | ((rn & 0xF) << 16) | ((rd & 0xF) << 12) |
+         ((rodagem & 3) << 10) | (rm & 0xF);
+}
+constexpr std::uint32_t Sxtah(std::uint32_t rd, std::uint32_t rn, std::uint32_t rm,
+                              std::uint32_t rodagem = 0) {
+  return (kAl << 28) | 0x06B00070u | ((rn & 0xF) << 16) | ((rd & 0xF) << 12) |
+         ((rodagem & 3) << 10) | (rm & 0xF);
+}
+constexpr std::uint32_t Uxtah(std::uint32_t rd, std::uint32_t rn, std::uint32_t rm) {
+  return (kAl << 28) | 0x06F00070u | ((rn & 0xF) << 16) | ((rd & 0xF) << 12) | (rm & 0xF);
+}
+constexpr std::uint32_t Rev(std::uint32_t rd, std::uint32_t rm) {
+  return (kAl << 28) | 0x06BF0F30u | ((rd & 0xF) << 12) | (rm & 0xF);
+}
+constexpr std::uint32_t Rev16(std::uint32_t rd, std::uint32_t rm) {
+  return (kAl << 28) | 0x06BF0FB0u | ((rd & 0xF) << 12) | (rm & 0xF);
+}
+constexpr std::uint32_t Revsh(std::uint32_t rd, std::uint32_t rm) {
+  return (kAl << 28) | 0x06FF0FB0u | ((rd & 0xF) << 12) | (rm & 0xF);
+}
+// `SEL` e `SXTB16`/`PKH`/`SSAT`/a aritmetica paralela ESTAO RECUSADAS (P2): o
+// `SEL` depende das bandeiras GE, que este interpretador nao emula.
+constexpr std::uint32_t SelRecusado(void) { return 0xE6800FB0u; }
+constexpr std::uint32_t Sxtb16Recusado(void) { return 0xE68F0070u; }  // `sxtb16 r0, r0`
+
+// --- construtores do grupo DSP ----------------------------------------------
+constexpr std::uint32_t XyDe(const char* xy) {
+  // O sufixo `<x><y>`: <x> escolhe a metade de Rm (bit 5) e <y> a de Rs (bit 6).
+  // A ordem foi conferida no objdump: `smlabt` = 0x...C0 e `smlatb` = 0x...A0.
+  return (xy[0] == 't' ? 0x20u : 0x0u) | (xy[1] == 't' ? 0x40u : 0x0u);
+}
+constexpr std::uint32_t SmulXy(const char* xy, std::uint32_t rd, std::uint32_t rs, std::uint32_t rm) {
+  return (kAl << 28) | 0x01600080u | XyDe(xy) | ((rd & 0xF) << 16) | ((rs & 0xF) << 8) | (rm & 0xF);
+}
+constexpr std::uint32_t SmlaXy(const char* xy, std::uint32_t rd, std::uint32_t ra, std::uint32_t rs,
+                               std::uint32_t rm) {
+  return (kAl << 28) | 0x01000080u | XyDe(xy) | ((rd & 0xF) << 16) | ((ra & 0xF) << 12) |
+         ((rs & 0xF) << 8) | (rm & 0xF);
+}
+constexpr std::uint32_t Clz(std::uint32_t rd, std::uint32_t rm) {
+  return (kAl << 28) | 0x016F0F10u | ((rd & 0xF) << 12) | (rm & 0xF);
+}
+constexpr std::uint32_t Qdadd(std::uint32_t rd, std::uint32_t rn, std::uint32_t rm) {
+  return (kAl << 28) | 0x01400050u | ((rn & 0xF) << 16) | ((rd & 0xF) << 12) | (rm & 0xF);
+}
+constexpr std::uint32_t Qsub(std::uint32_t rd, std::uint32_t rn, std::uint32_t rm) {
+  return (kAl << 28) | 0x01200050u | ((rn & 0xF) << 16) | ((rd & 0xF) << 12) | (rm & 0xF);
+}
+// Condicao 1111: `pld` e o `blx <rotulo>`.
+constexpr std::uint32_t PldImediato(std::uint32_t rn, std::uint32_t deslocamento) {
+  return 0xF550F000u | ((rn & 0xF) << 16) | (deslocamento & 0xFFF);
+}
+constexpr std::uint32_t PldRegistrador(std::uint32_t rn, std::uint32_t rm) {
+  return 0xF750F000u | ((rn & 0xF) << 16) | (rm & 0xF);
+}
+constexpr std::uint32_t BlxImediato(std::int32_t deslocamento_palavras) {
+  return 0xFA000000u | (static_cast<std::uint32_t>(deslocamento_palavras) & 0x00FFFFFFu);
+}
+// Thumb: os formatos 5 (registrador) e 8/9 (imediato).
+constexpr std::uint16_t ThumbF5(std::uint32_t op, std::uint32_t rm, std::uint32_t rn, std::uint32_t rd) {
+  return static_cast<std::uint16_t>(0x5000u | ((op & 7u) << 9) | ((rm & 7u) << 6) | ((rn & 7u) << 3) | (rd & 7u));
+}
+constexpr std::uint16_t ThumbMemImediato(bool carrega, bool meia, bool byte, std::uint32_t imm5,
+                                         std::uint32_t rn, std::uint32_t rd) {
+  const std::uint32_t base = meia ? 0x8000u : (byte ? 0x7000u : 0x6000u);
+  return static_cast<std::uint16_t>(base | (carrega ? 0x0800u : 0u) | ((imm5 & 0x1Fu) << 6) |
+                                    ((rn & 7u) << 3) | (rd & 7u));
+}
+
+TEST(Cpu, MediaPalavrasMedidasDoCorpus) {
+  // As palavras REAIS, cada uma com o ficheiro e o offset de onde foi lida.
+  EXPECT_EQ(Uxth(3, 5), 0xE6FF3075u);        // a3d.mod      +0xad00  `uxth r3, r5`
+  EXPECT_EQ(Uxtb(1, 1), 0xE6EF1071u);        // cninja.mod   +0x480   `uxtb r1, r1`
+  EXPECT_EQ(Sxth(6, 1), 0xE6BF6071u);        // a3d.mod      +0x12d4  `sxth r6, r1`
+  EXPECT_EQ(Sxtb(0, 0), 0xE6AF0070u);        // a3d.mod      +0x23bc  `sxtb r0, r0`
+  EXPECT_EQ(Sxtab(3, 3, 0), 0xE6A33070u);    // cninja.mod   +0x46620 `sxtab r3, r3, r0`
+  EXPECT_EQ(Sxtah(0, 0, 8, 2), 0xE6B00878u); // fifa09.mod   +0xc4fd8 `sxtah r0, r0, r8, ror #16`
+  EXPECT_EQ(Uxtah(4, 0, 4), 0xE6F04074u);    // zeebotennis  +0x3c32c `uxtah r4, r0, r4`
+  EXPECT_EQ(Rev16(0, 0), 0xE6BF0FB0u);       // a3d.mod      +0x11d80 `rev16 r0, r0`
+  EXPECT_EQ(Clz(6, 2), 0xE16F6F12u);         // chessbots    +0xc30   `clz r6, r2`
+  EXPECT_EQ(SmulXy("bb", 1, 14, 1), 0xE1610E81u);  // chessbots +0x13370 `smulbb r1, r1, lr`
+  EXPECT_EQ(SmlaXy("bt", 4, 1, 3, 3), 0xE10413C3u);  // chessbots +0x4db8 `smlabt r4, r3, r3, r1`
+}
+
+TEST(Cpu, MediaUxthNaoEscreveMemoriaNemLeByte) {
+  // O DEFEITO, como teste proprio: com os bits 27-25 = 011 e sem o ramo do grupo
+  // media, o `uxth r3, r5` cai na transferencia simples e corre como `ldrb r3,
+  // [r5]`. O r5 e um endereco VALIDO de proposito: o teste tem de distinguir
+  // "extraiu a meia-palavra" de "leu um byte do endereco".
+  Bancada b;
+  b.R(5, 0x00110000u);
+  b.R(3, 0xDEADBEEFu);
+  b.Mem().Escrever8(0x00110000u, 0x7Fu);  // se corresse como ldrb, o r3 ficava 0x7F
+  b.Instrucao(Uxth(3, 5));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(3), 0x00000000u) << "a metade de baixo do r5 e zero";
+}
+
+TEST(Cpu, MediaUxthExtraiAMeiaPalavraSemSinal) {
+  Bancada b;
+  b.R(5, 0xFFFF1234u);
+  b.R(3, 0xDEADBEEFu);
+  b.Instrucao(Uxth(3, 5));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(3), 0x00001234u);
+}
+
+TEST(Cpu, MediaSxthEstendeOSinalDaMeiaPalavra) {
+  Bancada b;
+  b.R(1, 0x12348000u);
+  b.R(6, 0xDEADBEEFu);
+  b.Instrucao(Sxth(6, 1));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(6), 0xFFFF8000u) << "0x8000 com sinal e 0xFFFF8000";
+}
+
+TEST(Cpu, MediaSxtbEstendeOSinalDoByte) {
+  Bancada b;
+  b.R(0, 0x00000080u);
+  b.Instrucao(Sxtb(0, 0));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(0), 0xFFFFFF80u);
+}
+
+TEST(Cpu, MediaUxtbZeraOsBitsDeCima) {
+  Bancada b;
+  b.R(1, 0xFFFFFF80u);
+  b.Instrucao(Uxtb(1, 1));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(1), 0x00000080u);
+}
+
+TEST(Cpu, MediaRodagemDeBytesVemAntesDaExtensao) {
+  // `sxtah r0, r0, r8, ror #16`: a rodagem de 16 bits ja poe a metade de baixo
+  // em 0x8000, e a extensao de sinal tem de dar 0xFFFF8000. Uma versao que
+  // estendesse ANTES de rodar daria outro valor -- e o valor errado parece
+  // plausivel, que e o que torna esta classe de erro caro.
+  Bancada b;
+  b.R(0, 0x00000000u);
+  // A rodagem em `sxtah ..., ror #16` RODA O r8 e extrai a metade de BAIXO do
+  // valor rodado: 0x80000000 rodado 16 bits da 0x00008000, cuja metade de baixo
+  // com sinal e 0xFFFF8000.
+  b.R(8, 0x80000000u);
+  b.Instrucao(Sxtah(0, 0, 8, 2));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(0), 0xFFFF8000u);
+}
+
+TEST(Cpu, MediaSxtabSomaAoRegistradorDaBase) {
+  Bancada b;
+  b.R(3, 0x00000100u);
+  b.R(0, 0x000000FFu);  // 0xFF com sinal = -1
+  b.Instrucao(Sxtab(3, 3, 0));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(3), 0x000000FFu) << "0x100 + (-1)";
+}
+
+TEST(Cpu, MediaRevInverteOsQuatroBytes) {
+  Bancada b;
+  b.R(0, 0x11223344u);
+  b.Instrucao(Rev(1, 0));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(1), 0x44332211u);
+}
+
+TEST(Cpu, MediaRev16InverteEmCadaMeiaPalavra) {
+  Bancada b;
+  b.R(2, 0x11223344u);
+  b.Instrucao(Rev16(3, 2));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(3), 0x22114433u);
+}
+
+TEST(Cpu, MediaRevshInverteEEstendeOSinal) {
+  Bancada b;
+  b.R(0, 0x000080FFu);
+  b.Instrucao(Revsh(1, 0));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(1), 0xFFFFFF80u) << "0x80FF trocado em 16 bits e 0xFF80";
+}
+
+TEST(Cpu, MediaNaoEngoleATransferenciaComDeslocamentoDeRegistrador) {
+  // A FRONTEIRA: uma transferencia com offset de registrador tem bits 27-24 =
+  // 0110 e o BIT 4 = 0. Um teste que so olhasse os bits 27-24 partia o
+  // `str r0, [r0, -r2]` -- e este teste existe para o apanhar.
+  Bancada b;
+  b.R(0, 0x00110000u);
+  b.R(2, 0x00000004u);
+  // `str r0, [r0, -r2]` = 0xE6000002 (post-indexado: guarda na BASE e so depois
+  // anda com ela). O que o teste prova e que GUARDA -- a alternativa era o ramo
+  // novo o ler como uma extensao de sinal.
+  b.Instrucao(0xE6000002u);
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.Mem().Ler32(0x00110000u), 0x00110000u) << "tem de GUARDAR, e nao extrair";
+  EXPECT_EQ(b.R(0), 0x0010FFFCu) << "e a base anda no fim";
+}
+
+TEST(Cpu, MediaSxtb16ConhecidaERecusadaComNome) {
+  // P2: o que nao esta implementado RECUSA. O `sxtb16` esta identificado na
+  // tabela e recusado com o nome dele -- nao executado como outra coisa.
+  Bancada b;
+  b.R(0, 0xDEADBEEFu);
+  b.Instrucao(Sxtb16Recusado());
+  b.Terminar();
+  const std::uint64_t antes = b.Cpu().InstruscoesRecusadas();
+  b.Correr(1);
+  EXPECT_EQ(b.Cpu().InstruscoesRecusadas(), antes + 1);
+  EXPECT_EQ(b.Cpu().FamiliaDaUltima(), std::string("sxtb16"));
+  EXPECT_EQ(b.R(0) & 0xFFFF0000u, 0xDEAD0000u) << "e nao mexe no registrador";
+}
+
+TEST(Cpu, DspClzContaOsZerosDaEsquerda) {
+  Bancada b;
+  b.R(2, 0x0000FFFFu);
+  b.Instrucao(Clz(6, 2));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(6), 16u);
+}
+
+TEST(Cpu, DspSmulbbMultiplicaAsMeiasPalavrasDeBaixo) {
+  // `smulbb r1, r1, lr`: Rd = bits 19-16 = 1, Rs = bits 11-8 = 14, Rm = bits 3-0
+  // = 1. O resultado e (int16)r1 * (int16)r14. Valores NEGATIVOS de proposito:
+  // com positivos, uma multiplicacao sem sinal dava o mesmo.
+  Bancada b;
+  b.R(1, 0x0000FFFEu);    // -2
+  b.R(14, 0x00000003u);   //  3
+  b.Instrucao(SmulXy("bb", 1, 14, 1));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(1), 0xFFFFFFFAu) << "-2 * 3";
+}
+
+TEST(Cpu, DspSmulbtUsaAMeiaDeCimaDeRs) {
+  // A variante MISTA e a que separa os bits 6 e 5: com as duas metades trocadas
+  // o resultado e outro, e o valor errado parece plausivel.
+  Bancada b;
+  b.R(4, 0x00000002u);    // Rm: metade de baixo = 2
+  b.R(3, 0x00070000u);    // Rs: metade de cima = 7
+  b.Instrucao(SmulXy("bt", 1, 3, 4));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(1), 14u) << "2 * 7";
+  // E O NOME, que e o que o auditor compara com o objdump: `bt` = metade de
+  // baixo de Rm e de cima de Rs. Trocar os dois bits (6 e 5) da o mesmo numero
+  // de metades escolhidas, mas o nome errado -- e um nome errado aqui significa
+  // uma instrucao lida ao contrario do que o binutils diz.
+  EXPECT_EQ(b.Cpu().FamiliaDaUltima(), std::string("smulbt"));
+
+  Bancada b2;
+  b2.R(4, 0x00070002u);   // Rm: baixo = 2, cima = 7
+  b2.R(3, 0x00000009u);   // Rs: baixo = 9
+  b2.Instrucao(SmulXy("tb", 1, 3, 4));  // metade de CIMA de Rm x a de BAIXO de Rs
+  b2.Terminar();
+  b2.Correr(1);
+  EXPECT_EQ(b2.R(1), 63u) << "7 * 9";
+  EXPECT_EQ(b2.Cpu().FamiliaDaUltima(), std::string("smultb"));
+}
+
+TEST(Cpu, DspSmlaXySomaORegistradorDeAcumulacao) {
+  // `smlabt r4, r3, r3, r1` (a palavra medida do chessbots): Rd = 4, Rs = 3,
+  // Ra = 1, Rm = 3. Rd = (int16)Rm_lo * (int16)Rs_hi + Ra. Mede a ORDEM dos
+  // operandos: trocar Rs por Ra da outro numero.
+  Bancada b;
+  b.R(3, 0x00090002u);   // Rs: cima = 9; Rm: baixo = 2
+  b.R(1, 100u);          // acumulador
+  b.R(4, 0u);
+  b.Instrucao(SmlaXy("bt", 4, 1, 3, 3));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(4), 118u) << "2 * 9 + 100";
+}
+
+TEST(Cpu, DspSmulxyNaoAceitaBits15a12DiferentesDeZero) {
+  // ARMADILHA MEDIDA: os bits 15-12 do `SMULxy` sao reservados e tem de ser
+  // ZERO. `0xE1641382` (bits 15-12 = 1) NAO e `smulbb` -- o objdump chama-lhe
+  // `cmn r4, r2, lsl #3`. Uma mascara que os deixasse livres transformava uma
+  // instrucao de dados processados numa multiplicacao, em silencio.
+  Bancada b;
+  b.R(4, 0x11111111u);
+  b.R(2, 0x22222222u);
+  b.Instrucao(0xE1641382u);
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.Cpu().FamiliaDaUltima(), std::string("cmn"));
+  EXPECT_EQ(b.R(4), 0x11111111u) << "o cmn nao escreve no Rd";
+}
+
+TEST(Cpu, DspQdaddSaturaEDevolveOMaximo) {
+  // `qdadd` soma o DOBRO de Rm e satura. Com 0x7FFFFFFF em Rn e 1 em Rm, o
+  // dobro e 2 e a soma satura: a resposta e 0x7FFFFFFF e a bandeira Q fica
+  // posta (bit 27 do CPSR).
+  Bancada b;
+  b.R(0, 0x7FFFFFFFu);
+  b.R(4, 1u);
+  b.Instrucao(Qdadd(0, 0, 4));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(0), 0x7FFFFFFFu);
+  EXPECT_NE(b.Cpu().Cpsr() & (1u << 27), 0u) << "a bandeira Q";
+}
+
+TEST(Cpu, DspQsubSaturaNoNegativo) {
+  Bancada b;
+  b.R(0, 0x80000000u);  // o menor inteiro
+  b.R(4, 1u);
+  b.Instrucao(Qsub(0, 0, 4));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(0), 0x80000000u);
+  EXPECT_NE(b.Cpu().Cpsr() & (1u << 27), 0u);
+}
+
+TEST(Cpu, DspNaoTocaNoSwpNemNoBkpt) {
+  // As tres formas que partilham os bits 27-24 = 0001: o SWP (bits 7-4 = 1001) e
+  // o BKPT (bits 7-4 = 0111) NAO sao do grupo DSP. Sem esta distincao o
+  // despachante passava a testar uma coisa e a executar outra.
+  Bancada b;
+  b.R(0, 0x00110000u);
+  b.R(2, 0x11223344u);
+  b.Mem().Escrever32(0x00110000u, 0x55667788u);
+  b.Instrucao(0xE1002092u);  // swp r2, r2, [r0]
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(2), 0x55667788u) << "o swp leu o valor antigo para o Rd";
+  EXPECT_EQ(b.Mem().Ler32(0x00110000u), 0x11223344u) << "e escreveu o Rm do sitio";
+
+  Bancada b2;
+  b2.Instrucao(0xE1200070u);  // bkpt 0
+  b2.Terminar();
+  const std::uint64_t antes = b2.Cpu().InstruscoesRecusadas();
+  b2.Correr(1);
+  EXPECT_EQ(b2.Cpu().InstruscoesRecusadas(), antes + 1) << "o BKPT recusa: nao ha depurador";
+  EXPECT_EQ(b2.Cpu().FamiliaDaUltima(), std::string("bkpt"));
+}
+
+TEST(Cpu, PldNaoTocaNaMemoriaNemNosRegistradores) {
+  // O PLD e uma DICA e a semantica dele e nao fazer nada. Trata-lo como "stub
+  // silencioso" seria um erro: nao ha caminho por implementar. O que o teste
+  // prova e que ele NAO tem o efeito da transferencia simples que o substituia
+  // (com os bits 27-25 = 101 e o bit 24 = 1, o PLD caia em "condicao NV" e era
+  // RECUSADO -- 4 630 palavras no corpus).
+  Bancada b;
+  b.R(0, 0x00110000u);
+  b.R(5, 0x11223344u);
+  b.Instrucao(PldImediato(0, 0x20));
+  b.Instrucao(PldRegistrador(0, 5));
+  b.Terminar();
+  const std::uint64_t antes = b.Cpu().InstruscoesRecusadas();
+  b.Correr(2);
+  EXPECT_EQ(b.Cpu().InstruscoesRecusadas(), antes) << "o pld nao recusa: e uma dica";
+  EXPECT_EQ(b.Cpu().FamiliaDaUltima(), std::string("pld"));
+  EXPECT_EQ(b.R(5), 0x11223344u);
+  EXPECT_EQ(b.R(0), 0x00110000u) << "e nao escreve no registrador da base";
+}
+
+TEST(Cpu, BlxImediatoTrocaParaThumbEOGuardaOLr) {
+  Bancada b;
+  b.Instrucao(BlxImediato(1));  // para pc + 8 + 4
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_NE(b.Cpu().Cpsr() & Cpsr::kT, 0u) << "entra em Thumb";
+  EXPECT_EQ(b.R(15), 0x00100000u + 8u + 4u);
+  EXPECT_EQ(b.R(14), 0x00100004u) << "o LR e a instrucao seguinte";
+}
+
+TEST(Cpu, McrNaoVaiParaOSwiEDepoisDoArranjoVaiParaOCoprocessador) {
+  // Os bits 27-25 do CDP/MCR/MRC sao 111, os MESMOS do SWI -- o que os separa e
+  // o bit 24 (SWI = `cond 1111 imm24`). O interpretador mandava os dois para o
+  // `SWI`, e o efeito era que o `mrc p15` (a leitura do tipo de cache) nunca
+  // chegava ao `Coprocessador`.
+  Bancada b;
+  b.Instrucao(0xEE110F10u);  // mrc p15, 0, r0, c1, c0, 0
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.Cpu().FamiliaDaUltima(), std::string("mrc"));
+  EXPECT_EQ(b.R(0), 0x410FB760u) << "o valor de cache declarado pelo Coprocessador";
+
+  Bancada b2;
+  b2.Instrucao(Swi(0x123456u));
+  b2.Terminar();
+  const std::uint64_t antes = b2.Cpu().InstruscoesRecusadas();
+  b2.Correr(1);
+  EXPECT_EQ(b2.Cpu().FamiliaDaUltima(), std::string("swi"));
+  EXPECT_EQ(b2.Cpu().InstruscoesRecusadas(), antes + 1);
+}
+
+TEST(Cpu, MrsComBitsBaixosDiferentesDeZeroNaoEMrs) {
+  // A MASCARA DO MRS VAI ATE AO BIT 0. Com a mascara antiga (que deixava os doze
+  // bits baixos livres e testava o MRS ANTES do SWP), `0xE10F0090` era lido como
+  // MRS -- e o objdump diz `swp r0, r0, [pc]`.
+  Bancada b;
+  b.R(0, 0x00110000u);
+  b.R(2, 0x11223344u);
+  b.Mem().Escrever32(0x00110000u, 0x55667788u);
+  b.Instrucao(0xE10F2090u);  // swp r2, r2, [pc] -- a base e o PC, so para o nome
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.Cpu().FamiliaDaUltima(), std::string("swp"));
+}
+
+TEST(Cpu, ThumbLdrhEStrhDoFormato8UsamDoisBytes) {
+  // O `meia` estava MORTO na versao anterior (`(instr & 0xF000) == 0x8000` E
+  // `(instr & 0x1000) != 0` nunca e verdade), e o STRH/LDRH corriam como
+  // STR/LDR de 32 bits -- que escrevem quatro bytes onde o jogo escreve dois.
+  Bancada b;
+  b.R(2, 0x00110000u);
+  b.R(1, 0x11223344u);
+  b.R(7, 0x00100005u);  // entra em Thumb: `bx r7` com o bit 0 posto
+  b.Mem().Escrever32(0x00110000u, 0xAAAAAAAAu);
+  b.Instrucao(0xE12FFF17u);                                // bx r7 -> Thumb
+  b.Thumb(ThumbMemImediato(false, true, false, 0, 2, 1));  // strh r1, [r2, #0]
+  b.Thumb(ThumbMemImediato(true, true, false, 0, 2, 3));   // ldrh r3, [r2, #0]
+  b.Terminar();
+  b.Correr(3);
+  EXPECT_EQ(b.Mem().Ler32(0x00110000u), 0xAAAA3344u) << "so os dois bytes de baixo mudaram";
+  EXPECT_EQ(b.R(3), 0x00003344u) << "e o ldrh zero-extende";
+}
+
+TEST(Cpu, ThumbStrbEStrDePalavraGuardamENaoCarregam) {
+  // DEFEITO MEDIDO NO ESPACO THUMB INTEIRO (65 536 meias-palavras, auditor):
+  // o `L` destas formas e o BIT 11 em todas elas, e o codigo lia os bits 12-11
+  // (`(instr >> 11) & 3`), que dao 0 no 0x6000 mas **2 no 0x7000 e no 0x9000**.
+  // Como o teste era `op == 0`, o `strb` e o `str` de palavra eram executados
+  // como LEITURA -- 2 048 + 2 048 meias-palavras do espaco, em silencio.
+  Bancada b;
+  b.R(2, 0x00110010u);
+  b.R(1, 0x11223344u);
+  b.R(7, 0x00100005u);
+  b.Mem().Escrever8(0x00110010u, 0x00u);
+  b.Instrucao(0xE12FFF17u);                                 // bx r7 -> Thumb
+  b.Thumb(ThumbMemImediato(false, false, true, 0, 2, 1));   // strb r1, [r2, #0]
+  b.Thumb(ThumbMemImediato(false, false, false, 0, 2, 1));  // str  r1, [r2, #0]
+  b.Terminar();
+  b.Correr(3);
+  EXPECT_EQ(b.Mem().Ler8(0x00110010u), 0x44u) << "o strb guardou o byte de baixo";
+  EXPECT_EQ(b.Mem().Ler32(0x00110010u), 0x11223344u) << "e o str guardou a palavra";
+}
+
+TEST(Cpu, ThumbFormato5FazAsSeteFormasDeMemoriaComRegistrador) {
+  // As sete formas que faltavam (LDRH/STRH/LDRSB/LDRSH e companhia) vivem no
+  // formato 5. O STRH tem de escrever DOIS bytes e o LDRSH tem de estender o
+  // SINAL -- as duas coisas que uma implementacao apressada troca.
+  Bancada b;
+  b.R(2, 0x00110020u);
+  b.R(1, 0x00008080u);
+  b.R(4, 0x00000000u);
+  b.R(7, 0x00100005u);
+  b.Instrucao(0xE12FFF17u);      // bx r7 -> Thumb
+  b.Thumb(ThumbF5(1, 4, 2, 1));  // strh r1, [r2, r4]
+  b.Thumb(ThumbF5(7, 4, 2, 3));  // ldrsh r3, [r2, r4]
+  b.Terminar();
+  b.Correr(3);
+  EXPECT_EQ(b.Mem().Ler32(0x00110020u), 0x00008080u) << "so dois bytes escritos";
+  EXPECT_EQ(b.R(3), 0xFFFF8080u) << "0x8080 com sinal";
+}
+
+TEST(Cpu, ThumbFormato5ContinuaARecusarOQueNaoConhece) {
+  // O espaco Thumb tem formas que NAO estao implementadas. Elas RECUSAM com o
+  // nome da forma (formato 1 = deslocamento imediato), e nao executam outra
+  // coisa: medido, 22 692 das 65 536 meias-palavras do espaco.
+  Bancada b;
+  b.R(7, 0x00100005u);
+  b.Instrucao(0xE12FFF17u);  // bx r7 -> Thumb
+  b.Thumb(0x0000u);          // lsls r0, r0, #0 -- formato 1
+  b.Terminar();
+  const std::uint64_t antes = b.Cpu().InstruscoesRecusadas();
+  b.Correr(2);
+  EXPECT_EQ(b.Cpu().InstruscoesRecusadas(), antes + 1);
+  EXPECT_EQ(b.Cpu().FamiliaDaUltima(), std::string("thumb:formato1_deslocamento_imediato"));
+}
