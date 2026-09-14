@@ -57,12 +57,38 @@
 //   - o que se implementa e SO o que a medicao justifica: o `IAppHistory::Top`.
 //     Nada de `bool` a fingir sucesso (P2) -- nem um objecto que se diz completo.
 //
-// PORQUE ISTO E UM BLOCO DE ENDERECOS PROPRIO. O mapa dos enderecos de objecto
-// esta em `core/brew/igl.h` (comentario "o mapa medido dos enderecos de objecto
-// deste emulador"), e a ultima linha livre era `0x800C0000` depois de o IGL ter
-// tomado `0x800B0000`. A faixa de SAIDAS usada aqui e 40000 (as da entrada sao
-// 20000+, as do IGL 30000/31000): uma faixa que se sobreponha a outra apaga uma
-// vtable em silencio -- foi o defeito medido que obrigou o IGL a mudar de faixa.
+// PORQUE ISTO E UM BLOCO DE ENDERECOS PROPRIO, E PORQUE E EM `0x8F000000`.
+//
+// O mapa dos enderecos de objecto esta em `core/brew/igl.h` (comentario "o mapa
+// medido dos enderecos de objecto deste emulador"); a ultima linha escrita la e
+// `0x800B0000 IGL | 0x800B1000 IEGL`. A faixa de SAIDAS usada aqui e 40000 (as da
+// entrada sao 20000+, as do IGL 30000/31000): uma faixa que se sobreponha a outra
+// apaga uma vtable em silencio -- foi o defeito medido que obrigou o IGL a mudar
+// de faixa.
+//
+// **`0x800C0000` NAO ESTAVA LIVRE, E ISSO FOI MEDIDO.** A primeira versao desta
+// frente pos os tres objectos em `0x800C0000` (a "proxima linha livre" do mapa) e
+// dois titulos mudaram de comportamento:
+//
+//     ./build/zb2_bateria "$corpus" "$mods" /tmp/depois.json
+//     ./build/zb2_comparar /tmp/antes.json /tmp/depois.json
+//       gof (277380): passos_create 1601656 -> 4000000
+//                     recusadas      45 -> 3733093
+//                     motivo "create:saiu_do_modulo_para_0x4278252046" -> "create:orcamento_esgotado"
+//       rmp (278282): passos_create 1601028 -> 4000000
+//                     recusadas       0 -> 3733092
+//
+// Nenhum dos dois pede nenhuma das tres classes (o `faltas` deles nao muda): o que
+// muda e a MEMORIA. Eles LEEM `0x800C0000`, que estava a zero, e passam a ler o
+// ponteiro da vtable. **Um endereco "livre" no mapa nao e um endereco que o
+// CORPUS nao usa** -- o mapa foi escrito por quem instalou os objectos, e nao por
+// quem mediu os 62 titulos.
+//
+// `0x8F000000` e o endereco que fica: acima de tudo o que o corpus mapeia (as
+// imagens tem a base ZERO e menos de 1 MB; o heap e `0x80200000`+12 MB; a pilha
+// `0x80080000`; a entrada `0x81030000`) e abaixo da faixa de saida (`0xF0000000`).
+// A prova e a bateria inteira: com este endereco, os 62 titulos dao o MESMO
+// resultado que antes, fora dos tres CLSIDs desta frente.
 
 #include <cstdint>
 
@@ -96,7 +122,7 @@ constexpr std::uint32_t VtClasse(std::uint32_t k) {
 }
 // Os enderecos dos objectos no espaco do guest. `0x800C0000 + k*0x1000`, um bloco
 // de 4 KB por classe -- o primeiro livre depois do IGL/EGL em `0x800B0000`.
-constexpr std::uint32_t ObjetoDaClasse(std::uint32_t k) { return 0x800C0000u + k * 0x1000u; }
+constexpr std::uint32_t ObjetoDaClasse(std::uint32_t k) { return 0x8F000000u + k * 0x1000u; }
 
 // O indice da classe deste CLSID, ou `kQuantasClasses` quando nao e nenhuma
 // delas. E o unico sitio onde os tres numeros aparecem.
