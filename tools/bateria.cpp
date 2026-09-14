@@ -149,6 +149,10 @@ constexpr std::uint32_t kSlotIdSetColor = 1535;
 constexpr std::uint32_t kSlotIdSetClipRect = 1536;
 constexpr std::uint32_t kSlotIdUpdate = 1537;
 constexpr std::uint32_t kSlotIdBacklight = 1542;
+constexpr std::uint32_t kSlotIdGetNumButtons = 1544;
+constexpr std::uint32_t kSlotIdGetDest = 1545;
+constexpr std::uint32_t kSlotIdSetDest = 1546;
+constexpr std::uint32_t kSlotIdRmDir = 1547;
 constexpr std::uint32_t kSlotIdCreateDIBitmap = 1538;
 constexpr std::uint32_t kObjDibBase = 0x80050000u;
 // Os slots do IDisplay, na ordem que `platform/ui/inc/AEEIDisplay.h` declara em
@@ -214,6 +218,7 @@ std::uint32_t g_updates = 0;
 std::uint32_t g_dibs = 0;
 std::uint32_t g_backlights = 0;
 std::uint32_t g_applet = 0;
+std::uint32_t g_destino = 0;
 std::uint32_t g_vtable_bitmap = 0;
 // Os slots do IShell, na ordem que `platform/system/inc/AEEIShell.h` declara em
 // `INHERIT_IShell`. Lido campo a campo, e nao copiado.
@@ -708,6 +713,46 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         cpu.Set(kR0, kAeeSuccess);
       } else if (idx == kSlotIdGetUpTime) {
         cpu.Set(kR0, static_cast<std::uint32_t>(g_agora_ms));
+      } else if (idx == kSlotIdGetNumButtons) {
+        // `int GetNumberOfButtons(IHIDDevice *po)` -- IHIDDevice slot 7.
+        //
+        // O valor e DECLARADO, e diz-se que e declarado. A contagem real foi
+        // medida na arvore antiga (docs/PAREAMENTO-DE-UIDS-MEDIDO.md) e o d-pad e
+        // um controlo UNICO com UID proprio; o numero de BOTOES e a contagem que
+        // o `hid_devices.cfg` do zeemu declara.
+        // Nao tem argumentos: os registos que a bateria imprime sao residuais.
+        cpu.Set(kR0, 14);
+      } else if (idx == kSlotIdGetDest) {
+        // `IBitmap *GetDestination(IDisplay *po)` -- IDisplay slot 16.
+        // Devolve o bitmap que esta a receber o desenho. O jogo usa-o para saber
+        // o TAMANHO da tela (via IBitmap::GetInfo) antes de calcular posicoes.
+        const std::uint32_t obj = kObjDibBase + 0x300;
+        mem_ref.Escrever32(obj + 0, g_vtable_bitmap);
+        mem_ref.Escrever32(obj + 4, 1);
+        mem_ref.Escrever32(obj + 8, 0);
+        mem_ref.Escrever32(obj + 12, kLargura);
+        mem_ref.Escrever32(obj + 16, kAltura);
+        mem_ref.Escrever32(obj + 20, 16);
+        g_destino = obj;
+        cpu.Set(kR0, obj);
+      } else if (idx == kSlotIdSetDest) {
+        // `int SetDestination(IDisplay *po, IBitmap *pDst)` -- IDisplay slot 15.
+        // So se ACEITA um bitmap nosso: aceitar um ponteiro qualquer poria o
+        // desenho num sitio que nao existe.
+        const std::uint32_t pdst = cpu.Get(kR1);
+        if (pdst >= kObjDibBase && pdst < kObjDibBase + 0x1000) {
+          g_destino = pdst;
+          cpu.Set(kR0, 0);  // SUCCESS
+        } else {
+          cpu.Set(kR0, kAeeUnsupported);
+        }
+      } else if (idx == kSlotIdRmDir) {
+        // `int RmDir(IFileMgr *po, const char *pszDir)` -- IFileMgr slot 7.
+        //
+        // A VFS desta etapa e SO DE LEITURA, e e deliberado: um jogo que apague
+        // um ficheiro do modulo destroi a reprodutibilidade. Recusa-se em voz
+        // alta (principio P2) em vez de mentir com um sucesso que nao aconteceu.
+        cpu.Set(kR0, kAeeUnsupported);
       } else if (idx == kSlotIdGetAppInstance) {
         // `void *GetAppInstance(void)` -- o ponteiro do applet, para o codigo que
         // nao tem o `po` a mao. Nao tem argumentos: os registos que a bateria
@@ -944,31 +989,83 @@ Estado Medir(const Titulo& t, const std::string& dir) {
     ConstruirShell(mem, s, ObjGenerico(k), s.Endereco(VtGenerico(k)), 64, VtGenerico(k));
   }
   // Os slots do IFileMgr que o corpus pede, e que tem implementacao.
-  mem.Escrever32(s.Endereco(kVtableFileMgr + kFmTest), s.Endereco(kSlotIdFmTest));
-  mem.Escrever32(s.Endereco(kVtableFileMgr + kFmGetFreeSpace), s.Endereco(kSlotIdFmFree));
-  mem.Escrever32(s.Endereco(kVtableFileMgr + kFmGetLastError), s.Endereco(kSlotIdFmLastErr));
-  // Os slots do IDisplay que o corpus pede, e que tem implementacao.
+  // A TABELA UNICA DA CABLAGEM DAS VTABLES: objecto, slot, endereco de saida.
   //
-  // Escreve-se na MEMORIA DA VTABLE -- `mem[vtable + slot*4]` -- e nao no
-  // endereco de saida. E o mesmo cuidado do SetTimer, e o mesmo erro que ja me
-  // apanhou uma vez.
+  // E uma so lista de proposito, pela mesma razao da tabela dos ajudantes. Antes
+  // disto eram escritas soltas espalhadas por cem linhas, e UMA DELAS
+  // DESAPARECEU numa edicao de texto sem eu notar -- o `SetTimer` (o slot 12 do
+  // IShell) ficou escrito em todo o lado menos na vtable, e a bateria voltou a
+  // dizer "falta SetTimer" com o SetTimer a funcionar. **E o mesmo sintoma da
+  // quarta e da oitava ocorrencia, por uma terceira causa: agora a causa e a
+  // edicao, nao a ordem.**
   //
-  // Este bloco chegou a NAO SER APLICADO sem eu notar: a substituicao de texto
-  // falhou em silencio e eu "verifiquei" com um `grep -c` que contava
-  // `kVtableDisplay` -- que aparece nas linhas do `ConstruirShell` de qualquer
-  // maneira. **Uma verificacao que passa sem a mudanca nao e verificacao.** Dai
-  // o `assert` acima, e o assert de leitura abaixo.
-  mem.Escrever32(s.Endereco(kVtableDisplay) + kDisGetFontMetrics * 4, s.Endereco(kSlotIdGetFontMetrics));
-  mem.Escrever32(s.Endereco(kVtableDisplay) + kDisMeasureTextEx * 4, s.Endereco(kSlotIdMeasureText));
-  mem.Escrever32(s.Endereco(kVtableDisplay) + kDisDrawText * 4, s.Endereco(kSlotIdDrawText));
-  mem.Escrever32(s.Endereco(kVtableDisplay) + kDisDrawRect * 4, s.Endereco(kSlotIdDrawRect));
-  mem.Escrever32(s.Endereco(kVtableDisplay) + kDisBitBlt * 4, s.Endereco(kSlotIdBitBlt));
-  mem.Escrever32(s.Endereco(kVtableDisplay) + kDisSetColor * 4, s.Endereco(kSlotIdSetColor));
-  mem.Escrever32(s.Endereco(kVtableDisplay) + kDisSetClipRect * 4, s.Endereco(kSlotIdSetClipRect));
-  mem.Escrever32(s.Endereco(kVtableDisplay) + kDisUpdate * 4, s.Endereco(kSlotIdUpdate));
-  mem.Escrever32(s.Endereco(kVtableDisplay) + 10 * 4, s.Endereco(kSlotIdBacklight));  // Backlight
-  mem.Escrever32(s.Endereco(kVtableDisplay) + kDisCreateDIBitmap * 4, s.Endereco(kSlotIdCreateDIBitmap));
-  mem.Escrever32(s.Endereco(kVtableShell) + 4 * 4, s.Endereco(kSlotIdQueryClass));
+  // Com uma so tabela, e impossivel acrescentar uma implementacao sem a cablar:
+  // a cablagem e o unico sitio onde se declara o que existe.
+  const struct { std::uint32_t vt; std::uint32_t slot; std::uint32_t saida; } kWire[] = {
+      // IShell
+      {kVtableShell, kSheSetTimer, kSlotIdSetTimer},
+      {kVtableShell, 4, kSlotIdQueryClass},
+      // IHIDDevice: slot 7 = GetNumberOfButtons
+      {VtGenerico(5), 7, kSlotIdGetNumButtons},
+      // IDisplay
+      {kVtableDisplay, kDisGetFontMetrics, kSlotIdGetFontMetrics},
+      {kVtableDisplay, kDisMeasureTextEx, kSlotIdMeasureText},
+      {kVtableDisplay, kDisDrawText, kSlotIdDrawText},
+      {kVtableDisplay, kDisDrawRect, kSlotIdDrawRect},
+      {kVtableDisplay, kDisBitBlt, kSlotIdBitBlt},
+      {kVtableDisplay, kDisSetColor, kSlotIdSetColor},
+      {kVtableDisplay, kDisSetClipRect, kSlotIdSetClipRect},
+      {kVtableDisplay, kDisUpdate, kSlotIdUpdate},
+      {kVtableDisplay, 10, kSlotIdBacklight},
+      {kVtableDisplay, kDisCreateDIBitmap, kSlotIdCreateDIBitmap},
+      {kVtableDisplay, 15, kSlotIdSetDest},
+      {kVtableDisplay, 16, kSlotIdGetDest},
+      // IFileMgr
+      {kVtableFileMgr, kFmTest, kSlotIdFmTest},
+      {kVtableFileMgr, kFmGetFreeSpace, kSlotIdFmFree},
+      {kVtableFileMgr, kFmGetLastError, kSlotIdFmLastErr},
+      {kVtableFileMgr, 7, kSlotIdRmDir},
+  };
+  for (const auto& w : kWire) {
+    // A GUARDA: um slot 0 num objecto ROPI e o `QueryInterface` da IBase, e a
+    // cablagem por scan ja o poe la. Cablar slot 0 ou 1 por cima destruiria a
+    // IBase de uma interface inteira sem nada a acusar.
+    if (w.slot < 3) {
+      std::fprintf(stderr, "CABLAGEM RECUSADA: slot %u do objecto 0x%08x e da IBase\n",
+                   w.slot, w.vt);
+      std::abort();
+    }
+    // O FIM da vtable deste objecto, e nao a base da PRIMEIRA vtable generica.
+    // A guarda disparou na primeira versao porque comparava com `kVtableGenericoBase`
+    // -- e cada vtable generica tem 64 slots, logo o fim de uma e o inicio da
+    // seguinte, nao a base da serie. **A guarda estava certa no proposito e
+    // errada na conta.**
+    const std::uint32_t fim = (w.vt >= kVtableGenericoBase)
+                                  ? VtGenerico((w.vt - kVtableGenericoBase) / 64u + 1u)
+                                  : kVtableGenericoBase;
+    if (w.vt + w.slot >= fim) {
+      std::fprintf(stderr, "CABLAGEM RECUSADA: slot %u de 0x%08x sai da vtable (fim 0x%08x)\n",
+                   w.slot, w.vt, fim);
+      std::abort();
+    }
+    mem.Escrever32(s.Endereco(w.vt) + w.slot * 4, s.Endereco(w.saida));
+  }
+  // LEITURA DE VOLTA, e aborta se nao bater certo.
+  //
+  // Existe porque a cablagem JA se perdeu uma vez sem sintoma visivel: o sintoma
+  // era a bateria a dizer "falta SetTimer" com o SetTimer a funcionar, e isso
+  // exigiu uma bateria inteira (4 minutos) e uma ida ao codigo para descobrir.
+  // **Uma cablagem que nao se confirma a si propria e uma cablagem que se perde
+  // em silencio.** Agora perde-se com estrondo, no arranque, em 1 segundo.
+  for (const auto& w : kWire) {
+    const std::uint32_t lido = mem.Ler32(s.Endereco(w.vt) + w.slot * 4);
+    if (lido != s.Endereco(w.saida)) {
+      std::fprintf(stderr,
+                   "CABLAGEM PERDIDA: objecto 0x%08x slot %u tem 0x%08x, devia ter 0x%08x\n",
+                   w.vt, w.slot, lido, s.Endereco(w.saida));
+      std::abort();
+    }
+  }
 
   const auto carga = CarregarMod(mem, imagem, kBase, kTabela, &traco);
   if (!carga.ok) { e.motivo = "carga_recusada:" + carga.motivo; return e; }
