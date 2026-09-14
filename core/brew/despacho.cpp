@@ -48,7 +48,7 @@ constexpr std::uint32_t kSlotIdGetFontMetrics = 1530, kSlotIdMeasureText = 1531,
                        kSlotIdDrawText = 1532, kSlotIdDrawRect = 1533, kSlotIdBitBlt = 1534,
                        kSlotIdSetColor = 1535, kSlotIdSetClipRect = 1536, kSlotIdUpdate = 1537,
                        kSlotIdCreateDIBitmap = 1538, kSlotIdBacklight = 1542;
-constexpr std::uint32_t kSlotIdGetNumButtons = 1544, kSlotIdGetDest = 1545,
+constexpr std::uint32_t kSlotIdGetConnectedDevices = 1565, kSlotIdGetDest = 1545,
                        kSlotIdSetDest = 1546, kSlotIdRmDir = 1547, kSlotIdGetDeviceInfo = 1549,
                        kSlotIdGetDeviceBitmap = 1550, kSlotIdGetClipRect = 1551,
                        kSlotIdCancelTimer = 1552, kSlotIdSqlOpen = 1553, kSlotIdOpenFile = 1554,
@@ -203,7 +203,16 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         if (n > 0) mem_.Escrever32(r0 + 4, n - 1);
         cpu.Set(kR0, n > 0 ? n - 1 : 0);
       } else if (idx == kBaseDoShell + 2) {
-        // IShell::QueryInterface(po, iid, ppo). Os dois IIDs que o corpus pede
+        // IShell::CreateInstance(po, ClsId, ppobj) -- IShell slot 2.
+        //
+        // NAO e `QueryInterface`: o `INHERIT_IBase` deste SDK tem DOIS membros
+        // (`AddRef`, `Release`) e nao ha `QueryInterface` nele; o slot 2 do IShell
+        // e o `CreateInstance` (`AEEIShell.h`). A semantica do codigo ja era essa
+        // (r1 = ClsId, r2 = &ppobj) -- **era o NOME que estava errado**, e este
+        // comentario andou a mentir durante varias rondas. Apontado por dois
+        // sub-agentes independentes (`imedia` e `hid-entrada`).
+        //
+        // Os dois IIDs que o corpus pede
         // sao conhecidos por medicao; o que nao for conhecido devolve
         // ECLASSNOTSUPPORT com o ponteiro a zero -- recusar, nao mentir.
         const std::uint32_t iid = cpu.Get(kR1);
@@ -246,7 +255,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         else if (idx >= zb2::brew::kVtableDisplay) { iface = "IDisplay"; slot = idx - zb2::brew::kVtableDisplay; }
         else { iface = "IShell"; slot = idx - kBaseDoShell; }
         std::snprintf(nome, sizeof(nome), "%s::slot%u", iface, slot);
-        // Os ARGUMENTOS no detalhe: para o QueryInterface (slot 2) o r1 e o IID
+        // Os ARGUMENTOS no detalhe: para o CreateInstance (slot 2) o r1 e o ClsId
         // pedido, e sem ele nao se sabe o que responder. Foi assim que se
         // percebeu, na arvore antiga, quais das interfaces eram as mesmas por
         // dois nomes diferentes.
@@ -526,7 +535,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         cpu.Set(kR0, kAeeSuccess);
       } else if (idx == kSlotIdGetUpTime) {
         cpu.Set(kR0, static_cast<std::uint32_t>(agora_ms_));
-      } else if (idx == kSlotIdGetNumButtons) {
+      } else if (idx == kSlotIdGetConnectedDevices) {
         // `int GetNumberOfButtons(IHIDDevice *po)` -- IHIDDevice slot 7.
         //
         // O valor e DECLARADO, e diz-se que e declarado. A contagem real foi
@@ -740,7 +749,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // `boolean QueryClass(IShell *po, AEECLSID cls, AEEAppInfo *pai)`.
         //
         // Responde se a classe existe, e preenche o `AEEAppInfo` quando ha
-        // ponteiro. As classes que SEI criar sao as que o `QueryInterface` e o
+        // ponteiro. As classes que SEI criar sao as que o `CreateInstance` e o
         // `CreateInstance` ja servem; o resto devolve FALSE -- recusar, nao
         // mentir. Um `AEEAppInfo` a zeros com `TRUE` seria a versao em dados do
         // stub silencioso.

@@ -31,6 +31,13 @@ INTERFACES = [
     ("SQLMgr",   "platform/deprecated/inc/AEESQL.h",      "#define INHERIT_ISQLMgr("),
     ("IAStream", "platform/system/inc/AEEIAStream.h",     "#define INHERIT_IAStream("),
     ("IFile",    "platform/deprecated/inc/AEEFile.h",     "#define INHERIT_IFile("),
+    # As quatro abaixo foram acrescentadas a pedido do sub-agente `hid-entrada`: ele
+    # tinha os numeros conferidos a mao e com static_assert, e isso tira-os da mao.
+    ("IHID",     "platform/hardware/inc/AEEIHID.h",       "#define INHERIT_IHID("),
+    ("ISignal",  "platform/system/inc/AEEISignal.h",        "#define INHERIT_ISignal("),
+    ("ISignalCtl", "platform/system/inc/AEEISignalCtl.h",   "#define INHERIT_ISignalCtl("),
+    ("ISignalCBFactory", "platform/system/inc/AEEISignalCBFactory.h",
+     "#define INHERIT_ISignalCBFactory("),
 ]
 
 

@@ -169,4 +169,29 @@ constexpr unsigned kIFile_GetInfoEx = 9;
 constexpr unsigned kIFile_SetCacheSize = 10;
 constexpr unsigned kIFile_Map = 11;
 
+// platform/hardware/inc/AEEIHID.h
+//   cabeca: INHERIT_IQI = 3 slots de cabeca
+//   5 metodos; slot = 3 + posicao
+constexpr unsigned kIHID_CreateDevice = 3;
+constexpr unsigned kIHID_GetDeviceInfo = 4;
+constexpr unsigned kIHID_GetNextConnectEvent = 5;
+constexpr unsigned kIHID_RegisterForConnectEvents = 6;
+constexpr unsigned kIHID_GetConnectedDevices = 7;
+
+// platform/system/inc/AEEISignal.h
+//   cabeca: INHERIT_IQI = 3 slots de cabeca
+//   1 metodos; slot = 3 + posicao
+constexpr unsigned kISignal_Set = 3;
+
+// platform/system/inc/AEEISignalCtl.h
+//   cabeca: INHERIT_ISignal = 4 slots de cabeca
+//   2 metodos; slot = 4 + posicao
+constexpr unsigned kISignalCtl_Detach = 4;
+constexpr unsigned kISignalCtl_Enable = 5;
+
+// platform/system/inc/AEEISignalCBFactory.h
+//   cabeca: INHERIT_IQI = 3 slots de cabeca
+//   1 metodos; slot = 3 + posicao
+constexpr unsigned kISignalCBFactory_CreateSignal = 3;
+
 }  // namespace brew_slots

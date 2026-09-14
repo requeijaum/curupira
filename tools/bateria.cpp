@@ -77,7 +77,7 @@ constexpr std::uint32_t kBaseDoDisplay = 3000;
 constexpr std::uint32_t kBaseDoFileMgr = 4000;
 constexpr std::uint32_t kIidDisplay = 0x01001001u;
 constexpr std::uint32_t kIidFileMgr = 0x01001003u;
-// Os IIDs que a bateria MEDIU como pedidos ao QueryInterface, com o nome do SDK
+// Os IIDs que a bateria MEDIU como pedidos ao `CreateInstance`, com o nome do SDK
 // (`platform/system/inc/AEEClassIDs.h`). A lista vem da medicao, nao de uma
 // leitura do cabecalho: e a ordem por demanda que diz o que vale implementar.
 constexpr std::uint32_t kIidHeap = 0x01001002u;
@@ -108,7 +108,7 @@ constexpr std::uint32_t kNGenericos = sizeof(kGenericos) / sizeof(kGenericos[0])
 // copiada de outro emulador, que foi o erro que a arvore antiga cometeu com os
 // slots do IGLES11.
 enum : std::uint32_t {
-  kFmQueryInterface = 2,
+  kFmQueryInterface = 2,  // nome historico; no IShell este slot e o CreateInstance
   kFmOpenFile = 3,
   kFmGetInfo = 4,
   kFmTest = 8,
@@ -153,7 +153,7 @@ constexpr std::uint32_t kSlotIdSetColor = 1535;
 constexpr std::uint32_t kSlotIdSetClipRect = 1536;
 constexpr std::uint32_t kSlotIdUpdate = 1537;
 constexpr std::uint32_t kSlotIdBacklight = 1542;
-constexpr std::uint32_t kSlotIdGetNumButtons = 1544;
+constexpr std::uint32_t kSlotIdGetConnectedDevices = 1565;
 constexpr std::uint32_t kSlotIdGetDest = 1545;
 constexpr std::uint32_t kSlotIdSetDest = 1546;
 constexpr std::uint32_t kSlotIdRmDir = 1547;
@@ -426,11 +426,11 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   zb2::brew::ConstruirObjeto(mem, s, kShell, s.Endereco(zb2::brew::kVtableShell),
                              zb2::brew::kSlotsPorVtable, zb2::brew::kBaseDoShell);
 
-  // As interfaces que o shell entrega por QueryInterface.
+  // As interfaces que o shell entrega pelo `CreateInstance` (slot 2).
   //
   // MEDIDO, e e o que decidiu a ordem desta etapa: 22 titulos pedem
   // `AEECLSID_DISPLAY` e 4 pedem `AEECLSID_FILEMGR`, ambos pelo slot 2 do IShell
-  // (QueryInterface) com o IID no r1 e o ponteiro de saida no r2.
+  // (CreateInstance) com o ClsId no r1 e o ponteiro de saida no r2.
   zb2::brew::ConstruirObjeto(mem, s, zb2::brew::kObjDisplay, s.Endereco(zb2::brew::kVtableDisplay), 64, zb2::brew::kVtableDisplay);
   zb2::brew::ConstruirObjeto(mem, s, zb2::brew::kObjFileMgr, s.Endereco(zb2::brew::kVtableFileMgr), 64, zb2::brew::kVtableFileMgr);
 
@@ -477,7 +477,20 @@ Estado Medir(const Titulo& t, const std::string& dir) {
       {zb2::brew::kVtableFileObj, brew_slots::kIFile_Write, kSlotIdFileWrite},
       {zb2::brew::kVtableFileObj, 1, kSlotIdFileRelease},
       // IHIDDevice: slot 7 = GetNumberOfButtons
-      {zb2::brew::VtGenerico(5), brew_slots::kHIDDevice_GetNumberOfButtons, kSlotIdGetNumButtons},
+      // IHID (nao IHIDDevice): o slot 7 e `GetConnectedDevices`, e NAO o
+      // `GetNumberOfButtons` do IHIDDevice.
+      //
+      // MEDIDO, e o defeito foi meu: aqui estava
+      // `{VtGenerico(5), kHIDDevice_GetNumberOfButtons, ...}`, que poe um metodo de
+      // uma interface no slot de OUTRA. `VtGenerico(5)` e o IHID, e o slot 7 do
+      // IHID e `GetConnectedDevices` (cabecalho `AEEIHID.h`). Um jogo que peca a
+      // lista de aparelhos recebia `r0=14` -- nao zero, logo "falhou" -- e desistia
+      // ALI, antes de chegar ao modulo de entrada.
+      //
+      // **Uma interface cruzada nao da erro de compilacao nem de execucao: da um
+      // numero plausivel no sitio errado.** Achado pelo sub-agente `hid-entrada`.
+      {zb2::brew::VtGenerico(5), brew_slots::kIHID_GetConnectedDevices,
+       kSlotIdGetConnectedDevices},
       // IDisplay
       {zb2::brew::kVtableDisplay, kDisGetFontMetrics, kSlotIdGetFontMetrics},
       {zb2::brew::kVtableDisplay, kDisMeasureTextEx, kSlotIdMeasureText},
