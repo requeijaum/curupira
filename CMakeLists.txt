@@ -42,3 +42,6 @@ add_test(NAME fundacao COMMAND zb2_tests)
 
 add_executable(zb2_sonda_mod tools/sonda_mod.cpp)
 target_link_libraries(zb2_sonda_mod PRIVATE zb2_core)
+
+add_executable(zb2_bateria tools/bateria.cpp)
+target_link_libraries(zb2_bateria PRIVATE zb2_core)
