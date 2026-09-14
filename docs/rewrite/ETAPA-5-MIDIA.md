@@ -11,6 +11,7 @@ Tudo o que esta aqui foi medido nesta arvore; os comandos estao escritos.
 | o motor entrega um `IMedia`? | **NAO**: `r0=0x00000003` (`AEE_ECLASSNOTSUPPORT`), `*ppobj=0`, falta `IShell::CreateInstance CLSID desconhecido` x1, saida **1** |  **SIM** na copia com o remendo: `r0=0`, `*ppobj=0x80090000`, saida **0** | `./build/zb2_sonda_media` |
 | testes | 87 | **203** (157 da integracao das outras frentes + 46 desta) | `./build/zb2_tests` |
 | entrega do aviso ao guest | nao existia | 1 aviso por chamada, com os 16 registradores e o CPSR repostos | `./build/zb2_tests --gtest_filter=Media.*` |
+| o motor entrega o IMedia e o aviso de fim? | nao (r0=3, `*ppobj=0`) | **sim** na branch `etapa5-cablagem`: r0=0, `*ppobj=0x80090000`, `avisos=1 (nCmd=4 nStatus=2)` entregues pelo laco, saida 0 | `./build/zb2_sonda_media` |
 | amostras no misturador, 1 s de midia | 0 | recebidas **22050**, nao nulas **11025**, pico **2400**, 23 blocos | `./build/zb2_sonda_media` |
 
 O misturador NAO toca som: ele CONTA. O criterio da etapa ("o misturador reporta
@@ -140,6 +141,36 @@ so, a propriedade nao estava a ser testada. As duas estao registadas assim mesmo
 
 Depois de repor: 203 testes verdes. Guioes: `/tmp/provar_guardas2.py` e
 `/tmp/prova_fila.py`.
+
+## A CABLAGEM (branch `etapa5-cablagem`, commit 33c5884)
+
+O remendo sao 47 linhas em `despacho.{h,cpp}`, em tres sitios: (1) o `Media` nasce no
+`InstalarAjudantes`, quando a faixa de saida ja esta configurada, e a vtable do
+IMedia e escrita uma vez; (2) o `CreateInstance` passa a servir a familia
+`AEECLSID_MULTIMEDIA`; (3) **no laco, a cada passo**, a midia anda com o relogio
+VIRTUAL -- 22 amostras por ms (`kTaxaDeclarada / 1000`, truncado) porque cada passo
+vale 1 ms -- e os avisos sao entregues, com reposicao dos 16 registradores, do CPSR e
+do PC. O sitio da entrega e o passo, e nao o handler: a entrega reentra no guest, o
+que so e seguro numa fronteira de instrucao.
+
+Medido no worktree cablado, com o guest a pedir a midia ao MOTOR e a girar no proprio
+codigo enquanto ela toca:
+
+    MOTOR: IShell::CreateInstance(0x01005500) -> r0=0x00000000, *ppobj=0x80090000
+    MOTOR: RegisterNotify=0 SetMediaParm(MEDIA_DATA)=0 Play=0 em obj=0x80090000
+    MOTOR: avisos que o LACO entregou ao tratador do guest=1 (nCmd=4 nStatus=2)
+    MOTOR: VERDE -- o motor entrega o IMedia E o aviso de fim
+
+`MOTOR: avisos=1 (nCmd=4, nStatus=2)` e o DONE do `MM_CMD_PLAY` contado pelo tratador
+do guest. Nada na sonda chama `Avancar` nem `EntregarAviso`: o aviso chega pelo
+caminho do motor.
+
+**Um defeito apanhado no caminho, e da SONDA:** a primeira corrida cablada deu "o
+motor criou o IMedia mas o aviso nao chegou" -- com o objecto em estado PRONTO,
+posicao 22050 de 22050 (a midia correu) e o contador do guest a zero. A causa era o
+`EscreverTratador` nao ser chamado no `MedirOMotor`: o endereco do callback tinha
+ZEROS, o guest corria `andeq` (NOP) ate ao limite de passos, e o aviso entregue
+ficava a PARECER perdido. Fica a marca `[DEBUG-midia]` a dizer o que se mediu.
 
 ## A ORDEM na cablagem, e a faixa de indices
 
