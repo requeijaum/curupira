@@ -28,6 +28,7 @@ add_library(zb2_core STATIC
   core/brew/despacho.cpp
   core/brew/ihid_entrada.cpp
   core/brew/ihiddevice.cpp
+  core/brew/igl.cpp
 )
 target_include_directories(zb2_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(zb2_core PRIVATE -Wall -Wextra)
@@ -50,6 +51,7 @@ add_executable(zb2_tests
   tests/comparar_test.cpp
   tests/hid_test.cpp
   tests/bar_test.cpp
+  tests/igl_test.cpp
 )
 # A RAIZ DO REPOSITORIO, para os testes que abrem ficheiros reais (o
 # `pacmania.bar` e o SDK) poderem dizer ONDE procuraram -- e SALTAR em vez de
@@ -79,8 +81,18 @@ add_test(NAME fundacao COMMAND zb2_tests)
 add_test(NAME slots_do_sdk COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/verificar_slots.sh)
 set_tests_properties(slots_do_sdk PROPERTIES SKIP_RETURN_CODE 77)
 
+# A GUARDA DA TABELA DO IGL. Gera `tools/gl_slots.inc` de `AEEGL.h` e compara
+# com o ficheiro versionado; confere tambem os 102 thunks do `conftest.elf`.
+# `SKIP_RETURN_CODE 77` porque sem o instalador da extensao OpenGL ES nao ha
+# cabecalho para ler -- e "nao correu" NAO e "passou".
+add_test(NAME slots_do_sdk_gl COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/verificar_slots_gl.sh)
+set_tests_properties(slots_do_sdk_gl PROPERTIES SKIP_RETURN_CODE 77)
+
 add_executable(zb2_sonda_mod tools/sonda_mod.cpp)
 target_link_libraries(zb2_sonda_mod PRIVATE zb2_core)
+
+add_executable(zb2_sonda_gl tools/sonda_gl.cpp)
+target_link_libraries(zb2_sonda_gl PRIVATE zb2_core)
 
 add_executable(zb2_bateria tools/bateria.cpp)
 target_link_libraries(zb2_bateria PRIVATE zb2_core)
