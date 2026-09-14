@@ -33,6 +33,8 @@ add_library(zb2_core STATIC
   core/brew/egl.cpp
   core/brew/igl.cpp
   core/brew/imedia.cpp
+  core/brew/clsids.cpp
+  core/brew/classes.cpp
   core/audio/misturador.cpp
   core/video/rasterizador.cpp
 )
@@ -66,6 +68,7 @@ add_executable(zb2_tests
   tests/widget_test.cpp
   tests/audio_test.cpp
   tests/rasterizador_test.cpp
+  tests/classes_test.cpp
 )
 # A RAIZ DO REPOSITORIO, para os testes que abrem ficheiros reais (o
 # `pacmania.bar` e o SDK) poderem dizer ONDE procuraram -- e SALTAR em vez de
@@ -101,6 +104,12 @@ set_tests_properties(slots_do_sdk PROPERTIES SKIP_RETURN_CODE 77)
 # cabecalho para ler -- e "nao correu" NAO e "passou".
 add_test(NAME slots_do_sdk_gl COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/verificar_slots_gl.sh)
 set_tests_properties(slots_do_sdk_gl PROPERTIES SKIP_RETURN_CODE 77)
+
+# A GUARDA DOS CLSIDs. Regenera `tools/clsids.inc` dos `*.bid`/`*.h` do SDK e
+# compara com o ficheiro versionado. `SKIP_RETURN_CODE 77` porque sem o SDK nao
+# ha cabecalho para ler -- e "nao correu" NAO e "passou".
+add_test(NAME clsids_do_sdk COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/verificar_clsids.sh)
+set_tests_properties(clsids_do_sdk PROPERTIES SKIP_RETURN_CODE 77)
 
 # A GUARDA DA TABELA DOS AJUDANTES (117 slots do `AEEHelperFuncs`). Regenera
 # `tools/ajudantes_slots.inc` de `AEEStdLib.h` e compara com o versionado; o
