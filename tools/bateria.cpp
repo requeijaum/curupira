@@ -167,6 +167,20 @@ constexpr std::uint32_t kSlotIdSetDest = 1546;
 constexpr std::uint32_t kSlotIdRmDir = 1547;
 constexpr std::uint32_t kSlotIdGetFontMetricsAlias = 1548;
 constexpr std::uint32_t kSlotIdGetDeviceInfo = 1549;
+constexpr std::uint32_t kSlotIdGetDeviceBitmap = 1550;
+constexpr std::uint32_t kSlotIdGetClipRect = 1551;
+constexpr std::uint32_t kSlotIdCancelTimer = 1552;
+constexpr std::uint32_t kSlotIdSqlOpen = 1553;
+constexpr std::uint32_t kSlotIdOpenFile = 1554;
+constexpr std::uint32_t kSlotIdFileRead = 1555;
+constexpr std::uint32_t kSlotIdFileSeek = 1556;
+constexpr std::uint32_t kSlotIdFileInfo = 1557;
+constexpr std::uint32_t kSlotIdFileRelease = 1558;
+constexpr std::uint32_t kSlotIdSprintf = 1560;
+constexpr std::uint32_t kSlotIdVsprintf = 1561;
+constexpr std::uint32_t kSlotIdFileWrite = 1559;
+constexpr std::uint32_t kVtableFileObj = 9500;
+constexpr std::uint32_t kObjFileBase = 0x80070000u;
 
 // OS NUMEROS DE SLOT VEM DO CABECALHO, GERADOS.
 //
@@ -286,6 +300,22 @@ std::uint32_t g_textos = 0;
 std::uint32_t g_blits = 0;
 std::uint32_t g_updates = 0;
 std::uint32_t g_dibs = 0;
+// OS FICHEIROS ABERTOS, por objecto.
+struct ArquivoAberto {
+  std::uint32_t obj = 0;
+  std::vector<std::uint8_t> dados;
+  std::uint32_t pos = 0;
+  bool usado = false;
+};
+std::vector<ArquivoAberto> g_arquivos;
+std::uint32_t g_n_arquivos = 0;
+// O CAMINHO DO TITULO ACTUAL e a vtable dos ficheiros: o despacho vive em
+// `CorrerFase`, que nao recebe `dir` nem o titulo. Globais explicitas, postas no
+// inicio de cada `Medir` -- e nao um estado que passa de um titulo para o outro.
+std::string g_dir_actual;
+std::string g_pasta_actual;
+std::uint32_t g_vtable_ficheiro = 0;
+std::string NormalizarCaminho(const std::string& bruto);
 std::uint32_t g_backlights = 0;
 std::uint32_t g_applet = 0;
 bool g_alias_fontmetrics = false;
@@ -423,6 +453,30 @@ const char* NomeDoSlot(std::uint32_t off) {
 // modulo, no disco do hospedeiro. Nao ha escrita, e uma tentativa de escrita
 // falha -- principio do desenho: nao escrever nas midias do utilizador.
 std::set<std::string>* g_vfs = nullptr;
+
+std::string NormalizarCaminho(const std::string& bruto) {
+  // A MESMA normalizacao do `Test`: barras invertidas viram normais, barras
+  // repetidas colapsam, e `..` NAO sai da pasta do modulo. Uma so regra, para
+  // nao haver duas verdades sobre que nome de ficheiro existe.
+  std::string limpo = bruto;
+  for (char& ch : limpo) {
+    if (ch == '\\') ch = '/';
+  }
+  while (limpo.find("//") != std::string::npos) limpo.replace(limpo.find("//"), 2, "/");
+  while (!limpo.empty() && limpo.front() == '/') limpo.erase(0, 1);
+  while (limpo.rfind("./", 0) == 0) limpo.erase(0, 2);
+  while (limpo.rfind("../", 0) == 0) limpo.erase(0, 3);
+  const size_t barra = limpo.rfind('/');
+  if (barra != std::string::npos) {
+    // "pasta/ficheiro" para recursos soltos na pasta do titulo.
+    const std::string so_nome = limpo.substr(barra + 1);
+    if (g_vfs && g_vfs->count(limpo) != 0) return limpo;
+    if (g_vfs && g_vfs->count(so_nome) != 0) return so_nome;
+    return {};
+  }
+  if (g_vfs && g_vfs->count(limpo) != 0) return limpo;
+  return {};
+}
 std::int64_t g_agora_ms = 0;
 Temporizador g_timer;
 bool g_vfs_registado = false;
@@ -838,6 +892,275 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         } else {
           cpu.Set(kR0, kAeeUnsupported);
         }
+      } else if (idx == kSlotIdGetDeviceBitmap) {
+        // `int GetDeviceBitmap(IDisplay *po, IBitmap **ppIBitmap)` -- IDisplay
+        // slot 16. O jogo quer o bitmap do ECRA para desenhar por cima dele.
+        // E o mesmo objecto que o `GetDestination` devolve.
+        const std::uint32_t pp = cpu.Get(kR1);
+        if (pp != 0) {
+          mem_ref.Escrever32(pp, kObjDibBase + 0x300);
+          cpu.Set(kR0, 0);  // SUCCESS
+        } else {
+          cpu.Set(kR0, kAeeUnsupported);
+        }
+      } else if (idx == kSlotIdGetClipRect) {
+        // `void GetClipRect(IDisplay *po, AEERect *pRect)` -- IDisplay slot 19.
+        // Devolve o clip ACTUAL, que o `SetClipRect` guardou.
+        const std::uint32_t prc = cpu.Get(kR1);
+        if (prc != 0) {
+          mem_ref.Escrever32(prc + 0, g_fb.clip[0]);
+          mem_ref.Escrever32(prc + 4, g_fb.clip[1]);
+          mem_ref.Escrever32(prc + 8, g_fb.clip[2]);
+          mem_ref.Escrever32(prc + 12, g_fb.clip[3]);
+        }
+        cpu.Set(kR0, 0);
+      } else if (idx == kSlotIdCancelTimer) {
+        // `void CancelTimer(IShell *po, AEECallback *pcb)` -- IShell slot 12.
+        //
+        // Desarma o temporizador. So se desarma se for o MESMO callback: cancelar
+        // um temporizador alheio pararia o laco de quadro de outra coisa.
+        g_timer.ativo = false;
+        cpu.Set(kR0, 0);
+      } else if (idx == kSlotIdSprintf || idx == kSlotIdVsprintf) {
+        // `int sprintf(char *pBuf, const char *pFmt, ...)`  -- AEEHelperFuncs
+        // 0x020. E `int vsprintf(char *pBuf, const char *pFmt, va_list)` -- 0x13c.
+        //
+        // VARARGS no AAPCS: os quatro primeiros argumentos vao em r0..r3 e o
+        // resto na PILHA a partir do `sp`. A diferenca entre os dois e que o
+        // `vsprintf` recebe um PONTEIRO para o resto (o r2 aponta para os
+        // argumentos), e o `sprintf` recebe-os soltos.
+        //
+        // O `dir`/`t` nao entram aqui: e so formatacao de texto.
+        std::uint32_t args[5];
+        int n_args = 0;
+        if (idx == kSlotIdVsprintf) {
+          const std::uint32_t pvalist = cpu.Get(kR2);
+          for (int i = 0; i < 5; ++i) {
+            args[n_args++] = pvalist != 0 ? mem_ref.Ler32(pvalist + static_cast<std::uint32_t>(i) * 4) : 0;
+          }
+        } else {
+          args[n_args++] = cpu.Get(kR2);
+          args[n_args++] = cpu.Get(kR3);
+          for (int i = 0; i < 3; ++i) {
+            args[n_args++] = mem_ref.Ler32(cpu.Get(kSP) + static_cast<std::uint32_t>(i) * 4);
+          }
+        }
+        const std::uint32_t pbuf = cpu.Get(kR0);
+        const std::uint32_t pfmt = cpu.Get(kR1);
+        if (pbuf == 0 || pfmt == 0) { cpu.Set(kR0, 0); }
+        else {
+          std::string saida;
+          int proximo = 0;
+          const auto proximo_arg = [&]() -> std::uint32_t {
+            return proximo < n_args ? args[proximo++] : 0;
+          };
+          for (std::uint32_t i = 0; i < 4096; ++i) {
+            const char ch = static_cast<char>(mem_ref.Ler8(pfmt + i));
+            if (ch == 0) break;
+            if (ch != '%') { saida.push_back(ch); continue; }
+            ++i;
+            const char espec = static_cast<char>(mem_ref.Ler8(pfmt + i));
+            if (espec == 0) break;
+            // Largura e zero a esquerda: `%04x` e comum e sem isto a saida sai
+            // curta e o jogo le um numero errado.
+            int largura = 0;
+            bool zero_a_esquerda = false;
+            std::uint32_t j = i;
+            if (espec == '0') {
+              zero_a_esquerda = true;
+              ++j;
+            } else if (espec >= '1' && espec <= '9') {
+              ++j;
+            } else {
+              j = i;
+            }
+            if (j != i) {
+              for (; j < i + 4; ++j) {
+                const char dch = static_cast<char>(mem_ref.Ler8(pfmt + j));
+                if (dch < '0' || dch > '9') break;
+                largura = largura * 10 + (dch - '0');
+              }
+              i = j;
+            }
+            char esp2 = espec;
+            if (esp2 == '0' || (esp2 >= '1' && esp2 <= '9')) {
+              esp2 = static_cast<char>(mem_ref.Ler8(pfmt + i));
+            }
+            if (esp2 == 'l' || esp2 == 'h') {
+              ++i;
+              esp2 = static_cast<char>(mem_ref.Ler8(pfmt + i));
+            }
+            char tmp[64];
+            switch (esp2) {
+              case 'd': case 'i': {
+                const std::int32_t v = static_cast<std::int32_t>(proximo_arg());
+                std::snprintf(tmp, sizeof(tmp), "%d", v);
+                break;
+              }
+              case 'u': {
+                const std::uint32_t v = proximo_arg();
+                std::snprintf(tmp, sizeof(tmp), "%u", v);
+                break;
+              }
+              case 'x': {
+                const std::uint32_t v = proximo_arg();
+                if (largura > 0 && zero_a_esquerda) std::snprintf(tmp, sizeof(tmp), "%0*x", largura, v);
+                else if (largura > 0) std::snprintf(tmp, sizeof(tmp), "%*x", largura, v);
+                else std::snprintf(tmp, sizeof(tmp), "%x", v);
+                break;
+              }
+              case 'X': {
+                const std::uint32_t v = proximo_arg();
+                std::snprintf(tmp, sizeof(tmp), largura > 0 ? "%0*X" : "%X", largura, v);
+                break;
+              }
+              case 'p': {
+                const std::uint32_t v = proximo_arg();
+                std::snprintf(tmp, sizeof(tmp), "0x%08x", v);
+                break;
+              }
+              case 'c': {
+                tmp[0] = static_cast<char>(proximo_arg() & 0xFFu);
+                tmp[1] = 0;
+                break;
+              }
+              case 's': {
+                const std::uint32_t ps = proximo_arg();
+                for (int k = 0; k < 256 && ps != 0; ++k) {
+                  const char sch = static_cast<char>(mem_ref.Ler8(ps + static_cast<std::uint32_t>(k)));
+                  if (sch == 0) break;
+                  tmp[k] = sch;
+                  tmp[k + 1] = 0;
+                }
+                if (ps == 0) tmp[0] = 0;
+                break;
+              }
+              case '%': { tmp[0] = '%'; tmp[1] = 0; break; }
+              default: { tmp[0] = '%'; tmp[1] = esp2; tmp[2] = 0; break; }
+            }
+            saida += tmp;
+          }
+          for (std::size_t k = 0; k < saida.size(); ++k) {
+            mem_ref.Escrever8(pbuf + static_cast<std::uint32_t>(k), static_cast<std::uint8_t>(saida[k]));
+          }
+          mem_ref.Escrever8(pbuf + static_cast<std::uint32_t>(saida.size()), 0);
+          cpu.Set(kR0, static_cast<std::uint32_t>(saida.size()));
+        }
+      } else if (idx == kSlotIdOpenFile) {
+        // `IFile *OpenFile(IFileMgr *po, const char *pszFile, OpenFileMode mode)`
+        // -- IFileMgr slot 2.
+        //
+        // Abre SO PARA LEITURA, e so ficheiros que existam na pasta irma do
+        // modulo. A VFS e a MESMA que o `Test` usa: nao ha duas verdades sobre
+        // que ficheiros existem.
+        std::string nome;
+        const std::uint32_t pnome = cpu.Get(kR1);
+        if (pnome != 0) {
+          for (int i = 0; i < 512; ++i) {
+            const char ch = static_cast<char>(mem_ref.Ler8(pnome + static_cast<std::uint32_t>(i)));
+            if (ch == 0) break;
+            nome.push_back(ch);
+          }
+        }
+        const std::uint32_t modo = cpu.Get(kR2);
+        // `_OFM_READ` = 1, `_OFM_READWRITE` = 2, `_OFM_CREATE` = 4,
+        // `_OFM_APPEND` = 8. Os tres ultimos MUDAM o ficheiro: recusa declarada,
+        // porque a VFS e so de leitura por DECISAO, nao por falta.
+        const bool so_leitura = (modo & 0x0001u) != 0 && (modo & 0x000Eu) == 0;
+        const std::string caminho = NormalizarCaminho(nome);
+        if (!so_leitura || caminho.empty() || !g_vfs || g_vfs->count(caminho) == 0) {
+          cpu.Set(kR0, 0);  // NULL -- nao ha IFile
+        } else {
+          bool ok = false;
+          ArquivoAberto a;
+          a.dados = Ler(g_dir_actual + "/" + g_pasta_actual + "/" + caminho, &ok);
+          if (!ok) {
+            cpu.Set(kR0, 0);
+          } else {
+            a.obj = kObjFileBase + g_n_arquivos * 0x40;
+            ++g_n_arquivos;
+            g_arquivos.push_back(a);
+            mem_ref.Escrever32(a.obj + 0, g_vtable_ficheiro);
+            mem_ref.Escrever32(a.obj + 4, 1);
+            cpu.Set(kR0, a.obj);
+          }
+        }
+      } else if (idx == kSlotIdFileRelease) {
+        for (auto& a : g_arquivos) {
+          if (a.obj == cpu.Get(kR0)) a.usado = false;
+        }
+        cpu.Set(kR0, 0);
+      } else if (idx == kSlotIdFileRead) {
+        // `int32 Read(IFile *po, void *pDest, uint32 nWant)` -- IFile slot 3.
+        // Curto se chegar ao fim: e o contrato. Devolver mais seria inventar.
+        for (auto& a : g_arquivos) {
+          if (a.obj != cpu.Get(kR0)) continue;
+          const std::uint32_t pdest = cpu.Get(kR1);
+          const std::uint32_t quer = cpu.Get(kR2);
+          const std::uint32_t resta = static_cast<std::uint32_t>(a.dados.size() - a.pos);
+          const std::uint32_t n = quer < resta ? quer : resta;
+          for (std::uint32_t i = 0; i < n; ++i) {
+            mem_ref.Escrever8(pdest + i, a.dados[a.pos + i]);
+          }
+          a.pos += n;
+          cpu.Set(kR0, n);
+          break;
+        }
+      } else if (idx == kSlotIdFileSeek) {
+        // `int32 Seek(IFile *po, FileSeekType seek, int32 position)` -- slot 7.
+        // Devolve a posicao NOVA, ou -1.
+        bool tratado = false;
+        for (auto& a : g_arquivos) {
+          if (a.obj != cpu.Get(kR0)) continue;
+          tratado = true;
+          const std::uint32_t tipo = cpu.Get(kR1);
+          const std::int32_t pos = static_cast<std::int32_t>(cpu.Get(kR2));
+          const std::int64_t tam = static_cast<std::int64_t>(a.dados.size());
+          std::int64_t novo = -1;
+          if (tipo == 0) novo = pos;
+          else if (tipo == 1) novo = static_cast<std::int64_t>(a.pos) + pos;
+          else if (tipo == 2) novo = tam + pos;
+          if (novo < 0 || novo > tam) {
+            cpu.Set(kR0, 0xFFFFFFFFu);
+          } else {
+            a.pos = static_cast<std::uint32_t>(novo);
+            cpu.Set(kR0, a.pos);
+          }
+          break;
+        }
+        if (!tratado) cpu.Set(kR0, 0xFFFFFFFFu);
+      } else if (idx == kSlotIdFileInfo) {
+        // `int GetInfo(IFile *po, FileInfo *pInfo)` -- slot 6.
+        // FileInfo: `char attrib; uint32 dwCreationDate; uint32 dwSize;
+        //            char szName[AEE_MAX_FILE_NAME]`.
+        bool tratado = false;
+        for (auto& a : g_arquivos) {
+          if (a.obj != cpu.Get(kR0)) continue;
+          tratado = true;
+          const std::uint32_t pi = cpu.Get(kR1);
+          if (pi != 0) {
+            mem_ref.Escrever8(pi + 0, 0);  // AEE_FA_NORMAL
+            mem_ref.Escrever32(pi + 4, 0);
+            mem_ref.Escrever32(pi + 8, static_cast<std::uint32_t>(a.dados.size()));
+            for (std::uint32_t i = 0; i < 64; ++i) mem_ref.Escrever8(pi + 12 + i, 0);
+          }
+          cpu.Set(kR0, 0);
+          break;
+        }
+        if (!tratado) cpu.Set(kR0, kAeeUnsupported);
+      } else if (idx == kSlotIdFileWrite) {
+        // `uint32 Write(IFile*, const void *p, uint32 n)` -- slot 5.
+        // A VFS e so de leitura por decisao. Recusa declarada, zero bytes.
+        cpu.Set(kR0, 0);
+      } else if (idx == kSlotIdSqlOpen) {
+        // `int Open(ISQLMgr *po, const char *pszFile, ISQL **ppiSQL, uint32 flags)`
+        // -- ISQLMgr slot 3.
+        //
+        // Recusa DECLARADA: nao ha SQLite aqui, e implementar meia base de dados
+        // seria a pior especie de mentira -- a que so falha mais tarde, ja dentro
+        // do jogo. O `tectoy` e o unico que o pede.
+        if (cpu.Get(kR3) != 0) mem_ref.Escrever32(cpu.Get(kR3), 0);
+        cpu.Set(kR0, kAeeUnsupported);
       } else if (idx == kSlotIdGetDeviceInfo) {
         // `void GetDeviceInfo(IShell *po, AEEDeviceInfo *pi)` -- IShell slot 4,
         // e a demanda MAIS ALTA do corpus: 18 titulos.
@@ -1042,6 +1365,11 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   s.ativa = true;
   cpu.ConfigurarSaidas(s);
   g_vtable_bitmap = s.Endereco(kVtableBitmap);
+  g_dir_actual = dir;
+  g_pasta_actual = t.pasta;
+  g_vtable_ficheiro = s.Endereco(kVtableFileObj);
+  g_arquivos.clear();
+  g_n_arquivos = 0;
   // A TABELA UNICA: offset no `AEEHelperFuncs` x endereco de saida da
   // implementacao.
   //
@@ -1070,6 +1398,8 @@ Estado Medir(const Titulo& t, const std::string& dir) {
       // o tempo VIRTUAL, e nao o do sistema -- e o que mantem o determinismo.
       {0x0b0, kSlotIdGetUpTime},   // aee_GetUpTimeMS (derivado da struct, 0x0b0)
       {0x0c0, kSlotIdGetAppInstance},
+      {0x020, kSlotIdSprintf},
+      {0x13c, kSlotIdVsprintf},
   };
   for (const auto& lig : kAjudantesLigados) {
     mem.Escrever32(kTabela + lig.off, s.Endereco(lig.saida));
@@ -1134,6 +1464,16 @@ Estado Medir(const Titulo& t, const std::string& dir) {
       {kVtableShell, brew_slots::kShell_SetTimer, kSlotIdSetTimer},
       {kVtableShell, brew_slots::kShell_QueryClass, kSlotIdQueryClass},
       {kVtableShell, brew_slots::kShell_GetDeviceInfo, kSlotIdGetDeviceInfo},
+      {kVtableShell, brew_slots::kShell_CancelTimer, kSlotIdCancelTimer},
+      {kVtableDisplay, brew_slots::kDisplay_GetDeviceBitmap, kSlotIdGetDeviceBitmap},
+      {kVtableDisplay, brew_slots::kDisplay_GetClipRect, kSlotIdGetClipRect},
+      {VtGenerico(6), brew_slots::kSQLMgr_Open, kSlotIdSqlOpen},
+      {kVtableFileMgr, brew_slots::kFileMgr_OpenFile, kSlotIdOpenFile},
+      {kVtableFileObj, brew_slots::kIAStream_Read, kSlotIdFileRead},
+      {kVtableFileObj, brew_slots::kIFile_Seek, kSlotIdFileSeek},
+      {kVtableFileObj, brew_slots::kIFile_GetInfo, kSlotIdFileInfo},
+      {kVtableFileObj, brew_slots::kIFile_Write, kSlotIdFileWrite},
+      {kVtableFileObj, 1, kSlotIdFileRelease},
       // IHIDDevice: slot 7 = GetNumberOfButtons
       {VtGenerico(5), brew_slots::kHIDDevice_GetNumberOfButtons, kSlotIdGetNumButtons},
       // IDisplay
@@ -1164,7 +1504,16 @@ Estado Medir(const Titulo& t, const std::string& dir) {
     // Aqui esteve `< 3`, e a premissa errada mandou-me recusar o slot 2 do
     // IDisplay, que e o `GetFontMetrics`. **Uma guarda construida sobre um
     // numero errado recusa o que esta certo** -- e o custo foi uma bateria.
-    if (w.slot < 2) {
+    // A UNICA EXCECAO, e ela e explicita.
+    //
+    // Para os objectos que o `ConstruirShell` construiu, os slots 0 e 1 ja tem o
+    // `AddRef`/`Release` da IBase, e escrever por cima destroi-os. Mas o objecto
+    // FICHEIRO nasce aqui e NAO tem `Release` nenhum -- e o jogo fecha ficheiros
+    // com `IFILE_Release(p)`, que e o slot 1. Sem esta excepcao, o fecho nao
+    // existia e o `Release` da IBase (que faz `AddRef`/`Release` de objectos ROPI)
+    // era chamado com um ponteiro de ficheiro.
+    const bool e_o_ficheiro = (w.vt == kVtableFileObj);
+    if (w.slot < 2 && !e_o_ficheiro) {
       std::fprintf(stderr, "CABLAGEM RECUSADA: slot %u do objecto 0x%08x e da IBase\n",
                    w.slot, w.vt);
       std::abort();
