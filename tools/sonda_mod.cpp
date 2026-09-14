@@ -50,6 +50,8 @@ int main(int argc, char** argv) {
     return 2;
   }
   const std::uint64_t limite = argc > 2 ? std::strtoull(argv[2], nullptr, 0) : 200000;
+  const std::uint32_t cls_id = argc > 3 ? static_cast<std::uint32_t>(std::strtoul(argv[3], nullptr, 0))
+                                        : 0;
 
   bool ok = false;
   const std::vector<std::uint8_t> imagem = LerFicheiro(argv[1], &ok);
@@ -178,6 +180,76 @@ int main(int argc, char** argv) {
     ++passos;
   }
   std::printf("  heap: alocado=%u bytes, falhas=%u\n", alocador.Alocado(), alocador.Falhas());
+
+  // ---------------------------------------------------------------------
+  // IModule::CreateInstance
+  //
+  // O formato vem da arvore antiga e e reconferido aqui: `ppMod` aponta para
+  // um objeto cujo primeiro campo e a vtable do modulo, e o slot 2 dessa
+  // vtable e `CreateInstance(po, ClsId, ppObj)`.
+  const std::uint32_t modulo = mem.Ler32(kPpMod);
+  if (modulo == 0) {
+    std::printf("CreateInstance: impossivel, o ponteiro de modulo e nulo\n");
+    return 1;
+  }
+  const std::uint32_t vtable = mem.Ler32(modulo);
+  const std::uint32_t create_instance = mem.Ler32(vtable + 2 * 4);
+  std::printf("\nmodulo=0x%08x vtable=0x%08x CreateInstance=0x%08x\n", modulo, vtable,
+              create_instance);
+  if (!DentroDoMod(create_instance, kBase, carga.tamanho)) {
+    std::printf("  CreateInstance aponta para FORA do modulo -- vtable inesperada\n");
+    return 1;
+  }
+
+  constexpr std::uint32_t kPPObj = 0x00090010u;
+  cpu.Repor(create_instance, kPilha);
+  cpu.Set(kR0, modulo);
+  cpu.Set(kR1, cls_id);
+  cpu.Set(kR2, kPPObj);
+  cpu.Set(kLR, kSentinela);
+  passos = 0;
+  eventos = 0;
+  while (passos < limite) {
+    const std::uint32_t pc = cpu.Get(kPC);
+    if (pc == kSentinela) {
+      std::printf("  CreateInstance RETORNOU apos %" PRIu64 " instrucoes\n", passos);
+      break;
+    }
+    std::uint32_t idx = 0;
+    if (cpu.GetSaidas().Contem(pc, &idx)) {
+      const std::uint32_t lr = cpu.Get(kLR);
+      const std::uint32_t arg = cpu.Get(kR0);
+      if (idx == 0) {
+        const std::uint32_t bloco = alocador.Malloc(arg);
+        std::printf("  [createinstance] MALLOC(%u) -> 0x%08x\n", arg, bloco);
+        cpu.Set(kR0, bloco);
+      } else if (idx == 1) {
+        alocador.Free(arg);
+        cpu.Set(kR0, kAeeSuccess);
+      } else {
+        std::printf("  [createinstance] SLOT %u NAO TRATADO (r0=0x%08x r1=0x%08x r2=0x%08x)\n",
+                    idx, arg, cpu.Get(kR1), cpu.Get(kR2));
+        cpu.Set(kR0, kAeeUnsupported);
+      }
+      cpu.Set(kPC, lr);
+      if (++eventos > 40) { std::printf("  (demasiadas saidas; paro)\n"); break; }
+      continue;
+    }
+    if (!DentroDoMod(pc, kBase, carga.tamanho)) {
+      std::printf("  [createinstance] saiu do modulo para 0x%08x apos %" PRIu64 " instrucoes\n",
+                  pc, passos);
+      break;
+    }
+    cpu.Passo();
+    ++passos;
+  }
+  std::printf("  applet (em 0x%08x) = 0x%08x\n", kPPObj, mem.Ler32(kPPObj));
+  std::printf("  resumo CreateInstance: %" PRIu64 " instrucoes, %" PRIu64 " recusadas\n",
+              passos, cpu.InstruscoesRecusadas());
+  if (cpu.InstruscoesRecusadas() > 0) {
+    std::printf("  ultima recusada: opcode=0x%08x em pc=0x%08x\n", cpu.UltimaRecusada(),
+                cpu.PcDaUltimaRecusada());
+  }
 
   std::printf("  resumo: %" PRIu64 " instrucoes, %" PRIu64 " recusadas, PC final=0x%08x\n",
               passos, cpu.InstruscoesRecusadas(), cpu.Get(kPC));

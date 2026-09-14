@@ -224,6 +224,66 @@ TEST(Carga, SemATabelaOModuloSaltaParaZero) {
 }
 
 // ===========================================================================
+// A estrutura do modulo que o `AEEMod_Load` constroi
+// ===========================================================================
+
+TEST(CargaCorpus, AEEModLoadConstroiOModuloEOModuloTemVtable) {
+  // MEDIDO no `imicro3d.mod` real, e o desmonte explica cada campo.
+  //
+  // `AEEStaticMod_New` (0x001006d4), que o `AEEMod_Load` chama, faz:
+  //     10077c  stmib r0, {r1, r6, r7, r8}
+  // ou seja escreve em module+4, +8, +12 e +16 os valores r1, r6, r7, r8.
+  // r7 e r8 vem de `ldm r8, {r7, r8}` -- os argumentos 5 e 6 na PILHA do
+  // chamador. E o proprio `AEEMod_Load` empurra zero para eles
+  // (0x00100008: `mov r3,#0 / str r3,[sp] / str r3,[sp,#4]`).
+  //
+  // CONCLUSAO, e vale a pena escreve-la porque eu a li errada primeiro: um
+  // `module+12` a zero DEPOIS do `AEEMod_Load` e o comportamento correcto, e
+  // nao memoria por preencher. O `CreateInstance` do APPLET regista-se noutro
+  // sitio, mais tarde. Foi preciso tracar as instrucoes para o ver: eu tinha
+  // atribuido o zero a um argumento em falta da NOSSA chamada.
+  const char* caminhos[] = {
+      "/media/rafaelfrequiao/8C5F-19E51/zeebo/ROMs/debug_nand/mod/12875/imicro3d.mod",
+      "/home/rafaelfrequiao/projects/zeebo-lab/games/brew/mod/12875/imicro3d.mod",
+  };
+  std::vector<std::uint8_t> imagem;
+  bool ok = false;
+  for (const char* c : caminhos) {
+    imagem = LerBytes(c, &ok);
+    if (ok) break;
+  }
+  if (!ok) GTEST_SKIP() << "corpus nao montado";
+
+  Bancada b;
+  constexpr std::uint32_t kBase = 0x00100000u;
+  constexpr std::uint32_t kPPMod = 0x00090000u;
+  constexpr std::uint32_t kShell = 0x81000000u;
+  ASSERT_TRUE(CarregarMod(b.mem, imagem, kBase, kTabela, &b.traco).ok);
+  b.cpu.Repor(kBase, 0x80080000u);
+  b.cpu.Set(kR0, kShell);
+  b.cpu.Set(kR2, kPPMod);
+  b.cpu.Set(kLR, Bancada::kSentinela());
+  b.Correr(10000);
+
+  const std::uint32_t modulo = b.mem.Ler32(kPPMod);
+  ASSERT_NE(modulo, 0u);
+  const std::uint32_t vtable = b.mem.Ler32(modulo);
+  EXPECT_NE(vtable, 0u) << "o primeiro campo do modulo e a vtable";
+  EXPECT_EQ(b.mem.Ler32(modulo + 4), 1u) << "contagem de referencias comeca em 1";
+  EXPECT_EQ(b.mem.Ler32(modulo + 8), kShell) << "o IShell que passamos foi guardado";
+  EXPECT_EQ(b.mem.Ler32(modulo + 12), 0u)
+      << "zero e o valor CERTO aqui: o proprio AEEMod_Load empurra zero para os "
+         "argumentos 5 e 6, que sao os que alimentam +12 e +16";
+  // A vtable do IModule tem 4 slots, e o slot 2 e `CreateInstance`.
+  for (int i = 0; i < 4; ++i) {
+    const std::uint32_t alvo = b.mem.Ler32(vtable + static_cast<std::uint32_t>(i) * 4);
+    EXPECT_TRUE(alvo >= kBase && alvo < kBase + 90068u)
+        << "slot " << i << " da vtable aponta para dentro do modulo";
+  }
+  EXPECT_EQ(b.cpu.InstruscoesRecusadas(), 0u);
+}
+
+// ===========================================================================
 // O alocador
 // ===========================================================================
 
