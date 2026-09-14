@@ -55,6 +55,7 @@ constexpr std::uint32_t kBaseDoSlot = 1000;
 // metodo da interface cada titulo chama, e nao so que chamou algum.
 constexpr std::uint32_t kBaseDoShell = 2000;
 constexpr std::uint32_t kVtableShell = 1000;
+constexpr std::uint32_t kVtableBitmap = 8000;
 constexpr std::uint32_t kVtableDisplay = 6000;
 constexpr std::uint32_t kVtableFileMgr = 7000;
 
@@ -104,6 +105,78 @@ constexpr std::uint32_t kSlotIdFmTest = 1510;
 constexpr std::uint32_t kSlotIdFmFree = 1511;
 constexpr std::uint32_t kSlotIdFmLastErr = 1512;
 constexpr std::uint32_t kSlotIdSetTimer = 1520;
+constexpr std::uint32_t kSlotIdGetFontMetrics = 1530;
+constexpr std::uint32_t kSlotIdMeasureText = 1531;
+constexpr std::uint32_t kSlotIdDrawText = 1532;
+constexpr std::uint32_t kSlotIdDrawRect = 1533;
+constexpr std::uint32_t kSlotIdBitBlt = 1534;
+constexpr std::uint32_t kSlotIdSetColor = 1535;
+constexpr std::uint32_t kSlotIdSetClipRect = 1536;
+constexpr std::uint32_t kSlotIdUpdate = 1537;
+constexpr std::uint32_t kSlotIdCreateDIBitmap = 1538;
+constexpr std::uint32_t kObjDibBase = 0x80050000u;
+// Os slots do IDisplay, na ordem que `platform/ui/inc/AEEIDisplay.h` declara em
+// `INHERIT_IDisplay`. Lido campo a campo.
+enum : std::uint32_t {
+  kDisQueryInterface = 2,
+  kDisGetFontMetrics = 3,
+  kDisMeasureTextEx = 4,
+  kDisDrawText = 5,
+  kDisDrawRect = 6,
+  kDisBitBlt = 7,
+  kDisUpdate = 8,
+  kDisSetColor = 11,
+  kDisCreateDIBitmap = 14,
+  kDisSetClipRect = 19,
+};
+// FRAMEBUFFER DE SOFTWARE.
+//
+// Existe para haver uma medida VISUAL que nao dependa de capturar ecra: quantos
+// pixels distintos cada titulo escreveu, e de que cor. E a versao honesta de
+// "o jogo desenha" -- e foi um censo a medir imagem, e nao jogabilidade, que
+// deu veredictos errados na arvore antiga.
+constexpr int kLargura = 640;
+constexpr int kAltura = 480;
+struct Framebuffer {
+  std::vector<std::uint32_t> cores{kLargura * kAltura, 0};
+  std::uint32_t cor_atual = 0;
+  std::uint32_t escritos = 0;
+  std::uint32_t clip[4] = {0, 0, kLargura, kAltura};
+  void Ponto(int x, int y) {
+    if (x < clip[0] || y < clip[1] || x >= clip[0] + clip[2] || y >= clip[1] + clip[3]) return;
+    if (x < 0 || y < 0 || x >= kLargura || y >= kAltura) return;
+    cores[static_cast<size_t>(y) * kLargura + x] = cor_atual;
+    ++escritos;
+  }
+  void Retangulo(std::uint32_t x, std::uint32_t y, std::uint32_t w, std::uint32_t h,
+                 bool preencher) {
+    if (preencher) {
+      for (std::uint32_t j = 0; j < h; ++j) {
+        for (std::uint32_t i = 0; i < w; ++i) Ponto(static_cast<int>(x + i), static_cast<int>(y + j));
+      }
+    } else {
+      for (std::uint32_t i = 0; i < w; ++i) {
+        Ponto(static_cast<int>(x + i), static_cast<int>(y));
+        Ponto(static_cast<int>(x + i), static_cast<int>(y + h - 1));
+      }
+      for (std::uint32_t j = 0; j < h; ++j) {
+        Ponto(static_cast<int>(x), static_cast<int>(y + j));
+        Ponto(static_cast<int>(x + w - 1), static_cast<int>(y + j));
+      }
+    }
+  }
+  std::uint32_t CoresDistintas() const {
+    std::set<std::uint32_t> s;
+    for (std::uint32_t v : cores) s.insert(v);
+    return static_cast<std::uint32_t>(s.size());
+  }
+};
+Framebuffer g_fb;
+std::uint32_t g_textos = 0;
+std::uint32_t g_blits = 0;
+std::uint32_t g_updates = 0;
+std::uint32_t g_dibs = 0;
+std::uint32_t g_vtable_bitmap = 0;
 // Os slots do IShell, na ordem que `platform/system/inc/AEEIShell.h` declara em
 // `INHERIT_IShell`. Lido campo a campo, e nao copiado.
 enum : std::uint32_t {
@@ -138,6 +211,10 @@ struct Estado {
   std::uint64_t passos_carga = 0;
   std::uint64_t passos_create = 0;
   std::uint64_t recusadas = 0;
+  std::uint32_t pixels = 0;
+  std::uint32_t cores = 0;
+  std::uint32_t textos = 0;
+  std::uint32_t blits = 0;
   std::uint32_t tamanho = 0;
   std::string motivo;   // porque parou, quando parou
   std::map<std::string, std::uint64_t> faltas;
@@ -410,6 +487,124 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         static std::uint32_t semente = 0x12345678u;
         semente = semente * 1103515245u + 12345u;
         cpu.Set(kR0, (semente >> 16) & 0x7FFFu);
+      } else if (idx == kSlotIdSetColor) {
+        // `void SetColor(IDisplay *po, RGBVAL rgb)`. O Zeebo usa RGB565.
+        g_fb.cor_atual = cpu.Get(kR1) & 0xFFFFu;
+        cpu.Set(kR0, 0);
+      } else if (idx == kSlotIdSetClipRect) {
+        // `void SetClipRect(IDisplay *po, AEERect *prc)` -- prc nulo limpa o clip.
+        const std::uint32_t prc = cpu.Get(kR1);
+        if (prc == 0) {
+          g_fb.clip[0] = 0; g_fb.clip[1] = 0; g_fb.clip[2] = kLargura; g_fb.clip[3] = kAltura;
+        } else {
+          g_fb.clip[0] = static_cast<std::uint32_t>(static_cast<std::int32_t>(mem_ref.Ler32(prc)));
+          g_fb.clip[1] = static_cast<std::uint32_t>(static_cast<std::int32_t>(mem_ref.Ler32(prc + 4)));
+          g_fb.clip[2] = mem_ref.Ler32(prc + 8);
+          g_fb.clip[3] = mem_ref.Ler32(prc + 12);
+        }
+        cpu.Set(kR0, 0);
+      } else if (idx == kSlotIdDrawRect) {
+        // `void DrawRect(IDisplay *po, AEERect *prc)` -- CONTORNO, nao
+        // preenchido. Quem preenche e o DrawRect do IGraphics/draw, que e outra
+        // interface; confundir os dois e um erro classico de quem le o SDK por
+        // alto.
+        const std::uint32_t prc = cpu.Get(kR1);
+        if (prc != 0) {
+          g_fb.Retangulo(mem_ref.Ler32(prc), mem_ref.Ler32(prc + 4), mem_ref.Ler32(prc + 8),
+                         mem_ref.Ler32(prc + 12), /*preencher=*/false);
+        }
+        cpu.Set(kR0, 0);
+      } else if (idx == kSlotIdDrawText) {
+        // `void DrawText(IDisplay *po, const AECHAR *pText, int nChars, AEERect *prc,
+        //                uint32 flags)`.
+        //
+        // Aqui NAO se rasteriza texto: nao ha fonte carregada. O que se faz e
+        // contar, e escrever uma barra com a cor actual na linha de base -- para
+        // a medida "pixels escritos" nao ficar a zero por causa do texto. Fica
+        // declarado como aproximacao.
+        const std::uint32_t ptext = cpu.Get(kR1);
+        const std::uint32_t prc = cpu.Get(kR3);
+        std::uint32_t larg = 0;
+        if (prc != 0) {
+          const std::uint32_t x = mem_ref.Ler32(prc), y = mem_ref.Ler32(prc + 4);
+          larg = mem_ref.Ler32(prc + 8);
+          if (larg == 0) larg = 8;
+          for (std::uint32_t i = 0; i < larg; ++i) g_fb.Ponto(static_cast<int>(x + i), static_cast<int>(y));
+        }
+        (void)ptext;
+        ++g_textos;
+        cpu.Set(kR0, 0);
+      } else if (idx == kSlotIdBitBlt) {
+        // `void BitBlt(IDisplay *po, IBitmap *pib, int xDst, int yDst, int dx,
+        //              int dy, int nWidth, int nHeight)`.
+        // Copia do bitmap de origem para o framebuffer. O bitmap tem cabecalho
+        // nosso (ver CreateDIBitmap): largura, altura, e os pixels em RGB565.
+        const std::uint32_t pib = cpu.Get(kR1);
+        if (pib != 0) {
+          const std::uint32_t origem = mem_ref.Ler32(pib + 8);
+          const std::uint32_t bmp_larg = mem_ref.Ler32(pib + 12);
+          const std::uint32_t bmp_alt = mem_ref.Ler32(pib + 16);
+          const std::int32_t xd = static_cast<std::int32_t>(cpu.Get(kR2));
+          const std::int32_t yd = static_cast<std::int32_t>(cpu.Get(kR3));
+          const std::uint32_t dw = mem_ref.Ler32(cpu.Get(kSP) + 0);
+          const std::uint32_t dh = mem_ref.Ler32(cpu.Get(kSP) + 4);
+          const std::uint32_t nw = mem_ref.Ler32(cpu.Get(kSP) + 8);
+          const std::uint32_t nh = mem_ref.Ler32(cpu.Get(kSP) + 12);
+          if (origem != 0 && bmp_larg != 0 && bmp_alt != 0 && nw != 0 && nh != 0) {
+            for (std::uint32_t j = 0; j < nh; ++j) {
+              for (std::uint32_t i = 0; i < nw; ++i) {
+                const std::uint32_t u = (dw + i) % bmp_larg, v = (dh + j) % bmp_alt;
+                g_fb.cor_atual = mem_ref.Ler16(origem + (v * bmp_larg + u) * 2);
+                g_fb.Ponto(static_cast<int>(xd + static_cast<std::int32_t>(i)),
+                           static_cast<int>(yd + static_cast<std::int32_t>(j)));
+              }
+            }
+            ++g_blits;
+          }
+        }
+        cpu.Set(kR0, 0);
+      } else if (idx == kSlotIdCreateDIBitmap) {
+        // `IBitmap *CreateDIBitmap(IDisplay *po, const AEEBitmapInfo *pbi, void *pData)`.
+        // Devolve um bitmap nosso: cabecalho `{vtable, ...}` + largura, altura e
+        // o endereco dos pixels no guest. Os pixels ficam no formato do SDK e o
+        // BitBlt le-os de la.
+        const std::uint32_t pbi = cpu.Get(kR1);
+        const std::uint32_t pdata = cpu.Get(kR2);
+        const std::int32_t cx = static_cast<std::int16_t>(mem_ref.Ler16(pbi + 4));
+        const std::int32_t cy = static_cast<std::int16_t>(mem_ref.Ler16(pbi + 6));
+        const std::uint32_t obj = kObjDibBase + g_dibs * 0x40;
+        ++g_dibs;
+        mem_ref.Escrever32(obj + 0, g_vtable_bitmap);
+        mem_ref.Escrever32(obj + 4, 1);
+        mem_ref.Escrever32(obj + 8, pdata);
+        mem_ref.Escrever32(obj + 12, static_cast<std::uint32_t>(cx > 0 ? cx : 1));
+        mem_ref.Escrever32(obj + 16, static_cast<std::uint32_t>(cy > 0 ? cy : 1));
+        cpu.Set(kR0, obj);
+      } else if (idx == kSlotIdGetFontMetrics) {
+        // `void GetFontMetrics(IDisplay *po, AEEFontMetrics *pfm)`. Valores
+        // DECLARADOS de uma fonte de 12 px -- o jogo precisa de numeros para
+        // calcular posicoes, e zero faria tudo colapsar numa linha.
+        const std::uint32_t pfm = cpu.Get(kR1);
+        if (pfm != 0) {
+          mem_ref.Escrever32(pfm + 0, 0);   // nAscent
+          mem_ref.Escrever32(pfm + 4, 0);   // nDescent
+          mem_ref.Escrever16(pfm + 8, 12);  // cy
+        }
+        cpu.Set(kR0, 0);
+      } else if (idx == kSlotIdMeasureText) {
+        // `void MeasureTextEx(IDisplay *po, const AECHAR *pText, int nChars,
+        //                     AEERect *prc)`. Devolve uma largura DECLARADA: 8 px
+        // por caracter, que e a fonte de 12 px medida acima.
+        const std::uint32_t prc = cpu.Get(kR3);
+        const std::uint32_t n = cpu.Get(kR2);
+        if (prc != 0) {
+          mem_ref.Escrever32(prc + 8, (n > 0 ? n : 1) * 8);
+          mem_ref.Escrever32(prc + 12, 12);
+        }
+        cpu.Set(kR0, 0);
+      } else if (idx == kSlotIdUpdate) {
+        ++g_updates;
+        cpu.Set(kR0, 0);
       } else if (idx == kSlotIdSetTimer) {
         // `int SetTimer(IShell *po, AEECallback *pcb, int msecs)`. Guarda o
         // pedido; quem o cumpre e o laco, adiante.
@@ -514,6 +709,12 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   bool ok = false;
   const std::vector<std::uint8_t> imagem = Ler(dir + "/" + t.pasta + "/" + t.mod + ".mod", &ok);
   if (!ok) { e.motivo = "mod_ausente"; return e; }
+  // O framebuffer e POR TITULO: um estado que passa de um titulo para o outro
+  // tornaria a medida incomparavel -- que e o defeito de metodo mais repetido
+  // desta sessao.
+  g_fb = Framebuffer{};
+  g_textos = g_blits = g_updates = g_dibs = 0;
+
   Tempo tempo;
   Traco traco("bateria", &tempo);
   DestinoMemoria dm;            // para a lista final poder dizer os ARGUMENTOS
@@ -549,6 +750,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   s.passo = 4;
   s.ativa = true;
   cpu.ConfigurarSaidas(s);
+  g_vtable_bitmap = s.Endereco(kVtableBitmap);
   mem.Escrever32(kTabela + 0x68, s.Endereco(0));  // malloc
   mem.Escrever32(kTabela + 0x6c, s.Endereco(1));  // free
   // `dbgprintf` (0x09c) passa a ser SERVIDO: e o slot mais pedido depois do
@@ -623,6 +825,26 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   mem.Escrever32(s.Endereco(kVtableFileMgr + kFmTest), s.Endereco(kSlotIdFmTest));
   mem.Escrever32(s.Endereco(kVtableFileMgr + kFmGetFreeSpace), s.Endereco(kSlotIdFmFree));
   mem.Escrever32(s.Endereco(kVtableFileMgr + kFmGetLastError), s.Endereco(kSlotIdFmLastErr));
+  // Os slots do IDisplay que o corpus pede, e que tem implementacao.
+  //
+  // Escreve-se na MEMORIA DA VTABLE -- `mem[vtable + slot*4]` -- e nao no
+  // endereco de saida. E o mesmo cuidado do SetTimer, e o mesmo erro que ja me
+  // apanhou uma vez.
+  //
+  // Este bloco chegou a NAO SER APLICADO sem eu notar: a substituicao de texto
+  // falhou em silencio e eu "verifiquei" com um `grep -c` que contava
+  // `kVtableDisplay` -- que aparece nas linhas do `ConstruirShell` de qualquer
+  // maneira. **Uma verificacao que passa sem a mudanca nao e verificacao.** Dai
+  // o `assert` acima, e o assert de leitura abaixo.
+  mem.Escrever32(s.Endereco(kVtableDisplay) + kDisGetFontMetrics * 4, s.Endereco(kSlotIdGetFontMetrics));
+  mem.Escrever32(s.Endereco(kVtableDisplay) + kDisMeasureTextEx * 4, s.Endereco(kSlotIdMeasureText));
+  mem.Escrever32(s.Endereco(kVtableDisplay) + kDisDrawText * 4, s.Endereco(kSlotIdDrawText));
+  mem.Escrever32(s.Endereco(kVtableDisplay) + kDisDrawRect * 4, s.Endereco(kSlotIdDrawRect));
+  mem.Escrever32(s.Endereco(kVtableDisplay) + kDisBitBlt * 4, s.Endereco(kSlotIdBitBlt));
+  mem.Escrever32(s.Endereco(kVtableDisplay) + kDisSetColor * 4, s.Endereco(kSlotIdSetColor));
+  mem.Escrever32(s.Endereco(kVtableDisplay) + kDisSetClipRect * 4, s.Endereco(kSlotIdSetClipRect));
+  mem.Escrever32(s.Endereco(kVtableDisplay) + kDisUpdate * 4, s.Endereco(kSlotIdUpdate));
+  mem.Escrever32(s.Endereco(kVtableDisplay) + kDisCreateDIBitmap * 4, s.Endereco(kSlotIdCreateDIBitmap));
 
   const auto carga = CarregarMod(mem, imagem, kBase, kTabela, &traco);
   if (!carga.ok) { e.motivo = "carga_recusada:" + carga.motivo; return e; }
@@ -678,6 +900,10 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   e.motivo += " | create:" + motivo_create;
   if (!e.create) e.motivo += "_sem_applet";
   for (const auto& par : traco.ContagemFaltas()) e.faltas[par.first] = par.second;
+  e.pixels = g_fb.escritos;
+  e.cores = g_fb.CoresDistintas();
+  e.textos = g_textos;
+  e.blits = g_blits;
   dm_eventos = dm.eventos;
   return e;
 }
@@ -692,8 +918,8 @@ int main(int argc, char** argv) {
   const std::vector<Titulo> titulos = LerCorpus(argv[1]);
   if (titulos.empty()) { std::fprintf(stderr, "corpus vazio ou ilegivel\n"); return 2; }
 
-  std::printf("%-16s %-8s %-6s %-6s %-6s %8s %8s  %s\n", "titulo", "tamanho", "carga", "modulo",
-              "vtable", "carga_p", "cria_p", "motivo");
+  std::printf("%-16s %-8s %-6s %-6s %-6s %8s %8s %8s %5s  %s\n", "titulo", "tamanho", "carga",
+              "modulo", "vtable", "carga_p", "cria_p", "PIXELS", "CORES", "motivo");
   int carregam = 0, com_modulo = 0, com_applet = 0;
   // Nome -> conjunto de detalhes distintos vistos (para a lista final dizer os
   // ARGUMENTOS, e nao so a contagem).
@@ -712,9 +938,10 @@ int main(int argc, char** argv) {
         faltas_detalhe[ev.nome.substr(18)][ev.detalhe]++;
       }
     }
-    std::printf("%-16s %-8u %-6s %-6s %-6s %8" PRIu64 " %8" PRIu64 "  %s\n", t.mod.c_str(),
+    std::printf("%-16s %-8u %-6s %-6s %-6s %8" PRIu64 " %8" PRIu64 " %8u %5u  %s\n", t.mod.c_str(),
                 e.tamanho, e.carga ? "sim" : "NAO", e.modulo ? "sim" : "NAO",
-                e.vtable ? "sim" : "NAO", e.passos_carga, e.passos_create, e.motivo.c_str());
+                e.vtable ? "sim" : "NAO", e.passos_carga, e.passos_create, e.pixels, e.cores,
+                e.motivo.c_str());
     json += "  {\"mod\":\"" + t.mod + "\",\"pasta\":\"" + t.pasta + "\",\"tamanho\":" +
             std::to_string(e.tamanho) + ",\"carga\":" + (e.carga ? "true" : "false") +
             ",\"modulo\":" + (e.modulo ? "true" : "false") +
@@ -723,7 +950,11 @@ int main(int argc, char** argv) {
             ",\"passos_carga\":" + std::to_string(e.passos_carga) +
             ",\"passos_create\":" + std::to_string(e.passos_create) +
             ",\"recusadas\":" + std::to_string(e.recusadas) +
-            ",\"motivo\":\"" + e.motivo + "\"" + "},\n";
+            ",\"motivo\":\"" + e.motivo + "\"" +
+            ",\"pixels\":" + std::to_string(e.pixels) +
+            ",\"cores\":" + std::to_string(e.cores) +
+            ",\"textos\":" + std::to_string(e.textos) +
+            ",\"blits\":" + std::to_string(e.blits) + "},\n";
   }
   // O JSON tem de ser VALIDO: uma virgula a mais no fim torna-o ilegivel para
   // quem o for ler, e ele existe exactamente para ser comparado entre corridas.
