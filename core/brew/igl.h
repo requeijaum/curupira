@@ -67,10 +67,46 @@ constexpr std::uint32_t kClsidIegl = 0x01014bc4u;
 // sitios, e um intervalo novo que ficasse ABAIXO seria engolido pelo ramo
 // generico. **O erro de ordem (um passo generico a atropelar um especifico)
 // apareceu SEIS vezes neste trabalho.**
-constexpr std::uint32_t kVtableIgl = 20000;   // 80 slots (AEEGL.h)
-constexpr std::uint32_t kVtableIegl = 21000;  // 28 slots (AEEGL.h)
-constexpr std::uint32_t kObjIgl = 0x800A0000u;
-constexpr std::uint32_t kObjIegl = 0x800A1000u;
+//
+// 30000 E NAO 20000, E A RAZAO FOI MEDIDA. Estas duas constantes nasceram a
+// 20000/21000, escolhidas quando a unica coisa acima do despacho era a tabela de
+// ajudantes. Depois disso, a etapa 8 escolheu -- num OUTRO ficheiro, e sem saber
+// desta -- a mesma base para a ENTRADA:
+//
+//     tools/bateria.cpp:65   constexpr std::uint32_t kBaseDasEntradas = 20000;
+//     core/brew/ihiddevice.h:319  Ihid::kSlotsNecessarios      = 32;
+//     core/brew/ihid_entrada.h:217 Sinais::kSlotsNecessarios   = 16;
+//
+// 32 + 16 = 48 slots, de 20000 a 20047 -- exactamente onde a vtable deste modulo
+// vive (20000 a 20079). As duas coisas escrevem em `Endereco(20000+i)`: sao a
+// MESMA memoria, e quem instalar por ultimo apaga o outro. Nao ha sintoma nenhum
+// no momento: a vtable fica escrita e o defeito aparece so quando o jogo salta
+// para um slot e cai no metodo de outra interface.
+//
+// Quem detecta isso e a LEITURA DE VOLTA do `Instalar` (ver `igl.cpp`), e o
+// teste `EglTest/CablagemGl.AInstalacaoDetectaAColisao` prova-o numa cena com as
+// duas instalacoes na mesma base.
+//
+// Ruling: a faixa do IGL sobe para 30000/31000, e a da entrada fica onde esta.
+// Custo se estiver errado: um numero diferente do que estava escrito no relatorio
+// da etapa 6. Custo de as deixar sobrepostas: a vtable de um dos dois modulos
+// apagada pelo outro, em silencio.
+constexpr std::uint32_t kVtableIgl = 30000;   // 80 slots (AEEGL.h)
+constexpr std::uint32_t kVtableIegl = 31000;  // 28 slots (AEEGL.h)
+// OS ENDERECOS DOS OBJECTOS. Tambem mudaram, e pela MESMA razao da faixa acima:
+// 0x800A0000 e 0x800A1000 estavam ocupados por outra frente.
+//
+//     core/brew/imedia.h:232  constexpr std::uint32_t kAvisoBase      = 0x800A0000u;
+//     core/brew/imedia.h:233  constexpr std::uint32_t kAvisoDadosBase = 0x800A1000u;
+//
+// O mapa medido dos enderecos de objecto deste emulador, por ordem:
+//     0x80010000 tabela de ajudantes | 0x80020000 IShell | 0x80030000 IDisplay
+//     0x80040000 IFileMgr | 0x80050000 DIB | 0x80060000 genericos
+//     0x80070000 ficheiros | 0x80080000 pilha | 0x80090000 IMedia
+//     0x800A0000 avisos de midia | 0x800B0000 LIVRE
+// `0x800B0000` e o primeiro bloco livre, e e o que este modulo passa a usar.
+constexpr std::uint32_t kObjIgl = 0x800B0000u;
+constexpr std::uint32_t kObjIegl = 0x800B1000u;
 
 // O resultado de UM slot, com os tres valores que o desenho exige:
 //   Feito           -- entendido, e o efeito de ESTADO aconteceu;

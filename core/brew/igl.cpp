@@ -197,7 +197,7 @@ std::uint32_t Igl::Instalar(const Saidas& saidas) {
                        "o estado e a interface existem; nenhum pixel e escrito. "
                        "Medido: 0 pixels em 62 titulos antes desta etapa.");
   traco_.Emitir(Area::Video, Nivel::Informacao, "IGL_INSTALADO",
-                "80 slots (AEEGL.h), objecto em 0x800A0000, vtable cablada e conferida");
+                "80 slots (AEEGL.h), objecto em 0x800B0000, vtable cablada e conferida");
   return kIglSlots;
 }
 

@@ -30,6 +30,7 @@ add_library(zb2_core STATIC
   core/brew/despacho.cpp
   core/brew/ihid_entrada.cpp
   core/brew/ihiddevice.cpp
+  core/brew/egl.cpp
   core/brew/igl.cpp
   core/brew/imedia.cpp
   core/audio/misturador.cpp
@@ -56,6 +57,7 @@ add_executable(zb2_tests
   tests/hid_test.cpp
   tests/entrada_despacho_test.cpp
   tests/bar_test.cpp
+  tests/egl_test.cpp
   tests/igl_test.cpp
   tests/mod_base_test.cpp
   tests/ajudantes_extra_test.cpp

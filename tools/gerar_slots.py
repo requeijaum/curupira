@@ -529,13 +529,55 @@ def thunk_do_wrapper(vaddr: int, ler32) -> tuple:
             and ((w >> 21) & 0xF) == 0x4
 
     def escreve_em(w, reg):
-        """Se a instrucao escreve no registo alvo, a cadeia perdeu-se."""
+        """Se a instrucao escreve no registo alvo, a cadeia perdeu-se.
+
+        O CAMPO Rd DE UM `str` NAO E UM DESTINO, e essa distincao foi MEDIDA.
+
+        A primeira versao devolvia `op in (0, 1, 2, 3, 5)` -- "transferencia de
+        dados, branch, ldr, ldm, ldr-imediato" -- e com isso um `str r3, [sp]`
+        (op=2, L=0) contava como escrita do r3 e QUEBRAVA a cadeia. O sintoma
+        estava no `ddragonz.mod`, no thunk do `eglChooseConfig` em 0x123dac:
+
+            123dac  push {r3, lr}          ; o prologo de um metodo com 5 argumentos
+            123db8  str  r3, [sp]          ; <<< aqui a cadeia "perdia-se"
+            123dbc  ldr  r3, [pc, #32]
+            123dc0  add  r3, pc, r3
+            123dc4  ldr  r3, [r3, #4]      ; &gpIEGL
+            123dc8  ldr  r3, [r3]
+            123dcc  ldr  ip, [r3, #40]     ; slot 10 (40/4) -- escolhido por r12, e nao por r3
+            123dd0  mov  r3, lr            ; devolve o 5.o argumento ao r3
+            123dd4  mov  lr, pc
+            123dd8  bx   ip
+
+        Com aquela versao, o gerador (e a sonda) NAO VIA este thunk: o `ddragonz`
+        aparecia com 37 thunks em vez de 41, e o `eglChooseConfig` -- que o jogo
+        chama mesmo -- ficava invisivel. **Uma contagem que parece medida e mede a
+        coisa errada e pior do que nenhuma.**
+
+        Duas correccoes, as duas com a medicao acima:
+          1. so um `ldr` (L=1) ou um `ldm` (L=1) escrevem no Rd; um `str`/`stm` nao;
+          2. entre o `ldr` do slot e o `bx` pode haver ate `JANELA_DO_BX`
+             instrucoes -- o prologo de 5 argumentos mete o `mov r3, lr` e o
+             `mov lr, pc` no meio. O registo do slot nao pode ser reescrito nessa
+             janela, e o `bx` tem de ser ao registo que recebeu o slot.
+        """
         if ((w >> 12) & 0xF) != reg:
             return False
-        op = (w >> 25) & 0x7
         if w == 0xE12FFF10 | reg:          # bx reg -- nao escreve
             return False
-        return op in (0, 1, 2, 3, 5)       # dta, br/blx, ldr, ldm, ldr-imediato
+        op = (w >> 25) & 0x7
+        if op in (0, 1):                   # processamento de dados
+            return not ((w >> 20) & 1 and not ((w >> 21) & 1))   # cmp/tst nao escrevem
+        if op == 2:                        # ldr escreve; STR NAO
+            return ((w >> 20) & 1) == 1
+        if op == 3:                        # ldm escreve; stm nao
+            return ((w >> 20) & 1) == 1
+        if op == 5:                        # bl escreve o LR; b nao
+            return ((w >> 24) & 1) == 1
+        return False
+
+    # Quantas instrucoes podem separar o `ldr` do slot do `bx` que salta para ele.
+    JANELA_DO_BX = 4
 
     for k in range(len(ws) - 6):
         if not ldr_imm(ws[k]) or ((ws[k] >> 16) & 0xF) != 15:
@@ -565,7 +607,22 @@ def thunk_do_wrapper(vaddr: int, ler32) -> tuple:
                 else:
                     if imm == 0 or imm % 4:
                         break
-                    return base, kk, imm // 4
+                    # O `bx` nao vem obrigatoriamente na instrucao seguinte: o
+                    # thunk de 5 argumentos do `eglChooseConfig` no `ddragonz`
+                    # (0x123dac) mete o `mov r3, lr` e o `mov lr, pc` entre o
+                    # `ldr ip, [r3, #40]` e o `bx ip`. Exigir a instrucao
+                    # seguinte perdia o thunk -- MEDIDO: 37 thunks em vez de 41.
+                    for j2 in range(j + 1, min(j + 1 + JANELA_DO_BX, len(ws))):
+                        # `bx` (0xE12FFF10) e `blx` (0xE12FFF30) saltam AMBOS para
+                        # o registo, e os dois aparecem: o `conftest.elf` do SDK
+                        # fecha o `glCompressedTexImage2D` (0x28398) com `blx ip`
+                        # e o `ddragonz.mod` fecha o `eglChooseConfig` (0x123dac)
+                        # com `bx ip`. Exigir so o `bx` recusava o thunk do SDK.
+                        if ws[j2] in (0xE12FFF10 | destino, 0xE12FFF30 | destino):
+                            return base, kk, imm // 4
+                        if escreve_em(ws[j2], destino):
+                            break
+                    break
             elif escreve_em(w, reg):
                 break
     return None
@@ -659,9 +716,79 @@ def enums_do_gl(sdk: Path):
     return [(n, achadas[n]) for n in GL_ENUMS]
 
 
+# As CONSTANTES DO EGL, do cabecalho `platform/ui/inc/EGL/egl.h` do SDK (o
+# `gles/egl.h` e um esqueleto de compatibilidade que so inclui este).
+#
+# SO AS QUE TEM VALOR NUMERICO ENTRAM AQUI. `EGL_DEFAULT_DISPLAY`,
+# `EGL_NO_DISPLAY`, `EGL_NO_CONTEXT` e `EGL_NO_SURFACE` sao CASTS
+# (`((EGLDisplay)0)`), e o valor que o ARM carrega e zero -- escreve-los por um
+# `re` seria inventar. Ficam no `core/brew/egl.h`, com a linha do cabecalho
+# citada, porque zero e um numero que se le.
+#
+# A LISTA e escolhida (sao as que o estado implementado compara); os VALORES sao
+# lidos do cabecalho -- a mesma regra do GL.
+EGL_ENUMS = """EGL_FALSE EGL_TRUE EGL_SUCCESS EGL_NOT_INITIALIZED
+EGL_BAD_ACCESS EGL_BAD_ALLOC EGL_BAD_ATTRIBUTE EGL_BAD_CONFIG EGL_BAD_CONTEXT
+EGL_BAD_CURRENT_SURFACE EGL_BAD_DISPLAY EGL_BAD_MATCH EGL_BAD_NATIVE_PIXMAP
+EGL_BAD_NATIVE_WINDOW EGL_BAD_PARAMETER EGL_BAD_SURFACE EGL_BUFFER_SIZE EGL_ALPHA_SIZE
+EGL_BLUE_SIZE EGL_GREEN_SIZE EGL_RED_SIZE EGL_DEPTH_SIZE EGL_STENCIL_SIZE
+EGL_CONFIG_CAVEAT EGL_CONFIG_ID EGL_LEVEL EGL_MAX_PBUFFER_HEIGHT EGL_MAX_PBUFFER_PIXELS
+EGL_MAX_PBUFFER_WIDTH EGL_NATIVE_RENDERABLE EGL_NATIVE_VISUAL_ID EGL_NATIVE_VISUAL_TYPE
+EGL_SAMPLES EGL_SAMPLE_BUFFERS EGL_SURFACE_TYPE EGL_TRANSPARENT_TYPE EGL_NONE
+EGL_BIND_TO_TEXTURE_RGB EGL_BIND_TO_TEXTURE_RGBA EGL_MIN_SWAP_INTERVAL
+EGL_MAX_SWAP_INTERVAL EGL_LUMINANCE_SIZE EGL_ALPHA_MASK_SIZE EGL_COLOR_BUFFER_TYPE
+EGL_RENDERABLE_TYPE EGL_MATCH_NATIVE_PIXMAP EGL_CONFORMANT EGL_SLOW_CONFIG
+EGL_NON_CONFORMANT_CONFIG EGL_TRANSPARENT_RGB EGL_RGB_BUFFER EGL_LUMINANCE_BUFFER
+EGL_NO_TEXTURE EGL_TEXTURE_RGB EGL_TEXTURE_RGBA EGL_TEXTURE_2D EGL_PBUFFER_BIT
+EGL_PIXMAP_BIT EGL_WINDOW_BIT EGL_OPENGL_ES_BIT EGL_VENDOR EGL_VERSION EGL_EXTENSIONS
+EGL_CLIENT_APIS EGL_HEIGHT EGL_WIDTH EGL_LARGEST_PBUFFER EGL_TEXTURE_FORMAT
+EGL_TEXTURE_TARGET EGL_MIPMAP_TEXTURE EGL_MIPMAP_LEVEL EGL_RENDER_BUFFER
+EGL_HORIZONTAL_RESOLUTION EGL_VERTICAL_RESOLUTION EGL_PIXEL_ASPECT_RATIO
+EGL_SWAP_BEHAVIOR EGL_BACK_BUFFER EGL_SINGLE_BUFFER EGL_BUFFER_PRESERVED
+EGL_BUFFER_DESTROYED EGL_CONTEXT_CLIENT_TYPE EGL_CONTEXT_CLIENT_VERSION EGL_OPENGL_ES_API
+EGL_DRAW EGL_READ EGL_CORE_NATIVE_ENGINE""".split()
+
+CABECALHO_EGL = "platform/ui/inc/EGL/egl.h"
+
+
+def enums_do_egl(sdk: Path):
+    """[(nome, valor_em_texto)] das constantes do EGL que o modulo usa."""
+    t = (sdk / CABECALHO_EGL).read_text(errors="replace")
+    achadas = {}
+    for nome in EGL_ENUMS:
+        m = re.search(r"#define\s+" + re.escape(nome) + r"\s+(0x[0-9A-Fa-f]+|\d+)\s*(?:/\*.*?\*/)?\s*$",
+                      t, re.M)
+        if not m:
+            raise SystemExit(f"{CABECALHO_EGL}: constante {nome} nao encontrada")
+        achadas[nome] = m.group(1)
+    return [(n, achadas[n]) for n in EGL_ENUMS]
+
+
+# AS DUAS INTERFACES DO GL, DECLARADAS UMA SO VEZ.
+#
+# (interface, prefixo do metodo no SDK, prefixo da constante, simbolo no ELF)
+#
+# Estavam escritas em TRES sitios -- as duas chamadas ao `metodos_gl`, os dois
+# lacos das constantes e os dois blocos da conferencia contra o ELF -- e tres
+# sitios que tem de concordar sao zero sitios: acrescentar uma terceira interface
+# era acrescentar em tres lugares e esquecer-se num. **Foi esquecer-se de um
+# acrescento numa lista que ja apagou uma implementacao neste trabalho** (o
+# `aee_GetUpTimeMS` na lista dos ajudantes).
+# (interface, prefixo do metodo no SDK, prefixo da constante, simbolo no ELF,
+#  nome da funcao que devolve o nome do slot, constante do tamanho da tabela)
+INTERFACES_GL = [
+    ("IGL", "gl", "kIgl_", "gpIGL", "NomeIgl", "kIglSlots"),
+    ("IEGL", "egl", "kIegl_", "gpIEGL", "NomeIegl", "kIeglSlots"),
+]
+
+
 def escrever_gl(saida: Path, aegl: Path, elf, sdk: Path):
-    igl, nota_igl = metodos_gl(aegl, "IGL")
-    ieg, nota_ieg = metodos_gl(aegl, "IEGL")
+    nomes = {}
+    notas = {}
+    for iface, _, _, _, _, _ in INTERFACES_GL:
+        nomes[iface], notas[iface] = metodos_gl(aegl, iface)
+    igl, nota_igl = nomes["IGL"], notas["IGL"]
+    ieg, nota_ieg = nomes["IEGL"], notas["IEGL"]
     linhas = [
         "// GERADO por tools/gerar_slots.py a partir de `AEEGL.h`, argumento a argumento.",
         "// NAO EDITAR A MAO: corre o gerador (`tools/verificar_slots_gl.sh`).",
@@ -676,42 +803,37 @@ def escrever_gl(saida: Path, aegl: Path, elf, sdk: Path):
         "#pragma once",
         "",
         "namespace gl_slots {",
-        f"// AEEGL.h -- {nota_igl}",
-        f"constexpr unsigned kIglSlots = {len(igl)};",
-        f"// AEEGL.h -- {nota_ieg}",
-        f"constexpr unsigned kIeglSlots = {len(ieg)};",
+        *[linha for iface, _, _, _, _, const_slots in INTERFACES_GL
+          for linha in (f"// AEEGL.h -- {notas[iface]}",
+                        f"constexpr unsigned {const_slots} = {len(nomes[iface])};")],
         "",
     ]
     # O prefixo do SDK cai no NOME DA CONSTANTE, e nao no nome do metodo: o
     # namespace ja diz de que interface se trata, e `kIgl_glMatrixMode` diria
     # "gl" duas vezes. O nome POR EXTENSO (`"glMatrixMode"`) continua a ser o do
     # SDK -- e o que aparece no traco.
-    for k, nome in enumerate(igl):
-        curto = nome[2:] if nome.startswith("gl") else nome
-        linhas.append(f"constexpr unsigned kIgl_{curto} = {k};")
-    linhas.append("")
-    for k, nome in enumerate(ieg):
-        curto = nome[3:] if nome.startswith("egl") else nome
-        linhas.append(f"constexpr unsigned kIegl_{curto} = {k};")
-    linhas.append("")
+    for iface, prefixo_metodo, prefixo_const, _, _, _ in INTERFACES_GL:
+        for k, nome in enumerate(nomes[iface]):
+            curto = nome[len(prefixo_metodo):] if nome.startswith(prefixo_metodo) else nome
+            linhas.append(f"constexpr unsigned {prefixo_const}{curto} = {k};")
+        linhas.append("")
     linhas.append("// O nome de CADA slot, indexado pelo proprio slot. Um despacho que")
     linhas.append("// devolvesse um sucesso mudo sem nome de metodo seria o defeito do")
     linhas.append("// `glCullFace` outra vez -- 86 377 chamadas descartadas em silencio.")
-    linhas.append("inline const char* NomeIgl(unsigned slot) {")
-    linhas.append(f"  static const char* k[] = {{")
-    linhas.append("      " + ", ".join(f'"{n}"' for n in igl) + ",")
-    linhas.append("  };")
-    linhas.append('  return slot < kIglSlots ? k[slot] : "slot_fora_da_tabela";')
-    linhas.append("}")
-    linhas.append("inline const char* NomeIegl(unsigned slot) {")
-    linhas.append(f"  static const char* k[] = {{")
-    linhas.append("      " + ", ".join(f'"{n}"' for n in ieg) + ",")
-    linhas.append("  };")
-    linhas.append('  return slot < kIeglSlots ? k[slot] : "slot_fora_da_tabela";')
-    linhas.append("}")
+    for iface, _, _, _, fn_nome, const_slots in INTERFACES_GL:
+        linhas.append(f"inline const char* {fn_nome}(unsigned slot) {{")
+        linhas.append("  static const char* k[] = {")
+        linhas.append("      " + ", ".join(f'"{n}"' for n in nomes[iface]) + ",")
+        linhas.append("  };")
+        linhas.append(f'  return slot < {const_slots} ? k[slot] : "slot_fora_da_tabela";')
+        linhas.append("}")
     linhas.append("")
     linhas.append(f"// As constantes do GL, lidas de {CABECALHO_GL}.")
     for nome, valor in enums_do_gl(sdk):
+        linhas.append(f"constexpr unsigned {nome} = {valor}u;")
+    linhas.append("")
+    linhas.append(f"// As constantes do EGL, lidas de {CABECALHO_EGL}.")
+    for nome, valor in enums_do_egl(sdk):
         linhas.append(f"constexpr unsigned {nome} = {valor}u;")
     linhas.append("")
     linhas.append("}  // namespace gl_slots")
@@ -743,22 +865,17 @@ def escrever_gl(saida: Path, aegl: Path, elf, sdk: Path):
                     f"{base_igl:x} e gpIEGL=0x{base_ieg:x}")
             medidas[nome] = slot
         divergencias = []
-        for k, nome in enumerate(igl):
-            if nome in ("AddRef", "Release", "QueryInterface"):
-                continue
-            if nome not in medidas:
-                divergencias.append(f"{nome}: no cabecalho (slot {k}), ausente do ELF")
-            elif medidas[nome] != k:
-                divergencias.append(f"{nome}: cabecalho diz {k}, ELF diz {medidas[nome]}")
-        for k, nome in enumerate(ieg):
-            if nome in ("AddRef", "Release", "QueryInterface"):
-                continue
-            if nome not in medidas:
-                divergencias.append(f"{nome}: no cabecalho (slot {k}), ausente do ELF")
-            elif medidas[nome] != k:
-                divergencias.append(f"{nome}: cabecalho diz {k}, ELF diz {medidas[nome]}")
+        todos_os_nomes = [n for iface, _, _, _, _, _ in INTERFACES_GL for n in nomes[iface]]
+        for iface, _, _, _, _, _ in INTERFACES_GL:
+            for k, nome in enumerate(nomes[iface]):
+                if nome in ("AddRef", "Release", "QueryInterface"):
+                    continue
+                if nome not in medidas:
+                    divergencias.append(f"{nome}: no cabecalho (slot {k}), ausente do ELF")
+                elif medidas[nome] != k:
+                    divergencias.append(f"{nome}: cabecalho diz {k}, ELF diz {medidas[nome]}")
         for nome, slot in medidas.items():
-            if nome not in igl and nome not in ieg:
+            if nome not in todos_os_nomes:
                 divergencias.append(f"{nome}: no ELF (slot {slot}), ausente do cabecalho")
         if divergencias:
             for d in divergencias:
