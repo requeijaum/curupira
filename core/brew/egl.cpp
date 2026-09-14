@@ -411,7 +411,7 @@ ResultadoEgl Egl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint3
       // `[r5, #20]`), mas este emulador nao tem dois displays: o valor e
       // guardado no registo e nao interpretado, e o detalhe di-lo.
       return feito_com(1, kDisplayUnico,
-                       "display nativo 0x" + std::to_string(nativo) +
+                       "display nativo " + Hex(nativo) +
                            " nao interpretado: so existe um display (o objecto IEGL)");
     }
     case kIegl_Initialize: {
@@ -610,7 +610,7 @@ ResultadoEgl Egl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint3
       // guarda-se o ponteiro e diz-se que nao e interpretado. Zero e aceite -- o
       // EGL permite-o, e o jogo que ainda nao tem IDIB chega aqui.
       return feito_com(4, s,
-                       "superficie de janela criada; janela 0x" + std::to_string(janela) +
+                       "superficie de janela criada; janela " + Hex(janela) +
                            " guardada e NAO interpretada (nao ha janela nativa); atributos: " +
                            std::to_string(ultimos_atributos_.size() / 2) +
                            " par(es) guardado(s) sem interpretacao");

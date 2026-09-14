@@ -99,7 +99,7 @@ bool Widgets::Construir(const Saidas& saidas, std::string* motivo) {
       const std::uint32_t lido = mem_.Ler32(vtable + i * 4);
       if (lido != saidas.Endereco(base + i)) {
         traco_.RegistarFalta(Area::Brew, "cablagem_dos_widgets_perdida",
-                             "vtable 0x" + std::to_string(vtable) + " slot " +
+                             "vtable " + Hex(vtable) + " slot " +
                                  std::to_string(i));
         if (motivo != nullptr) *motivo = "cablagem dos widgets perdida";
         return false;
@@ -109,7 +109,7 @@ bool Widgets::Construir(const Saidas& saidas, std::string* motivo) {
 
   pronto_ = true;
   traco_.Emitir(Area::Brew, Nivel::Informacao, "WIDGETS_CONSTRUIDOS",
-                "raiz=0x" + std::to_string(ObjetoDaRaiz_) + " widgets=" +
+                "raiz=" + Hex(ObjetoDaRaiz_) + " widgets=" +
                     std::to_string(kQuantosWidgets) + " faixa=" +
                     std::to_string(kBaseDaFaixaDosWidgets) + ".." +
                     std::to_string(ultimo));
@@ -192,7 +192,7 @@ Atendido Widgets::QueryInterfaceDe(ICpu& cpu, bool com_widget, std::uint32_t po)
     char det[64];
     std::snprintf(det, sizeof(det), "iid=0x%08x", iid);
     traco_.RegistarFalta(Area::Brew, "widget_QueryInterface_recusado", det);
-    recusas_.push_back(std::string("QueryInterface 0x") + det);
+    recusas_.push_back(std::string("QueryInterface ") + det);
     return Atendido::NaoImplementado;
   }
   return Atendido::Feito;

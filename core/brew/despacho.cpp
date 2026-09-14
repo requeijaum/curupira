@@ -235,10 +235,9 @@ bool Despacho::InstalarEntrada(const Saidas& saidas, std::uint32_t base) {
   base_da_entrada_ = base;
   entrada_pronta_ = true;
   traco_.Emitir(Area::Entrada, Nivel::Informacao, "ENTRADA_INSTALADA",
-                "base=" + std::to_string(base) + " eventos_do_guiao=" +
-                    std::to_string(entrada_.Quantos()) + " ihid=0x" +
-                    std::to_string(ihid_.EnderecoDoIhid()) + " fabrica=0x" +
-                    std::to_string(sinais_.EnderecoDaFabrica()));
+                "base=" + Hex(base) + " eventos_do_guiao=" +
+                    std::to_string(entrada_.Quantos()) + " ihid=" +
+                    Hex(ihid_.EnderecoDoIhid()) + " fabrica=" + Hex(sinais_.EnderecoDaFabrica()));
   return true;
 }
 
@@ -338,7 +337,7 @@ bool Despacho::PrepararCallbackDoTemporizador(ICpu& cpu) {
   // sitios a guardar a mesma faixa seriam dois sitios a divergir.
   if (fn < sinais_.BaseDoModulo() || fn >= sinais_.BaseDoModulo() + sinais_.TamanhoDoModulo()) {
     traco_.RegistarFalta(Area::Guarda, "callback_de_temporizador",
-                         "funcao 0x" + std::to_string(fn) + " fora do modulo");
+                         "funcao " + Hex(fn) + " fora do modulo");
     return false;
   }
   cpu.Set(kLR, kSentinela);       // o retorno do callback volta para ca
@@ -812,8 +811,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         timer_.puser = cpu.Get(kR3);
         timer_.vence_em_ms = agora_ms_ + static_cast<std::int64_t>(cpu.Get(kR1));
         traco_.Emitir(Area::Guarda, Nivel::Depuracao, "SET_TIMER",
-                     "pfn=0x" + std::to_string(timer_.pfn) + " puser=0x" +
-                         std::to_string(timer_.puser) + " em " +
+                     "pfn=" + Hex(timer_.pfn) + " puser=" + Hex(timer_.puser) + " em " +
                          std::to_string(cpu.Get(kR1)) + " ms");
         cpu.Set(kR0, kAeeSuccess);
       } else if (idx == kSlotIdGetUpTime) {
@@ -1099,7 +1097,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         if (++saidas > 200) { resultado.motivo = "parou_em_slot_nao_implementado"; return resultado; }
       } else {
         traco_.RegistarFalta(Area::Brew, "servico_sem_nome_idx" + std::to_string(idx),
-                            "chamado com r0=0x" + std::to_string(r0));
+                            "chamado com r0=" + Hex(r0));
         cpu.Set(kR0, kAeeUnsupported);
         if (++saidas > 200) { resultado.motivo = "parou_em_slot_nao_implementado"; return resultado; }
       }
@@ -1112,7 +1110,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
     // que nenhum.
     const std::uint32_t fim = (faixa_fim_ > faixa_base_) ? faixa_fim_ : (kBase + 0x01000000u);
     if (pc < kBase || pc >= fim) {
-      resultado.motivo = "saiu_do_modulo_para_0x" + std::to_string(pc);
+      resultado.motivo = "saiu_do_modulo_para_" + Hex(pc);
       (void)pp_saida;
       return resultado;
     }

@@ -38,12 +38,35 @@
 
 #include <cstdint>
 #include <map>
+#include <cstdio>
 #include <string>
 #include <vector>
 
 #include "core/tempo/tempo.h"
 
 namespace zb2 {
+
+// UM ENDERECO ESCREVE-SE EM HEXADECIMAL, e isto existe porque nao era assim.
+//
+// Havia 11 sitios que faziam `"0x" + std::to_string(v)`: isso imprime o valor em
+// DECIMAL com um prefixo hexadecimal a frente. O resultado e um numero que NAO
+// EXISTE -- `saiu_do_modulo_para_0x2148007884` era 2148007884 = `0x8007FFCC`, a
+// pilha; e `pfn=0x145884` era 145884 = `0x239DC`, dentro do `ddragonz.mod`.
+//
+// Quem o apanhou foi o sub-agente do rasterizador, depois de gastar duas leituras
+// erradas por causa disto. E o estrago nao fica no log: **fica no LEDGER**, que e
+// onde eu procuro os enderecos para voltar a um sitio. Um ledger com numeros que
+// nao existem e pior do que um ledger vazio.
+//
+// Mesma familia do campo `tamanho` que esteve a zero: um numero que parece medido e
+// nao e.
+inline std::string Hex(std::uint32_t v) {
+  char b[16];
+  std::snprintf(b, sizeof(b), "0x%08x", v);
+  return b;
+}
+
+
 
 enum class Nivel { Depuracao, Informacao, Aviso, Erro };
 enum class Area { Cpu, Memoria, Carga, Brew, Video, Audio, Entrada, Guarda, Teste, Traco };

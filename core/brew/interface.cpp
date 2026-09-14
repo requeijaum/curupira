@@ -46,7 +46,7 @@ ResultadoCablagem Cablar(Memoria& mem, const Saidas& saidas, const Ligacao* liga
                                   ? VtGenerico((l.vt - kVtableGenericoBase) / kPassoGenerico + 1u)
                                   : l.vt + kSlotsPorVtable;
     if (l.vt + l.slot >= fim) {
-      return {false, "slot " + std::to_string(l.slot) + " de 0x" + std::to_string(l.vt) +
+      return {false, "slot " + std::to_string(l.slot) + " de " + Hex(l.vt) +
                          " sai da vtable"};
     }
     // A IBASE NAO SE CABLA -- com UMA excepcao, e ela e declarada.
@@ -55,7 +55,7 @@ ResultadoCablagem Cablar(Memoria& mem, const Saidas& saidas, const Ligacao* liga
     // `Release`. O objecto FICHEIRO nasce a parte e NAO tem `Release`, e o jogo
     // fecha ficheiros com `IFILE_Release(p)`, que e o slot 1.
     if (l.slot < 2 && l.vt != kVtableFileObj) {
-      return {false, "slot " + std::to_string(l.slot) + " de 0x" + std::to_string(l.vt) +
+      return {false, "slot " + std::to_string(l.slot) + " de " + Hex(l.vt) +
                          " e da IBase"};
     }
     mem.Escrever32(saidas.Endereco(l.vt) + l.slot * 4, saidas.Endereco(l.saida));
@@ -65,7 +65,7 @@ ResultadoCablagem Cablar(Memoria& mem, const Saidas& saidas, const Ligacao* liga
     const Ligacao& l = ligacoes[k];
     const std::uint32_t lido = mem.Ler32(saidas.Endereco(l.vt) + l.slot * 4);
     if (lido != saidas.Endereco(l.saida)) {
-      return {false, "cablagem perdida: 0x" + std::to_string(l.vt) + " slot " +
+      return {false, "cablagem perdida: " + Hex(l.vt) + " slot " +
                          std::to_string(l.slot)};
     }
   }
