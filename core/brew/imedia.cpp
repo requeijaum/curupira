@@ -1,6 +1,7 @@
 #include "core/brew/imedia.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 
 namespace zb2::brew {
@@ -349,6 +350,55 @@ void Media::EmitirAviso(Objeto& o, std::int32_t comando, std::int32_t sub,
                 std::string(NomeDoComandoDeMidia(comando)) + " " + NomeDoStatusDeMidia(status) +
                     " obj=" + EmHex(o.endereco) + " fn=" + EmHex(o.fn) +
                     " nCmd=" + std::to_string(comando) + " nStatus=" + std::to_string(status));
+}
+
+bool Media::EntregarAviso(ICpu& cpu, std::uint32_t sentinela, std::uint64_t limite_de_passos) {
+  Aviso a;
+  if (!RetirarAviso(&a)) return false;
+  if (a.fn == 0) {
+    // Sem callback registado nao ha nada a chamar. Nao e um aviso perdido: e a
+    // opcao que o SDK declara ("this step is optional"), e o `EmitirAviso` ja
+    // deixou o evento no traco.
+    return true;
+  }
+  // 1. GUARDAR. Os 16 registradores e o CPSR: o guest tem registradores vivos
+  //    neste ponto, e uma chamada de callback que os deixe mudados estraga o
+  //    quadro em curso DELE.
+  std::array<std::uint32_t, 16> guardados{};
+  for (int r = 0; r < 16; ++r) guardados[static_cast<std::size_t>(r)] = cpu.Get(r);
+  const std::uint32_t cpsr_guardado = cpu.Cpsr();
+  const std::uint32_t pc_do_laco = cpu.Get(kPC);
+
+  // 2. CHAMAR como o SDK define: o `pUser` no r0, o `AEEMediaCmdNotify` no r1.
+  cpu.Set(kR0, a.usuario);
+  cpu.Set(kR1, a.endereco);
+  cpu.Set(kLR, sentinela);
+  cpu.Set(kPC, a.fn);
+
+  std::uint64_t passos = 0;
+  while (cpu.Get(kPC) != sentinela && passos < limite_de_passos) {
+    cpu.Passo();
+    ++passos;
+  }
+  const bool voltou = (cpu.Get(kPC) == sentinela);
+  if (voltou) {
+    ++avisos_entregues_;
+  } else {
+    ++avisos_nao_entregues_;
+    // P2: o caminho que nao concluiu REGISTA, e nunca devolve sucesso e nao faz
+    // nada. O endereco do callback e o pedido entram no detalhe, porque um
+    // "callback nao voltou" sem nome nao se depura.
+    Recusar("IMedia::EntregarAviso",
+            "o callback 0x" + EmHex(a.fn) + " nao voltou em " + std::to_string(passos) +
+                " passos (cmd=" + std::to_string(a.comando) + " status=" +
+                std::to_string(a.status) + ")");
+  }
+
+  // 3. REPOR: os registradores, o CPSR, e o PC.
+  for (int r = 0; r < 16; ++r) cpu.Set(r, guardados[static_cast<std::size_t>(r)]);
+  cpu.SetCpsr(cpsr_guardado);
+  cpu.Set(kPC, pc_do_laco);
+  return true;
 }
 
 bool Media::RetirarAviso(Aviso* saida) {

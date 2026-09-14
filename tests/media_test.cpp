@@ -58,7 +58,14 @@ constexpr std::uint32_t SomaImediata(std::uint32_t rd, std::uint32_t rn, std::ui
 constexpr std::uint32_t MoveRegistrador(std::uint32_t rd, std::uint32_t rm) {
   return DpRegistrador(0xD, rd, 0, rm);
 }
+constexpr std::uint32_t MovImediato(std::uint32_t rd, std::uint32_t imm,
+                                   bool mexe_nas_bandeiras = false) {
+  return (kAl << 28) | (1u << 25) | ((mexe_nas_bandeiras ? 1u : 0u) << 20) |
+         ((rd & 0xF) << 12) | (imm & 0xFF);
+}
 constexpr std::uint32_t Bx(std::uint32_t rm) { return (kAl << 28) | 0x012FFF10u | (rm & 0xF); }
+// `b .` -- um laco que nao acaba. E o callback que NAO volta.
+constexpr std::uint32_t BLacoInfinito() { return (kAl << 28) | 0x0AFFFFFEu; }
 constexpr std::uint32_t Blx(std::uint32_t rm) { return (kAl << 28) | 0x012FFF30u | (rm & 0xF); }
 
 // Confere o montador contra DUAS palavras que foram lidas do corpo de um titulo
@@ -76,6 +83,8 @@ constexpr std::uint32_t kDados = 0x00100200u;      // o `pUser` do callback
 constexpr std::uint32_t kMediaData = 0x00100300u;  // um `AEEMediaData`
 constexpr std::uint32_t kFicheiro = 0x00100400u;   // um nome de ficheiro
 constexpr std::uint32_t kSaida = 0x00100500u;      // onde o `GetMediaParm` escreve
+constexpr std::uint32_t kDestruidor = 0x00100180u; // callback que escreve em r0..r12
+constexpr std::uint32_t kPreso = 0x00100280u;      // callback que NUNCA volta
 // O PCM fica LONGE das outras areas: um teste entrega 22050 amostras (44100
 // bytes), e uma area sobreposta fazia o teste medir os proprios dados de apoio.
 constexpr std::uint32_t kBuffer = 0x00140000u;
@@ -128,8 +137,26 @@ class Bancada {
         LdrImediato(3, 1, 24), StrImediato(3, 0, 16),   // dwSize
         Bx(14),
     };
+    // O DESTRUIDOR: um callback que escreve valores em r0..r12 e mexe nas
+    // bandeiras. Existe para o teste da reposicao: se a entrega nao guardar e
+    // repor os registradores, o quadro do guest fica estragado.
+    const std::uint32_t destruidor[] = {
+        // Primeiro de tudo: guardar o `pUser` (r0, posto pela entrega) em
+        // `[r11]`, que o teste aponta para um marcador. E a PROVA de que o
+        // callback correu MESMO e de que o argumento chegou no sitio certo --
+        // o resto da rotina estraga os registradores de proposito.
+        StrImediato(0, 11, 0),
+        MovImediato(0, 1),  MovImediato(1, 2),  MovImediato(2, 3),  MovImediato(3, 4),
+        MovImediato(4, 5),  MovImediato(5, 6),  MovImediato(6, 7),  MovImediato(7, 8),
+        MovImediato(8, 9),  MovImediato(9, 10), MovImediato(10, 11), MovImediato(11, 12),
+        MovImediato(12, 13), MovImediato(3, 0, true),  // mexe nas bandeiras (Z)
+        Bx(14),
+    };
+    const std::uint32_t preso[] = {BLacoInfinito()};
     PorPalavras(kTrampolim, trampolim, sizeof(trampolim) / sizeof(trampolim[0]));
     PorPalavras(kTratador, tratador, sizeof(tratador) / sizeof(tratador[0]));
+    PorPalavras(kDestruidor, destruidor, sizeof(destruidor) / sizeof(destruidor[0]));
+    PorPalavras(kPreso, preso, sizeof(preso) / sizeof(preso[0]));
     for (std::uint32_t k = 0; k < 8; ++k) mem_.Escrever32(kDados + k * 4, 0);
     instalar_ = media_.Instalar();
   }
@@ -205,6 +232,9 @@ class Bancada {
 
   Memoria& Mem() { return mem_; }
   const ::zb2::Saidas& AsSaidas() const { return saidas_; }
+  ArmInterpreter& Cpu() { return cpu_; }
+  // AVANCAR sem entregar: o teste do callback quer controlar a entrega a mao.
+  void AvancarSemEntregar(std::uint32_t amostras) { media_.Avancar(amostras); }
   Traco& OTraco() { return traco_; }
   DestinoMemoria& Eventos() { return destino_; }
   Media& OMedia() { return media_; }
@@ -256,20 +286,11 @@ class Bancada {
   // medida (`HleRuntime::CallArmFunctionPreservingContext`,
   // `core/brew/hle_runtime.cpp`), e e a mesma disciplina.
   void EntregarAvisos() {
-    Media::Aviso a;
-    while (media_.RetirarAviso(&a)) {
-      if (a.fn == 0) continue;
-      const std::array<std::uint32_t, 16> guardados = GuardarRegistradores();
-      const std::uint32_t cpsr = cpu_.Cpsr();
-      cpu_.Set(kR0, a.usuario);
-      cpu_.Set(kR1, a.endereco);
-      cpu_.Set(kLR, kSentinela);
-      cpu_.Set(kPC, a.fn);
-      for (int k = 0; k < 4000 && cpu_.Get(kPC) != kSentinela; ++k) cpu_.Passo();
-      EXPECT_EQ(cpu_.Get(kPC), kSentinela) << "o callback do guest nao voltou";
+    // A entrega e a DO MODULO (`Media::EntregarAviso`): a bancada nao
+    // reimplementa a reposicao dos registradores que esta a ser testada.
+    while (media_.AvisosPendentes() > 0) {
+      if (!media_.EntregarAviso(cpu_, kSentinela, 20000)) break;
       ++avisos_entregues_;
-      for (int r = 0; r < 16; ++r) cpu_.Set(r, guardados[static_cast<std::size_t>(r)]);
-      cpu_.SetCpsr(cpsr);
     }
   }
 
@@ -829,6 +850,92 @@ TEST(Media, OsParametrosGuardadosFicamEscritosNoTraco) {
   EXPECT_GE(b.Eventos().QuantosComNome("IMEDIA_PARM_GUARDADO"), 3u);
 }
 
+
+
+// ---------------------------------------------------------------------------
+// A ENTREGA DO AVISO AO GUEST: a reposicao dos registradores.
+//
+// O pai do projeto pediu esta classe de defeito explicitamente: "guardar e repor
+// os 16 registradores e o CPSR a volta do callback". Nao havia teste nenhum para
+// ela nesta arvore, e o defeito e invisivel quando nao existe: o callback do
+// jogo corre, escreve em r0-r12, e o quadro de QUEM ESTAVA A CORRER fica
+// estragado sem sintoma no ponto da chamada.
+// ---------------------------------------------------------------------------
+TEST(Media, AEntregaGuardaERepoeOsDezasseisRegistradoresEOsCpsr) {
+  Bancada b;
+  std::uint32_t po = 0;
+  Preparar(b, &po);
+  b.Chamar(brew_slots::kMedia_RegisterNotify, po, kDestruidor, kDados);
+  b.Play();
+  b.AvancarSemEntregar(200);  // a midia acaba: o aviso nasce e fica em fila
+  ASSERT_EQ(b.OMedia().AvisosPendentes(), 1u);
+
+  // O estado do guest no momento da entrega: registradores VIVOS. O r11 leva o
+  // endereco do marcador onde o callback escreve o `pUser` que recebeu.
+  for (std::uint32_t r = 0; r < 13; ++r) b.Cpu().Set(static_cast<int>(r), 0xAAAA0000u + r);
+  b.Cpu().Set(11, kDados + 20);
+  b.Mem().Escrever32(kDados + 20, 0);
+  b.Cpu().Set(13, 0x00130000u);  // SP
+  b.Cpu().Set(14, 0x00140000u);  // LR
+  constexpr std::uint32_t kPcDoLaco = 0x0012345Cu;
+  b.Cpu().Set(kPC, kPcDoLaco);
+  // O CPSR com o Z LIMPO, para o `movs` do callback ter o que mudar.
+  const std::uint32_t cpsr = b.Cpu().Cpsr() & ~Cpsr::kZ;
+  b.Cpu().SetCpsr(cpsr);
+  // A FOTOGRAFIA do estado: e com isto que a reposicao e comparada, e nao com
+  // valores escritos a mao no EXPECT (o r11, por exemplo, nao vale o mesmo que
+  // os outros -- foi reescrito pelo teste).
+  std::array<std::uint32_t, 16> esperados{};
+  for (int r = 0; r < 16; ++r) esperados[static_cast<std::size_t>(r)] = b.Cpu().Get(r);
+
+  EXPECT_TRUE(b.OMedia().EntregarAviso(b.Cpu(), kSentinela, 10000));
+  EXPECT_EQ(b.OMedia().AvisosEntregues(), 1u);
+  for (int r = 0; r < 16; ++r) {
+    EXPECT_EQ(b.Cpu().Get(r), esperados[static_cast<std::size_t>(r)]) << "r" << r;
+  }
+  EXPECT_EQ(b.Cpu().Get(kPC), kPcDoLaco) << "o PC tem de ser REPOSTO pelo modulo";
+  EXPECT_EQ(b.Cpu().Cpsr(), cpsr) << "o CPSR tem de ser reposto pelo modulo";
+  // E o callback correu MESMO: ele escreveu o `pUser` no marcador antes de
+  // estragar os registradores -- o que prova tambem que o argumento chegou no r0.
+  EXPECT_EQ(b.Mem().Ler32(kDados + 20), kDados);
+}
+
+TEST(Media, UmCallbackQueNaoVoltaERegistadoENaoDaSucesso) {
+  // P2: o caminho que nao concluiu RECUSA e REGISTA. Um callback que gira para
+  // sempre nao pode ser dado como entregue, e o emulador nao pode ficar preso
+  // nele -- o limite de passos existe para isso.
+  Bancada b;
+  std::uint32_t po = 0;
+  Preparar(b, &po);
+  b.Chamar(brew_slots::kMedia_RegisterNotify, po, kPreso, kDados);
+  b.Play();
+  b.AvancarSemEntregar(200);
+  ASSERT_EQ(b.OMedia().AvisosPendentes(), 1u);
+  const std::uint32_t pc_antes = 0x0012345Cu;
+  b.Cpu().Set(kPC, pc_antes);
+
+  EXPECT_TRUE(b.OMedia().EntregarAviso(b.Cpu(), kSentinela, 500));
+  EXPECT_EQ(b.OMedia().AvisosEntregues(), 0u);
+  EXPECT_EQ(b.OMedia().AvisosNaoEntregues(), 1u);
+  EXPECT_GE(b.OTraco().ContagemFaltas().count("IMedia::EntregarAviso"), 1u);
+  EXPECT_NE(b.OMedia().UltimoMotivoDeRecusa().find("nao voltou"), std::string::npos);
+  // O PC voltou a ser o do laco: nem preso no callback, nem na sentinela.
+  EXPECT_EQ(b.Cpu().Get(kPC), pc_antes);
+}
+
+TEST(Media, AEntregaTiraUmAvisoDeCadaVezEDepoisDizQueNaoHaNenhum) {
+  Bancada b;
+  std::uint32_t po = 0;
+  Preparar(b, &po, 100);
+  b.Play();
+  b.Avancar(100);           // 1 aviso, entregue pela bancada
+  b.Play();
+  b.Avancar(100);           // 2.o aviso
+  EXPECT_EQ(b.Avisos(), 2u);
+  EXPECT_EQ(b.OMedia().AvisosPendentes(), 0u);
+  EXPECT_FALSE(b.OMedia().EntregarAviso(b.Cpu(), kSentinela, 100));
+  EXPECT_EQ(b.OMedia().AvisosEntregues(), 2u);
+}
 
 }  // namespace
 }  // namespace zb2::brew

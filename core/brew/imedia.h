@@ -360,12 +360,43 @@ class Media {
     std::uint32_t endereco = 0; // onde o aviso ja esta escrito na memoria
   };
 
-  // Tira UM aviso da fila e escreve-o na memoria do guest. Quem chama e que
-  // leva o callback ao guest (o laco conhece a sentinela de retorno; este modulo
-  // nao).
+  // Tira UM aviso da fila, SEM o entregar. Existe para quem queira ver o pedido
+  // sem correr codigo do guest.
   bool RetirarAviso(Aviso* saida);
   std::size_t AvisosPendentes() const { return fila_.size(); }
   std::uint64_t AvisosEmitidos() const { return avisos_emitidos_; }
+
+  // --- a ENTREGA do aviso ao guest ---------------------------------------
+  //
+  // Leva UMA notificacao pendente ao callback do jogo, correndo-o. E a operacao
+  // mais delicada do modulo, e cada regra tem uma medicao por tras:
+  //
+  // 1. OS 16 REGISTRADORES E O CPSR SAO GUARDADOS E REPOSTOS.
+  //    O callback e codigo do guest chamado a partir do laco, e no momento da
+  //    entrega o guest tem registradores VIVOS -- pode estar a meio de um
+  //    quadro. A arvore antiga tem esta primitiva medida
+  //    (`HleRuntime::CallArmFunctionPreservingContext`, core/brew/hle_runtime.cpp):
+  //    guarda `array<uint32_t,16>` + CPSR, chama com o LR na sentinela, corre ate
+  //    o PC voltar a sentinela, e repoe os dois.
+  //
+  // 2. O PC E REPOSTO A MAO. Sem isso, o laco seguinte volta a ler a sentinela e
+  //    encerra a fase: foi o que aconteceu na primeira sonda desta etapa, que
+  //    usou `0xEEEE0000` como sentinela e o laco respondeu `saiu_do_modulo`
+  //    (a sentinela do despacho e `0xFFFFFFF0`). Com o PC reposto, a sentinela
+  //    tem UM significado so para quem chama.
+  //
+  // 3. UM CALLBACK QUE NAO VOLTA E REGISTADO, e nao dado como bom (P2). Se o
+  //    callback nao regressar dentro de `limite_de_passos`, fica a falta com o
+  //    endereco do callback e o pedido que a provocou -- e o emulador CONTINUA,
+  //    em vez de girar para sempre.
+  //
+  // `sentinela` e o endereco de retorno do laco do motor (`Despacho`: 0xFFFFFFF0).
+  // Devolve `true` se tirou um aviso da fila (mesmo que a entrega tenha falhado).
+  bool EntregarAviso(ICpu& cpu, std::uint32_t sentinela, std::uint64_t limite_de_passos);
+
+  // Quantos callbacks do jogo correram de verdade, e quantos NAO voltaram.
+  std::uint64_t AvisosEntregues() const { return avisos_entregues_; }
+  std::uint64_t AvisosNaoEntregues() const { return avisos_nao_entregues_; }
 
   // --- o que a medicao le ------------------------------------------------
   const Saidas& SaidasDaBancada() const { return saidas_; }
@@ -431,6 +462,8 @@ class Media {
   std::vector<Aviso> fila_;
   std::map<std::uint32_t, std::uint32_t> classes_pedidas_;
   std::uint64_t avisos_emitidos_ = 0;
+  std::uint64_t avisos_entregues_ = 0;
+  std::uint64_t avisos_nao_entregues_ = 0;
   std::uint32_t pedidos_aceitos_ = 0;
   std::uint32_t pedidos_recusados_ = 0;
   std::string ultimo_motivo_;
