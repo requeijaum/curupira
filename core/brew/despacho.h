@@ -28,6 +28,7 @@
 #include "core/brew/interface.h"
 #include "core/brew/tela.h"
 #include "core/brew/vfs.h"
+#include "core/brew/widget.h"
 #include "core/cpu/cpu.h"
 #include "core/memoria/memoria.h"
 #include "core/traco/traco.h"
@@ -36,9 +37,32 @@ namespace zb2::brew {
 
 // Um temporizador pedido pelo guest. UM so, porque e o que os titulos pedem: o
 // laco de quadro, re-armado pelo proprio callback.
+//
+// O PAR E `(pfn, pUser)`, E NAO UM `AEECallback*`. Os argumentos veem SEPARADOS
+// do guest, como o cabecalho manda:
+//
+//     int SetTimer(IShell *po, int32 dwMsecs, void (*pfn)(void *), void *pUser);
+//     platform/system/inc/AEEIShell.h:299, em `INHERIT_IShell`
+//
+// MEDIDO no `asq` (`mod/280214/asq.mod`), no `EVT_APP_START`, em `0x8cf34`:
+//
+//     8cf34  ldr  r2, [r5, #12]     ; r2 = applet->m_pIShell
+//     8cf38  mov  r3, r5            ; r3 = pMe        -- o CONTEXTO
+//     8cf3c  mov  r0, r2            ; r0 = po
+//     8cf44  mov  r1, #100          ; r1 = 100 ms     -- a DURACAO
+//     8cf48  ldr  r2, [pc, #572]    ; r2 = *0x8d18c = 0x8c3e8  -- a FUNCAO
+//     8cf4c  ldr  ip, [ip, #44]     ; slot 11 = SetTimer
+//     8cf54  bx   ip
+//
+// Este codigo lia o r1 como ponteiro de `AEECallback` e o r2 como milissegundos
+// -- os dois campos TROCADOS. O `PrepararCallbackDoTemporizador` lia depois
+// `[100]` como par `(funcao, contexto)`, caia fora do modulo, e RECUSAVA. O
+// sintoma era "nenhum titulo arma o laco de quadro" -- e sem laco de quadro
+// nenhum titulo chega ao codigo que desenha.
 struct Temporizador {
   bool ativo = false;
-  std::uint32_t callback = 0;  // AEECallback* -- (funcao, contexto)
+  std::uint32_t pfn = 0;    // void (*pfn)(void *pUser)
+  std::uint32_t puser = 0;  // pUser
   std::int64_t vence_em_ms = 0;
 };
 
@@ -90,6 +114,24 @@ class Despacho {
   // Atende um pedido desta faixa. `false` = o indice nao e da entrada.
   bool AtenderEntrada(ICpu& cpu, std::uint32_t indice);
 
+  // --- O WIDGET (IRootForm + IForm + IHandler + IWidget) -------------------
+  //
+  // O `IShell::CreateInstance` do corpus pede `AEECLSID_CRootForm`
+  // (`0x01028e51`) e recebe o objecto GENERICO de indice `kIndiceDoRootForm`; os
+  // slots desse objecto ja apontam para a faixa de saida, e este modulo passa a
+  // ATENDE-LOS em vez de os recusar. Ver `core/brew/widget.h` para a medicao
+  // (o `tectoy`, slot 3 com `EVT_WDG_GETPROPERTY`/`WID_FORM`/`WID_SOFTKEYS`).
+  //
+  // CHAMADO AUTOMATICAMENTE NO FIM DO `InstalarAjudantes`, e idempotente: nao
+  // faz mal nenhum que quem dirige o titulo o chame tambem, e assim esta frente
+  // nao obriga a mudar `tools/bateria.cpp`.
+  bool InstalarWidgets(const Saidas& saidas);
+  Widgets& WidgetsRef() { return widgets_; }
+  const Widgets& WidgetsRef() const { return widgets_; }
+  // `true` = o indice era do widget e ja foi atendido (com sucesso OU com recusa
+  // registada). `false` = nao e desta faixa.
+  bool AtenderWidgets(ICpu& cpu, std::uint32_t indice);
+
   // Aplica a entrada ate ao instante actual e marca os sinais registados.
   // `true` = ha um callback do titulo posto no PC (PC = funcao, R0 = contexto,
   // LR = sentinela); quem chama tem de o deixar correr.
@@ -119,7 +161,8 @@ class Despacho {
   // depois do arranque -- que e o que a bateria (2 fases: carga e create) nao
   // faz, e sem o qual um menu nao chega a andar.
   bool TemporizadorArmado() const { return timer_.ativo; }
-  std::uint32_t CallbackDoTemporizador() const { return timer_.callback; }
+  std::uint32_t CallbackDoTemporizador() const { return timer_.pfn; }
+  std::uint32_t ContextoDoTemporizador() const { return timer_.puser; }
   bool PrepararCallbackDoTemporizador(ICpu& cpu);
 
   bool EntradaPronta() const { return entrada_pronta_; }
@@ -163,9 +206,13 @@ class Despacho {
   std::uint32_t base_da_entrada_ = 0;
   std::uint32_t base_do_modulo_ = 0;
   bool entrada_pronta_ = false;
+  bool widgets_prontos_ = false;
 
   std::int64_t agora_ms_ = 0;
   Temporizador timer_;
+  // O WIDGET. Depois de `tela_` e dos objectos do shell, porque e construido por
+  // `InstalarAjudantes` e nao no construtor.
+  Widgets widgets_;
 
   std::uint32_t textos_ = 0;
   std::uint32_t blits_ = 0;

@@ -25,6 +25,7 @@ add_library(zb2_core STATIC
   core/brew/vfs.cpp
   core/brew/arquivo.cpp
   core/brew/interface.cpp
+  core/brew/widget.cpp
   core/brew/sha256.cpp
   core/brew/despacho.cpp
   core/brew/ihid_entrada.cpp
@@ -59,6 +60,7 @@ add_executable(zb2_tests
   tests/mod_base_test.cpp
   tests/ajudantes_extra_test.cpp
   tests/media_test.cpp
+  tests/widget_test.cpp
   tests/audio_test.cpp
 )
 # A RAIZ DO REPOSITORIO, para os testes que abrem ficheiros reais (o
@@ -103,6 +105,12 @@ set_tests_properties(slots_do_sdk_gl PROPERTIES SKIP_RETURN_CODE 77)
 add_test(NAME slots_do_sdk_ajudantes
   COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/verificar_ajudantes.sh)
 set_tests_properties(slots_do_sdk_ajudantes PROPERTIES SKIP_RETURN_CODE 77)
+
+# A SONDA DO WIDGET (a interface de formularios). E o comando que fica VERMELHO
+# enquanto um pedido ao `IRootForm` nao for servido, e VERDE depois: a bateria
+# nao ve esta fase, porque guarda a contagem de faltas ANTES do `EVT_APP_START`.
+add_executable(zb2_sonda_widget tools/sonda_widget.cpp)
+target_link_libraries(zb2_sonda_widget PRIVATE zb2_core)
 
 add_executable(zb2_sonda_mod tools/sonda_mod.cpp)
 target_link_libraries(zb2_sonda_mod PRIVATE zb2_core)

@@ -703,7 +703,14 @@ Estado Medir(const Titulo& t, const std::string& dir) {
 
   e.motivo += " | create:" + motivo_create;
   if (!e.create) e.motivo += "_sem_applet";
-  for (const auto& par : traco.ContagemFaltas()) e.faltas[par.first] = par.second;
+  // A CONTAGEM DE FALTAS FICA PARA O FIM, e nao aqui.
+  //
+  // MEDIDO, e foi o sub-agente `widget` que o viu: aqui a contagem era guardada
+  // ANTES da fase do `EVT_APP_START`. **Tudo o que um titulo pede ao ARRANCAR -- que
+  // e onde toda a construcao de interface acontece -- nao entrava na linha nem no
+  // JSON.** O `IRootForm::slot3` nunca apareceu na bateria por isto, e so se viu no
+  // traco. E um defeito de instrumento (P7), e o pior tipo: fazia parecer que os
+  // titulos nao pediam nada ao arrancar.
   // O EVENTO DE ARRANQUE (ver `kEventosPorOmissao`).
   int eventos_dados = 0;
   if (g_eventos != 0 && g_applet != 0) {
@@ -778,11 +785,12 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   // -- nao se ve, pela tabela, o que ele ANDOU a fazer.
   if (g_trace) {
     std::fprintf(stderr, "== traco de %s (%zu eventos) ==\n", t.mod.c_str(), dm_eventos.size());
-    for (const auto& ev : dm_eventos) {
+    for (const auto& ev : dm.eventos) {
       std::fprintf(stderr, "  [%s] %s %s\n", Nome(ev.area), ev.nome.c_str(), ev.detalhe.c_str());
     }
   }
 
+  for (const auto& par : traco.ContagemFaltas()) e.faltas[par.first] = par.second;
   e.pixels = g_despacho->TelaRef().Escritos();
   e.cores = g_despacho->TelaRef().CoresDistintas();
   e.textos = g_textos;

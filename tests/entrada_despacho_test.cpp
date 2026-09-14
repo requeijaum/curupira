@@ -196,15 +196,19 @@ TEST(EntradaNoDespacho, OCallbackDeTemporizadorForaDoModuloNaoSeChama) {
   // dos sinais (em `Sinais::PrepararProximoCallback`), do lado do temporizador.
   Bancada b;
   ASSERT_TRUE(b.Instalada());
-  constexpr std::uint32_t kCb = 0x0020c000u;
-  // 1) um callback DENTRO do modulo, com um par (funcao, contexto) como o BREW usa
-  b.Mem().Escrever32(kCb + 0, kRotina);
-  b.Mem().Escrever32(kCb + 4, kContexto);
+  // 1) uma funcao DENTRO do modulo
   b.Cpu().Set(kSP, kArg0);
   // 1520 e o indice de saida do `IShell::SetTimer` na cablagem da bateria
   // (`kSlotIdSetTimer`). O slot 11 do IShell e o `SetTimer` pelo cabecalho, mas o
   // despacho atende-o por INDICE, e a cablagem da vtable e que decide o numero.
-  ASSERT_EQ(b.ChamaSaida(1520u, 0x80020000u, kCb, 1), kAeeSuccess);
+  //
+  // OS ARGUMENTOS SAO OS DO CABECALHO: `int (*SetTimer)(iname *po, int32 dwMsecs,
+  // void (*pfn)(void *), void *pUser)` (`AEEIShell.h:299`). O r1 e a DURACAO (1
+  // ms), o r2 a FUNCAO e o r3 o CONTEXTO -- e nao um `AEECallback*` no r1. Este
+  // teste escrevia o par num `AEECallback` na memoria e passava-o no r1, que era
+  // a assinatura errada do despacho; a medicao que a corrigiu esta em
+  // `core/brew/despacho.h` (`struct Temporizador`) e em `tests/widget_test.cpp`.
+  ASSERT_EQ(b.ChamaSaida(1520u, 0x80020000u, 1u, kRotina, kContexto), kAeeSuccess);
   ASSERT_TRUE(b.D().TemporizadorArmado());
   EXPECT_TRUE(b.D().PrepararCallbackDoTemporizador(b.Cpu()));
   EXPECT_EQ(b.Cpu().Get(kPC), kRotina);
@@ -212,10 +216,8 @@ TEST(EntradaNoDespacho, OCallbackDeTemporizadorForaDoModuloNaoSeChama) {
   EXPECT_EQ(b.Cpu().Get(kLR), kSentinela);
   EXPECT_FALSE(b.D().TemporizadorArmado()) << "o callback re-arma o seguinte; o laco e do titulo";
 
-  // 2) um callback FORA do modulo: recusa e REGISTA
-  b.Mem().Escrever32(kCb + 0, 0x50000000u);
-  b.Mem().Escrever32(kCb + 4, kContexto);
-  ASSERT_EQ(b.ChamaSaida(1520u, 0x80020000u, kCb, 1), kAeeSuccess);
+  // 2) uma funcao FORA do modulo: recusa e REGISTA
+  ASSERT_EQ(b.ChamaSaida(1520u, 0x80020000u, 1u, 0x50000000u, kContexto), kAeeSuccess);
   EXPECT_FALSE(b.D().PrepararCallbackDoTemporizador(b.Cpu()));
   EXPECT_EQ(b.Faltas("callback_de_temporizador"), 1u);
 }
