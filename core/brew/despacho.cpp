@@ -6,6 +6,8 @@
 
 #include "core/audio/misturador.h"
 #include "core/brew/ajudantes_extra.h"
+#include "core/brew/classes.h"
+#include "core/brew/clsids.h"
 #include "core/brew/formato.h"
 #include "core/brew/imedia.h"
 
@@ -309,6 +311,12 @@ void Despacho::InstalarAjudantes(const Saidas& saidas, Endereco tabela) {
                          "o IGL e/ou o IEGL nao cablaram; os pedidos de GL vao recusar");
   }
 
+  // AS TRES CLASSES DO ARRANQUE (`core/brew/classes.h`): `AEECLSID_AppHistory`,
+  // `AEECLSID_VALUEMODEL_1` e `AEECLSID_TEXTCTL`. Ficam AQUI, no mesmo passo de
+  // construcao do sistema, e nao num sitio que a bateria tenha de chamar --
+  // `tools/bateria.cpp` e partilhado e esta frente nao o altera.
+  ConstruirClasses(mem_, saidas, traco_);
+
   for (std::uint32_t off = 0; off < 117 * 4; off += 4) {
     if (off == 0x68 || off == 0x6c || ja_tem(off)) continue;
     // UM endereco de saida POR OFFSET, e nao um stub generico para todos.
@@ -406,6 +414,16 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // sao 20000+, e o ramo `idx >= kBaseDoShell` (2000) mais abaixo apanhava-os
         // e dava-lhes o NOME de um metodo do IShell. Foi por um nome errado num
         // ramo generico que o `SetTimer` ja se perdeu uma vez nesta arvore.
+      } else if (AtenderClasse(cpu, idx, traco_)) {
+        // AS CLASSES CONHECIDAS (`core/brew/classes.h`). ESTE RAMO VEM ANTES DO
+        // `idx >= kBaseDoShell`, e nao e gosto: os indices desta faixa sao 40000+
+        // e o ramo generico (2000) apanhava-os e dava-lhes o NOME de um metodo do
+        // IShell. **E o erro de ORDEM, que ja apareceu oito vezes nesta arvore.**
+        //
+        // Os metodos nao implementados RECUSAM COM O NOME DO METODO
+        // (`ITextCtl::SetInputMode`), e o `saidas` conta-os como os outros: um
+        // jogo que insista num metodo que recusa para, em vez de andar em ciclo.
+        if (++saidas > 200) { resultado.motivo = "parou_em_slot_nao_implementado"; return resultado; }
       } else if (idx == kBaseDoShell + 2) {
         // IShell::CreateInstance(po, ClsId, ppobj) -- IShell slot 2.
         //
@@ -452,12 +470,22 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           for (std::uint32_t k = 0; k < kNGenericos; ++k) {
             if (iid == kGenericos[k].iid) devolver = zb2::brew::ObjGenerico(k);
           }
+          // E, por fim, AS TRES CLASSES DO ARRANQUE (`core/brew/classes.h`). O
+          // objecto existe e os metodos que nao estejam implementados RECUSAM COM
+          // O NOME -- o `CreateInstance` de um `AEECLSID_TEXTCTL` no aparelho a
+          // serio TAMBEM devolve um objecto. O que nao se faz e devolver sucesso
+          // com um objecto que se diz completo (P2).
+          if (devolver == 0) devolver = zb2::brew::ObjetoDoClsid(iid);
         }
         if (ppo != 0) mem_.Escrever32(ppo, devolver);
         cpu.Set(kR0, devolver != 0 ? kAeeSuccess : kAeeClassNotSupported);
         if (devolver == 0) {
-          char det[96];
-          std::snprintf(det, sizeof(det), "iid=0x%08x ppo=0x%08x", iid, ppo);
+          char det[128];
+          // O NOME, QUANDO O SDK O DECLARA (`tools/clsids.inc`, gerado dos
+          // `*.bid`/`*.h`). Uma lista de demanda que diz o numero obriga a ir ao
+          // cabecalho contar em cada ronda; uma que diz o nome e uma medida.
+          std::snprintf(det, sizeof(det), "iid=0x%08x ppo=0x%08x %s", iid, ppo,
+                        zb2::brew::DescreverClsid(iid).c_str());
           traco_.RegistarFalta(Area::Brew, "IShell::CreateInstance CLSID desconhecido", det);
         }
       } else if (media_ && media_->Atender(idx, cpu)) {
@@ -1110,7 +1138,37 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
     // que nenhum.
     const std::uint32_t fim = (faixa_fim_ > faixa_base_) ? faixa_fim_ : (kBase + 0x01000000u);
     if (pc < kBase || pc >= fim) {
-      resultado.motivo = "saiu_do_modulo_para_" + Hex(pc);
+      // O ANEL DAS ULTIMAS INSTRUCOES -- para responder a "como e que chegamos aqui".
+      //
+      // MEDIDO: 21 dos 62 titulos saem do modulo com o PC na PILHA (0x8007ffc0..
+      // 0x8007ffcc). Isso e um endereco de pilha a ser usado como endereco de
+      // CODIGO, e as causas candidatas sao sempre as mesmas: um `bx lr` com o LR
+      // estragado, um ponteiro de funcao lido do sitio errado, ou um argumento
+      // passado no registo errado. **Sem saber a instrucao que saltou, as tres sao
+      // indistinguiveis** -- e foi assim que se perdeu tempo na arvore antiga.
+      //
+      // O anel guarda as ultimas 16 instrucoes (PC + palavra) e e impresso no
+      // motivo. E barato e responde a pergunta no proprio registo da bateria.
+      char anel[16 * 22 + 1];
+      std::size_t usado = 0;
+      anel[0] = 0;
+      const std::uint32_t quantas = (ultimas_ < 16) ? ultimas_ : 16;
+      for (std::uint32_t k = 0; k < quantas; ++k) {
+        const std::uint32_t i = (ultimas_ + k) % 16;
+        const int n = std::snprintf(anel + usado, sizeof(anel) - usado, " %08x:%08x",
+                                    anel_pc_[i], anel_instr_[i]);
+        if (n <= 0 || usado + static_cast<std::size_t>(n) >= sizeof(anel) - 1) break;
+        usado += static_cast<std::size_t>(n);
+      }
+      // OS REGISTOS entram tambem: o anel diz a INSTRUCAO, e os registos dizem de
+      // ONDE veio o valor. Medido no `a3d`: a ultima instrucao e `bxne r12` e o
+      // `r12` veio de `ldr r12,[r0,#12]` -- um despacho virtual cujo campo `+12` do
+      // objecto tem um endereco de PILHA. Sem os registos nao se sabe se o objecto
+      // era o errado ou se o campo e que estava por inicializar.
+      resultado.motivo = "saiu_do_modulo_para_" + Hex(pc) + " lr=" + Hex(cpu.Get(kLR)) +
+                         " r0=" + Hex(cpu.Get(kR0)) + " r1=" + Hex(cpu.Get(kR1)) +
+                         " r2=" + Hex(cpu.Get(kR2)) + " r3=" + Hex(cpu.Get(kR3)) +
+                         " sp=" + Hex(cpu.Get(kSP)) + " ultimas:" + anel;
       (void)pp_saida;
       return resultado;
     }
@@ -1160,6 +1218,11 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
       media_->EntregarAviso(cpu, kSentinela, 200000);
     }
     if (saidas > 200) { resultado.motivo = "parou_em_slot_nao_implementado"; return resultado; }
+    // O ANEL: guarda o PC e a PALAVRA da instrucao antes de a executar. A palavra
+    // serve para ver QUAL era a instrucao, e nao so onde estava.
+    anel_pc_[ultimas_ % 16] = pc;
+    anel_instr_[ultimas_ % 16] = mem_.Ler32(pc);
+    ++ultimas_;
     cpu.Passo();
     ++resultado.passos;
   }

@@ -219,6 +219,12 @@ class Despacho {
   // O FIM DA FAIXA DO MODULO, e nao `kBase + 16 MB`.
 
  private:
+  // O ANEL DAS ULTIMAS INSTRUCOES (ver `Correr`): guarda o PC e a palavra de cada uma
+  // das ultimas 16, para o motivo da saida dizer COMO se chegou la.
+  std::uint32_t anel_pc_[16] = {0};
+  std::uint32_t anel_instr_[16] = {0};
+  std::uint32_t ultimas_ = 0;
+
   Memoria& mem_;
   Traco& traco_;
   Alocador& al_;
