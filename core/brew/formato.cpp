@@ -23,7 +23,7 @@ std::string LerCadeia(Memoria& mem, Endereco p, std::size_t maximo) {
 }  // namespace
 
 std::uint32_t Formatar(Memoria& mem, Endereco pBuf, Endereco pFormato,
-                       const std::uint32_t* argumentos, int nArgumentos) {
+                       const std::uint32_t* argumentos, int nArgumentos, std::uint32_t limite) {
   // O `Traco` do `Ler8` nao e usado aqui: uma formatacao em falta e registada
   // pelo DESPACHO, com o nome do slot. Registar de novo aqui duplicaria.
   std::string saida;
@@ -111,6 +111,9 @@ std::uint32_t Formatar(Memoria& mem, Endereco pBuf, Endereco pFormato,
     saida += tmp;
   }
 
+  // O LIMITE do `vsnprintf`. Sem ele, um `%s` comprido escreve fora do buffer do
+  // jogo -- e o jogo nao tem como saber.
+  if (limite > 0 && saida.size() > limite) saida.resize(limite);
   for (std::size_t k = 0; k < saida.size(); ++k) {
     mem.Escrever8(pBuf + static_cast<Endereco>(k), static_cast<std::uint8_t>(saida[k]));
   }

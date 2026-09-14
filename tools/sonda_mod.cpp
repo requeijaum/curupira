@@ -202,11 +202,32 @@ int main(int argc, char** argv) {
   }
 
   constexpr std::uint32_t kPPObj = 0x00090010u;
+  // A CONVENCAO DE ARGUMENTOS, e aqui havia DUAS em uso nesta arvore.
+  //
+  // A sonda chamava com TRES argumentos (`r0=po, r1=ClsId, r2=ppObj`) e a bateria
+  // com QUATRO. **As duas imprimiam respostas opostas sobre o MESMO titulo:**
+  // `zb2_sonda_mod imicro3d` dizia `applet = 0x00000000` e a bateria dizia nao nulo.
+  //
+  // Quatro argumentos e a certa, e e MEDIDA: o `0x100644` faz `mov lr,r2 / mov r2,r0`
+  // e salta para `0x1005f4` com `(r0=lr, r1, r2=po, r3)`; o `0x1005f4` compara o r0 com
+  // o CLSID e chama `0x104980(16, r1, r2, r3)` -- o `AEEApplet_New(dwSize, pIShell,
+  // pIModule, ppApplet)`, com `cmpne r6,#0` a EXIGIR o r1 (o pIShell) diferente de
+  // zero. **A sonda passava o CLSID no r1 e nao passava shell nenhum**, e o
+  // `AEEApplet_New` recusava em tres instrucoes.
+  //
+  // Achado pela auditoria do plano, que comparou os dois instrumentos. **Dois
+  // instrumentos com convencoes diferentes sobre o mesmo ABI nao se contradizem: um
+  // deles esta errado, e nada obriga os dois a concordar.** Passou a haver uma so --
+  // esta -- e o shell tem de vir do chamador (`kShell`).
+  constexpr std::uint32_t kShell = 0x80020000u;
   cpu.Repor(create_instance, kPilha);
   cpu.Set(kR0, modulo);
-  cpu.Set(kR1, cls_id);
-  cpu.Set(kR2, kPPObj);
+  cpu.Set(kR1, kShell);
+  cpu.Set(kR2, cls_id);
+  cpu.Set(kR3, kPPObj);
   cpu.Set(kLR, kSentinela);
+  memset_pp:;
+  cpu.Mem().Escrever32(kPPObj, 0);
   passos = 0;
   eventos = 0;
   while (passos < limite) {

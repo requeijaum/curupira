@@ -22,8 +22,12 @@ namespace zb2::brew {
 // primeiros em r0..r3, o resto na pilha. Quem chama resolve-os, porque so quem
 // chama sabe se veio de um `sprintf` (argumentos soltos) ou de um `vsprintf`
 // (um ponteiro para os argumentos).
+// `limite` e o numero maximo de CARACTERES a escrever (sem o terminador). Zero
+// significa sem limite, que e o contrato do `sprintf`/`vsprintf`. O `vsnprintf` passa
+// o valor do r1 -- e sem ele um `%s` comprido transborda o buffer do jogo.
 std::uint32_t Formatar(Memoria& mem, Endereco pBuf, Endereco pFormato,
-                       const std::uint32_t* argumentos, int nArgumentos);
+                       const std::uint32_t* argumentos, int nArgumentos,
+                       std::uint32_t limite = 0);
 
 }  // namespace zb2::brew
 

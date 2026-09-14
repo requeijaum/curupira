@@ -840,11 +840,28 @@ int main(int argc, char** argv) {
   const std::string build = (ambiente_build != nullptr && ambiente_build[0] != 0)
                                 ? ambiente_build
                                 : "desconhecido";
+  // O HASH DO BINARIO -- porque o NOME DO COMMIT MENTE.
+  //
+  // MEDIDO pelo sub-agente da auditoria: a referencia da bateria dizia
+  // `build=eb62459` e os dados so podiam vir do codigo de `0286921`. A corrida foi
+  // feita com a ARVORE SUJA e o campo guardou o commit do checkout, nao o codigo que
+  // produziu o binario. **O comparador nao apanha isto, porque `build` e neutro por
+  // desenho -- e um campo que nao identifica o que mediu nao serve como
+  // proveniencia.**
+  //
+  // O hash do executavel identifica exactamente o que produziu os numeros: um
+  // binario diferente da outro hash, e o mesmo binario da sempre o mesmo. E vem do
+  // ambiente pela mesma razao que o `build`: **o instrumento nao le o sistema por
+  // sua conta.**
+  const char* ambiente_binario = std::getenv("ZB2_BINARIO");
+  const std::string binario = (ambiente_binario != nullptr && ambiente_binario[0] != 0)
+                                  ? ambiente_binario
+                                  : "desconhecido";
   std::string json = "{\n  \"config\": {\"corpus_sha256\": \"" +
                      (ok_corpus ? zb2::brew::Sha256Hex(bytes_corpus.data(), bytes_corpus.size())
                                 : std::string("desconhecido")) +
                      "\", \"titulos\": " + std::to_string(titulos.size()) + ", \"build\": \"" +
-                     build + "\"},\n  \"titulos\": [\n";
+                     build + "\", \"binario_sha256\": \"" + binario + "\"},\n  \"titulos\": [\n";
   for (const Titulo& t : titulos) {
     dm_eventos.clear();
   const Estado e = Medir(t, argv[2]);

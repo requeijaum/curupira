@@ -73,6 +73,7 @@ constexpr std::uint32_t kSlotIdGetDest = 1545,
                        kSlotIdFileRead = 1555, kSlotIdFileSeek = 1556, kSlotIdFileInfo = 1557,
                        kSlotIdFileRelease = 1558, kSlotIdFileWrite = 1559;
 constexpr std::uint32_t kSlotIdSprintf = 1560, kSlotIdVsprintf = 1561, kSlotIdHeapLock = 1562,
+                       kSlotIdVsnprintf = 1566, kSlotIdRealloc = 1567,
                        kSlotIdFreeResData = 1563, kSlotIdCheckPriv = 1564;
 constexpr std::uint32_t kBaseDoSlot = 1000;
 
@@ -287,6 +288,14 @@ void Despacho::InstalarAjudantes(const Saidas& saidas, Endereco tabela) {
       {0x0c0, kSlotIdGetAppInstance},
       {0x020, kSlotIdSprintf},
       {0x13c, kSlotIdVsprintf},
+      // `vsnprintf` (0x140) e o PEDIDO MAIS ALTO do corpus: **116 vezes, em 4 titulos**
+      // (alice 65, zeeboids 49). E o irmao `vsprintf` (0x13c) JA ESTAVA implementado --
+      // **uma vitoria de demanda a meio caminho**, sem engenharia reversa nenhuma.
+      // Achado pela auditoria de stubs.
+      {brew_ajudantes::kAjudante_vsnprintf, kSlotIdVsnprintf},
+      // `realloc` (0x074), 9 vezes em 3 titulos. O `Alocador::Realloc` estava ESCRITO e
+      // TESTADO e **nao ligado ao slot** -- o mesmo caso.
+      {brew_ajudantes::kAjudante_realloc, kSlotIdRealloc},
   };
   for (const auto& lig : kLigados) {
     mem_.Escrever32(tabela + lig.off, saidas.Endereco(lig.saida));
@@ -900,6 +909,11 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // pararia o laco de quadro de outra coisa.
         if (timer_.ativo && timer_.pfn == cpu.Get(kR1)) timer_.ativo = false;
         cpu.Set(kR0, kAeeSuccess);
+      } else if (idx == kSlotIdRealloc) {
+        // `void *realloc(void *pSrc, uint32 dwSize)` -- o alocador do guest, que ja
+        // tinha o `Realloc` escrito e testado. Ate agora um jogo que o chamasse
+        // recebia `EUNSUPPORTED` e **ficava com o ponteiro antigo sem saber**.
+        cpu.Set(kR0, al_.Realloc(cpu.Get(kR0), cpu.Get(kR1)));
       } else if (idx == kSlotIdHeapLock || idx == kSlotIdHeapLock + 0) {
         // `int Lock(IHeap1 *po)` -- IHeap1 slot 7. Bloqueia o heap para uso
         // exclusivo.
@@ -921,7 +935,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // percentagem de memoria, e o nivel de sistema. Recusar faria o jogo
         // desistir de escrever onde tem de escrever.
         cpu.Set(kR0, 1);
-      } else if (idx == kSlotIdSprintf || idx == kSlotIdVsprintf) {
+      } else if (idx == kSlotIdSprintf || idx == kSlotIdVsprintf || idx == kSlotIdVsnprintf) {
         // `int sprintf(char *pBuf, const char *pFmt, ...)` -- AEEHelperFuncs
         // 0x020; `int vsprintf(char*, const char*, va_list)` -- 0x13c.
         //
@@ -931,7 +945,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // que tem testes contra o `snprintf` DO SISTEMA.
         std::uint32_t args[8];
         int n = 0;
-        if (idx == kSlotIdVsprintf) {
+        if (idx == kSlotIdVsprintf || idx == kSlotIdVsnprintf) {
           const std::uint32_t va = cpu.Get(kR2);
           for (int i = 0; i < 8; ++i) {
             args[n++] = va != 0 ? mem_.Ler32(va + static_cast<std::uint32_t>(i) * 4) : 0;
@@ -943,11 +957,18 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
             args[n++] = mem_.Ler32(cpu.Get(kSP) + static_cast<std::uint32_t>(i) * 4);
           }
         }
+        // `vsnprintf(char *buf, uint32 f, const char *format, AEEOldVaList list)`: o
+        // r1 e o TAMANHO, e o formato esta no r2. O `sprintf`/`vsprintf` nao tem esse
+        // argumento -- e o `Formatar` tem de receber o limite, senao um `%s` comprido
+        // transborda o buffer do jogo.
         const std::uint32_t pbuf = cpu.Get(kR0);
-        if (pbuf == 0 || cpu.Get(kR1) == 0) {
+        const bool com_limite = (idx == kSlotIdVsnprintf);
+        const std::uint32_t pfmt = com_limite ? cpu.Get(kR2) : cpu.Get(kR1);
+        const std::uint32_t limite = com_limite ? cpu.Get(kR1) : 0;
+        if (pbuf == 0 || pfmt == 0) {
           cpu.Set(kR0, 0);
         } else {
-          cpu.Set(kR0, Formatar(mem_, pbuf, cpu.Get(kR1), args, n));
+          cpu.Set(kR0, Formatar(mem_, pbuf, pfmt, args, n, limite));
         }
       } else if (idx == kSlotIdOpenFile) {
         // `IFile *OpenFile(IFileMgr *po, const char *pszFile, OpenFileMode mode)`

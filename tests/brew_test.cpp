@@ -290,11 +290,26 @@ TEST(Interface, CablarRecusaUmSlotForaDaVtable) {
   EXPECT_FALSE(r.ok);
 }
 
-TEST(Interface, CablarDetetaUmaCablagemPerdida) {
-  // ESTE E O TESTE QUE FALTAVA. A cablagem JA se perdeu uma vez sem sintoma: o
-  // `SetTimer` estava escrito e a funcionar, mas a entrada da vtable apontava
-  // para o stub que recusa. O sintoma era "falta SetTimer" depois de uma corrida
-  // de 4 minutos. Aqui a perda e detetada em microssegundos.
+TEST(Interface, CablarReescreveUmaEntradaAlteradaPorBaixo) {
+  // ESTE TESTE CHAMAVA-SE `CablarDetetaUmaCablagemPerdida`, E O NOME MENTIA.
+  //
+  // Achado pela auditoria do plano, com prova por mutacao: **o teste fica VERDE
+  // quando a LEITURA DE VOLTA e arrancada do `Cablar`.** Ou seja, ele nao mede a
+  // deteccao -- mede a REESCRITA, que acontece antes da leitura.
+  //
+  // O `Cablar` escreve, e depois confirma. Neste teste o valor foi alterado ANTES
+  // da chamada, logo a escrita corrige-o -- e a confirmacao passa por construcao.
+  // **A deteccao nao esta a ser exercitada por nada.**
+  //
+  // A licao, e e a terceira vez nesta arvore: **um teste cujo nome e cujo comentario
+  // afirmam o que ele NAO faz.** Ficam aqui as duas partes separadas, para o nome
+  // nao voltar a prometer o que o corpo nao cumpre.
+  //
+  // (O que a deteccao apanharia, de verdade: uma escrita que chegasse DEPOIS da
+  // leitura de volta. O `Cablar` nao tem esse caminho: escreve, le, e devolve. A
+  // deteccao existe para o caso de OUTRO escritor aparecer pelo meio, e esse caso
+  // nao e reproduzivel num teste de unidade sem um escritor concorrente -- o que
+  // esta arvore proibe por desenho, P6.)
   Memoria mem(nullptr);
   Saidas s;
   ConstruirObjeto(mem, s, kObjShell, s.Endereco(kVtableShell), 64, kBaseDoShell);

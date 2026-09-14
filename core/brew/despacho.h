@@ -109,13 +109,26 @@ class Despacho {
   // --- o estado que a ferramenta observa ---------------------------------
   Tela& TelaRef() { return tela_; }
   const Tela& TelaRef() const { return tela_; }
-  Vfs& VfsRef() { return vfs_; }
-  Arquivos& ArquivosRef() { return arquivos_; }
-  const std::map<std::string, std::uint64_t>& Faltas() const { return faltas_; }
-  void LimparFaltas() { faltas_.clear(); }
+
+
+  // `Faltas()`, `VfsRef()`, `ArquivosRef()`, `Blits()` e `Backlights()` SAIRAM.
+  //
+  // Eram acessores que ninguem chamava -- e o `Faltas()` era pior do que inutil:
+  // devolvia `faltas_`, um mapa que **nunca e escrito em lado nenhum**. Quem o
+  // chamasse lia um mapa VAZIO e concluia "nao falta nada".
+  //
+  // **E a terceira vez que esta classe de defeito aparece nesta arvore:**
+  // o `e.tamanho` esteve a zero e fazia o degrau `vtable` parecer falso; o
+  // `Despacho::Faltas()` foi encontrado pelo sub-agente do GL, que o leu e imprimiu
+  // "sem_nome" nas 41 chamadas; e o `e.create` media lixo no slot de saida --
+  // **o `applet 41` estava inflado e o honesto era 22.**
+  //
+  // A licao e sempre a mesma: **um campo que nao mede e pior do que um campo ausente,
+  // porque um ausente nao se le.** Uma API que devolve um valor plausivel e errado
+  // faz o instrumento mentir sem avisar.
   std::uint32_t Textos() const { return textos_; }
-  std::uint32_t Blits() const { return blits_; }
-  std::uint32_t Backlights() const { return backlights_; }
+
+
 
   // --- A ENTRADA (etapa 8) -------------------------------------------------
   //
@@ -275,7 +288,6 @@ class Despacho {
   std::string pasta_;
   std::uint32_t faixa_base_ = 0;
   std::uint32_t faixa_fim_ = 0;
-  std::map<std::string, std::uint64_t> faltas_;
 };
 
 }  // namespace zb2::brew
