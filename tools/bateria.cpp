@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <algorithm>
 #include <map>
 #include <sstream>
 #include <string>
@@ -44,12 +45,22 @@ constexpr std::uint32_t kPPMod = 0x00090000u;
 constexpr std::uint32_t kPPObj = 0x00090010u;
 constexpr std::uint32_t kSentinela = 0xFFFFFFF0u;
 constexpr std::uint64_t kLimite = 4000000ull;
+// Os slots da tabela comecam neste indice da faixa de saida. Abaixo dele ficam
+// os servicos tratados (malloc, free, AddRef, Release).
+constexpr std::uint32_t kBaseDoSlot = 1000;
+// Os slots da vtable do IShell comecam aqui, para o mesmo efeito: saber QUAL
+// metodo da interface cada titulo chama, e nao so que chamou algum.
+constexpr std::uint32_t kBaseDoShell = 2000;
+constexpr std::uint32_t kSlotDbgPrintf = 0x09c;
+constexpr std::uint32_t kSlotGetAeeVersion = 0x08c;
 
 struct Titulo {
   std::string pasta;
   std::string mod;
   std::string clsid;
 };
+
+std::vector<Evento> dm_eventos;  // eventos do ultimo titulo, para os detalhes
 
 struct Estado {
   bool carga = false;
@@ -117,12 +128,36 @@ void ConstruirShell(Memoria& mem, const Saidas& s, std::uint32_t objeto, std::ui
   mem.Escrever32(objeto, vtable);           // *(pishell) = vtable
   mem.Escrever32(objeto + 4, 1);            // contagem de referencias
   for (std::uint32_t i = 0; i < quantos_slots; ++i) {
-    // Cada slot leva um endereco de saida proprio; quem nao estiver tratado
-    // RECUSA (principio P2) em vez de saltar para zero.
-    mem.Escrever32(vtable + i * 4, s.Endereco(2));
+    // UM endereco por slot, para o registo dizer QUAL metodo do IShell foi
+    // chamado. Com um stub so para todos, 27 titulos pediam "algo do shell" e o
+    // numero nao tinha nome.
+    mem.Escrever32(vtable + i * 4, s.Endereco(kBaseDoShell + i));
   }
   mem.Escrever32(vtable + 0, s.Endereco(3));   // AddRef
   mem.Escrever32(vtable + 4, s.Endereco(4));   // Release
+}
+
+// Traduz um offset da tabela de ajudantes para o nome que o SDK lhe da. So os
+// que ja foram medidos; o resto fica com o offset, que ja e util porque ordena
+// a demanda.
+const char* NomeDoSlot(std::uint32_t off) {
+  switch (off) {
+    case 0x000: return "memmove";
+    case 0x004: return "memset";
+    case 0x008: return "strcpy";
+    case 0x00c: return "strcat";
+    case 0x010: return "strcmp";
+    case 0x014: return "strlen";
+    case 0x018: return "strchr";
+    case 0x01c: return "strrchr";
+    case 0x020: return "sprintf";
+    case 0x068: return "malloc";
+    case 0x06c: return "free";
+    case 0x088: return "OEMStrSize";
+    case 0x08c: return "GetAEEVersion";
+    case 0x09c: return "dbgprintf";
+    default: return nullptr;
+  }
 }
 
 void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& traco,
@@ -153,9 +188,41 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         const std::uint32_t n = mem_ref.Ler32(r0 + 4);
         if (n > 0) mem_ref.Escrever32(r0 + 4, n - 1);
         cpu.Set(kR0, n > 0 ? n - 1 : 0);
+      } else if (idx >= kBaseDoShell) {
+        char nome[64], det[128];
+        std::snprintf(nome, sizeof(nome), "IShell::slot%u", idx - kBaseDoShell);
+        // Os ARGUMENTOS no detalhe: para o QueryInterface (slot 2) o r1 e o IID
+        // pedido, e sem ele nao se sabe o que responder. Foi assim que se
+        // percebeu, na arvore antiga, quais das interfaces eram as mesmas por
+        // dois nomes diferentes.
+        std::snprintf(det, sizeof(det), "r0=0x%08x r1=0x%08x r2=0x%08x", r0, cpu.Get(kR1),
+                      cpu.Get(kR2));
+        traco.RegistarFalta(Area::Brew, nome, det);
+        cpu.Set(kR0, kAeeUnsupported);
+        if (++saidas > 200) { *motivo = "parou_em_slot_nao_implementado"; return; }
+      } else if (idx == kBaseDoSlot + 500) {
+        // dbgprintf
+        std::string msg;
+        mem_ref.LerCadeia(r0, &msg, 512);
+        traco.Emitir(Area::Brew, Nivel::Depuracao, "GUEST_DBGPRINTF", msg);
+        cpu.Set(kR0, 0);
+      } else if (idx >= kBaseDoSlot) {
+        const std::uint32_t off = (idx - kBaseDoSlot) * 4;
+        const char* conhecido = NomeDoSlot(off);
+        char nome[64];
+        if (conhecido != nullptr) {
+          std::snprintf(nome, sizeof(nome), "AEEHelperFuncs[0x%03x] %s", off, conhecido);
+        } else {
+          std::snprintf(nome, sizeof(nome), "AEEHelperFuncs[0x%03x]", off);
+        }
+        char det2[128];
+        std::snprintf(det2, sizeof(det2), "r0=0x%08x r1=0x%08x r2=0x%08x", r0, cpu.Get(kR1),
+                      cpu.Get(kR2));
+        traco.RegistarFalta(Area::Brew, nome, det2);
+        cpu.Set(kR0, kAeeUnsupported);
+        if (++saidas > 200) { *motivo = "parou_em_slot_nao_implementado"; return; }
       } else {
-        // `idx` identifica o slot; o endereco de retorno diz QUEM chamou.
-        traco.RegistarFalta(Area::Brew, "slot_de_saida_" + std::to_string(idx),
+        traco.RegistarFalta(Area::Brew, "servico_sem_nome_idx" + std::to_string(idx),
                             "chamado com r0=0x" + std::to_string(r0));
         cpu.Set(kR0, kAeeUnsupported);
         if (++saidas > 200) { *motivo = "parou_em_slot_nao_implementado"; return; }
@@ -185,6 +252,8 @@ Estado Medir(const Titulo& t, const std::string& dir) {
 
   Tempo tempo;
   Traco traco("bateria", &tempo);
+  DestinoMemoria dm;            // para a lista final poder dizer os ARGUMENTOS
+  traco.JuntarDestino(&dm);
   Memoria mem(&traco);
   mem.EscritorUnico("cpu");
   ArmInterpreter cpu(mem, &traco);
@@ -198,6 +267,10 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   cpu.ConfigurarSaidas(s);
   mem.Escrever32(kTabela + 0x68, s.Endereco(0));  // malloc
   mem.Escrever32(kTabela + 0x6c, s.Endereco(1));  // free
+  // `dbgprintf` (0x09c) passa a ser SERVIDO: e o slot mais pedido depois do
+  // malloc, medido (16 titulos). Le a cadeia de formato do guest e escreve-a.
+  // Nao interpreta os `%` -- o texto cru ja diz de que titulo se trata.
+  mem.Escrever32(kTabela + kSlotDbgPrintf, s.Endereco(kBaseDoSlot + 500));
   // TODOS os outros slots da tabela recebem um endereco que RECUSA em voz alta,
   // em vez de ficarem a ZERO.
   //
@@ -211,7 +284,14 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   // era literalmente o endereco zero.
   for (std::uint32_t off = 0; off < 117 * 4; off += 4) {
     if (off == 0x68 || off == 0x6c) continue;
-    mem.Escrever32(kTabela + off, s.Endereco(2));
+    // UM endereco de saida POR OFFSET, e nao um stub generico para todos.
+    //
+    // MOTIVO, medido: com um stub so, 44 titulos pediam algo e o registo dizia
+    // "slot_de_saida_2" 44 vezes -- um numero sem nome. Com um endereco por
+    // offset, a bateria diz QUAL funcao do sistema cada titulo pediu, e a lista
+    // do que falta passa a ser ordenada por demanda em vez de por intuicao. E o
+    // mesmo metodo que nomeou os slots de GL na arvore antiga.
+    mem.Escrever32(kTabela + off, s.Endereco(kBaseDoSlot + off / 4));
   }
 
   // As vtables das interfaces ficam ACIMA da tabela de ajudantes, dentro da
@@ -236,6 +316,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   if (!e.modulo) {
     e.motivo += " | sem_ponteiro_de_modulo";
     for (const auto& par : traco.ContagemFaltas()) e.faltas[par.first] = par.second;
+    dm_eventos = dm.eventos;
     return e;
   }
 
@@ -249,9 +330,22 @@ Estado Medir(const Titulo& t, const std::string& dir) {
 
   const std::uint32_t ci = mem.Ler32(vtable + 8);
   cpu.Repor(ci, kPilha);
+  // ASSINATURA MEDIDA, por desmonte e por traco de registradores:
+  //   r0 = po (o modulo), r1 = pIShell, r2 = ClsId, r3 = ppApplet
+  //
+  // Como se sabe, e vale escreve-lo porque custou varias hipoteses erradas:
+  // `0x100644` faz `mov lr,r2 / mov r2,r0` e salta para `0x1005f4` com
+  // `(r0=lr, r1, r2=po, r3)`. O `0x1005f4` compara r0 com o CLSID e chama
+  // `0x104980(16, r1, r2, r3)` -- que e o `AEEApplet_New(dwSize, pIShell,
+  // pIModule, ppApplet)` classico, com `movs r8,r3` a guardar o ppApplet e
+  // `cmpne r6,#0` a EXIGIR r1 (o pIShell) diferente de zero.
+  //
+  // Eu passava r1 = 0 e o `AEEApplet_New` devolvia 1 em tres instrucoes. Nao era
+  // o CLSID nem a ordem dos argumentos: era o SHELL em falta.
   cpu.Set(kR0, modulo);
-  cpu.Set(kR1, static_cast<std::uint32_t>(std::strtoul(t.clsid.c_str(), nullptr, 0)));
-  cpu.Set(kR2, kPPObj);
+  cpu.Set(kR1, kShell);
+  cpu.Set(kR2, static_cast<std::uint32_t>(std::strtoul(t.clsid.c_str(), nullptr, 0)));
+  cpu.Set(kR3, kPPObj);
   cpu.Set(kLR, kSentinela);
   std::string motivo_create;
   CorrerFase(cpu, al, mem, traco, kLimite, &e.passos_create, &motivo_create, kPPObj);
@@ -260,6 +354,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   e.motivo += " | create:" + motivo_create;
   if (!e.create) e.motivo += "_sem_applet";
   for (const auto& par : traco.ContagemFaltas()) e.faltas[par.first] = par.second;
+  dm_eventos = dm.eventos;
   return e;
 }
 
@@ -276,14 +371,23 @@ int main(int argc, char** argv) {
   std::printf("%-16s %-8s %-6s %-6s %-6s %8s %8s  %s\n", "titulo", "tamanho", "carga", "modulo",
               "vtable", "carga_p", "cria_p", "motivo");
   int carregam = 0, com_modulo = 0, com_applet = 0;
+  // Nome -> conjunto de detalhes distintos vistos (para a lista final dizer os
+  // ARGUMENTOS, e nao so a contagem).
   std::map<std::string, std::uint64_t> faltas_totais;
+  std::map<std::string, std::map<std::string, std::uint64_t>> faltas_detalhe;
   std::string json = "[\n";
   for (const Titulo& t : titulos) {
-    const Estado e = Medir(t, argv[2]);
+    dm_eventos.clear();
+  const Estado e = Medir(t, argv[2]);
     if (e.carga) ++carregam;
     if (e.modulo) ++com_modulo;
     if (e.create) ++com_applet;
     for (const auto& par : e.faltas) faltas_totais[par.first] += par.second;
+    for (const auto& ev : dm_eventos) {
+      if (ev.nome.rfind("NAO_IMPLEMENTADO: ", 0) == 0) {
+        faltas_detalhe[ev.nome.substr(18)][ev.detalhe]++;
+      }
+    }
     std::printf("%-16s %-8u %-6s %-6s %-6s %8" PRIu64 " %8" PRIu64 "  %s\n", t.mod.c_str(),
                 e.tamanho, e.carga ? "sim" : "NAO", e.modulo ? "sim" : "NAO",
                 e.vtable ? "sim" : "NAO", e.passos_carga, e.passos_create, e.motivo.c_str());
@@ -300,9 +404,16 @@ int main(int argc, char** argv) {
 
   std::printf("\n== %d titulos | carga %d | ponteiro de modulo %d | applet %d ==\n", (int)titulos.size(),
               carregam, com_modulo, com_applet);
-  std::printf("== slots do sistema que ficaram por implementar ==\n");
-  for (const auto& par : faltas_totais) {
-    std::printf("   %-40s %" PRIu64 "\n", par.first.c_str(), par.second);
+  std::printf("== o que falta, por DEMANDA (o que os titulos pedem, por ordem) ==\n");
+  std::vector<std::pair<std::uint64_t, std::string>> ordenado;
+  for (const auto& par : faltas_totais) ordenado.push_back({par.second, par.first});
+  std::sort(ordenado.begin(), ordenado.end(),
+            [](const auto& a, const auto& b) { return a.first > b.first; });
+  for (const auto& par : ordenado) {
+    std::printf("   %-34s pedido %" PRIu64 "x\n", par.second.c_str(), par.first);
+    for (const auto& d : faltas_detalhe[par.second]) {
+      std::printf("        %-46s %" PRIu64 "x\n", d.first.c_str(), d.second);
+    }
   }
   if (argc > 3) {
     std::ofstream out(argv[3]);
