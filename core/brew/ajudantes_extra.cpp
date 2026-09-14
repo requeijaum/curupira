@@ -24,6 +24,9 @@ constexpr std::uint32_t kCabecalhoDeBloco = 16;
 // existe e a sua violacao e REGISTADA.
 constexpr std::uint32_t kLimiteDeCaracteres = 1u << 20;
 constexpr std::uint32_t kLimiteDeCadeia = 1u << 16;
+// Uma lista de blocos maior do que isto e uma lista que nao fecha. O limite
+// existe para uma travessia de um heap corrompido nao correr sem fim.
+constexpr std::uint32_t kLimiteDeBlocos = 1u << 20;
 
 // Uma falta registada com o NOME e a ASSINATURA do cabecalho. Nao existe
 // recusa muda neste ficheiro: a razao vai sempre para o registo (P2).
@@ -287,41 +290,52 @@ void FazerUtf8ToWstr(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
 // medicao falhou. Nesse caso escreve-se 0 nos dois ponteiros, devolve-se 0
 // ("nao ha memoria disponivel", que faz o chamador recusar em vez de assumir) e
 // REGISTA-SE. **Um numero que nao foi medido nao se devolve.**
+//
+// A TRAVESSIA E UM PONTO SO DE DECISAO, e isso foi medido: a primeira versao
+// tinha tres `if` soltos (bloco impossivel, bloco fora do heap, soma que nao
+// fecha), e arrancar o da soma final NAO fez teste nenhum ficar vermelho -- a
+// verificacao por bloco apanhava o mesmo caso primeiro, e a "guarda" nao era
+// guarda nenhuma. **Uma guarda que se pode arrancar sem um teste ficar vermelho
+// nao esta provada.** Aqui o resultado da travessia inteira e ESTE booleano, e a
+// violacao deliberada que o forca a `true` poe o teste vermelho.
+bool PercorrerHeap(const Memoria& mem, const Alocador& al, std::uint32_t* livre,
+                   std::uint32_t* maior) {
+  std::uint32_t andado = 0;
+  std::uint32_t soma_livre = 0;
+  std::uint32_t o_maior = 0;
+  std::uint32_t blocos = 0;
+  while (andado < al.Tamanho()) {
+    const std::uint32_t inicio = al.Inicio() + andado;
+    const std::uint32_t tamanho = mem.Ler32(inicio);
+    // Um bloco que comeca antes do fim tem de ACABAR dentro do heap e de ter
+    // espaco para o proprio cabecalho.
+    if (tamanho < kCabecalhoDeBloco || andado + tamanho > al.Tamanho()) return false;
+    if (mem.Ler32(inicio + 4) != 0) {
+      const std::uint32_t util = tamanho - kCabecalhoDeBloco;
+      soma_livre += util;
+      if (util > o_maior) o_maior = util;
+    }
+    andado += tamanho;
+    if (++blocos > kLimiteDeBlocos) return false;
+  }
+  if (andado != al.Tamanho()) return false;
+  *livre = soma_livre;
+  *maior = o_maior;
+  return true;
+}
+
 void FazerGetRamFree(Memoria& mem, Alocador& al, ICpu& cpu, Traco& traco) {
   const std::uint32_t p_total = cpu.Get(kR0);
   const std::uint32_t p_maior = cpu.Get(kR1);
 
-  std::uint32_t andado = 0;
   std::uint32_t livre = 0;
   std::uint32_t maior = 0;
-  std::uint32_t blocos = 0;
-  bool ok = true;
-  while (andado < al.Tamanho()) {
-    const std::uint32_t inicio = al.Inicio() + andado;
-    const std::uint32_t tamanho = mem.Ler32(inicio);
-    const std::uint32_t e_livre = mem.Ler32(inicio + 4);
-    if (tamanho < kCabecalhoDeBloco || andado + tamanho > al.Tamanho()) {
-      ok = false;
-      break;
-    }
-    if (e_livre != 0) {
-      const std::uint32_t util = tamanho - kCabecalhoDeBloco;
-      livre += util;
-      maior = std::max(maior, util);
-    }
-    andado += tamanho;
-    ++blocos;
-    if (blocos > kLimiteDeCaracteres) {
-      ok = false;
-      break;
-    }
-  }
-  if (andado != al.Tamanho()) ok = false;
+  const bool ok = PercorrerHeap(mem, al, &livre, &maior);
 
   char det[160];
   if (!ok) {
-    std::snprintf(det, sizeof(det), "a lista de blocos do heap soma %u de %u bytes",
-                  andado, al.Tamanho());
+    std::snprintf(det, sizeof(det), "a lista de blocos do heap NAO fecha (tamanho=%u)",
+                  al.Tamanho());
     RegistarRecusa(traco, brew_ajudantes::kAjudante_GetRAMFree,
                    "medicao do heap falhou", det);
     if (p_total != 0) mem.Escrever32(p_total, 0);
@@ -332,8 +346,8 @@ void FazerGetRamFree(Memoria& mem, Alocador& al, ICpu& cpu, Traco& traco) {
   if (p_total != 0) mem.Escrever32(p_total, al.Tamanho());
   if (p_maior != 0) mem.Escrever32(p_maior, maior);
   cpu.Set(kR0, livre);
-  std::snprintf(det, sizeof(det), "livre=%u total=%u maior=%u blocos=%u", livre,
-                al.Tamanho(), maior, blocos);
+  std::snprintf(det, sizeof(det), "livre=%u total=%u maior=%u", livre, al.Tamanho(),
+                maior);
   EmitirChamada(traco, brew_ajudantes::kAjudante_GetRAMFree, det);
 }
 

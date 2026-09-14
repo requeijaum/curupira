@@ -369,7 +369,7 @@ TEST(AjudantesExtra, GetRamFreeRecusaQuandoOHeapNaoSoma) {
   EXPECT_EQ(b.mem.Ler32(kTexto), 0u);
   EXPECT_EQ(b.mem.Ler32(kTexto2), 0u);
   EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x138] GetRAMFree"), 1u);
-  EXPECT_NE(b.DetalheDaFalta("AEEHelperFuncs[0x138] GetRAMFree").find("soma"),
+  EXPECT_NE(b.DetalheDaFalta("AEEHelperFuncs[0x138] GetRAMFree").find("NAO fecha"),
             std::string::npos);
 }
 
