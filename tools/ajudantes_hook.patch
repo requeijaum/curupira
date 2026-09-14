@@ -1,0 +1,94 @@
+O GANCHO NO DESPACHO -- para o dono do ficheiro partilhado aplicar.
+
+PORQUE NAO ESTA APLICADO NA BRANCH `ajudantes`: `core/brew/despacho.cpp` esta na
+lista de ficheiros partilhados ("eu faco o merge"). O gancho tem 3 partes, todas
+neste ficheiro:
+
+  1. `#include "core/brew/ajudantes_extra.h"`;
+  2. os offsets dos ajudantes passam a vir do cabecalho gerado, e nao da mao.
+     DOIS ESTAVAM ERRADOS: `kSlotStrtowstr` valia 0x0a0 (que e `wstrcompress`)
+     quando o `strtowstr` e 0x040, e `kSlotAeeGetRand` valia 0x090 (que e `atoi`)
+     quando o `aee_GetRand` e 0x0a8. Ver o relatorio;
+  3. o ramo dos 117 slots consulta a tabela EXTRA ANTES do ramo generico.
+     A ORDEM e o defeito: a primeira versao usou `!Atender...` e o caso
+     ATENDIDO caia no ramo generico, que escrevia AEE_EUNSUPPORTED por cima do
+     resultado -- a lista de demanda mostrou os tres offsets como
+     `servico_sem_nome_idx1017/1020/1078`.
+
+MEDIDO COM ESTE PATCH APLICADO (62 titulos, corpus62.json, 2026-09-14):
+  antes:  AEEHelperFuncs[0x044] 1x, [0x050] 1x, [0x138] 2x  (3 offsets CRUS)
+  depois: 0 offsets crus; os tres passam a ter implementacao (pacmania)
+  `tools/comparar` contra tools/baseline/bateria.json: 0 regressoes, 0
+  melhorias, 4 neutros (as 3 faltas acima e a etiqueta de build).
+  carga 62 | modulo 62 | vtable 48 | applet 41 -- inalterado.
+
+Aplicar da RAIZ do repositorio:
+    git apply research/sources/zeebulator/src2/tools/ajudantes_hook.patch
+
+diff --git a/research/sources/zeebulator/src2/core/brew/despacho.cpp b/research/sources/zeebulator/src2/core/brew/despacho.cpp
+index 140534f..ddecf27 100644
+--- a/research/sources/zeebulator/src2/core/brew/despacho.cpp
++++ b/research/sources/zeebulator/src2/core/brew/despacho.cpp
+@@ -4,6 +4,7 @@
+ #include <cstring>
+ #include <set>
+ 
++#include "core/brew/ajudantes_extra.h"
+ #include "core/brew/formato.h"
+ 
+ namespace zb2::brew {
+@@ -64,11 +65,29 @@ constexpr std::uint32_t kBaseDoSlot = 1000;
+ 
+ // Uma linha da tabela de ajudantes: o offset no `AEEHelperFuncs` e o endereco de
+ // saida da implementacao.
+-constexpr std::uint32_t kSlotDbgPrintf = 0x09c;
+-constexpr std::uint32_t kSlotStrlen = 0x014, kSlotMemset = 0x004, kSlotStrcpy = 0x008;
+-constexpr std::uint32_t kSlotStrcmp = 0x010, kSlotStrchr = 0x018, kSlotMemmove = 0x000;
+-constexpr std::uint32_t kSlotStrtowstr = 0x0a0, kSlotGetAeeVersion = 0x08c,
+-                       kSlotAeeGetRand = 0x090;
++// OS OFFSETS DESTA TABELA VEM DO CABECALHO, e nao da mao.
++//
++// DOIS DELES ESTAVAM NO SITIO ERRADO, e nada acusou: `kSlotStrtowstr` valia
++// 0x0a0 -- que e o `wstrcompress`; o `strtowstr` verdadeiro e 0x040 -- e
++// `kSlotAeeGetRand` valia 0x090, que e o `atoi`; o `aee_GetRand` e 0x0a8. O
++// despacho servia um `strtowstr` no sitio do `wstrcompress` e bytes aleatorios
++// no sitio do `atoi`. Os numeros certos JA estavam escritos em
++// `tools/bateria.cpp` -- a SEGUNDA copia deles divergiu desta, e nao havia nada
++// a comparar as duas. **Duas copias de um numero medido sao duas chances de ele
++// divergir.** (Medido em `platform/system/inc/AEEStdLib.h`, campos 10, 16, 36 e
++// 42; ver `tools/ajudantes_slots.inc`, gerado.)
++constexpr std::uint32_t kSlotDbgPrintf = brew_ajudantes::kAjudante_dbgprintf;
++constexpr std::uint32_t kSlotStrlen = brew_ajudantes::kAjudante_strlen;
++constexpr std::uint32_t kSlotMemset = brew_ajudantes::kAjudante_memset;
++constexpr std::uint32_t kSlotStrcpy = brew_ajudantes::kAjudante_strcpy;
++constexpr std::uint32_t kSlotStrcmp = brew_ajudantes::kAjudante_strcmp;
++constexpr std::uint32_t kSlotStrchr = brew_ajudantes::kAjudante_strchr;
++constexpr std::uint32_t kSlotMemmove = brew_ajudantes::kAjudante_memmove;
++constexpr std::uint32_t kSlotStrtowstr = brew_ajudantes::kAjudante_strtowstr;
++constexpr std::uint32_t kSlotGetAeeVersion = brew_ajudantes::kAjudante_GetAEEVersion;
++constexpr std::uint32_t kSlotAeeGetRand = brew_ajudantes::kAjudante_aee_GetRand;
++static_assert(kSlotStrtowstr == 0x040, "0x040 e strtowstr; 0x0a0 e wstrcompress");
++static_assert(kSlotAeeGetRand == 0x0a8, "0x0a8 e aee_GetRand; 0x090 e atoi");
+ 
+ struct LigacaoAjudante {
+   std::uint32_t off;
+@@ -880,6 +899,19 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
+         mem_.LerCadeia(r0, &msg, 512);
+         traco_.Emitir(Area::Brew, Nivel::Depuracao, "GUEST_DBGPRINTF", msg);
+         cpu.Set(kR0, 0);
++      } else if (idx >= kBaseDoSlot &&
++                 AtenderAjudanteExtra(cpu, mem_, al_, traco_, (idx - kBaseDoSlot) * 4)) {
++        // A TABELA DOS AJUDANTES EXTRA, e este ramo vem ANTES do ramo generico
++        // dos 117 slots. **A ORDEM E O DEFEITO**: com a condicao invertida
++        // (`!Atender...`) o caso ATENDIDO cai no ramo generico, que escreve
++        // AEE_EUNSUPPORTED por cima do resultado e regista um
++        // `servico_sem_nome_idx<idx>`. Foi o que a primeira versao deste gancho
++        // fez, e a lista de demanda mostrou-o na ronda seguinte: os tres offsets
++        // tratados apareceram como `servico_sem_nome_idx1017/1020/1078`. E a
++        // setima vez que esta classe de erro aparece nesta arvore.
++        //
++        // R0 ja esta escrito (implementacao, ou recusa com o nome e a
++        // assinatura). O `saidas` continua a contar no fim do laco.
+       } else if (idx >= kBaseDoSlot) {
+         const std::uint32_t off = (idx - kBaseDoSlot) * 4;
+         const char* conhecido = zb2::brew::NomeDoAjudante(off);

@@ -260,7 +260,7 @@ def modo_demanda(membros, caminho_json):
                     fora += 1
                     nome = "(offset fora dos %d)" % QUANTOS
                 else:
-                    nome = "%s   [%s]" % (d["nome"], d["assinatura"])
+                    nome = "%s   [%s]" % (d["nome"], d["texto"])
                 cru += 1
                 linhas.append((off, nome, quantos, titulo.get("mod", "?")))
             else:
