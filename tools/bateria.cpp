@@ -67,6 +67,38 @@ constexpr std::uint32_t kObjDisplay = 0x80030000u;
 constexpr std::uint32_t kObjFileMgr = 0x80040000u;
 constexpr std::uint32_t kIidDisplay = 0x01001001u;
 constexpr std::uint32_t kIidFileMgr = 0x01001003u;
+// Os IIDs que a bateria MEDIU como pedidos ao QueryInterface, com o nome do SDK
+// (`platform/system/inc/AEEClassIDs.h`). A lista vem da medicao, nao de uma
+// leitura do cabecalho: e a ordem por demanda que diz o que vale implementar.
+constexpr std::uint32_t kIidHeap = 0x01001002u;
+constexpr std::uint32_t kIidFile = 0x01001014u;
+constexpr std::uint32_t kIidSound = 0x01001056u;
+constexpr std::uint32_t kIidGraphics = 0x01002001u;
+constexpr std::uint32_t kIidRootForm = 0x01028e51u;
+constexpr std::uint32_t kIidHid = 0x0106c411u;
+constexpr std::uint32_t kIidSqlMgr = 0x0102c4e8u;
+// UM objecto e UMA vtable por interface, e nao um objecto so para todas.
+//
+// MEDIDO, e foi um defeito meu: com um objecto unico, o `slot 7` quer dizer
+// `IHeap::slot7` OU `IFile::slot7` OU `ISound::slot7` -- conforme quem chamou --
+// e a bateria nomeava tudo como `IFileMgr::slot2007`, porque o nome sai do
+// intervalo da vtable. **A demanda ficava desonesta**: nao se sabia que metodo
+// cada titulo quer, que e o unico proposito desta lista.
+constexpr std::uint32_t kObjGenericoBase = 0x80060000u;
+constexpr std::uint32_t kVtableGenericoBase = 9000;
+constexpr std::uint32_t kPassoGenerico = 0x100;
+// A ordem desta tabela e a ordem em que os objectos sao construidos: o indice e
+// o que liga o IID ao objecto.
+struct GenericIfc { std::uint32_t iid; const char* nome; };
+const GenericIfc kGenericos[] = {
+    {0x01001002u, "IHeap"},    {0x01001014u, "IFile"},  {0x01001056u, "ISound"},
+    {0x01002001u, "IGraphics"}, {0x01028e51u, "IRootForm"},
+    {0x0106c411u, "IHID"},     {0x0102c4e8u, "ISQLMgr"},
+};
+constexpr std::uint32_t kNGenericos = sizeof(kGenericos) / sizeof(kGenericos[0]);
+constexpr std::uint32_t ObjGenerico(std::uint32_t k) { return kObjGenericoBase + k * kPassoGenerico; }
+constexpr std::uint32_t VtGenerico(std::uint32_t k) { return kVtableGenericoBase + k * 64; }
+constexpr std::uint32_t kObjGenerico = 0x80060000u;  // mantido para o resto
 // Os slots do IFileMgr, na ordem que `platform/deprecated/inc/AEEFile.h` declara
 // em `INHERIT_IFileMgr`. A ORDEM E A DO SDK, lida campo a campo -- e nao
 // copiada de outro emulador, que foi o erro que a arvore antiga cometeu com os
@@ -101,6 +133,9 @@ constexpr std::uint32_t kSlotIdStrcpy = 1505;
 constexpr std::uint32_t kSlotIdMemmove = 1506;
 constexpr std::uint32_t kSlotIdStrcmp = 1507;
 constexpr std::uint32_t kSlotIdStrchr = 1508;
+constexpr std::uint32_t kSlotIdGetUpTime = 1540;
+constexpr std::uint32_t kSlotIdQueryClass = 1541;
+constexpr std::uint32_t kSlotIdGetAppInstance = 1543;
 constexpr std::uint32_t kSlotIdFmTest = 1510;
 constexpr std::uint32_t kSlotIdFmFree = 1511;
 constexpr std::uint32_t kSlotIdFmLastErr = 1512;
@@ -113,6 +148,7 @@ constexpr std::uint32_t kSlotIdBitBlt = 1534;
 constexpr std::uint32_t kSlotIdSetColor = 1535;
 constexpr std::uint32_t kSlotIdSetClipRect = 1536;
 constexpr std::uint32_t kSlotIdUpdate = 1537;
+constexpr std::uint32_t kSlotIdBacklight = 1542;
 constexpr std::uint32_t kSlotIdCreateDIBitmap = 1538;
 constexpr std::uint32_t kObjDibBase = 0x80050000u;
 // Os slots do IDisplay, na ordem que `platform/ui/inc/AEEIDisplay.h` declara em
@@ -176,6 +212,8 @@ std::uint32_t g_textos = 0;
 std::uint32_t g_blits = 0;
 std::uint32_t g_updates = 0;
 std::uint32_t g_dibs = 0;
+std::uint32_t g_backlights = 0;
+std::uint32_t g_applet = 0;
 std::uint32_t g_vtable_bitmap = 0;
 // Os slots do IShell, na ordem que `platform/system/inc/AEEIShell.h` declara em
 // `INHERIT_IShell`. Lido campo a campo, e nao copiado.
@@ -381,6 +419,13 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         std::uint32_t devolver = 0;
         if (iid == kIidDisplay) devolver = kObjDisplay;
         else if (iid == kIidFileMgr) devolver = kObjFileMgr;
+        // Os que tem objecto generico: o jogo fica com uma interface cujos
+        // metodos recusam, e a bateria aprende quais sao.
+        else {
+          for (std::uint32_t k = 0; k < kNGenericos; ++k) {
+            if (iid == kGenericos[k].iid) devolver = ObjGenerico(k);
+          }
+        }
         if (ppo != 0) mem_ref.Escrever32(ppo, devolver);
         cpu.Set(kR0, devolver != 0 ? kAeeSuccess : kAeeClassNotSupported);
         if (devolver == 0) {
@@ -396,7 +441,16 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         char nome[64], det[128];
         const char* iface = "IShell";
         std::uint32_t slot = 0;
-        if (idx >= kVtableFileMgr) { iface = "IFileMgr"; slot = idx - kVtableFileMgr; }
+        // Os objectos GENERICOS tem vtable propria por interface: sem isto o
+        // `slot 7` de um `ISound` aparecia nomeado como `IFileMgr`, e a lista de
+        // demanda mentia sobre o que os titulos pedem.
+        const std::uint32_t kgen = (idx >= kVtableGenericoBase)
+                                       ? (idx - kVtableGenericoBase) / 64u
+                                       : kNGenericos;
+        if (kgen < kNGenericos) {
+          iface = kGenericos[kgen].nome;
+          slot = idx - VtGenerico(kgen);
+        } else if (idx >= kVtableFileMgr) { iface = "IFileMgr"; slot = idx - kVtableFileMgr; }
         else if (idx >= kVtableDisplay) { iface = "IDisplay"; slot = idx - kVtableDisplay; }
         else { iface = "IShell"; slot = idx - kBaseDoShell; }
         std::snprintf(nome, sizeof(nome), "%s::slot%u", iface, slot);
@@ -504,106 +558,139 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         }
         cpu.Set(kR0, 0);
       } else if (idx == kSlotIdDrawRect) {
-        // `void DrawRect(IDisplay *po, AEERect *prc)` -- CONTORNO, nao
-        // preenchido. Quem preenche e o DrawRect do IGraphics/draw, que e outra
-        // interface; confundir os dois e um erro classico de quem le o SDK por
-        // alto.
+        // `void DrawRect(IDisplay *po, const AEERect *pRect, RGBVAL clrFrame,
+        //                RGBVAL clrFill, uint32 dwFlags)`.
+        //
+        // ASSINATURA CORRIGIDA. Eu tinha escrito a versao do BREW 4.x, em que o
+        // r1 era a rect e nao havia cores. Neste SDK o r1 e a RECT, o r2 e a cor
+        // do contorno e o r3 a do preenchimento -- e o bit `DW_RECT_DRAW` do
+        // dwFlags e que diz se e contorno ou cheio.
         const std::uint32_t prc = cpu.Get(kR1);
         if (prc != 0) {
-          g_fb.Retangulo(mem_ref.Ler32(prc), mem_ref.Ler32(prc + 4), mem_ref.Ler32(prc + 8),
-                         mem_ref.Ler32(prc + 12), /*preencher=*/false);
-        }
-        cpu.Set(kR0, 0);
-      } else if (idx == kSlotIdDrawText) {
-        // `void DrawText(IDisplay *po, const AECHAR *pText, int nChars, AEERect *prc,
-        //                uint32 flags)`.
-        //
-        // Aqui NAO se rasteriza texto: nao ha fonte carregada. O que se faz e
-        // contar, e escrever uma barra com a cor actual na linha de base -- para
-        // a medida "pixels escritos" nao ficar a zero por causa do texto. Fica
-        // declarado como aproximacao.
-        const std::uint32_t ptext = cpu.Get(kR1);
-        const std::uint32_t prc = cpu.Get(kR3);
-        std::uint32_t larg = 0;
-        if (prc != 0) {
           const std::uint32_t x = mem_ref.Ler32(prc), y = mem_ref.Ler32(prc + 4);
-          larg = mem_ref.Ler32(prc + 8);
-          if (larg == 0) larg = 8;
-          for (std::uint32_t i = 0; i < larg; ++i) g_fb.Ponto(static_cast<int>(x + i), static_cast<int>(y));
-        }
-        (void)ptext;
-        ++g_textos;
-        cpu.Set(kR0, 0);
-      } else if (idx == kSlotIdBitBlt) {
-        // `void BitBlt(IDisplay *po, IBitmap *pib, int xDst, int yDst, int dx,
-        //              int dy, int nWidth, int nHeight)`.
-        // Copia do bitmap de origem para o framebuffer. O bitmap tem cabecalho
-        // nosso (ver CreateDIBitmap): largura, altura, e os pixels em RGB565.
-        const std::uint32_t pib = cpu.Get(kR1);
-        if (pib != 0) {
-          const std::uint32_t origem = mem_ref.Ler32(pib + 8);
-          const std::uint32_t bmp_larg = mem_ref.Ler32(pib + 12);
-          const std::uint32_t bmp_alt = mem_ref.Ler32(pib + 16);
-          const std::int32_t xd = static_cast<std::int32_t>(cpu.Get(kR2));
-          const std::int32_t yd = static_cast<std::int32_t>(cpu.Get(kR3));
-          const std::uint32_t dw = mem_ref.Ler32(cpu.Get(kSP) + 0);
-          const std::uint32_t dh = mem_ref.Ler32(cpu.Get(kSP) + 4);
-          const std::uint32_t nw = mem_ref.Ler32(cpu.Get(kSP) + 8);
-          const std::uint32_t nh = mem_ref.Ler32(cpu.Get(kSP) + 12);
-          if (origem != 0 && bmp_larg != 0 && bmp_alt != 0 && nw != 0 && nh != 0) {
-            for (std::uint32_t j = 0; j < nh; ++j) {
-              for (std::uint32_t i = 0; i < nw; ++i) {
-                const std::uint32_t u = (dw + i) % bmp_larg, v = (dh + j) % bmp_alt;
-                g_fb.cor_atual = mem_ref.Ler16(origem + (v * bmp_larg + u) * 2);
-                g_fb.Ponto(static_cast<int>(xd + static_cast<std::int32_t>(i)),
-                           static_cast<int>(yd + static_cast<std::int32_t>(j)));
-              }
-            }
-            ++g_blits;
+          const std::uint32_t w = mem_ref.Ler32(prc + 8), h = mem_ref.Ler32(prc + 12);
+          const std::uint32_t clrframe = cpu.Get(kR2), clrfill = cpu.Get(kR3);
+          const std::uint32_t flags = mem_ref.Ler32(cpu.Get(kSP) + 0);
+          // Os bits do `AEERectFlags`: DRAW = contorno, FILL = cheio.
+          const bool contorno = (flags & 0x01u) != 0, cheio = (flags & 0x02u) != 0;
+          if (cheio || contorno) {
+            g_fb.cor_atual = cheio ? clrfill : clrframe;
+            g_fb.Retangulo(x, y, w, h, cheio);
           }
         }
         cpu.Set(kR0, 0);
+      } else if (idx == kSlotIdDrawText) {
+        // `int DrawText(IDisplay *po, AEEFont nFont, const AECHAR *pcText,
+        //              int nChars, int x, int y, const AEERect *prcBackground,
+        //              uint32 dwFlags)`.
+        //
+        // ASSINATURA CORRIGIDA: os argumentos 5 e 6 sao COORDENADAS, nao uma
+        // rect. A minha versao lia o r3 como ponteiro de rect e desenhava a barra
+        // no sitio errado -- e um ponteiro de rect interpretado como x daria uma
+        // barra numa linha absurda, ou fora do ecra, sem nada a acusar.
+        //
+        // Nao ha fonte carregada, logo NAO se rasteriza texto: desenha-se uma
+        // barra com a cor actual, com a largura declarada de 8 px por caracter.
+        // Fica declarado como aproximacao, e a bateria conta `textos`.
+        const std::uint32_t nchars = cpu.Get(kR3);
+        const std::uint32_t x = mem_ref.Ler32(cpu.Get(kSP) + 0);
+        const std::uint32_t y = mem_ref.Ler32(cpu.Get(kSP) + 4);
+        const std::uint32_t prcfundo = mem_ref.Ler32(cpu.Get(kSP) + 8);
+        if (prcfundo != 0) {
+          // O fundo e pedido explicitamente: pinta-se com a cor actual antes.
+          g_fb.Retangulo(mem_ref.Ler32(prcfundo), mem_ref.Ler32(prcfundo + 4),
+                         mem_ref.Ler32(prcfundo + 8), mem_ref.Ler32(prcfundo + 12), true);
+        }
+        const std::uint32_t larg = (nchars > 0 ? nchars : 1) * 8;
+        for (std::uint32_t i = 0; i < larg; ++i) g_fb.Ponto(static_cast<int>(x + i), static_cast<int>(y));
+        ++g_textos;
+        cpu.Set(kR0, static_cast<std::uint32_t>(larg));
+      } else if (idx == kSlotIdBitBlt) {
+        // `void BitBlt(IDisplay *po, int xDest, int yDest, int cxDest, int cyDest,
+        //              const void *pbmSource, int xSrc, int ySrc, AEERasterOp dwRopCode)`.
+        //
+        // ASSINATURA CORRIGIDA, e a correccao e grande: a origem NAO e um
+        // `IBitmap` com cabecalho -- e um bloco CRU de pixels, sem largura nem
+        // altura. Quem sabe as dimensoes e quem chamou. A largura da origem vem
+        // do proprio passo: assume-se que a origem tem a largura pedida
+        // (`cxDest`), que e a convencao do BREW para blits sem escalonamento.
+        const std::int32_t xd = static_cast<std::int32_t>(cpu.Get(kR1));
+        const std::int32_t yd = static_cast<std::int32_t>(cpu.Get(kR2));
+        const std::int32_t cx = static_cast<std::int32_t>(cpu.Get(kR3));
+        const std::int32_t cy = static_cast<std::int32_t>(mem_ref.Ler32(cpu.Get(kSP) + 0));
+        const std::uint32_t origem = mem_ref.Ler32(cpu.Get(kSP) + 4);
+        const std::int32_t xs = static_cast<std::int32_t>(mem_ref.Ler32(cpu.Get(kSP) + 8));
+        const std::int32_t ys = static_cast<std::int32_t>(mem_ref.Ler32(cpu.Get(kSP) + 12));
+        if (origem != 0 && cx > 0 && cy > 0) {
+          for (std::int32_t j = 0; j < cy; ++j) {
+            for (std::int32_t i = 0; i < cx; ++i) {
+              const std::uint32_t u = static_cast<std::uint32_t>(xs + i);
+              const std::uint32_t v = static_cast<std::uint32_t>(ys + j);
+              g_fb.cor_atual =
+                  mem_ref.Ler16(origem + (v * static_cast<std::uint32_t>(cx) + u) * 2);
+              g_fb.Ponto(xd + i, yd + j);
+            }
+          }
+          ++g_blits;
+        }
+        cpu.Set(kR0, 0);
       } else if (idx == kSlotIdCreateDIBitmap) {
-        // `IBitmap *CreateDIBitmap(IDisplay *po, const AEEBitmapInfo *pbi, void *pData)`.
-        // Devolve um bitmap nosso: cabecalho `{vtable, ...}` + largura, altura e
-        // o endereco dos pixels no guest. Os pixels ficam no formato do SDK e o
-        // BitBlt le-os de la.
-        const std::uint32_t pbi = cpu.Get(kR1);
-        const std::uint32_t pdata = cpu.Get(kR2);
-        const std::int32_t cx = static_cast<std::int16_t>(mem_ref.Ler16(pbi + 4));
-        const std::int32_t cy = static_cast<std::int16_t>(mem_ref.Ler16(pbi + 6));
+        // `int CreateDIBitmap(IDisplay *po, IDIB **ppIDIB, uint8 colorDepth,
+        //                     uint16 w, uint16 h)`.
+        //
+        // ASSINATURA CORRIGIDA. O ponteiro de saida e o SEGUNDO argumento, e o
+        // que se devolve no r0 e um codigo (0 = SUCCESS). A minha versao
+        // devolvia o objecto no r0 e ignorava o `ppIDIB` -- o chamador ficava com
+        // o ponteiro por preencher e o objecto perdido.
+        const std::uint32_t ppidib = cpu.Get(kR1);
+        const std::uint32_t prof = cpu.Get(kR2) & 0xFFu;
+        const std::uint32_t w = cpu.Get(kR3) & 0xFFFFu;
+        const std::uint32_t h = mem_ref.Ler32(cpu.Get(kSP) + 0) & 0xFFFFu;
         const std::uint32_t obj = kObjDibBase + g_dibs * 0x40;
         ++g_dibs;
+        // O IDIB tem cabecalho proprio: dimensoes, profundidade, e o PASSAPORTE
+        // de acesso aos pixels (`pData`), que o `IDIB_GetBuffer` devolve.
         mem_ref.Escrever32(obj + 0, g_vtable_bitmap);
         mem_ref.Escrever32(obj + 4, 1);
-        mem_ref.Escrever32(obj + 8, pdata);
-        mem_ref.Escrever32(obj + 12, static_cast<std::uint32_t>(cx > 0 ? cx : 1));
-        mem_ref.Escrever32(obj + 16, static_cast<std::uint32_t>(cy > 0 ? cy : 1));
-        cpu.Set(kR0, obj);
+        mem_ref.Escrever32(obj + 8, 0);  // pData -- por atribuir
+        mem_ref.Escrever32(obj + 12, w);
+        mem_ref.Escrever32(obj + 16, h);
+        mem_ref.Escrever32(obj + 20, prof);
+        if (ppidib != 0) mem_ref.Escrever32(ppidib, obj);
+        cpu.Set(kR0, 0);
       } else if (idx == kSlotIdGetFontMetrics) {
-        // `void GetFontMetrics(IDisplay *po, AEEFontMetrics *pfm)`. Valores
-        // DECLARADOS de uma fonte de 12 px -- o jogo precisa de numeros para
-        // calcular posicoes, e zero faria tudo colapsar numa linha.
-        const std::uint32_t pfm = cpu.Get(kR1);
-        if (pfm != 0) {
-          mem_ref.Escrever32(pfm + 0, 0);   // nAscent
-          mem_ref.Escrever32(pfm + 4, 0);   // nDescent
-          mem_ref.Escrever16(pfm + 8, 12);  // cy
-        }
-        cpu.Set(kR0, 0);
+        // `int GetFontMetrics(IDisplay *po, AEEFont nFont, int *pnAscent,
+        //                     int *pnDescent)`.
+        //
+        // ASSINATURA CORRIGIDA: o r1 e a FONTE e o r2/r3 sao os dois ponteiros de
+        // saida. Eu tinha escrito a versao do BREW 4.x, com uma struct de
+        // metricas no r1 -- que aqui seria lido como um `AEEFont` e a escrita
+        // ia para o sitio errado. **Este era um defeito silencioso de verdade.**
+        const std::uint32_t pascent = cpu.Get(kR2), pdescent = cpu.Get(kR3);
+        const int asc = -10, desc = 2;  // fonte de 12 px, valores DECLARADOS
+        if (pascent != 0) mem_ref.Escrever32(pascent, static_cast<std::uint32_t>(asc));
+        if (pdescent != 0) mem_ref.Escrever32(pdescent, static_cast<std::uint32_t>(desc));
+        cpu.Set(kR0, 12);
       } else if (idx == kSlotIdMeasureText) {
-        // `void MeasureTextEx(IDisplay *po, const AECHAR *pText, int nChars,
-        //                     AEERect *prc)`. Devolve uma largura DECLARADA: 8 px
-        // por caracter, que e a fonte de 12 px medida acima.
-        const std::uint32_t prc = cpu.Get(kR3);
-        const std::uint32_t n = cpu.Get(kR2);
-        if (prc != 0) {
-          mem_ref.Escrever32(prc + 8, (n > 0 ? n : 1) * 8);
-          mem_ref.Escrever32(prc + 12, 12);
+        // `int MeasureTextEx(IDisplay *po, AEEFont nFont, const AECHAR *pcText,
+        //                    int nChars, int nMaxWidth, int *pnFits)`.
+        //
+        // ASSINATURA CORRIGIDA: `pnFits` e o 6.o argumento, na pilha, e recebe a
+        // largura que CABE. Largura DECLARADA de 8 px por caracter.
+        const std::uint32_t n = cpu.Get(kR3);
+        const std::uint32_t nmax = mem_ref.Ler32(cpu.Get(kSP) + 0);
+        const std::uint32_t pfits = mem_ref.Ler32(cpu.Get(kSP) + 4);
+        const std::uint32_t larg = (n > 0 ? n : 1) * 8;
+        if (pfits != 0) {
+          mem_ref.Escrever32(pfits, nmax == 0 ? larg : (larg < nmax ? larg : nmax));
         }
-        cpu.Set(kR0, 0);
+        cpu.Set(kR0, static_cast<std::uint32_t>(larg));
       } else if (idx == kSlotIdUpdate) {
         ++g_updates;
+        cpu.Set(kR0, 0);
+      } else if (idx == kSlotIdBacklight) {
+        // `void Backlight(IDisplay *po, boolean bOn)`. Sem ecra fisico: conta.
+        ++g_backlights;
         cpu.Set(kR0, 0);
       } else if (idx == kSlotIdSetTimer) {
         // `int SetTimer(IShell *po, AEECallback *pcb, int msecs)`. Guarda o
@@ -619,6 +706,37 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
                      "cb=0x" + std::to_string(g_timer.callback) + " em " +
                          std::to_string(cpu.Get(kR2)) + " ms");
         cpu.Set(kR0, kAeeSuccess);
+      } else if (idx == kSlotIdGetUpTime) {
+        cpu.Set(kR0, static_cast<std::uint32_t>(g_agora_ms));
+      } else if (idx == kSlotIdGetAppInstance) {
+        // `void *GetAppInstance(void)` -- o ponteiro do applet, para o codigo que
+        // nao tem o `po` a mao. Nao tem argumentos: os registos que a bateria
+        // imprime sao RESIDUAIS, e foi por isso que quase persegui uma "fuga de
+        // enderecos de saida para o guest" que nao existia.
+        cpu.Set(kR0, g_applet);
+      } else if (idx == kSlotIdQueryClass) {
+        // `boolean QueryClass(IShell *po, AEECLSID cls, AEEAppInfo *pai)`.
+        //
+        // Responde se a classe existe, e preenche o `AEEAppInfo` quando ha
+        // ponteiro. As classes que SEI criar sao as que o `QueryInterface` e o
+        // `CreateInstance` ja servem; o resto devolve FALSE -- recusar, nao
+        // mentir. Um `AEEAppInfo` a zeros com `TRUE` seria a versao em dados do
+        // stub silencioso.
+        const std::uint32_t cls = cpu.Get(kR1);
+        const std::uint32_t pai = cpu.Get(kR2);
+        const bool conhecida = (cls == kIidDisplay || cls == kIidFileMgr ||
+                                cls == kIidHeap || cls == kIidFile || cls == kIidSound ||
+                                cls == kIidGraphics || cls == kIidRootForm ||
+                                cls == kIidHid || cls == kIidSqlMgr);
+        if (pai != 0) {
+          // AEEAppInfo: cls(0), pszName(4), pszIcon(8), dwIconSize(12), ...
+          mem_ref.Escrever32(pai + 0, cls);
+          mem_ref.Escrever32(pai + 4, 0);
+          mem_ref.Escrever32(pai + 8, 0);
+          mem_ref.Escrever32(pai + 12, 0);
+          mem_ref.Escrever32(pai + 16, 0);
+        }
+        cpu.Set(kR0, conhecida ? 1u : 0u);
       } else if (idx == kSlotIdFmTest) {
         // `int Test(IFileMgr *po, const char *pszName)` -- devolve AEE_SUCCESS
         // se o ficheiro existe no sistema de ficheiros virtual.
@@ -751,49 +869,41 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   s.ativa = true;
   cpu.ConfigurarSaidas(s);
   g_vtable_bitmap = s.Endereco(kVtableBitmap);
-  mem.Escrever32(kTabela + 0x68, s.Endereco(0));  // malloc
-  mem.Escrever32(kTabela + 0x6c, s.Endereco(1));  // free
-  // `dbgprintf` (0x09c) passa a ser SERVIDO: e o slot mais pedido depois do
-  // malloc, medido (16 titulos). Le a cadeia de formato do guest e escreve-a.
-  // Nao interpreta os `%` -- o texto cru ja diz de que titulo se trata.
-  mem.Escrever32(kTabela + kSlotDbgPrintf, s.Endereco(kBaseDoSlot + 500));
-  mem.Escrever32(kTabela + kSlotStrlen, s.Endereco(kSlotIdStrlen));
-  mem.Escrever32(kTabela + kSlotMemset, s.Endereco(kSlotIdMemset));
-  mem.Escrever32(kTabela + kSlotStrcpy, s.Endereco(kSlotIdStrcpy));
-  mem.Escrever32(kTabela + kSlotStrcmp, s.Endereco(kSlotIdStrcmp));
-  mem.Escrever32(kTabela + kSlotStrchr, s.Endereco(kSlotIdStrchr));
-  mem.Escrever32(kTabela + kSlotMemmove, s.Endereco(kSlotIdMemmove));
-  mem.Escrever32(kTabela + kSlotStrtowstr, s.Endereco(kSlotIdStrtowstr));
-  mem.Escrever32(kTabela + kSlotGetAeeVersion, s.Endereco(kSlotIdGetAeeVersion));
-  mem.Escrever32(kTabela + kSlotAeeGetRand, s.Endereco(kSlotIdAeeGetRand));
-  // TODOS os outros slots da tabela recebem um endereco que RECUSA em voz alta,
-  // em vez de ficarem a ZERO.
+  // A TABELA UNICA: offset no `AEEHelperFuncs` x endereco de saida da
+  // implementacao.
   //
-  // MEDIDO, e foi a medicao que mudou o rumo: com os slots a zero, 61 dos 62
-  // titulos saem do modulo com `saiu_do_modulo_para_0x0` -- o `bx` do modulo cai
-  // em memoria nula e nao ha nada a aprender dali. Com um stub que recusa, o
-  // pedido fica REGISTADO com o nome do slot, e a bateria diz o que cada titulo
-  // precisa em vez de dizer que saltou para zero.
+  // E uma so lista de proposito. Havia duas -- as escritas individuais e uma
+  // lista de "quem ja tem implementacao" que o laco de preenchimento consultava
+  // -- e eu esqueci-me de acrescentar a segunda UMA vez. O sintoma foi identico
+  // ao do erro que essa lista existia para evitar: a bateria a dizer "falta
+  // aee_GetUpTimeMS" com o `aee_GetUpTimeMS` escrito e a funcionar.
   //
-  // E o principio P2 do desenho: stub silencioso e proibido. Aqui o "silencio"
-  // era literalmente o endereco zero.
-  // QUEM JA TEM IMPLEMENTACAO. O laco abaixo enche o resto com o stub que
-  // recusa -- e tem de SALTAR estes, senao sobrescreve-os.
-  //
-  // Esta lista existe por causa do erro mais reincidente desta sessao, que
-  // apareceu QUATRO vezes: um passo generico a atropelar trabalho especifico. As
-  // tres primeiras foram na ordem dos testes de descodificacao; esta foi um laco
-  // de preenchimento a apagar implementacoes ja escritas -- e o sintoma era a
-  // bateria continuar a dizer "falta strlen" com o `strlen` escrito e a
-  // funcionar. Com uma lista explicita, o erro passa a ser impossivel por
-  // construcao, em vez de depender de a ordem estar certa.
-  const std::uint32_t implementados[] = {
-      kSlotMemmove, kSlotMemset, kSlotStrcpy, kSlotStrcmp, kSlotStrlen, kSlotStrchr,
-      kSlotStrtowstr, kSlotGetAeeVersion, kSlotAeeGetRand, kSlotDbgPrintf,
+  // **Duas listas que tem de concordar sao zero listas.** Com uma so, e
+  // impossivel acrescentar uma implementacao sem que o laco a respeite.
+  const struct { std::uint32_t off; std::uint32_t saida; } kAjudantesLigados[] = {
+      {0x68, 0},  // malloc -- tratado a parte, pelo alocador
+      {0x6c, 1},  // free
+      {kSlotDbgPrintf, kBaseDoSlot + 500},
+      {kSlotStrlen, kSlotIdStrlen},
+      {kSlotMemset, kSlotIdMemset},
+      {kSlotStrcpy, kSlotIdStrcpy},
+      {kSlotStrcmp, kSlotIdStrcmp},
+      {kSlotStrchr, kSlotIdStrchr},
+      {kSlotMemmove, kSlotIdMemmove},
+      {kSlotStrtowstr, kSlotIdStrtowstr},
+      {kSlotGetAeeVersion, kSlotIdGetAeeVersion},
+      {kSlotAeeGetRand, kSlotIdAeeGetRand},
+      // `aee_GetUpTimeMS`: o relogio do sistema, pedido por 11 titulos. Devolve
+      // o tempo VIRTUAL, e nao o do sistema -- e o que mantem o determinismo.
+      {0x0b0, kSlotIdGetUpTime},   // aee_GetUpTimeMS (derivado da struct, 0x0b0)
+      {0x0c0, kSlotIdGetAppInstance},
   };
+  for (const auto& lig : kAjudantesLigados) {
+    mem.Escrever32(kTabela + lig.off, s.Endereco(lig.saida));
+  }
   const auto ja_tem = [&](std::uint32_t off) {
-    for (std::uint32_t x : implementados) {
-      if (x == off) return true;
+    for (const auto& lig : kAjudantesLigados) {
+      if (lig.off == off) return true;
     }
     return false;
   };
@@ -821,6 +931,18 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   // (QueryInterface) com o IID no r1 e o ponteiro de saida no r2.
   ConstruirShell(mem, s, kObjDisplay, s.Endereco(kVtableDisplay), 64, kVtableDisplay);
   ConstruirShell(mem, s, kObjFileMgr, s.Endereco(kVtableFileMgr), 64, kVtableFileMgr);
+
+  // Um objecto generico para as interfaces que ainda nao tem implementacao.
+  //
+  // MOTIVO, e e uma decisao de honestidade: quando o `QueryInterface` recusa, o
+  // jogo desiste e a bateria nao aprende nada sobre ele. Quando devolve um
+  // objecto cujos slots RECUSAM em voz alta, a bateria aprende QUAL metodo
+  // daquela interface o jogo quer -- e a lista de demanda cresce em vez de
+  // parar. O que NAO se faz e devolver sucesso com um objecto que finge
+  // funcionar (principio P2).
+  for (std::uint32_t k = 0; k < kNGenericos; ++k) {
+    ConstruirShell(mem, s, ObjGenerico(k), s.Endereco(VtGenerico(k)), 64, VtGenerico(k));
+  }
   // Os slots do IFileMgr que o corpus pede, e que tem implementacao.
   mem.Escrever32(s.Endereco(kVtableFileMgr + kFmTest), s.Endereco(kSlotIdFmTest));
   mem.Escrever32(s.Endereco(kVtableFileMgr + kFmGetFreeSpace), s.Endereco(kSlotIdFmFree));
@@ -844,7 +966,9 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   mem.Escrever32(s.Endereco(kVtableDisplay) + kDisSetColor * 4, s.Endereco(kSlotIdSetColor));
   mem.Escrever32(s.Endereco(kVtableDisplay) + kDisSetClipRect * 4, s.Endereco(kSlotIdSetClipRect));
   mem.Escrever32(s.Endereco(kVtableDisplay) + kDisUpdate * 4, s.Endereco(kSlotIdUpdate));
+  mem.Escrever32(s.Endereco(kVtableDisplay) + 10 * 4, s.Endereco(kSlotIdBacklight));  // Backlight
   mem.Escrever32(s.Endereco(kVtableDisplay) + kDisCreateDIBitmap * 4, s.Endereco(kSlotIdCreateDIBitmap));
+  mem.Escrever32(s.Endereco(kVtableShell) + 4 * 4, s.Endereco(kSlotIdQueryClass));
 
   const auto carga = CarregarMod(mem, imagem, kBase, kTabela, &traco);
   if (!carga.ok) { e.motivo = "carga_recusada:" + carga.motivo; return e; }
@@ -856,6 +980,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   cpu.Set(kLR, kSentinela);
   CorrerFase(cpu, al, mem, traco, kLimite, &e.passos_carga, &e.motivo, kPPMod);
   e.recusadas = cpu.InstruscoesRecusadas();
+  g_applet = mem.Ler32(kPPObj);  // para o `GetAppInstance`
 
   const std::uint32_t modulo = mem.Ler32(kPPMod);
   e.modulo = modulo != 0;
@@ -896,6 +1021,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   std::string motivo_create;
   CorrerFase(cpu, al, mem, traco, kLimite, &e.passos_create, &motivo_create, kPPObj);
   e.recusadas = cpu.InstruscoesRecusadas();
+  g_applet = mem.Ler32(kPPObj);  // para o `GetAppInstance`
   e.create = mem.Ler32(kPPObj) != 0;
   e.motivo += " | create:" + motivo_create;
   if (!e.create) e.motivo += "_sem_applet";
