@@ -232,6 +232,8 @@ int main(int argc, char** argv) {
   for (int k = 0; k < 4; ++k) mem.Escrever32(cores + 4u * k, 0xFFFFFFFFu);
   for (int k = 0; k < 6; ++k) mem.Escrever32(coords + 4u * k, 0);
   const std::uint32_t destino_textura = kBanda + 0x300, destino_int = kBanda + 0x340;
+  const std::uint32_t vetor_parametros = kBanda + 0x380;
+  for (int k = 0; k < 4; ++k) mem.Escrever32(vetor_parametros + 4u * k, 0);
 
   // Os argumentos, por slot. Nao ha aqui nenhum numero de slot escrito a mao: a
   // chave e a constante GERADA do cabecalho, e e por isso que renomear um slot
@@ -274,6 +276,19 @@ int main(int argc, char** argv) {
       case kIgl_DrawArrays: return {{GL_TRIANGLES, 0, 3, 0}, {}};
       case kIgl_DrawElements: return {{GL_TRIANGLES, 3, GL_UNSIGNED_SHORT, vertices}, {}};
       case kIgl_GetIntegerv: return {{GL_MAX_MODELVIEW_STACK_DEPTH, destino_int, 0, 0}, {}};
+      // A unidade de textura existe no cabecalho (`GL_TEXTURE0`); passar zero
+      // fazia o modulo recusar por um motivo que era da SONDA e nao do modulo.
+      case kIgl_ActiveTexture:
+      case kIgl_ClientActiveTexture: return {{GL_TEXTURE0, 0, 0, 0}, {}};
+      // As familias que so acumulam parametros levam um vector A SERIO, lido da
+      // memoria do guest. Com o ponteiro a zero, a recusa era "sem vector" -- e a
+      // lista de recusas ficava a misturar as falhas da sonda com as do modulo.
+      case kIgl_Fogxv:
+      case kIgl_LightModelxv:
+      case kIgl_Lightxv:
+      case kIgl_Materialxv:
+      case kIgl_TexEnvxv: return {{GL_FOG, vetor_parametros, 0, 0}, {}};
+      case kIgl_PushMatrix: return {{0, 0, 0, 0}, {}};
       default: return {{0, 0, 0, 0}, {}};
     }
   };
@@ -294,9 +309,15 @@ int main(int argc, char** argv) {
       case kIgl_TexCoordPointer:
       case kIgl_NormalPointer:
         return 0;
+      // O `glPopMatrix` so tem sentido DEPOIS de um `glPushMatrix`: um pop numa
+      // pilha vazia recusa, e a recusa seria verdadeira e inutil.
+      case kIgl_PushMatrix:
+        return 0;
       case kIgl_DrawArrays:
       case kIgl_DrawElements:
         return 2;
+      case kIgl_PopMatrix:
+        return 3;
       default:
         return 1;
     }
