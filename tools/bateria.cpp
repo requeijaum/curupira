@@ -54,6 +54,7 @@ constexpr std::uint32_t kBaseDoSlot = 1000;
 // Os slots da vtable do IShell comecam aqui, para o mesmo efeito: saber QUAL
 // metodo da interface cada titulo chama, e nao so que chamou algum.
 constexpr std::uint32_t kBaseDoShell = 2000;
+constexpr std::uint32_t kVtableShell = 1000;
 constexpr std::uint32_t kVtableDisplay = 6000;
 constexpr std::uint32_t kVtableFileMgr = 7000;
 
@@ -102,6 +103,23 @@ constexpr std::uint32_t kSlotIdStrchr = 1508;
 constexpr std::uint32_t kSlotIdFmTest = 1510;
 constexpr std::uint32_t kSlotIdFmFree = 1511;
 constexpr std::uint32_t kSlotIdFmLastErr = 1512;
+constexpr std::uint32_t kSlotIdSetTimer = 1520;
+// Os slots do IShell, na ordem que `platform/system/inc/AEEIShell.h` declara em
+// `INHERIT_IShell`. Lido campo a campo, e nao copiado.
+enum : std::uint32_t {
+  kSheCreateInstance = 3,
+  kSheSetTimer = 12,     // <<< o pedido de demanda mais alto depois do QI
+  kSheCancelTimer = 14,
+  kSheSendEvent = 25,
+  kSheForceExit = 41,
+};
+// Um temporizador pedido pelo guest. Um so, porque e o que os titulos pedem:
+// o laco de quadro, re-armado pelo proprio callback.
+struct Temporizador {
+  bool ativo = false;
+  std::uint32_t callback = 0;   // AEECallback*
+  std::int64_t vence_em_ms = 0;
+};
 constexpr std::uint32_t kSlotGetAeeVersion = 0x08c;
 
 struct Titulo {
@@ -214,6 +232,8 @@ const char* NomeDoSlot(std::uint32_t off) {
 // modulo, no disco do hospedeiro. Nao ha escrita, e uma tentativa de escrita
 // falha -- principio do desenho: nao escrever nas midias do utilizador.
 std::set<std::string>* g_vfs = nullptr;
+std::int64_t g_agora_ms = 0;
+Temporizador g_timer;
 bool g_vfs_registado = false;
 bool vfs_tem(const std::string& nome) {
   if (g_vfs == nullptr) return false;
@@ -243,9 +263,18 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
                 std::uint32_t pp_out) {
   *passos = 0;
   std::uint32_t saidas = 0;
+  bool continuar_no_laco = false;
   while (*passos < limite) {
     const std::uint32_t pc = cpu.Get(kPC);
-    if (pc == kSentinela) { *motivo = "retornou"; return; }
+    if (pc == kSentinela) {
+      // A sentinela tem dois significados: o retorno da chamada de entrada, ou
+      // o retorno de um callback de temporizador. Distinguir os dois e o que
+      // permite o laco de eventos -- sem isto, o primeiro callback do jogo
+      // seria lido como "o modulo retornou".
+      if (continuar_no_laco) { continuar_no_laco = false; continue; }
+      *motivo = "retornou";
+      return;
+    }
     std::uint32_t idx = 0;
     if (cpu.GetSaidas().Contem(pc, &idx)) {
       const std::uint32_t lr = cpu.Get(kLR);
@@ -381,6 +410,20 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         static std::uint32_t semente = 0x12345678u;
         semente = semente * 1103515245u + 12345u;
         cpu.Set(kR0, (semente >> 16) & 0x7FFFu);
+      } else if (idx == kSlotIdSetTimer) {
+        // `int SetTimer(IShell *po, AEECallback *pcb, int msecs)`. Guarda o
+        // pedido; quem o cumpre e o laco, adiante.
+        //
+        // E o pedido de demanda mais alto do IShell, e faz sentido: em BREW o
+        // laco de quadro do jogo vive AQUI -- o app arma um temporizador e o
+        // proprio callback re-arma o seguinte. Sem isto nenhum jogo anda.
+        g_timer.ativo = true;
+        g_timer.callback = cpu.Get(kR1);
+        g_timer.vence_em_ms = g_agora_ms + static_cast<std::int64_t>(cpu.Get(kR2));
+        traco.Emitir(Area::Guarda, Nivel::Depuracao, "SET_TIMER",
+                     "cb=0x" + std::to_string(g_timer.callback) + " em " +
+                         std::to_string(cpu.Get(kR2)) + " ms");
+        cpu.Set(kR0, kAeeSuccess);
       } else if (idx == kSlotIdFmTest) {
         // `int Test(IFileMgr *po, const char *pszName)` -- devolve AEE_SUCCESS
         // se o ficheiro existe no sistema de ficheiros virtual.
@@ -435,6 +478,30 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
       (void)pp_out;
       return;
     }
+    // O LACO DE EVENTOS, em tempo VIRTUAL (principio P4): a cada passo avanca-se
+    // 1 ms de tempo emulado, e um temporizador vencido e cumprido aqui.
+    //
+    // O callback de um `AEECallback` e um par `(funcao, contexto)` nos dois
+    // primeiros campos. Chama-se com o contexto no r0, como o SDK define, e o
+    // proprio callback re-arma o temporizador -- que e como um laco de quadro
+    // se sustenta em BREW.
+    ++g_agora_ms;
+    if (g_timer.ativo && g_agora_ms >= g_timer.vence_em_ms && g_timer.callback != 0) {
+      const std::uint32_t fn = mem_ref.Ler32(g_timer.callback);
+      const std::uint32_t ctx = mem_ref.Ler32(g_timer.callback + 4);
+      g_timer.ativo = false;
+      if (fn >= kBase && fn < kBase + 0x01000000u) {
+        ++*passos;
+        const std::uint32_t pc_salvo = cpu.Get(kPC);
+        const std::uint32_t lr_salvo = cpu.Get(kLR);
+        cpu.Set(kLR, kSentinela);       // o retorno do callback volta para ca
+        cpu.Set(kPC, fn);
+        cpu.Set(kR0, ctx);
+        continuar_no_laco = true;
+        (void)pc_salvo; (void)lr_salvo;
+      }
+    }
+
     if (saidas > 200) { *motivo = "parou_em_slot_nao_implementado"; return; }
     cpu.Passo();
     ++*passos;
@@ -543,7 +610,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   // As vtables das interfaces ficam ACIMA da tabela de ajudantes, dentro da
   // mesma faixa de saida. Enderecos distintos por interface.
   const std::uint32_t kShell = 0x80020000u;
-  ConstruirShell(mem, s, kShell, s.Endereco(1000), 64);
+  ConstruirShell(mem, s, kShell, s.Endereco(kVtableShell), 64);
 
   // As interfaces que o shell entrega por QueryInterface.
   //
