@@ -17,18 +17,41 @@ namespace {
 // O nome do slot de cada classe, vindo da tabela GERADA (`tools/brew_slots.inc`,
 // gerada de `AEEText.h`, `AEEIAppHistory.h` e `AEEIValueModel.h`). Um nome de
 // slot escrito a mao seria exactamente o numero transcrito de memoria que o
-// gerador existe para impedir.
+// gerador existe para impedir. Excecao: IThread (AEEThread.h + AEEIRscPool.h +
+// AEEIQI.h), sem entrada no gerador; nomes declarados abaixo, na ordem do
+// cabecalho (IQI 3 + RscPool 4 + Thread 5 = 12).
+const char* NomeDoSlotThread(unsigned slot) {
+  switch (slot) {
+    case 0: return "AddRef";
+    case 1: return "Release";
+    case 2: return "QueryInterface";
+    case 3: return "Malloc";
+    case 4: return "Free";
+    case 5: return "HoldRsc";
+    case 6: return "ReleaseRsc";
+    case 7: return "Start";
+    case 8: return "Exit";
+    case 9: return "Join";
+    case 10: return "Suspend";
+    case 11: return "GetResumeCBK";
+    default: return "?";
+  }
+}
+
 const char* (*const kNomeDoSlot[])(unsigned) = {
     &brew_slots::NomeDeAppHistory,
     &brew_slots::NomeDeValueModel,
     &brew_slots::NomeDeTextCtl,
+    &NomeDoSlotThread,
 };
 
-// Quantos slots cada interface TEM, do mesmo cabecalho.
+// Quantos slots cada interface TEM, do mesmo cabecalho (IThread: 12, medido em
+// AEEThread.h/AEEIRscPool.h/AEEIQI.h).
 const std::uint32_t kSlotsDaInterface[] = {
     brew_slots::kAppHistorySlots,
     brew_slots::kValueModelSlots,
     brew_slots::kTextCtlSlots,
+    12,
 };
 
 // OS NOMES QUE A DEMANDA VAI MOSTRAR. O CLSID vem da constante gerada em
@@ -43,6 +66,7 @@ constexpr Ficha kFichas[kQuantasClasses] = {
     {brew_clsids::kClsid_AppHistory, "AEECLSID_AppHistory", "IAppHistory"},
     {brew_clsids::kClsid_VALUEMODEL_1, "AEECLSID_VALUEMODEL_1", "IValueModel"},
     {brew_clsids::kClsid_TEXTCTL, "AEECLSID_TEXTCTL", "ITextCtl"},
+    {brew_clsids::kClsid_THREAD, "AEECLSID_THREAD", "IThread"},
 };
 
 // OS TRES CLSIDs, lidos do `.inc` gerado. Se um deles divergir do cabecalho, a
@@ -53,6 +77,8 @@ static_assert(brew_clsids::kClsid_TEXTCTL == 0x01003109u,
               "AEECLSID_TEXTCTL tem de ser 0x01003109 (AEEClassIDs.h:209)");
 static_assert(brew_clsids::kClsid_VALUEMODEL_1 == 0x01028e3cu,
               "AEECLSID_VALUEMODEL_1 tem de ser 0x01028e3c (AEECLSID_VALUEMODEL_1.bid:31)");
+static_assert(brew_clsids::kClsid_THREAD == 0x01001017u,
+              "AEECLSID_THREAD tem de ser 0x01001017 (AEEClassIDs.h:84)");
 
 // O `IAppHistory` TEM 16 slots, e o `Top` e o slot 5 -- nao um numero escrito
 // aqui: sai da cadeia de heranca (`INHERIT_IQI` = 3, mais `Forward`, `Back`,

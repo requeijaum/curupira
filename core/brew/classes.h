@@ -105,7 +105,8 @@ enum class Classe : std::uint32_t {
   kAppHistory = 0,
   kValueModel_1 = 1,
   kTextCtl = 2,
-  kQuantas = 3,
+  kThread = 3,
+  kQuantas = 4,
 };
 
 constexpr std::uint32_t kQuantasClasses = static_cast<std::uint32_t>(Classe::kQuantas);

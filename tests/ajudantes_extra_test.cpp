@@ -463,10 +463,62 @@ TEST(AjudantesExtra, OffsetForaDaTabelaNaoERecusadoAqui) {
 }
 
 TEST(AjudantesExtra, ImplementadosSaoCincoEATodosNoCatalogo) {
-  EXPECT_EQ(AjudantesExtra::Implementados(), 5u);
-  for (std::uint32_t off : {0x0D8u, 0x044u, 0x050u, 0x0E8u, 0x138u}) {
+  EXPECT_EQ(AjudantesExtra::Implementados(), 6u);
+  for (std::uint32_t off : {0x0D8u, 0x044u, 0x050u, 0x0E8u, 0x138u, 0x0F4u}) {
     EXPECT_NE(DeclaracaoDoOffset(off), nullptr) << "0x" << std::hex << off;
   }
+}
+
+TEST(AjudantesExtra, StrdupCopiaComNulEDaPonteiroNovo) {
+  Bancada b;
+  b.EscreverCadeia(kTexto, "ola");
+  b.cpu.Set(kR0, kTexto);
+  EXPECT_EQ(b.Atender(0x0F4), Atendimento::Implementado);
+  const std::uint32_t p = b.cpu.Get(kR0);
+  EXPECT_NE(p, 0u);
+  EXPECT_NE(p, kTexto);
+  EXPECT_EQ(b.LerCadeia(p), "ola");
+  EXPECT_EQ(b.mem.Ler8(p + 3), 0u);
+  // Segunda chamada devolve endereco diferente com mesmo conteudo: e copia.
+  b.cpu.Set(kR0, kTexto);
+  b.Atender(0x0F4);
+  const std::uint32_t p2 = b.cpu.Get(kR0);
+  EXPECT_NE(p2, 0u);
+  EXPECT_NE(p2, p);
+  EXPECT_EQ(b.LerCadeia(p2), "ola");
+}
+
+TEST(AjudantesExtra, StrdupVaziaDaPonteiroValidoComNul) {
+  Bancada b;
+  b.EscreverCadeia(kTexto, "");
+  b.cpu.Set(kR0, kTexto);
+  EXPECT_EQ(b.Atender(0x0F4), Atendimento::Implementado);
+  const std::uint32_t p = b.cpu.Get(kR0);
+  EXPECT_NE(p, 0u);
+  EXPECT_EQ(b.mem.Ler8(p), 0u);
+}
+
+TEST(AjudantesExtra, StrdupNulaRecusaERegista) {
+  Bancada b;
+  b.cpu.Set(kR0, 0);
+  EXPECT_EQ(b.Atender(0x0F4), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u);
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x0f4] strdup"), 1u);
+}
+
+TEST(AjudantesExtra, StrdupSemMemoriaRecusaERegista) {
+  Bancada b;
+  b.EscreverCadeia(kTexto, "abc");
+  // Enche o heap: aloca o maior bloco possivel (heap - cabecalho).
+  // Depois disto nao cabe mais nada, como prova GetRamFreeOMaiorReportadoCabeMesmo.
+  const std::uint32_t grande = b.alocador.Malloc(kHeapTamanho - 16);
+  ASSERT_NE(grande, 0u);
+  b.cpu.Set(kR0, kTexto);
+  EXPECT_EQ(b.Atender(0x0F4), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u);
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x0f4] strdup"), 1u);
+  EXPECT_NE(b.DetalheDaFalta("AEEHelperFuncs[0x0f4] strdup").find("sem memoria"),
+            std::string::npos);
 }
 
 TEST(AjudantesExtra, OContratoDoGanchoEDeUmaLinha) {

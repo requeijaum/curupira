@@ -415,6 +415,45 @@ void FazerStristr(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
 }
 
 // ---------------------------------------------------------------------------
+// 0x0F4 -- `char *(*strdup)(const char *psz)` (AEEStdLib.h linha 159)
+// ---------------------------------------------------------------------------
+//
+// r0 = psz; devolve copia no heap do Alocador, ou NULL.
+// Semantica libc: malloc(strlen+1), copia com NUL.
+void FazerStrdup(Memoria& mem, Alocador& al, ICpu& cpu, Traco& traco) {
+  const std::uint32_t p_in = cpu.Get(kR0);
+  if (p_in == 0) {
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_strdup, "ponteiro nulo",
+                   DetalheDosRegistos(cpu));
+    cpu.Set(kR0, 0);
+    return;
+  }
+  std::string s;
+  const std::size_t n = mem.LerCadeia(p_in, &s, kLimiteDeCadeia);
+  if (n == kLimiteDeCadeia && mem.Ler8(p_in + static_cast<std::uint32_t>(n)) != 0) {
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_strdup,
+                   "cadeia de entrada sem fim (limite de caracteres)",
+                   DetalheDosRegistos(cpu));
+    cpu.Set(kR0, 0);
+    return;
+  }
+  const std::uint32_t saida = al.Malloc(static_cast<std::uint32_t>(n + 1));
+  if (saida == 0) {
+    char det[96];
+    std::snprintf(det, sizeof(det), "sem memoria: n=%zu", n);
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_strdup, "sem memoria", det);
+    cpu.Set(kR0, 0);
+    return;
+  }
+  if (!s.empty()) mem.EscreverBloco(saida, s.data(), static_cast<std::uint32_t>(n));
+  mem.Escrever8(saida + static_cast<std::uint32_t>(n), 0);
+  cpu.Set(kR0, saida);
+  char det[96];
+  std::snprintf(det, sizeof(det), "n=%zu -> 0x%08x", n, saida);
+  EmitirChamada(traco, brew_ajudantes::kAjudante_strdup, det);
+}
+
+// ---------------------------------------------------------------------------
 // A LISTA DAS IMPLEMENTACOES
 // ---------------------------------------------------------------------------
 //
@@ -434,6 +473,7 @@ constexpr Implementacao kImplementados[] = {
     {brew_ajudantes::kAjudante_utf8towstr, "utf8towstr", FazerUtf8ToWstr},
     {brew_ajudantes::kAjudante_stristr, "stristr", FazerStristr},
     {brew_ajudantes::kAjudante_GetRAMFree, "GetRAMFree", FazerGetRamFree},
+    {brew_ajudantes::kAjudante_strdup, "strdup", FazerStrdup},
 };
 
 // AS ANCORAS DA LISTA, verificadas em tempo de COMPILACAO. Cada uma e um offset
@@ -451,9 +491,10 @@ static_assert(brew_ajudantes::kAjudante_vsprintf == 0x13C, "0x13c e vsprintf");
 static_assert(brew_ajudantes::kAjudante_wstrtostr == 0x044, "0x044 e wstrtostr");
 static_assert(brew_ajudantes::kAjudante_utf8towstr == 0x050, "0x050 e utf8towstr");
 static_assert(brew_ajudantes::kAjudante_GetRAMFree == 0x138, "0x138 e GetRAMFree");
+static_assert(brew_ajudantes::kAjudante_strdup == 0x0F4, "0x0f4 e strdup");
 static_assert(
     sizeof(kImplementados) / sizeof(kImplementados[0]) ==
-        5,
+        6,
     "a lista das implementacoes mudou: actualiza o numero e o teste");
 
 }  // namespace

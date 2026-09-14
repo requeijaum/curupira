@@ -202,8 +202,10 @@ ResultadoDoRecurso Recursos::Atender(const PedidoDeRecurso& pedido) {
     // ao jogo um buffer com lixo no fim, sem nada a acusar.
     const std::uint32_t cabem = mem_.Ler32(pedido.pn_tamanho);
     if (cabem < tamanho) {
-      Recusar(pedido.ficheiro + ": buffer do chamador com " + Hex(cabem) + " bytes para um recurso de " +
-                  Hex(tamanho) + " (o SDK devolve NULL e nao escreve)", &r);
+      Recusar(pedido.ficheiro + " id=" + std::to_string(pedido.id) + " tipo=" +
+                  std::to_string(pedido.tipo) + ": buffer do chamador com " + Hex(cabem) +
+                  " bytes para um recurso de " + Hex(tamanho) + " (o SDK devolve NULL e nao escreve)",
+              &r);
       return r;
     }
     mem_.EscreverBloco(pedido.buffer, recurso.dados, tamanho);

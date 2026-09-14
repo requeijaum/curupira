@@ -581,6 +581,51 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // alocador corromperia o heap silenciosamente.
         (void)recursos_.Libertar(cpu.Get(kR1));
         cpu.Set(kR0, kAeeSuccess);  // método void; a recusa fica no Traco.
+      } else if (idx == kBaseDoShell + brew_slots::kShell_GetDeviceInfoEx) {
+        // `int GetDeviceInfoEx(IShell*, AEEDeviceItem, void*, int*)` (AEEIShell.h).
+        // Pedido 2x na bateria (recklessracing, rt2): nItem=0x29=41=MODEL_NAME.
+        // *pnSize e in/out: entrada = bytes do buffer, saida = bytes necessarios.
+        const std::uint32_t item = cpu.Get(kR1);
+        const std::uint32_t p_buf = cpu.Get(kR2);
+        const std::uint32_t p_tam = cpu.Get(kR3);
+        constexpr std::uint32_t kItemModelName = 0x29u;
+        // u"Zeebo" DECLARADO (sem medicao): 5 AECHAR + NUL = 12 bytes UTF-16LE.
+        constexpr std::uint16_t kModelo[] = {'Z', 'e', 'e', 'b', 'o', 0};
+        constexpr std::uint32_t kNecessario = sizeof(kModelo);
+        if (p_tam == 0) {
+          cpu.Set(kR0, kAeeBadParm);
+        } else if (item != kItemModelName) {
+          char det[64];
+          std::snprintf(det, sizeof(det), "nItem=0x%08x sem suporte", item);
+          traco_.RegistarFalta(Area::Brew, "IShell::GetDeviceInfoEx", det);
+          cpu.Set(kR0, kAeeUnsupported);
+        } else if (p_buf == 0) {
+          mem_.Escrever32(p_tam, kNecessario);
+          cpu.Set(kR0, kAeeSuccess);
+          traco_.Emitir(Area::Brew, Nivel::Depuracao, "ISHELL_GETDEVICEINFOEX",
+                        "MODEL_NAME so-tamanho -> 12");
+        } else {
+          const std::uint32_t cabem = mem_.Ler32(p_tam);
+          if (cabem >= kNecessario) {
+            for (std::uint32_t i = 0; i < 6; ++i) {
+              mem_.Escrever16(p_buf + i * 2, kModelo[i]);
+            }
+          } else {
+            // Preenchimento parcial com NUL final garantido (unidades de 2).
+            const std::uint32_t unidades = cabem / 2;
+            for (std::uint32_t i = 0; i < unidades; ++i) {
+              const std::uint16_t c =
+                  (i + 1 == unidades) ? 0 : kModelo[i];
+              mem_.Escrever16(p_buf + i * 2, c);
+            }
+          }
+          mem_.Escrever32(p_tam, kNecessario);
+          cpu.Set(kR0, kAeeSuccess);
+          char det[96];
+          std::snprintf(det, sizeof(det), "MODEL_NAME cabem=%u -> %u", cabem,
+                        kNecessario);
+          traco_.Emitir(Area::Brew, Nivel::Depuracao, "ISHELL_GETDEVICEINFOEX", det);
+        }
       } else if (idx >= kBaseDoShell) {
         // O NOME tem de dizer de QUE interface e o slot. Um so "IShell::slot"
         // para tudo dava `IShell::slot4004` para um metodo do IDisplay -- numero

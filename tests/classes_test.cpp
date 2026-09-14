@@ -226,9 +226,36 @@ TEST(Classes, ObjetoDoClsidSoRespondeAsTresClasses) {
   EXPECT_EQ(ObjetoDoClsid(0x0100104fu), ObjetoDaClasse(0));
   EXPECT_EQ(ObjetoDoClsid(0x01028e3cu), ObjetoDaClasse(1));
   EXPECT_EQ(ObjetoDoClsid(0x01003109u), ObjetoDaClasse(2));
+  EXPECT_EQ(ObjetoDoClsid(0x01001017u), ObjetoDaClasse(3));
   EXPECT_EQ(ObjetoDoClsid(0x01011810u), 0u);
   EXPECT_EQ(IndiceDaClasse(0x01003109u), static_cast<std::uint32_t>(Classe::kTextCtl));
+  EXPECT_EQ(IndiceDaClasse(0x01001017u), static_cast<std::uint32_t>(Classe::kThread));
   EXPECT_EQ(IndiceDaClasse(0x12345678u), kQuantasClasses);
+}
+
+TEST(Classes, OThreadTemDozeSlotsNaOrdemDoCabecalho) {
+  const std::uint32_t th = static_cast<std::uint32_t>(Classe::kThread);
+  EXPECT_STREQ(NomeDaInterface(th), "IThread");
+  EXPECT_STREQ(NomeDaClasse(th), "AEECLSID_THREAD");
+  EXPECT_STREQ(NomeDoSlotDaClasse(th, 0), "AddRef");
+  EXPECT_STREQ(NomeDoSlotDaClasse(th, 2), "QueryInterface");
+  EXPECT_STREQ(NomeDoSlotDaClasse(th, 3), "Malloc");
+  EXPECT_STREQ(NomeDoSlotDaClasse(th, 6), "ReleaseRsc");
+  EXPECT_STREQ(NomeDoSlotDaClasse(th, 7), "Start");
+  EXPECT_STREQ(NomeDoSlotDaClasse(th, 8), "Exit");
+  EXPECT_STREQ(NomeDoSlotDaClasse(th, 11), "GetResumeCBK");
+  for (std::uint32_t s = 2; s < 12; ++s) {
+    EXPECT_FALSE(SlotDaClasseImplementado(th, s)) << "slot " << s;
+  }
+}
+
+TEST(Classes, OThreadStartRecusaComNome) {
+  Bancada b;
+  const std::uint32_t th = static_cast<std::uint32_t>(Classe::kThread);
+  b.Cpu().Set(kR0, ObjetoDaClasse(th));
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(th) + 7, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("IThread::Start"), 1u);
 }
 
 // ---------------------------------------------------------------------------
