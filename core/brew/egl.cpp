@@ -162,11 +162,17 @@ std::uint32_t Egl::Instalar(const Saidas& saidas) {
       return 0;
     }
   }
-  // O QUE ESTA ETAPA NAO FAZ, DITO UMA VEZ E COM NOME. Sem isto, o proximo a ler
-  // este modulo conclui que a geometria apresentada aqui aparece em algum lado.
-  traco_.RegistarFalta(Area::Video, "rasterizador_de_GL",
-                       "o IEGL existe e serve o config e as superficies; nenhum pixel e escrito "
-                       "(nao ha rasterizador). Medido: 0 pixels em 62 titulos.");
+  // O RASTERIZADOR EXISTE, E NAO E AQUI (`core/video/rasterizador.cpp`).
+  //
+  // AQUI ESTAVA UMA FALTA -- `rasterizador_de_GL`, "nenhum pixel e escrito (nao ha
+  // rasterizador). Medido: 0 pixels em 62 titulos." -- e ela era verdadeira. Com o
+  // rasterizador escrito, a mesma linha passaria a ser MENTIRA no minuto seguinte
+  // (P7: um log so entra se puder ser verdadeiro). O que fica dito e o que este
+  // modulo continua a ser: o config e as superficies. Quem desenha e o IGL, na
+  // Tela que o despacho lhe liga (`igl_.DefinirTela`).
+  traco_.Emitir(Area::Video, Nivel::Informacao, "IEGL_SEM_DESENHO_PROPRIO",
+                "o IEGL serve o config e as superficies; os pixels sao escritos pelo IGL "
+                "em core/video/rasterizador.cpp");
   traco_.Emitir(Area::Video, Nivel::Informacao, "IEGL_INSTALADO",
                 "28 slots (AEEGL.h), objecto em 0x800B1000, vtable cablada e conferida");
   return kIeglSlots;

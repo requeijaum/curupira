@@ -385,7 +385,24 @@ int main(int argc, char** argv) {
     return static_cast<std::uint32_t>(static_cast<std::int32_t>(v * 65536.0f));
   };
   const std::uint32_t vertices = kBanda, cores = kBanda + 0x80, coords = kBanda + 0x100;
-  for (int k = 0; k < 9; ++k) mem.Escrever32(vertices + 4u * k, 0x3F800000u);
+  // OS TRES VERTICES, e a mudanca de `0x3F800000` (1.0f) repetido PARA UMA
+  // GEOMETRIA A SERIO tem uma razao medida: tres vertices IGUAIS sao um
+  // triangulo DEGENERADO (area zero), e um rasterizador honesto desenha ZERO
+  // pixels com ele. A sonda imprimia "PIXELS: 0" e nao distinguia "nao ha
+  // rasterizador" de "a bancada pediu um triangulo sem area" -- os dois numeros
+  // iguais com causas diferentes, que e o defeito que esta arvore persegue.
+  //
+  // ATENCAO AO QUE ISTO MEDE: a GEOMETRIA E DA BANCADA, e nao do titulo. O que e
+  // do titulo e o CODIGO que a manda (o thunk do `GLES_1x.c` compilado dentro do
+  // `.mod`, achado por varrimento da imagem) e o caminho que ela percorre (a
+  // vtable, a faixa de saida, o despacho do motor e a Tela). Nao e uma medida de
+  // jogabilidade, e nao substitui `PIXELS` da bateria.
+  const float triangulo[9] = {-0.5f, -0.5f, 0.0f, 0.5f, -0.5f, 0.0f, 0.0f, 0.5f, 0.0f};
+  for (int k = 0; k < 9; ++k) {
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &triangulo[k], sizeof(bits));
+    mem.Escrever32(vertices + 4u * k, bits);
+  }
   for (int k = 0; k < 4; ++k) mem.Escrever32(cores + 4u * k, 0xFFFFFFFFu);
   for (int k = 0; k < 6; ++k) mem.Escrever32(coords + 4u * k, 0);
   const std::uint32_t destino_textura = kBanda + 0x300, destino_int = kBanda + 0x340;
@@ -653,7 +670,14 @@ int main(int argc, char** argv) {
               estado_egl->Iniciado() ? "sim" : "NAO", estado_egl->SuperficiesCriadas(),
               estado_egl->SuperficiesVivas(), estado_egl->ContextosCriados(),
               estado_egl->ContextosVivos(), estado_egl->Trocas(), estado_egl->Erro());
-  std::printf("PIXELS: 0 -- nao ha rasterizador nesta etapa (o `glDrawArrays` recusa e di-lo)\n");
+  // OS PIXELS A SERIO, lidos NA TELA DO MOTOR -- a mesma que o `tools/bateria.cpp`
+  // publica. A geometria e a da bancada (ver o comentario do triangulo acima), e
+  // por isso este numero NAO e a medida de um titulo: e a prova de ponta a ponta
+  // de que o caminho (thunk do titulo -> vtable -> faixa de saida -> despacho ->
+  // rasterizador -> Tela) escreve pixels quando alguem pede um triangulo.
+  std::printf("PIXELS: %u | CORES: %u (na Tela do motor; a geometria e a da BANCADA,"
+              " nao a do titulo)\n",
+              despacho.TelaRef().Escritos(), despacho.TelaRef().CoresDistintas());
 
   std::printf("\n== recusas, por nome (o que a arvore antiga nao tinha em lado nenhum) ==\n");
   bool alguma = false;

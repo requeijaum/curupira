@@ -138,6 +138,15 @@ std::uint32_t Despacho::InstalarGl(const Saidas& saidas) {
   }
   traco_.Emitir(Area::Video, Nivel::Informacao, "GL_CABLADO",
                 "IGL em 0x800B0000 (faixa 30000) e IEGL em 0x800B1000 (faixa 31000)");
+  // A TELA DO DESENHO. O rasterizador (`core/video/rasterizador.cpp`) escreve
+  // AQUI, e nao num buffer proprio: a medida `PIXELS`/`CORES` do
+  // `tools/bateria.cpp` le a `Tela` do `Despacho`, e uma tela propria dentro do
+  // IGL daria um numero que nao mede o que o titulo escreveu no ecra.
+  //
+  // Sem esta linha o `glDrawArrays` RECUSA com o motivo escrito ("o IGL NAO TEM
+  // TELA LIGADA"), e nenhum pixel aparece -- e o unico remendo que a etapa do
+  // rasterizador precisa em ficheiro partilhado.
+  igl_.DefinirTela(&tela_);
   return a + b;
 }
 
