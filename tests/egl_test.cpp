@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "core/brew/despacho.h"
+#include "core/cpu/arm_interpreter.h"
 #include "core/brew/egl.h"
 #include "core/brew/ihid_entrada.h"
 #include "core/brew/ihiddevice.h"
@@ -608,12 +609,16 @@ struct CenaDoDespacho {
 
 // Entra no despacho pelo endereco de saida do slot `idx`, como o guest entra: o PC
 // fica no endereco da faixa e os registos levam os argumentos. Devolve o r0.
+// A sentinela do laco do motor (a mesma do `despacho.cpp`): o PC aqui significa
+// "a chamada retornou", e nao "o guest saltou para o nada".
+constexpr std::uint32_t kSentinelaDoLaco = 0xFFFFFFF0u;
+
 std::uint32_t EntrarPeloSlot(CenaDoDespacho& c, std::uint32_t idx, std::uint32_t r0,
                              std::uint32_t r1 = 0) {
   c.cpu.Repor(c.saidas.Endereco(idx), 0x80080000u);
   c.cpu.Set(kR0, r0);
   c.cpu.Set(kR1, r1);
-  c.cpu.Set(kLR, kSentinela);
+  c.cpu.Set(kLR, kSentinelaDoLaco);
   c.despacho.Correr(c.cpu, 10000, 0);
   return c.cpu.Get(kR0);
 }
@@ -650,20 +655,26 @@ TEST(CablagemGl, AORDEMDoRamoEAGuardaDoOitavoCaso) {
   // nome do GL; se foi engolido, tem o nome de outra interface.
   CenaDoDespacho c;
   EntrarPeloSlot(c, kVtableIgl + gl_slots::kIgl_Clear, gl_slots::GL_COLOR_BUFFER_BIT);
-  std::size_t faltas_com_nome_de_gl = 0, faltas_com_nome_de_outra_iface = 0;
+  std::size_t faltas_com_nome_de_outra_iface = 0;
   for (const auto& par : c.traco.ContagemFaltas()) {
     if (par.first.find("IFileMgr::") != std::string::npos ||
         par.first.find("IDisplay::") != std::string::npos ||
         par.first.find("IShell::") != std::string::npos) {
       faltas_com_nome_de_outra_iface += par.second;
     }
-    if (par.first == "glClear") faltas_com_nome_de_gl += 1;
   }
   EXPECT_EQ(faltas_com_nome_de_outra_iface, 0u)
       << "um pedido da faixa do GL foi atendido por um ramo generico e ficou com o NOME de outra "
          "interface -- e a OITAVA vez deste erro de ordem";
-  EXPECT_EQ(faltas_com_nome_de_gl, 1u)
-      << "o `glClear` nao ficou registado com o NOME dele (recusa, e nao silencio)";
+  // E O NOME DO METODO TEM DE ESTAR NO TRACO. `glClear` e SERVIDO (o estado e
+  // acumulado) e o detalhe diz que nenhum pixel foi escrito; o que se exige aqui e
+  // que a chamada tenha deixado uma linha com o NOME dela, e nao "algo de GL".
+  std::size_t linhas_com_o_nome = 0;
+  for (const auto& e : c.destino.eventos) {
+    if (e.nome == "GL_glClear") ++linhas_com_o_nome;
+  }
+  EXPECT_EQ(linhas_com_o_nome, 1u)
+      << "o `glClear` nao ficou registado com o NOME dele (um caminho mudo, e nao um log)";
 }
 
 TEST(CablagemGl, OsDoisObjectsSaoDistintos) {

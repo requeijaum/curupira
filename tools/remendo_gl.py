@@ -167,13 +167,15 @@ EDICOES = [
 # verificacao que apanha uma escrita que apaga: um ficheiro truncado continua a ser
 # um ficheiro valido em Python, e foi assim que um `bateria.cpp` de 1295 linhas
 # virou 412 sem um aviso.
-# MEDIDO: os ficheiros tinham 181 e 962 linhas antes do remendo (commit f461798) e
-# ficam com 206 e 1030 depois. Os numeros nao sao decorativos: sao o que apanha uma
-# escrita que apaga, e por isso o script RECUSA aplicar sobre uma versao em que eles
-# ja nao batam certo.
+# MEDIDO: no commit `96ede69` (o `full-rewrite` de 13/09) o `despacho.h` tem 189
+# linhas e o `despacho.cpp` 1000; depois do remendo ficam com 214 e 1068. Os numeros
+# nao sao decorativos: sao o que apanha uma escrita que apaga (o `bateria.cpp` de
+# 1295 linhas que virou 412 sem um aviso), e por isso o script RECUSA aplicar sobre
+# uma versao em que eles ja nao batam certo -- o que tambem quer dizer que ele
+# RECUSA quando alguem mexeu nos ficheiros entretanto, e isso e a resposta certa.
 ESPERADO = {
-    "core/brew/despacho.h": (181, 206),
-    "core/brew/despacho.cpp": (962, 1030),
+    "core/brew/despacho.h": (189, 214),
+    "core/brew/despacho.cpp": (1000, 1068),
 }
 
 
