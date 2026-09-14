@@ -1,0 +1,407 @@
+[
+ {
+  "id": 1,
+  "file": "core/traco/traco.cpp",
+  "old": "if (!CaminhoAbsoluto(caminho_absoluto)) {",
+  "new": "if (false) {",
+  "filt": "Traco.LogRelativo*",
+  "esperado": "VERMELHO",
+  "nota": "etapa0: a recusa de caminho relativo (P7/regra 3)"
+ },
+ {
+  "id": 2,
+  "file": "core/traco/traco.cpp",
+  "old": "if (a.etiqueta_ != b.etiqueta_) {",
+  "new": "if (false) {",
+  "filt": "Traco.CompararRecusa*",
+  "esperado": "VERMELHO",
+  "nota": "etapa0: recusa de comparar configuracoes diferentes"
+ },
+ {
+  "id": 3,
+  "file": "core/traco/traco.cpp",
+  "old": "++faltas_[o_que_falta];",
+  "new": "(void)0;",
+  "filt": "Traco.NaoImplementadoFicaContadoENomeado",
+  "esperado": "VERMELHO",
+  "nota": "P2: a falta fica contada"
+ },
+ {
+  "id": 4,
+  "file": "core/traco/traco.cpp",
+  "old": "v.erase(std::unique(v.begin(), v.end()), v.end());",
+  "new": "(void)0;",
+  "filt": "Traco.MarcasDeDepuracao*",
+  "esperado": "VERMELHO",
+  "nota": "regra 4: marcas distintas, nao linhas"
+ },
+ {
+  "id": 5,
+  "file": "core/memoria/memoria.cpp",
+  "old": "if (par.first == a) { ja = true; break; }",
+  "new": "if (false) { ja = true; break; }",
+  "filt": "Memoria.VigiaRegistaOPrimeiroEscritor*",
+  "esperado": "VERMELHO",
+  "nota": "P6: uma vez por endereco"
+ },
+ {
+  "id": 6,
+  "file": "core/memoria/memoria.cpp",
+  "old": "if (a < g.inicio || a >= g.fim) continue;",
+  "new": "if (false) continue;",
+  "filt": "Memoria.VigiaRegistaOPrimeiroEscritor*",
+  "esperado": "VERMELHO",
+  "nota": "a faixa da vigia limita o registo"
+ },
+ {
+  "id": 7,
+  "file": "core/memoria/memoria.cpp",
+  "old": "if (!autor_.empty()) {",
+  "new": "if (true) {",
+  "filt": "Memoria.EscreverSemEscritorDeclaradoEsContado",
+  "esperado": "VERMELHO",
+  "nota": "P6: escritas sem escritor declarado sao contadas"
+ },
+ {
+  "id": 8,
+  "file": "core/memoria/memoria.cpp",
+  "old": "if (c == 0) return i;",
+  "new": "if (false) return i;",
+  "filt": "Memoria.CadeiaTerminadaEmNul*",
+  "esperado": "VERMELHO",
+  "nota": "limite da cadeia terminada em NUL"
+ },
+ {
+  "id": 9,
+  "file": "core/cpu/arm_interpreter.cpp",
+  "old": "// lockstep interpretador-contra-JIT existia -- o sintoma na tela era o mesmo.\n  modo_atual_ = static_cast<std::uint32_t>(Modo::Usuario) | Cpsr::kI | Cpsr::kF;",
+  "new": "// lockstep interpretador-contra-JIT existia -- o sintoma na tela era o mesmo.\n  modo_atual_ = 0u;",
+  "filt": "Cpu.AposRepor*,Cpu.MrsDevolve*",
+  "esperado": "VERMELHO",
+  "nota": "etapa1: cpsr inicial e modo valido"
+ },
+ {
+  "id": 10,
+  "file": "core/cpu/arm_interpreter.cpp",
+  "old": "    default:\n      return false;",
+  "new": "    default:\n      return true;",
+  "filt": "Cpu.ZeroNaoEUmModoValido",
+  "esperado": "VERMELHO",
+  "nota": "etapa1: zero nao e modo nenhum"
+ },
+ {
+  "id": 11,
+  "file": "core/cpu/arm_interpreter.cpp",
+  "old": "if (!ModoValido(v)) {",
+  "new": "if (false) {",
+  "filt": "Cpu.EscreverUmModoInvalidoERecusado",
+  "esperado": "VERMELHO",
+  "nota": "etapa1: modo invalido escrito e recusado e contado"
+ },
+ {
+  "id": 12,
+  "file": "core/carga/mod.cpp",
+  "old": "mem.Escrever32(endereco_ropi, tabela_de_ajudantes);",
+  "new": "(void)0;",
+  "filt": "Carga.OCarregadorEscreveATabelaEmBaseMenosQuatro",
+  "esperado": "VERMELHO",
+  "nota": "etapa2: a tabela de ajudantes em base-4 (ROPI)"
+ },
+ {
+  "id": 13,
+  "file": "core/carga/mod.cpp",
+  "old": "r.ponto_de_entrada = base;",
+  "new": "r.ponto_de_entrada = 0u;",
+  "filt": "Carga.OCarregadorEscreveATabelaEmBaseMenosQuatro",
+  "esperado": "VERMELHO",
+  "nota": "etapa2: o ponto de entrada"
+ },
+ {
+  "id": 14,
+  "file": "core/cpu/arm_interpreter.cpp",
+  "old": "  std::uint32_t r = acumula ? (Get(static_cast<int>(rn)) * Get(static_cast<int>(rm)))\n                            : (Get(static_cast<int>(rm)) * Get(static_cast<int>(rs)));\n  if (acumula) r += Get(static_cast<int>(rs));",
+  "new": "  std::uint32_t r = acumula ? (Get(static_cast<int>(rm)) * Get(static_cast<int>(rs)))\n                            : (Get(static_cast<int>(rm)) * Get(static_cast<int>(rs)));\n  if (acumula) r += Get(static_cast<int>(rn));",
+  "filt": "Cpu.MulEMla",
+  "esperado": "VERMELHO",
+  "nota": "etapa1: a ordem do MLA (o bug real encontrado pelos testes)"
+ },
+ {
+  "id": 15,
+  "file": "core/video/rasterizador.cpp",
+  "old": "v->y = static_cast<float>(vy + (1.0 - y_ndc) * vh * 0.5);",
+  "new": "v->y = static_cast<float>(vy + (y_ndc + 1.0) * vh * 0.5);",
+  "filt": "Rasterizador.*",
+  "esperado": "VERMELHO",
+  "nota": "etapa3: a inversao do y na projeccao"
+ },
+ {
+  "id": 16,
+  "file": "core/video/rasterizador.cpp",
+  "old": "bool ArestaDeCanto(double dx, double dy) { return dy < 0.0 || (dy == 0.0 && dx > 0.0); }",
+  "new": "bool ArestaDeCanto(double dx, double dy) { return false; }",
+  "filt": "Rasterizador.*",
+  "esperado": "VERMELHO",
+  "nota": "etapa3: a regra do canto (top-left)"
+ },
+ {
+  "id": 17,
+  "file": "core/video/rasterizador.cpp",
+  "old": "  if (x < 0 || y < 0 || x >= l || y >= a) return;\n  const std::size_t indice = static_cast<std::size_t>(y) * static_cast<std::size_t>(l) +",
+  "new": "  if (false) return;\n  const std::size_t indice = static_cast<std::size_t>(y) * static_cast<std::size_t>(l) +",
+  "filt": "Rasterizador.*",
+  "esperado": "VERMELHO",
+  "nota": "etapa3: o limite da janela no pixel"
+ },
+ {
+  "id": 18,
+  "file": "core/video/rasterizador.cpp",
+  "old": "      case GL_LESS: passa = profundidade < guardada; break;",
+  "new": "      case GL_LESS: passa = true; break;",
+  "filt": "Rasterizador.*",
+  "esperado": "VERMELHO",
+  "nota": "etapa3: o teste de profundidade"
+ },
+ {
+  "id": 19,
+  "file": "core/video/rasterizador.cpp",
+  "old": "  const bool frente = (e.orientacao_da_frente == GL_CCW) ? anti_horario : !anti_horario;",
+  "new": "  const bool frente = anti_horario;",
+  "filt": "Rasterizador.*",
+  "esperado": "VERMELHO",
+  "nota": "etapa3: o descarte de faces usa a orientacao"
+ },
+ {
+  "id": 20,
+  "file": "core/carga/bar.cpp",
+  "old": "b.motivo = \"mime sem terminador NUL dentro dos \" + Hex(recurso.tamanho) + \" bytes do recurso\";",
+  "new": "b.motivo = \"mime vazio\";",
+  "filt": "BlobSintetico.RecusaMimeSemTerminador",
+  "esperado": "VERDE",
+  "nota": "FRENTE B: find(\"mime\") apanha o diagnostico ERRADO -- assercao generica"
+ },
+ {
+  "id": 21,
+  "file": "core/carga/bar.cpp",
+  "old": "  if (fim_do_mime < 2u) {",
+  "new": "  if (false) {",
+  "filt": "BlobSintetico.RecusaMimeSemTerminador",
+  "esperado": "VERDE",
+  "nota": "FRENTE B: guarda da recusa arrancada e o teste continua verde (a outra recusa tem \"mime\")"
+ },
+ {
+  "id": 22,
+  "file": "core/carga/bar.cpp",
+  "old": "  if (fim_do_mime == 2u) {",
+  "new": "  if (false) {",
+  "filt": "BlobSintetico.RecusaMimeVazio",
+  "esperado": "VERMELHO",
+  "nota": "guarda do mime vazio: aqui o teste TEM dentes"
+ },
+ {
+  "id": 23,
+  "file": "core/brew/igl.cpp",
+  "old": "      if (!destino_.Pronto()) {\n        return recusa_com(3, \"geometria submetida (\" + std::to_string(quantos) +",
+  "new": "      if (false) {\n        return recusa_com(3, \"geometria submetida (\" + std::to_string(quantos) +",
+  "filt": "EstadoGl.DrawArraysSemTelaRecusaMasContaAGeometria",
+  "esperado": "VERMELHO",
+  "nota": "etapa6: o desenho sem tela recusa"
+ },
+ {
+  "id": 24,
+  "file": "core/brew/igl.cpp",
+  "old": "      if (a.reg[0] < 2 || a.reg[0] > 4) return recusa(\"tamanho de vertice fora de 2..4\");",
+  "new": "      if (false) return recusa(\"tamanho de vertice fora de 2..4\");",
+  "filt": "EstadoGl.*",
+  "esperado": "VERMELHO",
+  "nota": "etapa6: o tamanho do vertice 2..4"
+ },
+ {
+  "id": 25,
+  "file": "core/brew/egl.cpp",
+  "old": "        if (id == EGL_CONTEXT_CLIENT_VERSION && valor != 1) {",
+  "new": "        if (false) {",
+  "filt": "CicloDoEgl.OCriaContextoRecusaOVersionamento2",
+  "esperado": "VERMELHO",
+  "nota": "IEGL: o versionamento 2 recusa"
+ },
+ {
+  "id": 26,
+  "file": "core/brew/egl.cpp",
+  "old": "      mem_.Escrever32(pvalor, v->valor);",
+  "new": "      mem_.Escrever32(pvalor, 0u);",
+  "filt": "CicloDoEgl.OGetConfigAttrib*",
+  "esperado": "VERMELHO",
+  "nota": "IEGL: o valor servido vem do cabecalho"
+ },
+ {
+  "id": 27,
+  "file": "core/audio/misturador.cpp",
+  "old": "  return static_cast<std::int32_t>(amostra * static_cast<std::int32_t>(volume)) /",
+  "new": "  return static_cast<std::int32_t>(amostra * static_cast<std::int32_t>(volume)) *",
+  "filt": "Misturador.*",
+  "esperado": "VERMELHO",
+  "nota": "etapa5: a escala do volume"
+ },
+ {
+  "id": 28,
+  "file": "core/brew/imedia.cpp",
+  "old": "      if (a != 0) ++nao_nulas;",
+  "new": "      if (false) ++nao_nulas;",
+  "filt": "Media.OMisturadorContaAsAmostrasQueAMidiaEntrega",
+  "esperado": "VERMELHO",
+  "nota": "etapa5: amostras nao nulas contadas"
+ },
+ {
+  "id": 29,
+  "file": "core/brew/ihid_entrada.cpp",
+  "old": "    if (e.valor != 0 && e.valor != 1) {",
+  "new": "    if (false) {",
+  "filt": "Hid.GuiaoInvalidoEhRecusadoInteiro",
+  "esperado": "VERMELHO",
+  "nota": "etapa8: o nState 0/1"
+ },
+ {
+  "id": 30,
+  "file": "core/brew/ihid_entrada.cpp",
+  "old": "  if (!ja.empty() && e.t_ms < ja.back().t_ms) {",
+  "new": "  if (false) {",
+  "filt": "Hid.GuiaoInvalidoEhRecusadoInteiro",
+  "esperado": "VERMELHO",
+  "nota": "etapa8: o guiao fora de ordem"
+ },
+ {
+  "id": 31,
+  "file": "core/brew/classes.cpp",
+  "old": "    std::snprintf(nome, sizeof(nome), \"%s::%s\", NomeDaInterface(k), do_slot);",
+  "new": "    std::snprintf(nome, sizeof(nome), \"%s::slot%u\", NomeDaInterface(k), slot);",
+  "filt": "Classes.OMetodoNaoImplementadoRecusaComONomeDoMetodo",
+  "esperado": "VERMELHO",
+  "nota": "classes: o nome do metodo vem da tabela do cabecalho"
+ },
+ {
+  "id": 32,
+  "file": "tools/comparar.cpp",
+  "old": "      if (AcharCampo(par.first) == nullptr) {",
+  "new": "      if (false) {",
+  "filt": "Comparar.CampoDesconhecidoERecusado",
+  "esperado": "VERMELHO",
+  "nota": "etapa9: campo desconhecido e recusado"
+ },
+ {
+  "id": 33,
+  "file": "core/brew/formato.cpp",
+  "old": "        else std::snprintf(tmp, sizeof(tmp), \"%x\", argumento());",
+  "new": "        else std::snprintf(tmp, sizeof(tmp), \"%d\", argumento());",
+  "filt": "Formato.HexadecimalComLargura",
+  "esperado": "VERMELHO",
+  "nota": "formato: o hexadecimal do sistema"
+ },
+ {
+  "id": 34,
+  "file": "core/brew/ihiddevice.cpp",
+  "old": "    // \"AEE_ENOSUCH : if the specified button is not supported.\"\n    cpu.Set(kR0, kAeeNoSuch);",
+  "new": "    // \"AEE_ENOSUCH : if the specified button is not supported.\"\n    cpu.Set(kR0, kAeeSuccess);",
+  "filt": "Hid.BotaoDesconhecidoRecusaComEnosuch",
+  "esperado": "VERMELHO",
+  "nota": "etapa8: botao desconhecido recusa com E_ENOSUCH"
+ },
+ {
+  "id": 35,
+  "file": "core/video/rasterizador.cpp",
+  "old": "  const bool frente = (e.orientacao_da_frente == GL_CCW) ? anti_horario : !anti_horario;",
+  "new": "  const bool frente = (e.orientacao_da_frente == GL_CCW) ? !anti_horario : anti_horario;",
+  "filt": "Rasterizador.ODescarteDeFaces*",
+  "esperado": "VERMELHO",
+  "nota": "etapa3: o descarte de faces (mutante nao-equivalente)"
+ },
+ {
+  "id": 36,
+  "file": "core/brew/despacho.cpp",
+  "old": "        timer_.pfn = cpu.Get(kR2);\n        timer_.puser = cpu.Get(kR3);\n        timer_.vence_em_ms = agora_ms_ + static_cast<std::int64_t>(cpu.Get(kR1));",
+  "new": "        timer_.pfn = cpu.Get(kR1);\n        timer_.puser = cpu.Get(kR3);\n        timer_.vence_em_ms = agora_ms_ + static_cast<std::int64_t>(cpu.Get(kR2));",
+  "filt": "Widget.OSetTimer*",
+  "esperado": "VERMELHO",
+  "nota": "etapa8/laco: a assinatura do SetTimer (duracao no r1, funcao no r2)"
+ },
+ {
+  "id": 37,
+  "file": "core/brew/imedia.cpp",
+  "old": "            \"o callback 0x\" + EmHex(a.fn) + \" nao voltou em \" + std::to_string(passos) +",
+  "new": "            \"callback nao voltou: 0x\" + EmHex(a.fn) + \" passos=\" + std::to_string(passos) +",
+  "filt": "Media.UmCallbackQueNaoVolta*",
+  "esperado": "VERDE",
+  "nota": "FRENTE B: find(\"nao voltou\") nao fixa o formato -- assercao generica"
+ },
+ {
+  "id": 38,
+  "file": "core/brew/interface.cpp",
+  "old": "    if (l.slot < 2 && l.vt != kVtableFileObj) {",
+  "new": "    if (false) {",
+  "filt": "Interface.CablarRecusaOSlotDaIBase",
+  "esperado": "VERMELHO",
+  "nota": "a IBase nao se cabla"
+ },
+ {
+  "id": 39,
+  "file": "core/cpu/arm_interpreter.cpp",
+  "old": "// lockstep interpretador-contra-JIT existia -- o sintoma na tela era o mesmo.\n  modo_atual_ = static_cast<std::uint32_t>(Modo::Usuario) | Cpsr::kI | Cpsr::kF;",
+  "new": "// lockstep interpretador-contra-JIT existia -- o sintoma na tela era o mesmo.\n  modo_atual_ = 0u;",
+  "filt": "Cpu.*",
+  "esperado": "VERDE",
+  "nota": "FRENTE B: o cpsr do CONSTRUTOR (o bug do projeto antigo) pode ficar a zero -- nenhum teste apanha"
+ },
+ {
+  "id": 40,
+  "file": "core/brew/formato.cpp",
+  "old": "        else std::snprintf(tmp, sizeof(tmp), \"%x\", argumento());",
+  "new": "        else std::snprintf(tmp, sizeof(tmp), \"%d\", argumento());",
+  "filt": "Formato.*",
+  "esperado": "?",
+  "nota": "o caminho sem largura do %x"
+ },
+ {
+  "id": 41,
+  "file": "core/brew/imedia.cpp",
+  "old": "      if (a != 0) ++nao_nulas;",
+  "new": "      if (false) ++nao_nulas;",
+  "filt": "Media.*",
+  "esperado": "?",
+  "nota": "o contador nao_nulas do imedia (so vai para o log)"
+ },
+ {
+  "id": 42,
+  "file": "core/brew/ajudantes.cpp",
+  "old": "  if (!r.faltam.empty() && !permitir_por_implementar) {",
+  "new": "  if (false) {",
+  "filt": "Ajudantes.RecusaInstalarComSlotPorImplementar",
+  "esperado": "VERMELHO",
+  "nota": "etapa7: instalar uma tabela com slot por preencher RECUSA"
+ },
+ {
+  "id": 43,
+  "file": "core/brew/interface.cpp",
+  "old": "    if (lido != saidas.Endereco(l.saida)) {",
+  "new": "    if (false) {",
+  "filt": "Interface.CablarDetetaUmaCablagemPerdida",
+  "esperado": "VERMELHO",
+  "nota": "etapa7: a leitura de volta da cablagem"
+ },
+ {
+  "id": 44,
+  "file": "core/brew/ihiddevice.cpp",
+  "old": "      if (handle != kHandleDoDispositivo) {\n        // RECUSA em vez de devolver um dispositivo que nao existe: quem pede um",
+  "new": "      if (false) {\n        // RECUSA em vez de devolver um dispositivo que nao existe: quem pede um",
+  "filt": "Hid.OIhidEntregaUmDispositivo*",
+  "esperado": "?",
+  "nota": "etapa8: handle de dispositivo desconhecido"
+ },
+ {
+  "id": 45,
+  "file": "core/brew/ihiddevice.cpp",
+  "old": "      if (handle != kHandleDoDispositivo) {\n        // RECUSA em vez de devolver um dispositivo que nao existe: quem pede um",
+  "new": "      if (false) {\n        // RECUSA em vez de devolver um dispositivo que nao existe: quem pede um",
+  "filt": "Hid.*",
+  "esperado": "?",
+  "nota": "etapa8: handle desconhecido (filtro largo)"
+ }
+]
