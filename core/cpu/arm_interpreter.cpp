@@ -141,6 +141,10 @@ Modo ArmInterpreter::ModoAtual() const {
 }
 
 void ArmInterpreter::Recusar(std::uint32_t instr, std::uint32_t pc, const char* porque) {
+  // A sonda do descodificador le daqui: `FamiliaDaUltima()` diz O QUE era a
+  // instrucao, e este campo diz O QUE FALTOU. Quem le a recusa na bateria ve um
+  // numero; quem le isto ve a forma que falta.
+  motivo_recusa_ = porque;
   ++recusadas_;
   ultima_recusada_ = instr;
   pc_da_recusada_ = pc;
@@ -160,6 +164,8 @@ void ArmInterpreter::Repor(Reg pc, Reg sp) {
   recusadas_ = 0;
   ultima_recusada_ = 0;
   pc_da_recusada_ = 0;
+  familia_ = "-";
+  motivo_recusa_ = nullptr;
 }
 
 std::uint32_t ArmInterpreter::Buscar32(std::uint32_t end) { return mem_.Ler32(end); }
@@ -342,6 +348,21 @@ void ArmInterpreter::TransferenciaExtra(std::uint32_t instr, std::uint32_t pc) {
   const bool palavra_dupla = !carrega && (campo == 0xDu || campo == 0xFu);
   const bool dupla_carrega = (campo == 0xDu);
 
+  // NOME da forma, para a sonda. O nome vem dos bits, e nao do caminho que o
+  // codigo toma: uma forma RECUSADA continua a ter nome (o `ldrh` com Rn = PC e
+  // `ldrh`), e quem quer o motivo le `MotivoDaRecusa`. Sem isto, a recusa
+  // apagaria a informacao de QUAL instrucao faltou.
+  if (palavra_dupla) {
+    familia_ = dupla_carrega ? "ldrd" : "strd";
+  } else if (campo == 0xBu) {
+    familia_ = carrega ? "ldrh" : "strh";
+  } else {
+    // O campo 7-4 e que separa: 1101 e o LDRSB, 1111 e o LDRSH. A primeira
+    // versao desta sonda escrevia "ldrsb" nos DOIS, e foi o auditor, na
+    // primeira corrida, que o apanhou (`e1d000f0` = `ldrsh r0, [r0]`).
+    familia_ = (campo == 0xDu) ? "ldrsb" : "ldrsh";
+  }
+
   if (rn == 15 || rt == 15) {
     Recusar(instr, pc, "extra load/store com Rn ou Rt = PC e UNPREDICTABLE no ARM");
     return;
@@ -435,8 +456,397 @@ void ArmInterpreter::TransferenciaExtra(std::uint32_t instr, std::uint32_t pc) {
   Set(static_cast<int>(rt), static_cast<Reg>(static_cast<std::int32_t>(h)));
 }
 
+// ---------------------------------------------------------------------------
+// ARMv6: O GRUPO "MEDIA" (extensao de sinal/zero e reversao de bytes)
+// ---------------------------------------------------------------------------
+//
+// PORQUE EXISTE ESTE RAMO, e a medicao que o obrigou (auditor diferencial,
+// `tools/auditar_descodificador.py`, corpus dos 62 titulos):
+//
+//   uxth  17 295 palavras -> o interpretador executava `ldrb`
+//   uxtb  12 764 palavras -> o interpretador executava `strb`
+//   sxth   2 183 palavras -> o interpretador executava `ldr`
+//   sxtb     781 palavras -> o interpretador executava `str`
+//   sxtab  6 432 palavras -> o interpretador executava `str`
+//
+// Os bits 27-24 destas instrucoes sao 0110, que o primeiro nivel de
+// descodificacao le como TRANSFERENCIA SIMPLES (bits 27-25 = 011) -- exactamente
+// o mesmo defeito de classe do `ldrd` (bits 27-25 = 000 lidos como dados
+// processados): uma instrucao que NAO recusa, corre outra coisa e da um
+// resultado plausivel.
+//
+// O QUE SEPARA AS DUAS COISAS: numa transferencia com offset de registrador o
+// BIT 4 e ZERO (bits 11-4 = deslocamento: bits 11-7 quantidade, bits 6-5 tipo,
+// bit 4 = 0). Todas as formas "media" tem o bit 4 = 1. Logo
+// `bits 27-24 = 0110 e bit 4 = 1` e a fronteira, e e ela que o despachante testa.
+//
+// A TABELA FOI DERIVADA DO BINUTILS, e nao escrita de memoria: varreu-se
+// bits 27-20 x bits 19-16 x bits 11-4 (65 536 palavras) e leu-se o nome que o
+// `arm-none-eabi-objdump -D -b binary -m armv6` da a cada uma; a mascara de cada
+// forma e o conjunto de bits que NAO variam dentro de um mesmo nome. Zero
+// ambiguidades: nenhum par de mascaras casa com a mesma palavra.
+namespace {
+
+enum class SemanticaMedia {
+  Nenhuma,            // a forma existe e NAO esta implementada -> recusa com nome
+  Extensao,           // SXTB/SXTH/UXTB/UXTH
+  ExtensaoAcumulada,  // SXTAB/SXTAH/UXTAB/UXTAH
+  Reverter,           // REV
+  Reverter16,         // REV16
+  ReverterSinal16,    // REVSH
+};
+
+struct FormaMedia {
+  std::uint32_t mascara;
+  std::uint32_t valor;
+  const char* nome;
+  SemanticaMedia semantica;
+  bool com_sinal;   // a extensao e com sinal
+  int largura;      // 8 ou 16 bits
+};
+
+const FormaMedia kFormasMedia[] = {
+    // -- implementadas -------------------------------------------------------
+    // A ordem importa: as formas SEM acumulacao (bits 19-16 = 1111) tem de ser
+    // testadas antes das formas "A", cuja mascara deixa os bits 19-16 livres --
+    // `0x06AF0070 & 0x0FF003F0` da `0x06A00070`, ou seja, o SXTB tambem casa com
+    // a mascara do SXTAB. A primeira versao desta tabela nao tinha a ordem e o
+    // SXTB era lido como SXTAB.
+    {0x0FFF03F0u, 0x06AF0070u, "sxtb", SemanticaMedia::Extensao, true, 8},
+    {0x0FFF03F0u, 0x06BF0070u, "sxth", SemanticaMedia::Extensao, true, 16},
+    {0x0FFF03F0u, 0x06EF0070u, "uxtb", SemanticaMedia::Extensao, false, 8},
+    {0x0FFF03F0u, 0x06FF0070u, "uxth", SemanticaMedia::Extensao, false, 16},
+    {0x0FF003F0u, 0x06A00070u, "sxtab", SemanticaMedia::ExtensaoAcumulada, true, 8},
+    {0x0FF003F0u, 0x06B00070u, "sxtah", SemanticaMedia::ExtensaoAcumulada, true, 16},
+    {0x0FF003F0u, 0x06E00070u, "uxtab", SemanticaMedia::ExtensaoAcumulada, false, 8},
+    {0x0FF003F0u, 0x06F00070u, "uxtah", SemanticaMedia::ExtensaoAcumulada, false, 16},
+    {0x0FFF0FF0u, 0x06BF0F30u, "rev", SemanticaMedia::Reverter, false, 32},
+    {0x0FFF0FF0u, 0x06BF0FB0u, "rev16", SemanticaMedia::Reverter16, false, 32},
+    {0x0FFF0FF0u, 0x06FF0FB0u, "revsh", SemanticaMedia::ReverterSinal16, false, 32},
+    // -- conhecidas e RECUSADAS com nome (P2) --------------------------------
+    // A aritmetica paralela (SADD16...) tem de mexer nas bandeiras GE do CPSR,
+    // que este interpretador nao emula; faze-la "a meias" daria resultados
+    // errados EM SILENCIO, que e o defeito que esta arvore persegue. O mesmo
+    // vale para o SEL, cujo resultado depende dessas bandeiras.
+    {0x0FFF03F0u, 0x068F0070u, "sxtb16", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FFF03F0u, 0x06CF0070u, "uxtb16", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF003F0u, 0x06800070u, "sxtab16", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF003F0u, 0x06C00070u, "uxtab16", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06800FB0u, "sel", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00070u, 0x06800010u, "pkhbt", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00070u, 0x06800050u, "pkhtb", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FE00030u, 0x06A00010u, "ssat", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06A00F30u, "ssat16", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FE00030u, 0x06E00010u, "usat", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06E00F30u, "usat16", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06100F10u, "sadd16", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06100F30u, "sasx", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06100F50u, "ssax", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06100F70u, "ssub16", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06100F90u, "sadd8", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06100FF0u, "ssub8", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06200F10u, "qadd16", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06200F30u, "qasx", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06200F50u, "qsax", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06200F70u, "qsub16", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06200F90u, "qadd8", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06200FF0u, "qsub8", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06300F10u, "shadd16", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06300F30u, "shasx", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06300F50u, "shsax", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06300F70u, "shsub16", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06300F90u, "shadd8", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06300FF0u, "shsub8", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06500F10u, "uadd16", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06500F30u, "uasx", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06500F50u, "usax", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06500F70u, "usub16", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06500F90u, "uadd8", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06500FF0u, "usub8", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06600F10u, "uqadd16", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06600F30u, "uqasx", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06600F50u, "uqsax", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06600F70u, "uqsub16", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06600F90u, "uqadd8", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06600FF0u, "uqsub8", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06700F10u, "uhadd16", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06700F30u, "uhasx", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06700F50u, "uhsax", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06700F70u, "uhsub16", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06700F90u, "uhadd8", SemanticaMedia::Nenhuma, false, 0},
+    {0x0FF00FF0u, 0x06700FF0u, "uhsub8", SemanticaMedia::Nenhuma, false, 0},
+};
+
+// A FRONTEIRA da transferencia simples com offset de registrador: bit 4 = 0.
+bool EhMediaArmv6(std::uint32_t instr) {
+  return (instr & 0x0F000010u) == 0x06000010u;
+}
+
+// Rotacao de bytes: `rotr` (bits 11-10 das extensoes) roda o registrador de
+// origem em multiplos de 8 bits, e o ARM ARM manda rodar ANTES de extrair.
+Reg RodarBytes(Reg valor, std::uint32_t quanto) {
+  const std::uint32_t r = (quanto & 3u) * 8u;
+  if (r == 0) return valor;
+  return (valor >> r) | (valor << (32u - r));
+}
+
+}  // namespace
+
+void ArmInterpreter::MediaArmv6(std::uint32_t instr, std::uint32_t pc) {
+  const std::uint32_t rd = (instr >> 12) & 0xFu;
+  const std::uint32_t rn = (instr >> 16) & 0xFu;
+  const std::uint32_t rm = instr & 0xFu;
+  const std::uint32_t rot = (instr >> 10) & 3u;
+
+  const FormaMedia* forma = nullptr;
+  for (const FormaMedia& f : kFormasMedia) {
+    if ((instr & f.mascara) == f.valor) { forma = &f; break; }
+  }
+  if (forma == nullptr) {
+    // O espaco media tem palavras que o binutils tambem nao descodifica: o
+    // caminho correcto e RECUSAR, e nao inventar uma forma.
+    familia_ = "media_armv6_desconhecida";
+    Recusar(instr, pc, "forma do grupo media do ARMv6 nao implementada");
+    return;
+  }
+  familia_ = forma->nome;
+
+  // A RODAGEM SO EXISTE NAS FORMAS DE EXTENSAO. Nas de reversao os bits 11-10
+  // fazem parte do proprio opcode (0xF3 no REV, 0xFB no REV16/REVSH) e rodar por
+  // eles da um resultado errado que parece plausivel -- foi um teste que o
+  // apanhou (`rev` de 0x11223344 dava 0x11442222 em vez de 0x44332211).
+  const Reg origem = (forma->semantica == SemanticaMedia::Extensao ||
+                      forma->semantica == SemanticaMedia::ExtensaoAcumulada)
+                         ? RodarBytes(Get(static_cast<int>(rm)), rot)
+                         : Get(static_cast<int>(rm));
+  switch (forma->semantica) {
+    case SemanticaMedia::Extensao:
+    case SemanticaMedia::ExtensaoAcumulada: {
+      Reg valor = 0;
+      if (forma->largura == 8) {
+        valor = forma->com_sinal ? static_cast<Reg>(static_cast<std::int32_t>(static_cast<std::int8_t>(origem & 0xFFu)))
+                                 : static_cast<Reg>(origem & 0xFFu);
+      } else {
+        valor = forma->com_sinal ? static_cast<Reg>(static_cast<std::int32_t>(static_cast<std::int16_t>(origem & 0xFFFFu)))
+                                 : static_cast<Reg>(origem & 0xFFFFu);
+      }
+      if (forma->semantica == SemanticaMedia::ExtensaoAcumulada) valor += Get(static_cast<int>(rn));
+      Set(static_cast<int>(rd), valor);
+      return;
+    }
+    case SemanticaMedia::Reverter:
+      Set(static_cast<int>(rd), ((origem & 0xFFu) << 24) | ((origem & 0xFF00u) << 8) |
+                                ((origem >> 8) & 0xFF00u) | ((origem >> 24) & 0xFFu));
+      return;
+    case SemanticaMedia::Reverter16:
+      Set(static_cast<int>(rd), ((origem & 0xFF00FF00u) >> 8) | ((origem & 0x00FF00FFu) << 8));
+      return;
+    case SemanticaMedia::ReverterSinal16: {
+      const Reg trocado = ((origem & 0xFF00u) >> 8) | ((origem & 0xFFu) << 8);
+      Set(static_cast<int>(rd), static_cast<Reg>(static_cast<std::int32_t>(static_cast<std::int16_t>(trocado & 0xFFFFu))));
+      return;
+    }
+    case SemanticaMedia::Nenhuma:
+    default:
+      Recusar(instr, pc, "forma do grupo media do ARMv6 conhecida e NAO implementada");
+      return;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ARMv5TE: A ARITMETICA DSP (multiplicacoes de meia-palavra) e o CLZ
+// ---------------------------------------------------------------------------
+//
+// PORQUE EXISTE, e o que o auditor mediu no corpus dos 62 titulos:
+//   smulbb 1 105 palavras, smlabb 1 013, clz 259, smulwy 215 -- todas elas
+//   executadas como `cmn`/`tst`/`teq` (o opcode do grupo de dados processados
+//   que partilha os bits 27-25 = 000).
+//
+// A FRONTEIRA: `bits 27-24 = 0001` com os campos 7-4 em {1yx0, 1y10, 0101}. Do
+// mesmo espaco fazem parte o SWP (bits 7-4 = 1001) e o BKPT/HLT (bits 7-4 =
+// 0111), que ficam FORA desta funcao e RECUSAM no sitio deles: o BKPT entra em
+// modo de depuracao, que este emulador nao tem, e o SWP ja tem implementacao.
+//
+// AS MASCARAS FORAM DERIVADAS DO BINUTILS (ver o comentario da tabela media) e
+// NAO da documentacao: no `SMULxy` os bits 15-12 sao reservados e TEM de ser
+// zero -- medido, `0xE1641382` (bits 15-12 = 1) nao e `smulbb`, e `cmn`. Uma
+// mascara que os deixasse livres trocava uma instrucao de dados processados por
+// uma multiplicacao, EM SILENCIO.
+namespace {
+
+struct FormaDsp {
+  std::uint32_t mascara;
+  std::uint32_t valor;
+  const char* nome;
+};
+
+const FormaDsp kFormasDsp[] = {
+    {0x0FFF0FF0u, 0x016F0F10u, "clz"},
+    {0x0FF00FF0u, 0x01000050u, "qadd"},
+    {0x0FF00FF0u, 0x01200050u, "qsub"},
+    {0x0FF00FF0u, 0x01400050u, "qdadd"},
+    {0x0FF00FF0u, 0x01600050u, "qdsub"},
+    // AS MASCARAS DAS FORMAS `xy` TEM DE DEIXAR OS BITS 6-5 LIVRES: sao eles que
+    // escolhem as metades (BB/BT/TB/TT). A primeira versao desta tabela usava
+    // `0x0FF000F0` (o campo 7-4 inteiro fixo) e so a variante `BB` era
+    // reconhecida -- as outras tres caiam no grupo de dados processados e davam
+    // `teq`/`cmn`/`tst`/`cmp`. Medido pelo auditor sobre a varredura do espaco:
+    // 2 862 palavras divergentes. Os bits 15-12 ficam livres quando ha acumulador
+    // (Ra) e sao ZERO obrigatorio no `SMULxy`/`SMULWy` (medido: `0xE1641382` com
+    // bits 15-12 = 1 nao e `smulbb`, e `cmn`).
+    {0x0FF0F090u, 0x01600080u, "smulxy"},
+    {0x0FF00090u, 0x01000080u, "smlaxy"},
+    {0x0FF00090u, 0x01400080u, "smlalxy"},
+    {0x0FF0F0B0u, 0x012000A0u, "smulwy"},
+    {0x0FF000B0u, 0x01200080u, "smlawy"},
+    {0x0FF000F0u, 0x01000070u, "hlt"},
+    {0x0FF000F0u, 0x01200070u, "bkpt"},
+};
+
+// A FRONTEIRA da aritmetica DSP: e EXACTAMENTE o conjunto da tabela acima, e nao
+// uma segunda expressao dos mesmos bits escrita a mao. Duas expressoes dos mesmos
+// bits divergem, e o despachante passa a testar uma coisa e a executar outra --
+// que e a classe de defeito que este auditor persegue.
+bool EhAritmeticaDsp(std::uint32_t instr) {
+  for (const FormaDsp& f : kFormasDsp) {
+    if ((instr & f.mascara) == f.valor) return true;
+  }
+  return false;
+}
+
+std::int32_t MeiaPalavra(Reg v, bool alto) {
+  return alto ? static_cast<std::int32_t>(static_cast<std::int16_t>(v >> 16))
+              : static_cast<std::int32_t>(static_cast<std::int16_t>(v & 0xFFFFu));
+}
+
+// Satura para 32 bits com sinal e diz se saturou (a bandeira Q do CPSR depende
+// disso).
+Reg Saturar(std::int64_t v, bool* saturou) {
+  if (v > 2147483647LL) { *saturou = true; return 0x7FFFFFFFu; }
+  if (v < -2147483648LL) { *saturou = true; return 0x80000000u; }
+  return static_cast<Reg>(static_cast<std::int32_t>(v));
+}
+
+}  // namespace
+
+void ArmInterpreter::AritmeticaDsp(std::uint32_t instr, std::uint32_t pc) {
+  const uint32_t campo_27_20 = (instr >> 20) & 0xFFu;
+  const uint32_t campo_7_4 = (instr >> 4) & 0xFu;
+  const uint32_t rd = (instr >> 12) & 0xFu;
+  const uint32_t rn = (instr >> 16) & 0xFu;
+  const uint32_t rs = (instr >> 8) & 0xFu;
+  const uint32_t rm = instr & 0xFu;
+  const bool x_alto = (instr & 0x20u) != 0;  // bit 5: metade de Rm
+  const bool y_alto = (instr & 0x40u) != 0;  // bit 6: metade de Rs
+
+  const FormaDsp* forma = nullptr;
+  for (const FormaDsp& f : kFormasDsp) {
+    if ((instr & f.mascara) == f.valor) { forma = &f; break; }
+  }
+  if (forma == nullptr) {
+    familia_ = "dsp_desconhecida";
+    Recusar(instr, pc, "instrucao do grupo DSP/QADD do ARMv5TE nao implementada");
+    return;
+  }
+
+  const std::string nome = forma->nome;
+  // O nome da sonda e o do objdump, com as letras das metades. As cadeias sao
+  // literais ESTATICOS: o `familia_` e um `const char*` que a sonda le depois do
+  // passo, e uma cadeia temporaria seria um ponteiro para memoria morta.
+  const int xy = (x_alto ? 2 : 0) | (y_alto ? 1 : 0);
+  static const char* const kNomeXy[3][4] = {
+      {"smulbb", "smulbt", "smultb", "smultt"},
+      {"smlabb", "smlabt", "smlatb", "smlatt"},
+      {"smlalbb", "smlalbt", "smlaltb", "smlaltt"},
+  };
+  static const char* const kNomeWy[2][2] = {{"smulwb", "smulwt"}, {"smlawb", "smlawt"}};
+  if (nome == "smulxy") familia_ = kNomeXy[0][xy];
+  else if (nome == "smlaxy") familia_ = kNomeXy[1][xy];
+  else if (nome == "smlalxy") familia_ = kNomeXy[2][xy];
+  else if (nome == "smulwy") familia_ = kNomeWy[0][y_alto ? 1 : 0];
+  else if (nome == "smlawy") familia_ = kNomeWy[1][y_alto ? 1 : 0];
+  else familia_ = forma->nome;
+
+  if (nome == "bkpt" || nome == "hlt") {
+    // Nao e uma classe em falta: o BKPT provoca uma excepcao de depuracao, e
+    // este emulador nao tem depurador. Recusar e a resposta honesta.
+    Recusar(instr, pc, "BKPT/HLT: o emulador nao tem depurador");
+    return;
+  }
+  if (nome == "clz") {
+    Reg v = Get(static_cast<int>(rm));
+    Reg n = 0;
+    while (n < 32 && (v & 0x80000000u) == 0) { v <<= 1; ++n; }
+    Set(static_cast<int>(rd), n);
+    return;
+  }
+  if (campo_7_4 == 0x5u && (campo_27_20 & 0xF9u) == 0x10u) {
+    // QADD/QSUB/QDADD/QDSUB: `campo_27_20` = 0x10/0x12/0x14/0x16 -> os dois bits
+    // do meio escolhem a operacao. O ARM ARM: Rd = Rn +/- Rm, com o dobro de Rm
+    // nas formas D.
+    const Reg valor_rn = Get(static_cast<int>(rn));
+    const Reg valor_rm = Get(static_cast<int>(rm));
+    const bool dobrar = (campo_27_20 & 0x4u) != 0;
+    const bool subtrair = (campo_27_20 & 0x2u) != 0;
+    bool saturou = false;
+    Reg parcela = valor_rm;
+    if (dobrar) {
+      // O dobro satura ANTES da soma (e a primeira saturacao que pode por o Q).
+      parcela = Saturar(2LL * static_cast<std::int64_t>(static_cast<std::int32_t>(valor_rm)), &saturou);
+    }
+    const std::int64_t a = static_cast<std::int64_t>(static_cast<std::int32_t>(valor_rn));
+    const std::int64_t b = static_cast<std::int64_t>(static_cast<std::int32_t>(parcela));
+    const Reg resultado = Saturar(subtrair ? a - b : a + b, &saturou);
+    if (saturou) modo_atual_ |= (1u << 27);  // a bandeira Q do CPSR
+    Set(static_cast<int>(rd), resultado);
+    return;
+  }
+
+  const std::int32_t a = MeiaPalavra(Get(static_cast<int>(rm)), x_alto);
+  const std::int32_t b = MeiaPalavra(Get(static_cast<int>(rs)), y_alto);
+  const std::int64_t produto = static_cast<std::int64_t>(a) * static_cast<std::int64_t>(b);
+
+  if (nome == "smulxy") {
+    Set(static_cast<int>(rn), static_cast<Reg>(static_cast<std::int32_t>(produto)));
+    return;
+  }
+  if (nome == "smlaxy") {
+    const Reg resultado = static_cast<Reg>(static_cast<std::int32_t>(
+        produto + static_cast<std::int64_t>(static_cast<std::int32_t>(Get(static_cast<int>(rd))))));
+    Set(static_cast<int>(rn), resultado);
+    return;
+  }
+  if (nome == "smlalxy") {
+    // Duas metades de destino: RdHi = bits 19-16, RdLo = bits 15-12.
+    const std::uint64_t antigo = (static_cast<std::uint64_t>(Get(static_cast<int>(rn))) << 32) |
+                                 Get(static_cast<int>(rd));
+    const std::uint64_t novo = antigo + static_cast<std::uint64_t>(produto);
+    Set(static_cast<int>(rn), static_cast<Reg>(novo >> 32));
+    Set(static_cast<int>(rd), static_cast<Reg>(novo & 0xFFFFFFFFu));
+    return;
+  }
+  // smulwy / smlawy: o `W` diz que o PRIMEIRO operando e a palavra inteira (e
+  // nao uma metade), o `B`/`T` qual a metade de Rs, e o resultado e a metade
+  // alta do produto. E o que a instrucao faz numa multiplicacao de ponto fixo
+  // 16.16 por uma fraccao Q15.
+  const std::int64_t bruto = static_cast<std::int64_t>(static_cast<std::int32_t>(Get(static_cast<int>(rm)))) *
+                             static_cast<std::int64_t>(b);
+  const Reg meio = static_cast<Reg>(static_cast<std::uint64_t>(bruto) >> 16);
+  if (nome == "smlawy") {
+    Set(static_cast<int>(rn), static_cast<Reg>(meio + Get(static_cast<int>(rd))));
+    return;
+  }
+  Set(static_cast<int>(rn), meio);
+}
+
 void ArmInterpreter::DadosProcessados(std::uint32_t instr, std::uint32_t pc) {
   const std::uint32_t opcode = (instr >> 21) & 0xF;
+  // Nome do mnemonico, para a sonda do descodificador. A tabela e a do ARM ARM
+  // A5.2.1, pela ordem do campo opcode -- e o mesmo campo que o `switch` abaixo
+  // consome, logo nao ha duas listas para divergirem.
+  static const char* const kNomes[16] = {"and", "eor", "sub", "rsb", "add", "adc", "sbc", "rsc",
+                                         "tst", "teq", "cmp", "cmn", "orr", "mov", "bic", "mvn"};
+  familia_ = kNomes[opcode];
   const uint32_t rn = (instr >> 16) & 0xF;
   const uint32_t rd = (instr >> 12) & 0xF;
   const bool s = (instr & (1u << 20)) != 0;
@@ -505,6 +915,7 @@ void ArmInterpreter::TransferenciaSimples(std::uint32_t instr, std::uint32_t pc)
   const uint32_t rn = (instr >> 16) & 0xF;
   const uint32_t rd = (instr >> 12) & 0xF;
   (void)pc;
+  familia_ = l ? (b ? "ldrb" : "ldr") : (b ? "strb" : "str");
 
   Reg deslocamento = instr & 0xFFF;
   if (i) {
@@ -550,6 +961,8 @@ void ArmInterpreter::Bloco(std::uint32_t instr, std::uint32_t pc) {
   const bool l = (instr & (1u << 20)) != 0;
   const uint32_t rn = (instr >> 16) & 0xF;
   const uint32_t lista = instr & 0xFFFF;
+  familia_ = l ? (u ? (p ? "ldmib" : "ldmia") : (p ? "ldmdb" : "ldmda"))
+               : (u ? (p ? "stmib" : "stmia") : (p ? "stmdb" : "stmda"));
   if (lista == 0) { Recusar(instr, pc, "LDM/STM com lista de registradores vazia"); return; }
   int quantos = 0;
   for (int i = 0; i < 16; ++i) if ((lista & (1u << i)) != 0) ++quantos;
@@ -578,6 +991,7 @@ void ArmInterpreter::Bloco(std::uint32_t instr, std::uint32_t pc) {
 }
 
 void ArmInterpreter::Bifurcar(std::uint32_t instr, std::uint32_t pc) {
+  familia_ = ((instr & (1u << 24)) != 0) ? "bl" : "b";
   int32_t deslocamento = static_cast<int32_t>(instr & 0x00FFFFFFu);
   if ((deslocamento & 0x00800000) != 0) deslocamento |= static_cast<int32_t>(0xFF000000u);
   const Reg alvo = pc + 8 + static_cast<Reg>(deslocamento << 2);
@@ -592,6 +1006,7 @@ void ArmInterpreter::Multiplicar(std::uint32_t instr) {
   const uint32_t rm = instr & 0xF;
   const bool acumula = (instr & (1u << 21)) != 0;
   const bool s = (instrucao_bandeiras(instr));
+  familia_ = acumula ? "mla" : "mul";
   // ARM ARM, e importa ler a ordem com cuidado:
   //   MUL  Rd, Rm, Rs      ->  Rd = Rm * Rs        (o campo Rn nao e operando)
   //   MLA  Rd, Rn, Rm, Rs  ->  Rd = Rn * Rm + Rs   (Rn e o primeiro factor E a
@@ -614,6 +1029,7 @@ void ArmInterpreter::MultiplicarLongo(std::uint32_t instr) {
   const bool com_sinal = (instr & (1u << 22)) != 0;
   const bool acumula = (instr & (1u << 21)) != 0;
   const bool s = (instr & (1u << 20)) != 0;
+  familia_ = com_sinal ? (acumula ? "smlal" : "smull") : (acumula ? "umlal" : "umull");
   if (com_sinal) {
     std::int64_t r = static_cast<std::int64_t>(static_cast<std::int32_t>(Get(static_cast<int>(rm)))) *
                      static_cast<std::int64_t>(static_cast<std::int32_t>(Get(static_cast<int>(rs))));
@@ -639,6 +1055,7 @@ void ArmInterpreter::MultiplicarLongo(std::uint32_t instr) {
 }
 
 void ArmInterpreter::TrocarEntreProcessadorEStatus(std::uint32_t instr) {
+  familia_ = ((instr & (1u << 21)) == 0) ? "mrs" : "msr";
   if ((instr & (1u << 21)) == 0) {  // MRS
     const uint32_t rd = (instr >> 12) & 0xF;
     const bool spsr = (instr & (1u << 22)) != 0;
@@ -664,6 +1081,26 @@ void ArmInterpreter::TrocarEntreProcessadorEStatus(std::uint32_t instr) {
 void ArmInterpreter::Coprocessador(std::uint32_t instr, std::uint32_t pc) {
   (void)pc;
   const uint32_t cp = (instr >> 8) & 0xF;
+  {
+    const bool carrega = (instr & (1u << 20)) != 0;
+    // bits 27-25 = 110 (bit 25 = 0) e o LDC/STC; bits 27-25 = 111 (bit 25 = 1) e
+    // o CDP/MCR/MRC. A primeira versao desta sonda tinha o bit trocado e chamava
+    // `ldc` ao `mcr` -- apanhado pelo auditor na primeira corrida.
+    const bool para_memoria = (instr & (1u << 25)) == 0;
+    if (para_memoria && (instr & 0xF0u) == 0x50u) {
+      // bits 7-4 = 0101: e a transferencia de DOIS registradores de
+      // coprocessador (MCRR/MRRC), e nao um LDC/STC. O nome e do objdump;
+      // antes desta correccao o auditor chamava-lhe `ldc` (94 palavras no
+      // corpus) -- o nome errado num instrumento e o mesmo defeito de P7.
+      familia_ = carrega ? "mrrc" : "mcrr";
+    } else if (para_memoria) {
+      familia_ = carrega ? "ldc" : "stc";
+    } else if ((instr & (1u << 4)) != 0) {
+      familia_ = carrega ? "mrc" : "mcr";
+    } else {
+      familia_ = "cdp";
+    }
+  }
   if (cp == 15 && (instr & (1u << 20)) != 0) {  // MRC p15
     // O unico uso medido no corpus e ler o registrador de tipo de cache. Este
     // projeto nao emula cache, e em vez de devolver zero em silencio devolve um
@@ -680,17 +1117,54 @@ void ArmInterpreter::Coprocessador(std::uint32_t instr, std::uint32_t pc) {
 }
 
 void ArmInterpreter::SWI(std::uint32_t instr, std::uint32_t pc) {
+  familia_ = "swi";
   Recusar(instr, pc, "SWI sem tratador registado");
 }
 
 void ArmInterpreter::ExecutarArm(std::uint32_t instr, std::uint32_t pc) {
+  // A sonda do descodificador comeca em "nada correu": cada ramo abaixo escreve o
+  // NOME do que correu (ou da forma em falta), e `Recusar` acrescenta o motivo.
+  familia_ = "nenhuma";
+  motivo_recusa_ = nullptr;
   const std::uint32_t cond = instr >> 28;
   if (cond == 0xF) {
+    // TRES FORMAS TEM CONDICAO 1111 POR CONSTRUCAO, e recusa-las e recusar
+    // instrucoes validas. Medido no corpus: 4 630 `pld` contados como recusa.
+    //
+    //   `pld` (dica de pre-carga): `1111 0101 U101 Rn 1111 imm12` e a forma de
+    //   registrador `1111 0111 U101 Rn 1111 0000 00 shift Rm`. O PLD NAO tem
+    //   efeito nenhum sobre a memoria nem sobre os registradores (ARM ARM, "hint
+    //   instructions"), logo executa-lo como nada NAO e um stub silencioso: e a
+    //   semantica inteira dele. Conferido com o objdump: 0xF5D0F000 = `pld [r0]`,
+    //   0xF550F000 = `pld [r0, #-0]`, 0xF7D0F001 = `pld [r0, r1]`.
+    if ((instr & 0xFF70F000u) == 0xF550F000u || (instr & 0xFF70F000u) == 0xF750F000u) {
+      familia_ = "pld";
+      Set(kPC, pc + 4);
+      return;
+    }
+    //   `blx <rotulo>`: `1111 101H imm24`. Muda para Thumb, e o `H` (bit 24) e a
+    //   metade baixa do deslocamento. Medido no corpus: 0xfa000000 contado como
+    //   "instrucao com condicao NV".
+    if ((instr & 0xFE000000u) == 0xFA000000u) {
+      familia_ = "blx_imediato";
+      int32_t deslocamento = static_cast<int32_t>(instr & 0x00FFFFFFu);
+      if ((deslocamento & 0x00800000) != 0) deslocamento |= static_cast<int32_t>(0xFF000000u);
+      const Reg alvo = pc + 8 + static_cast<Reg>(deslocamento << 2) + (((instr >> 24) & 1u) << 1);
+      Set(kLR, pc + 4);
+      modo_atual_ |= Cpsr::kT;
+      Set(kPC, alvo & ~1u);
+      return;
+    }
+    familia_ = "nv";
     Recusar(instr, pc, "instrucao com condicao NV");
     Set(kPC, pc + 4);
     return;
   }
   if (!CondicaoVerdadeira(cond)) {
+    // Com a condicao FALSA nao ha instrucao executada. Reportar aqui um nome
+    // seria a sonda a mentir: o `ldrd` que motivou este auditor vivia
+    // precisamente de um ramo que dizia uma coisa e fazia outra.
+    familia_ = "condicao_falsa";
     Set(kPC, pc + 4);
     return;
   }
@@ -721,6 +1195,10 @@ void ArmInterpreter::ExecutarArm(std::uint32_t instr, std::uint32_t pc) {
       Set(kPC, pc + 4);
       return;
     }
+    // A ARITMETICA DSP DO ARMv5TE (SMULxy/SMLAWy/QADD/CLZ) vive nos mesmos bits
+    // 27-25 = 000, e sem este ramo cada `smulbb` corre como `cmn` (medido: 1 105
+    // `smulbb` no corpus, 1 013 `smlabb`, 259 `clz`).
+    if (EhAritmeticaDsp(instr)) { AritmeticaDsp(instr, pc); Set(kPC, pc + 4); return; }
     // Grupo das multiplicacoes e do misc, com formas especificas.
     // BX e BLX (forma de registrador). Partilham quase tudo; o que os separa
     // sao os bits 7-4: 0001 para BX, 0011 para BLX -- que alem de saltar guarda
@@ -732,14 +1210,39 @@ void ArmInterpreter::ExecutarArm(std::uint32_t instr, std::uint32_t pc) {
     // com modulo sintetico apanhou-o.
     if ((instr & 0x0FFFFF30u) == 0x012FFF10u || (instr & 0x0FFFFF30u) == 0x012FFF30u) {
       const bool com_retorno = (instr & 0x30u) == 0x30u;
+      familia_ = com_retorno ? "blx" : "bx";
       const Reg alvo = Get(static_cast<int>(instr & 0xF));
       if (com_retorno) Set(kLR, pc + 4);
       if ((alvo & 1) != 0) modo_atual_ |= Cpsr::kT; else modo_atual_ &= ~Cpsr::kT;
       Set(kPC, alvo & ~1u);
       return;
     }
-    if ((instr & 0x0FBF0F00u) == 0x010F0000u) {  // MRS
+    // A MASCARA DO MRS VAI ATE AO BIT 0, e a razao e medida: a codificacao do
+    // MRS e `cond 00010 R 00 1111 Rd 0000 0000 0000` -- os doze bits baixos sao
+    // ZERO, e com a mascara antiga (`0x0FBF0F00`, que os deixava livres) o
+    // `swp r0, r0, [pc]` (0xE10F0090) era descodificado como MRS, porque o teste
+    // do MRS vem antes do SWP. Conferido no objdump: 0xE10F0090 = `swp`,
+    // 0xE10F0010 = `tst`.
+    if ((instr & 0x0FBF0FFFu) == 0x010F0000u) {  // MRS
       TrocarEntreProcessadorEStatus(instr);
+      Set(kPC, pc + 4);
+      return;
+    }
+    // MSR com REGISTRADOR. Faltava, e o sintoma era silencioso: `msr CPSR_f, r0`
+    // (0xE128F000) caia no grupo de dados processados como `teq` -- lia os
+    // campos como um TEQ e NAO escrevia o CPSR. Medido no `a3d.mod` (+0x2d2d0,
+    // 0x012dfda4 = `msreq CPSR_fsc, r4, lsr #27`).
+    if ((instr & 0x0FB0FFF0u) == 0x0120F000u) {  // MSR registrador
+      TrocarEntreProcessadorEStatus(instr);
+      Set(kPC, pc + 4);
+      return;
+    }
+    // BKPT/HLT: entram em modo de depuracao, que este emulador NAO tem. Uma
+    // palavra destas num fluxo de codigo e um ponto de quebra, e executa-la como
+    // `teq` (o que acontecia) escondia-o.
+    if ((instr & 0x0FF000F0u) == 0x01200070u || (instr & 0x0FF000F0u) == 0x01000070u) {
+      familia_ = ((instr & 0x0FF000F0u) == 0x01200070u) ? "bkpt" : "hlt";
+      Recusar(instr, pc, "BKPT/HLT: o emulador nao tem depurador");
       Set(kPC, pc + 4);
       return;
     }
@@ -753,6 +1256,7 @@ void ArmInterpreter::ExecutarArm(std::uint32_t instr, std::uint32_t pc) {
 
     if ((instr & 0x0FB00FF0u) == 0x01000090u) {  // SWP/SWPB
       const bool byte = (instr & (1u << 22)) != 0;
+      familia_ = byte ? "swpb" : "swp";
       const uint32_t rn = (instr >> 16) & 0xF;
       const uint32_t rd = (instr >> 12) & 0xF;
       const uint32_t rm = instr & 0xF;
@@ -780,18 +1284,68 @@ void ArmInterpreter::ExecutarArm(std::uint32_t instr, std::uint32_t pc) {
     Set(kPC, pc + 4);
     return;
   }
-  if (g == 2 || g == 3) { TransferenciaSimples(instr, pc); Set(kPC, pc + 4); return; }
+  if (g == 2 || g == 3) {
+    // ANTES da transferencia simples: o grupo "media" do ARMv6 (SXTB/UXTH/REV)
+    // partilha estes bits 27-25 = 011. O bit 4 e o que separa -- ver
+    // `EhMediaArmv6`. Medido no corpus: 17 295 `uxth` executados como `ldrb`.
+    if (EhMediaArmv6(instr)) { MediaArmv6(instr, pc); Set(kPC, pc + 4); return; }
+    TransferenciaSimples(instr, pc);
+    Set(kPC, pc + 4);
+    return;
+  }
   if (g == 4) { Bloco(instr, pc); return; }  // o PC e tratado dentro
   if (g == 5) { Bifurcar(instr, pc); return; }
   if (g == 6) { Coprocessador(instr, pc); Set(kPC, pc + 4); return; }
-  // 111: SWI
+  // 111: com o bit 24 a UM e o `SWI` (a codificacao e `cond 1111 imm24`, e o
+  // bit 24 = 1 vem do `1111`); com o bit 24 a ZERO e o grupo de COPROCESSADOR
+  // (CDP/MCR/MRC, que se escrevem `cond 1110 ...`). O interpretador mandava os DOIS para o `SWI`, e
+  // o efeito era medivel: `mrc p15, 0, r0, c1, c0, 0` (a leitura do tipo de
+  // cache, que o `Coprocessador` implementa) NUNCA chegava la, e o `cdp`/`mcr`
+  // apareciam como "SWI sem tratador registado".
+  if ((instr & (1u << 24)) == 0) {
+    Coprocessador(instr, pc);
+    Set(kPC, pc + 4);
+    return;
+  }
   SWI(instr, pc);
   Set(kPC, pc + 4);
 }
 
-void ArmInterpreter::ExecutarThumb(std::uint16_t instr, std::uint32_t pc) {
+namespace {
 
+// O NOME DA FORMA DE PRIMEIRO NIVEL DO THUMB, do ARM ARM (A6.2), para a RECUSA
+// dizer QUAL falta. As 16 formas dos bits 15-12; as que este interpretador
+// implementa escrevem o mnemonico do objdump e nao param aqui.
+const char* NomeDoFormatoThumb(std::uint16_t instr) {
+  switch (instr >> 12) {
+    case 0x0: return "thumb:formato1_deslocamento_imediato";
+    case 0x1: return "thumb:formato2_add_sub_registrador";
+    case 0x2:
+    case 0x3: return "thumb:formato3_mov_cmp_add_sub_imediato";
+    case 0x4: return "thumb:formato4_operacoes_alu";
+    case 0x5:
+    case 0x6: return "thumb:formato5_6_memoria_com_registrador";
+    case 0x7:
+    case 0x8: return "thumb:formato7_8_memoria_com_imediato";
+    case 0xA: return "thumb:formato10_add_rd_pc_sp";
+    case 0xB: return "thumb:formato11_add_sub_sp";
+    case 0xC: return "thumb:formato12_stmia_ldmia";
+    case 0xE: return "thumb:formato19_sufixo_blx";
+    case 0xF: return "thumb:formato19_bl_blx";
+    default: return "thumb:formato_desconhecido";
+  }
+}
+
+}  // namespace
+
+void ArmInterpreter::ExecutarThumb(std::uint16_t instr, std::uint32_t pc) {
+  // A sonda do descodificador, do lado do Thumb. O Thumb tem 19 formas de
+  // primeiro nivel, e as que FALTAM RECUSAM com nome (`forma Thumb NAO
+  // implementada`); o auditor compara este nome com o do objdump.
+  familia_ = "nenhuma";
+  motivo_recusa_ = nullptr;
   if ((instr & 0xF800u) == 0x1800u) {  // ADD/SUB, registrador ou imediato de 3 bits
+    familia_ = (((instr >> 9) & 3) == 1 || ((instr >> 9) & 3) == 3) ? "sub" : "add";
     const uint32_t op = (instr >> 9) & 3;
     const uint32_t rm = (instr >> 6) & 7;
     const uint32_t rn = (instr >> 3) & 7;
@@ -807,6 +1361,7 @@ void ArmInterpreter::ExecutarThumb(std::uint16_t instr, std::uint32_t pc) {
     return;
   }
   if ((instr & 0xE000u) == 0x2000u) {  // MOV/CMP/ADD/SUB imediato de 8 bits
+    familia_ = (const char*[]){"mov", "cmp", "add", "sub"}[(instr >> 11) & 3];
     const uint32_t op = (instr >> 11) & 3;
     const uint32_t rd = (instr >> 8) & 7;
     const Reg imm = instr & 0xFF;
@@ -823,6 +1378,7 @@ void ArmInterpreter::ExecutarThumb(std::uint16_t instr, std::uint32_t pc) {
     return;
   }
   if ((instr & 0xF800u) == 0x4800u) {  // LDR literal
+    familia_ = "ldr";
     const uint32_t rd = (instr >> 8) & 7;
     const Reg end = ((pc + 4) & ~3u) + ((instr & 0xFF) << 2);
     Set(static_cast<int>(rd), mem_.Ler32(end));
@@ -831,45 +1387,100 @@ void ArmInterpreter::ExecutarThumb(std::uint16_t instr, std::uint32_t pc) {
   }
   if ((instr & 0xE000u) == 0x6000u || (instr & 0xE000u) == 0x7000u ||
       (instr & 0xE000u) == 0x8000u) {  // LDR/STR, LDRB/STRB, LDRH/STRH
-    const uint32_t op = (instr >> 11) & 3;
+    // O `L` DESTAS FORMAS E O BIT 11, em todas elas: 0x6000/0x6800 (palavra),
+    // 0x7000/0x7800 (byte), 0x8000/0x8800 (meia-palavra) e 0x9000/0x9800
+    // (palavra). Ler os bits 12-11 (`(instr >> 11) & 3`) da 0 no 0x6000 mas da
+    // **2 no 0x7000 e no 0x9000** -- e como o teste de guarda era `op == 0`, o
+    // `strb` (0x7000) e o `str` de palavra (0x9000) eram executados como
+    // LEITURA, em silencio. Medido com o auditor: 2 048 + 2 048 metades de
+    // palavra do espaco Thumb. O bit 12 nao faz parte do `L`: ele e que separa
+    // a meia-palavra (0x8000) da palavra (0x9000).
+    const bool carrega = ((instr >> 11) & 1u) != 0;
     const uint32_t imm5 = (instr >> 6) & 0x1F;
     const uint32_t rn = (instr >> 3) & 7;
     const uint32_t rd = instr & 7;
     const Reg base = Get(static_cast<int>(rn));
-    const bool meia = (instr & 0xF000u) == 0x8000u && (instr & 0x1000u) != 0;
+    // A GUARDA DA MEIA-PALAVRA ESTAVA MORTA, e e um defeito medido: a condicao
+    // era `(instr & 0xF000) == 0x8000` E `(instr & 0x1000) != 0` -- as duas
+    // juntas nunca sao verdadeiras, porque `(instr & 0xF000) == 0x8000` diz que
+    // o bit 12 e ZERO. Resultado: `1000 imm5 Rn Rd` (STRH, 0x8000) e
+    // `1000 1 imm5 Rn Rd` (LDRH, 0x8800) corriam como STR/LDR de 32 bits, EM
+    // SILENCIO. Os valores do objdump (`-M force-thumb`): 0x8000 = `strh`,
+    // 0x8800 = `ldrh`, 0x9000 = `str` (palavra), 0x9800 = `ldr` -- o bit 11 e o
+    // `L` do LDRH e o bit 12 e o que separa a palavra (0x9) da meia-palavra
+    // (0x8), logo o teste certo e so `(instr & 0xF000) == 0x8000`.
+    const bool meia = (instr & 0xF000u) == 0x8000u;
+    // O NOME da forma, para a sonda: a mesma familia de instrucoes com tres
+    // larguras diferentes nao pode ter um nome so, senao a comparacao com o
+    // objdump acusa divergencia onde nao ha nenhuma.
+    familia_ = meia ? (carrega ? "ldrh" : "strh")
+                    : ((instr & 0xF000u) == 0x7000u ? (carrega ? "ldrb" : "strb")
+                                                    : (carrega ? "ldr" : "str"));
     const bool byte = (instr & 0xF000u) == 0x7000u;
     if (meia) {
       const Reg end = base + (imm5 << 1);
-      if (op == 1) mem_.Escrever16(end, static_cast<std::uint16_t>(Get(static_cast<int>(rd)) & 0xFFFF));
-      else Set(static_cast<int>(rd), mem_.Ler16(end));
+      if (carrega) Set(static_cast<int>(rd), mem_.Ler16(end));
+      else mem_.Escrever16(end, static_cast<std::uint16_t>(Get(static_cast<int>(rd)) & 0xFFFF));
       Set(kPC, pc + 2);
       return;
     }
     const Reg end = base + (byte ? imm5 : imm5 << 2);
-    if (op == 0) {
-      if (byte) mem_.Escrever8(end, static_cast<std::uint8_t>(Get(static_cast<int>(rd)) & 0xFF));
-      else mem_.Escrever32(end, Get(static_cast<int>(rd)));
-    } else {
+    if (carrega) {
       if (byte) Set(static_cast<int>(rd), mem_.Ler8(end));
       else Set(static_cast<int>(rd), mem_.Ler32(end));
+    } else {
+      if (byte) mem_.Escrever8(end, static_cast<std::uint8_t>(Get(static_cast<int>(rd)) & 0xFF));
+      else mem_.Escrever32(end, Get(static_cast<int>(rd)));
+    }
+    Set(kPC, pc + 2);
+    return;
+  }
+  // FORMATO 5 DO THUMB (0x5000-0x5FFF): acesso a memoria com offset de
+  // REGISTRADOR nas oito variantes. FALTAVA INTEIRO -- era recusado ("forma
+  // Thumb NAO implementada"), e as sete formas que o agente anterior mediu em
+  // falta (LDRH/STRH/LDRSB/LDRSH e as suas companheiras) vivem aqui e no formato
+  // 8/9 acima. Os nomes e a ordem dos campos sao do objdump
+  // (`-M force-thumb`): `0101 op Rm Rn Rd` com `op` nos bits 11-9 --
+  // 0 STR, 1 STRH, 2 STRB, 3 LDRSB, 4 LDR, 5 LDRH, 6 LDRB, 7 LDRSH.
+  if ((instr & 0xF000u) == 0x5000u) {
+    const uint32_t op = (instr >> 9) & 7u;
+    const uint32_t rm = (instr >> 6) & 7u;
+    const uint32_t rn = (instr >> 3) & 7u;
+    const uint32_t rd = instr & 7u;
+    static const char* const kNomes[8] = {"str",   "strh", "strb", "ldrsb",
+                                          "ldr",   "ldrh", "ldrb", "ldrsh"};
+    familia_ = kNomes[op];
+    const Reg end = Get(static_cast<int>(rn)) + Get(static_cast<int>(rm));
+    switch (op) {
+      case 0: mem_.Escrever32(end, Get(static_cast<int>(rd))); break;
+      case 1: mem_.Escrever16(end, static_cast<std::uint16_t>(Get(static_cast<int>(rd)) & 0xFFFFu)); break;
+      case 2: mem_.Escrever8(end, static_cast<std::uint8_t>(Get(static_cast<int>(rd)) & 0xFFu)); break;
+      case 3: Set(static_cast<int>(rd), static_cast<Reg>(static_cast<std::int32_t>(static_cast<std::int8_t>(mem_.Ler8(end))))); break;
+      case 4: Set(static_cast<int>(rd), mem_.Ler32(end)); break;
+      case 5: Set(static_cast<int>(rd), mem_.Ler16(end)); break;  // zero-extendido
+      case 6: Set(static_cast<int>(rd), mem_.Ler8(end)); break;
+      default: Set(static_cast<int>(rd), static_cast<Reg>(static_cast<std::int32_t>(static_cast<std::int16_t>(mem_.Ler16(end))))); break;
     }
     Set(kPC, pc + 2);
     return;
   }
   if ((instr & 0xF800u) == 0xE000u) {  // B incondicional
+    familia_ = "b";
     int32_t d = instr & 0x7FF;
     if ((d & 0x400) != 0) d |= static_cast<int32_t>(0xFFFFF800u);
     Set(kPC, pc + 4 + static_cast<Reg>(d << 1));
     return;
   }
-  if ((instr & 0xFF00u) == 0xDF00u) { SWI(instr, pc); Set(kPC, pc + 2); return; }
+  if ((instr & 0xFF00u) == 0xDF00u) { familia_ = "swi"; SWI(instr, pc); Set(kPC, pc + 2); return; }
   if ((instr & 0xFF87u) == 0x4700u) {  // BX/BLX registrador
+    familia_ = ((instr & 0x0080u) != 0) ? "blx" : "bx";
     const Reg alvo = Get(static_cast<int>((instr >> 3) & 0xF));
     if ((alvo & 1) == 0) modo_atual_ &= ~Cpsr::kT;
     Set(kPC, alvo & ~1u);
     return;
   }
   if ((instr & 0xF000u) == 0xD000u) {  // B condicional
+    familia_ = "b";
     if (CondicaoVerdadeira((instr >> 8) & 0xF)) {
       int32_t d = instr & 0xFF;
       if ((d & 0x80) != 0) d |= static_cast<int32_t>(0xFFFFFF00u);
@@ -879,6 +1490,7 @@ void ArmInterpreter::ExecutarThumb(std::uint16_t instr, std::uint32_t pc) {
     }
     return;
   }
+  familia_ = NomeDoFormatoThumb(instr);
   Recusar(instr, pc, "forma Thumb NAO implementada");
   Set(kPC, pc + 2);
 }

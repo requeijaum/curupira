@@ -131,6 +131,24 @@ target_link_libraries(zb2_sonda_mod PRIVATE zb2_core)
 add_executable(zb2_sonda_gl tools/sonda_gl.cpp)
 target_link_libraries(zb2_sonda_gl PRIVATE zb2_core)
 
+# A SONDA DO DESCODIFICADOR (a metade C++ do auditor diferencial). Existe porque
+# a comparacao com o `objdump` precisa do NOME que o NOSSO ramo de execucao deu a
+# cada palavra -- e esse nome so o interpretador tem, sem uma segunda
+# descodificacao que possa divergir da primeira em silencio.
+add_executable(zb2_sonda_descodificador tools/sonda_descodificador.cpp)
+target_link_libraries(zb2_sonda_descodificador PRIVATE zb2_core)
+
+# A GUARDA DO AUDITOR: o espaco Thumb inteiro (65 536 meias-palavras) comparado
+# com o `objdump`, e o criterio e ZERO palavras executadas como outra instrucao.
+# `SKIP_RETURN_CODE 77` porque sem o binutils nao ha oraculo -- e "nao correu" NAO
+# e "passou". O corpus inteiro (13 milhoes de palavras) fica fora do ctest pelo
+# tempo que leva; corre-se a mao, e o comando esta no cabecalho da ferramenta.
+add_test(NAME descodificador_espaco_thumb
+  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/guarda_descodificador.sh)
+set_tests_properties(descodificador_espaco_thumb PROPERTIES
+  SKIP_RETURN_CODE 77
+  ENVIRONMENT "ZB2_DIR=${CMAKE_CURRENT_BINARY_DIR}")
+
 add_executable(zb2_bateria tools/bateria.cpp)
 target_link_libraries(zb2_bateria PRIVATE zb2_core)
 
