@@ -9,6 +9,7 @@
 #include "core/brew/arquivo.h"
 #include "core/brew/formato.h"
 #include "core/brew/interface.h"
+#include "core/brew/sha256.h"
 #include "core/brew/tela.h"
 #include "core/brew/vfs.h"
 #include "core/memoria/memoria.h"
@@ -317,6 +318,40 @@ TEST(Interface, AsConstantesDeSlotSaoAsDoCabecalho) {
   EXPECT_EQ(brew_slots::kDisplay_DrawText, 4u);
   EXPECT_EQ(brew_slots::kFileMgr_OpenFile, 2u);
   EXPECT_EQ(brew_slots::kIFile_Seek, 7u);
+}
+
+// ---------------------------------------------------------------------------
+// SHA-256. VECTORES CONHECIDOS (FIPS 180-4), e nao o que eu acho que devia dar.
+// ---------------------------------------------------------------------------
+
+TEST(Sha256, VectoresConhecidos) {
+  // Os tres vectores do FIPS 180-4, mais o das mil repeticoes de 'a'. Se a
+  // implementacao estiver errada, qualquer um deles falha -- e um resumo de
+  // ficheiro errado faz o comparador comparar entradas diferentes como se fossem
+  // a mesma.
+  EXPECT_EQ(Sha256Hex(std::string("")),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+  EXPECT_EQ(Sha256Hex(std::string("abc")),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+  EXPECT_EQ(Sha256Hex(std::string("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
+  EXPECT_EQ(Sha256Hex(std::string(1000000, 'a')),
+            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
+}
+
+TEST(Sha256, UmByteDiferenteDaOutroResumo) {
+  // O ponto todo: dois corpus que difiram num byte tem de dar resumos diferentes.
+  EXPECT_NE(Sha256Hex(std::string("corpus A")), Sha256Hex(std::string("corpus B")));
+}
+
+TEST(Sha256, BlocosDeTamanhosDiferentes) {
+  // 55, 56, 64 e 65 bytes: os tamanhos a volta da fronteira do preenchimento, que
+  // e onde uma implementacao errada acerta por acaso.
+  for (int n : {54, 55, 56, 63, 64, 65, 119, 120}) {
+    const std::string s(static_cast<std::size_t>(n), 'x');
+    EXPECT_EQ(Sha256Hex(s).size(), 64u) << n;
+    EXPECT_NE(Sha256Hex(s), Sha256Hex(s + "x")) << n;
+  }
 }
 
 }  // namespace

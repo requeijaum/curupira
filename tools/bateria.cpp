@@ -28,6 +28,7 @@
 
 #include "core/brew/ajudantes.h"
 #include "core/brew/despacho.h"
+#include "core/brew/sha256.h"
 #include "core/brew/interface.h"
 #include "core/brew/tela.h"
 #include <filesystem>
@@ -640,7 +641,27 @@ int main(int argc, char** argv) {
   // ARGUMENTOS, e nao so a contagem).
   std::map<std::string, std::uint64_t> faltas_totais;
   std::map<std::string, std::map<std::string, std::uint64_t>> faltas_detalhe;
-  std::string json = "[\n";
+  // O CABECALHO DE PROVENIENCIA, e nao so a lista de fichas.
+  //
+  // Vem de um achado do sub-agente `regressoes`: o comparador deriva a
+  // configuracao da lista de `pasta/mod`, logo **dois corpus diferentes que
+  // mantenham os mesmos 62 pasta/mod sao indistinguiveis**. Duas dumps da mesma
+  // ROM dao o mesmo corpus e bytes diferentes.
+  //
+  // O `build` vem do AMBIENTE e nao de um `git` invocado daqui: o instrumento nao
+  // le o sistema por sua conta (P4 e P7). Se ninguem o disser, fica
+  // `desconhecido`, e isso e uma resposta honesta.
+  bool ok_corpus = false;
+  const std::vector<std::uint8_t> bytes_corpus = Ler(argv[1], &ok_corpus);
+  const char* ambiente_build = std::getenv("ZB2_BUILD");
+  const std::string build = (ambiente_build != nullptr && ambiente_build[0] != 0)
+                                ? ambiente_build
+                                : "desconhecido";
+  std::string json = "{\n  \"config\": {\"corpus_sha256\": \"" +
+                     (ok_corpus ? zb2::brew::Sha256Hex(bytes_corpus.data(), bytes_corpus.size())
+                                : std::string("desconhecido")) +
+                     "\", \"titulos\": " + std::to_string(titulos.size()) + ", \"build\": \"" +
+                     build + "\"},\n  \"titulos\": [\n";
   for (const Titulo& t : titulos) {
     dm_eventos.clear();
   const Estado e = Medir(t, argv[2]);
@@ -691,7 +712,7 @@ int main(int argc, char** argv) {
   // O texto termina em "},\n", logo a virgula esta em `size-2` e nao em
   // `size-3` -- errei o indice a primeira vez e o JSON continuou invalido.
   if (json.size() > 3 && json[json.size() - 2] == ',') json.erase(json.size() - 2, 1);
-  json += "]\n";
+  json += "  ]\n}\n";
 
   std::printf("\n== %d titulos | carga %d | ponteiro de modulo %d | applet %d ==\n", (int)titulos.size(),
               carregam, com_modulo, com_applet);

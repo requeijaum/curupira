@@ -23,6 +23,7 @@ add_library(zb2_core STATIC
   core/brew/vfs.cpp
   core/brew/arquivo.cpp
   core/brew/interface.cpp
+  core/brew/sha256.cpp
   core/brew/despacho.cpp
 )
 target_include_directories(zb2_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
