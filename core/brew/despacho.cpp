@@ -5,6 +5,7 @@
 #include <set>
 
 #include "core/audio/misturador.h"
+#include "core/brew/ajudantes_extra.h"
 #include "core/brew/formato.h"
 #include "core/brew/imedia.h"
 
@@ -71,11 +72,29 @@ constexpr std::uint32_t kBaseDoSlot = 1000;
 
 // Uma linha da tabela de ajudantes: o offset no `AEEHelperFuncs` e o endereco de
 // saida da implementacao.
-constexpr std::uint32_t kSlotDbgPrintf = 0x09c;
-constexpr std::uint32_t kSlotStrlen = 0x014, kSlotMemset = 0x004, kSlotStrcpy = 0x008;
-constexpr std::uint32_t kSlotStrcmp = 0x010, kSlotStrchr = 0x018, kSlotMemmove = 0x000;
-constexpr std::uint32_t kSlotStrtowstr = 0x0a0, kSlotGetAeeVersion = 0x08c,
-                       kSlotAeeGetRand = 0x090;
+// OS OFFSETS DESTA TABELA VEM DO CABECALHO, e nao da mao.
+//
+// DOIS DELES ESTAVAM NO SITIO ERRADO, e nada acusou: `kSlotStrtowstr` valia
+// 0x0a0 -- que e o `wstrcompress`; o `strtowstr` verdadeiro e 0x040 -- e
+// `kSlotAeeGetRand` valia 0x090, que e o `atoi`; o `aee_GetRand` e 0x0a8. O
+// despacho servia um `strtowstr` no sitio do `wstrcompress` e bytes aleatorios
+// no sitio do `atoi`. Os numeros certos JA estavam escritos em
+// `tools/bateria.cpp` -- a SEGUNDA copia deles divergiu desta, e nao havia nada
+// a comparar as duas. **Duas copias de um numero medido sao duas chances de ele
+// divergir.** (Medido em `platform/system/inc/AEEStdLib.h`, campos 10, 16, 36 e
+// 42; ver `tools/ajudantes_slots.inc`, gerado.)
+constexpr std::uint32_t kSlotDbgPrintf = brew_ajudantes::kAjudante_dbgprintf;
+constexpr std::uint32_t kSlotStrlen = brew_ajudantes::kAjudante_strlen;
+constexpr std::uint32_t kSlotMemset = brew_ajudantes::kAjudante_memset;
+constexpr std::uint32_t kSlotStrcpy = brew_ajudantes::kAjudante_strcpy;
+constexpr std::uint32_t kSlotStrcmp = brew_ajudantes::kAjudante_strcmp;
+constexpr std::uint32_t kSlotStrchr = brew_ajudantes::kAjudante_strchr;
+constexpr std::uint32_t kSlotMemmove = brew_ajudantes::kAjudante_memmove;
+constexpr std::uint32_t kSlotStrtowstr = brew_ajudantes::kAjudante_strtowstr;
+constexpr std::uint32_t kSlotGetAeeVersion = brew_ajudantes::kAjudante_GetAEEVersion;
+constexpr std::uint32_t kSlotAeeGetRand = brew_ajudantes::kAjudante_aee_GetRand;
+static_assert(kSlotStrtowstr == 0x040, "0x040 e strtowstr; 0x0a0 e wstrcompress");
+static_assert(kSlotAeeGetRand == 0x0a8, "0x0a8 e aee_GetRand; 0x090 e atoi");
 
 struct LigacaoAjudante {
   std::uint32_t off;
@@ -905,6 +924,19 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         mem_.LerCadeia(r0, &msg, 512);
         traco_.Emitir(Area::Brew, Nivel::Depuracao, "GUEST_DBGPRINTF", msg);
         cpu.Set(kR0, 0);
+      } else if (idx >= kBaseDoSlot &&
+                 AtenderAjudanteExtra(cpu, mem_, al_, traco_, (idx - kBaseDoSlot) * 4)) {
+        // A TABELA DOS AJUDANTES EXTRA, e este ramo vem ANTES do ramo generico
+        // dos 117 slots. **A ORDEM E O DEFEITO**: com a condicao invertida
+        // (`!Atender...`) o caso ATENDIDO cai no ramo generico, que escreve
+        // AEE_EUNSUPPORTED por cima do resultado e regista um
+        // `servico_sem_nome_idx<idx>`. Foi o que a primeira versao deste gancho
+        // fez, e a lista de demanda mostrou-o na ronda seguinte: os tres offsets
+        // tratados apareceram como `servico_sem_nome_idx1017/1020/1078`. E a
+        // setima vez que esta classe de erro aparece nesta arvore.
+        //
+        // R0 ja esta escrito (implementacao, ou recusa com o nome e a
+        // assinatura). O `saidas` continua a contar no fim do laco.
       } else if (idx >= kBaseDoSlot) {
         const std::uint32_t off = (idx - kBaseDoSlot) * 4;
         const char* conhecido = zb2::brew::NomeDoAjudante(off);

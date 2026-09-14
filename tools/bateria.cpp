@@ -28,6 +28,7 @@
 
 #include "core/brew/ajudantes.h"
 #include "core/brew/despacho.h"
+#include "ajudantes_slots.inc"
 #include "core/brew/sha256.h"
 #include "core/brew/interface.h"
 #include "core/brew/tela.h"
@@ -166,14 +167,32 @@ constexpr std::uint32_t kSlotDbgPrintf = 0x09c;
 // semantica vem do C e do SDK, e um teste pode compara-las com a libc do
 // hospedeiro -- que e como a arvore antiga fechou a duvida sobre `strcmp` e
 // `strstr`. Aqui implementam-se porque a bateria os pediu POR DEMANDA.
-constexpr std::uint32_t kSlotMemmove = 0x000;
-constexpr std::uint32_t kSlotMemset = 0x004;
-constexpr std::uint32_t kSlotStrcpy = 0x008;
-constexpr std::uint32_t kSlotStrcmp = 0x010;
-constexpr std::uint32_t kSlotStrlen = 0x014;
-constexpr std::uint32_t kSlotStrchr = 0x018;
-constexpr std::uint32_t kSlotStrtowstr = 0x040;
-constexpr std::uint32_t kSlotAeeGetRand = 0x0a8;
+// OS OFFSETS VEM DO CABECALHO GERADO, e NAO escritos aqui.
+//
+// Havia DUAS copias destes numeros -- esta e a do despacho -- e elas DIVERGIRAM:
+// o despacho tinha 0x0a0 para o `strtowstr` (que e 0x040) e 0x090 para o
+// `aee_GetRand` (que e 0x0a8). O efeito medido: um guest que chamasse
+// `wstrcompress` recebia a conversao do `strtowstr`, um que chamasse `atoi`
+// recebia BYTES ALEATORIOS, e os outros dois recebiam EUNSUPPORTED.
+//
+// Nada comparava as duas copias. **Duas listas que tem de concordar sao zero
+// listas** -- e esta e a sexta vez que este erro aparece neste trabalho, agora com
+// consequencia no valor de retorno.
+//
+// Achado pelo sub-agente `helpers`, que gerou `tools/ajudantes_slots.inc` a partir
+// de `AEEStdLib.h` e provou que o despacho divergia.
+constexpr std::uint32_t kSlotMemmove = brew_ajudantes::kAjudante_memmove;
+constexpr std::uint32_t kSlotMemset = brew_ajudantes::kAjudante_memset;
+constexpr std::uint32_t kSlotStrcpy = brew_ajudantes::kAjudante_strcpy;
+constexpr std::uint32_t kSlotStrcmp = brew_ajudantes::kAjudante_strcmp;
+constexpr std::uint32_t kSlotStrlen = brew_ajudantes::kAjudante_strlen;
+constexpr std::uint32_t kSlotStrchr = brew_ajudantes::kAjudante_strchr;
+constexpr std::uint32_t kSlotStrtowstr = brew_ajudantes::kAjudante_strtowstr;
+constexpr std::uint32_t kSlotAeeGetRand = brew_ajudantes::kAjudante_aee_GetRand;
+// A CONFERENCIA, no sitio onde o erro aconteceu. Se o `.inc` mudar, isto nao
+// compila -- e um numero errado nao chega a correr.
+static_assert(kSlotStrtowstr == 0x040, "0x040 e strtowstr; 0x0a0 e wstrcompress");
+static_assert(kSlotAeeGetRand == 0x0a8, "0x0a8 e aee_GetRand; 0x090 e atoi");
 constexpr std::uint32_t kSlotIdStrtowstr = 1500;
 constexpr std::uint32_t kSlotIdGetAeeVersion = 1501;
 constexpr std::uint32_t kSlotIdAeeGetRand = 1502;
@@ -318,7 +337,7 @@ struct Temporizador {
   std::uint32_t callback = 0;   // AEECallback*
   std::int64_t vence_em_ms = 0;
 };
-constexpr std::uint32_t kSlotGetAeeVersion = 0x08c;
+constexpr std::uint32_t kSlotGetAeeVersion = brew_ajudantes::kAjudante_GetAEEVersion;
 
 struct Titulo {
   std::string pasta;
