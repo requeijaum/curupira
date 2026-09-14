@@ -62,6 +62,11 @@ constexpr std::uint32_t kMediaData = 0x00100300u;
 // Longe das outras areas: o PCM tem 44100 bytes.
 constexpr std::uint32_t kBuffer = 0x00140000u;
 constexpr std::uint32_t kClsMedia = 0x01005500u;  // AEECLSID_MEDIA
+// Onde o guest gira enquanto a midia toca: `b .`. E o estado de um jogo no laco.
+constexpr std::uint32_t kLacoDoGuest = 0x00100500u;
+// Deslocamento do contador de avisos dentro do `pUser` do tratador (ver o
+// `EscreverTratador`: +0 o nCmd, +4 o nStatus, +8 quantas vezes foi chamado).
+constexpr std::uint32_t kOffAvisoContadorDoGuest = 8;
 
 constexpr std::uint32_t DpRegistrador(std::uint32_t opcode, std::uint32_t rd, std::uint32_t rn,
                                       std::uint32_t rm) {
@@ -91,6 +96,8 @@ constexpr std::uint32_t MoveRegistrador(std::uint32_t rd, std::uint32_t rm) {
   return DpRegistrador(0xD, rd, 0, rm);
 }
 constexpr std::uint32_t Bx(std::uint32_t rm) { return (kAl << 28) | 0x012FFF10u | (rm & 0xF); }
+// `b .`: um laco que nao acaba, dentro do modulo. E o guest a correr sozinho.
+constexpr std::uint32_t BLacoInfinito() { return (kAl << 28) | 0x0AFFFFFEu; }
 constexpr std::uint32_t Blx(std::uint32_t rm) { return (kAl << 28) | 0x012FFF30u | (rm & 0xF); }
 
 void EscreverPalavras(Memoria& m, std::uint32_t onde, const std::uint32_t* p, std::size_t n) {
@@ -104,6 +111,10 @@ void EscreverTrampolim(Memoria& m) {
       LdrImediato(12, 12, 0), Blx(12), MoveRegistrador(14, 5), Bx(14),
   };
   EscreverPalavras(m, kTrampolim, codigo, sizeof(codigo) / sizeof(codigo[0]));
+  // O laco do guest: `b .` -- um passo por instrucao, e o relogio virtual do laco
+  // do motor avanca 1 ms em cada um.
+  const std::uint32_t laco[] = {BLacoInfinito()};
+  EscreverPalavras(m, kLacoDoGuest, laco, 1);
 }
 
 // O tratador do aviso: le o nCmd (+8) e o nStatus (+16) -- os MESMOS campos que
@@ -180,10 +191,68 @@ int MedirOMotor() {
                   static_cast<unsigned long long>(par.second));
     }
   }
-  if (aceitou) {
-    std::printf("MOTOR: VERDE -- o motor entregou um objecto de midia (0x%08x)\n", ponteiro);
-    return 0;
+  if (!aceitou) {
+    std::printf(
+        "MOTOR: VERMELHO -- o motor NAO conhece o AEECLSID_MEDIA. Nenhum titulo pede IMedia\n"
+        "MOTOR:            porque o pedido morre aqui, com ECLASSNOTSUPPORT e a falta registada.\n"
+        "MOTOR:            (a parte do ciclo de vida pelo laco fica SALTADA neste estado)\n");
+    return 1;
   }
+
+  // ------------------------------------------------------------------------
+  // O CAMINHO COMPLETO PELO MOTOR, e nao so a criacao do objecto.
+  //
+  // O guest pe os dados, arma o callback, da `Play` -- e quem entrega o aviso de
+  // fim e o LACO, com o relogio virtual a avancar a midia. Nada aqui chama
+  // `Avancar` nem `EntregarAviso` a mao: se o aviso chegar ao tratador do guest,
+  // chegou pelo caminho do motor.
+  // ------------------------------------------------------------------------
+  constexpr std::uint32_t kAmostras = 22050;  // 1 s na taxa declarada
+  for (std::uint32_t k = 0; k < kAmostras; ++k) {
+    const std::int16_t v = ((k % 2) == 0) ? static_cast<std::int16_t>(3000) : 0;
+    mem.Escrever16(kBuffer + k * 2, static_cast<std::uint16_t>(v));
+  }
+  mem.Escrever32(kMediaData + zb2::brew::kOffMidiaClsData, zb2::brew::kMmdBuffer);
+  mem.Escrever32(kMediaData + zb2::brew::kOffMidiaPData, kBuffer);
+  mem.Escrever32(kMediaData + zb2::brew::kOffMidiaDwSize, kAmostras * 2);
+  for (std::uint32_t k = 0; k < 8; ++k) mem.Escrever32(kDados + k * 4, 0);
+  const std::uint32_t pmedia = mem.Ler32(kPponovo);
+
+  const auto chamar_pelo_motor = [&](std::uint32_t slot, std::uint32_t a1, std::uint32_t a2) {
+    cpu.Set(kR0, pmedia);
+    cpu.Set(kR1, a1);
+    cpu.Set(kR2, a2);
+    cpu.Set(4, slot * 4);
+    cpu.Set(kLR, kSentinela);
+    cpu.Set(kPC, kTrampolim);
+    despacho.Correr(cpu, 2000000, 0);
+    return cpu.Get(kR0);
+  };
+  const std::uint32_t registou =
+      chamar_pelo_motor(brew_slots::kMedia_RegisterNotify, kTratador, kDados);
+  const std::uint32_t dados = chamar_pelo_motor(
+      brew_slots::kMedia_SetMediaParm, static_cast<std::uint32_t>(zb2::brew::kMmParmMediaData),
+      kMediaData);
+  const std::uint32_t play = chamar_pelo_motor(brew_slots::kMedia_Play, 0, 0);
+
+  // E agora o LACO, com o guest a correr codigo proprio (`b .`), que e o estado em
+  // que um jogo esta quando a midia toca. O aviso tem de chegar ao tratador.
+  cpu.Set(kPC, kLacoDoGuest);
+  const auto passos = despacho.Correr(cpu, 200000, 0);
+  const std::uint32_t avisos = mem.Ler32(kDados + kOffAvisoContadorDoGuest);
+  std::printf("MOTOR: RegisterNotify=%u SetMediaParm(MEDIA_DATA)=%u Play=%u em obj=0x%08x\n",
+              registou, dados, play, pmedia);
+  std::printf("MOTOR: avancos do laco=%llu motivo=%s\n",
+              static_cast<unsigned long long>(passos.passos), passos.motivo.c_str());
+  std::printf("MOTOR: avisos que o LACO entregou ao tratador do guest=%u (nCmd=%u nStatus=%u)\n",
+              avisos, mem.Ler32(kDados + 0), mem.Ler32(kDados + 4));
+  if (avisos != 1 || mem.Ler32(kDados + 0) != 4 || mem.Ler32(kDados + 4) != 2) {
+    std::printf("MOTOR: VERMELHO -- o motor criou o IMedia mas o aviso de fim nao chegou\n");
+    return 1;
+  }
+  std::printf("MOTOR: VERDE -- o motor entrega o IMedia (0x%08x) E o aviso de fim\n", ponteiro);
+  return 0;
+  
   std::printf(
       "MOTOR: VERMELHO -- o motor NAO conhece o AEECLSID_MEDIA. Nenhum titulo pede IMedia\n"
       "MOTOR:            porque o pedido morre aqui, com ECLASSNOTSUPPORT e a falta registada.\n");

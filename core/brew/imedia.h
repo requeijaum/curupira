@@ -411,6 +411,11 @@ class Media {
   // uma midia sai de um numero declarado, e nao de um cabecalho lido. O valor
   // esta aqui, com este comentario, para nao parecer medido.
   static constexpr std::uint32_t kTaxaDeclarada = 22050;
+  // Quantas amostras o laco avanca por milissegundo do relogio VIRTUAL (P4): a
+  // taxa declarada dividida por 1000, TRUNCADA. O truncamento (22,05 -> 22) anda
+  // 0,2% devagar, e isso esta DITO: um numero redondo inventado seria pior do que
+  // um numero truncado e explicado.
+  static constexpr std::uint32_t kAmostrasPorMs = kTaxaDeclarada / 1000;
 
  private:
   struct Objeto {
