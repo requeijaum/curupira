@@ -19,6 +19,7 @@ add_library(zb2_core STATIC
   core/carga/mod.cpp
   core/carga/bar.cpp
   core/brew/ajudantes.cpp
+  core/brew/ajudantes_extra.cpp
   core/brew/formato.cpp
   core/brew/tela.cpp
   core/brew/vfs.cpp
@@ -56,6 +57,7 @@ add_executable(zb2_tests
   tests/bar_test.cpp
   tests/igl_test.cpp
   tests/mod_base_test.cpp
+  tests/ajudantes_extra_test.cpp
   tests/media_test.cpp
   tests/audio_test.cpp
 )
@@ -93,6 +95,14 @@ set_tests_properties(slots_do_sdk PROPERTIES SKIP_RETURN_CODE 77)
 # cabecalho para ler -- e "nao correu" NAO e "passou".
 add_test(NAME slots_do_sdk_gl COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/verificar_slots_gl.sh)
 set_tests_properties(slots_do_sdk_gl PROPERTIES SKIP_RETURN_CODE 77)
+
+# A GUARDA DA TABELA DOS AJUDANTES (117 slots do `AEEHelperFuncs`). Regenera
+# `tools/ajudantes_slots.inc` de `AEEStdLib.h` e compara com o versionado; o
+# gerador tem ancoras internas, e `strtowstr`/`aee_GetRand` estao entre elas
+# porque ja divergiram (0x0a0 em vez de 0x040, 0x090 em vez de 0x0a8).
+add_test(NAME slots_do_sdk_ajudantes
+  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/verificar_ajudantes.sh)
+set_tests_properties(slots_do_sdk_ajudantes PROPERTIES SKIP_RETURN_CODE 77)
 
 add_executable(zb2_sonda_mod tools/sonda_mod.cpp)
 target_link_libraries(zb2_sonda_mod PRIVATE zb2_core)
