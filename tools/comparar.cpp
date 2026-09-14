@@ -296,7 +296,22 @@ const Campo kCampos[] = {
     {"blits", kNumero, kMaiorMelhor,
      "MEDIDO: soma 0 nos 62 titulos da referencia (`sum(.[].blits) == 0`). "
      "Inerte hoje."},
-    {"passos_start", kNumero, kMaiorMelhor,
+    // kNEUTRO, e nao kMaiorMelhor. **Um contador de instrucoes executadas NAO TEM
+    // DIRECCAO.**
+    //
+    // MEDIDO, e foram DOIS sub-agentes independentes que o apanharam:
+    // servindo os 3 pedidos do `IRootForm` ao `tectoy`, o caminho dele ENCURTA
+    // (300 -> 244 passos, porque deixa de andar pelo ramo de erro); e o `pbc` com a
+    // cablagem do GL passa de 4000000 para 375. Nos dois casos o campo estava
+    // declarado `[maior melhor]` e o juiz chamava REGRESSAO ao progresso.
+    //
+    // E a classe de defeito que o LEDGER ja descrevia: *"declarar um deles como
+    // criterio transforma progresso em falha"*. Correr mais passos pode ser chegar
+    // mais longe OU andar em circulos; o numero sozinho nao distingue. Quem
+    // distingue sao os degraus (`applet`, `vtable`, `pixels`), esses com direcao.
+    //
+    // O campo continua a ser medido e reportado -- so nao julga.
+    {"passos_start", kNumero, kNeutro,
      "PASSOS DA FASE DO `EVT_APP_START` -- o ciclo de vida do app a arrancar. "
      "MEDIDO: 0 em 62 titulos ate ao commit b42043e, porque a bateria criava o "
      "applet e PARAVA; **41 titulos tinha um applet nao nulo e nenhum arrancava o "
