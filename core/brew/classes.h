@@ -106,7 +106,8 @@ enum class Classe : std::uint32_t {
   kValueModel_1 = 1,
   kTextCtl = 2,
   kThread = 3,
-  kQuantas = 4,
+  kPNGDecoderBREW = 4,
+  kQuantas = 5,
 };
 
 constexpr std::uint32_t kQuantasClasses = static_cast<std::uint32_t>(Classe::kQuantas);
@@ -146,6 +147,10 @@ bool SlotDaClasseImplementado(std::uint32_t k, std::uint32_t slot);
 // ficou por cablar -- uma cablagem perdida numa edicao ja custou uma corrida
 // inteira neste trabalho.
 void ConstruirClasses(Memoria& mem, const Saidas& saidas, Traco& traco);
+
+// Repoem o estado do ITextCtl (ativo/props/modo) no arranque. Sem isto, dois
+// testes na mesma Bancada veriam o estado um do outro -- statics partilhados.
+void ReporEstadoTextCtl();
 
 // Atende um pedido desta faixa. `false` = o indice nao e destas classes (e o
 // chamador segue a cadeia de ramos). `true` = foi atendido, com sucesso OU com

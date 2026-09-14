@@ -167,12 +167,13 @@ TEST(Classes, OMetodoNaoImplementadoRecusaComONomeDoMetodo) {
   b.Cpu().Set(kR0, obj);
   b.Cpu().Set(kR1, 3);          // AEE_TM_LETTERS, medido no zenonia
   b.Cpu().Set(kLR, 0x000459ccu);  // o LR medido da chamada
-  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(textctl) + brew_slots::kTextCtl_SetInputMode,
+  // SetTitle (slot 11) segue nao implementado: recusa com o nome do metodo.
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(textctl) + brew_slots::kTextCtl_SetTitle,
                             b.T()));
   EXPECT_EQ(b.Cpu().Get(kR0), kAeeUnsupported);
   // A DEMANDA PASSA A DIZER O NOME, e nao `0x01003109`.
-  EXPECT_EQ(b.Faltas("ITextCtl::SetInputMode"), 1u);
-  const std::string d = b.Detalhe("ITextCtl::SetInputMode");
+  EXPECT_EQ(b.Faltas("ITextCtl::SetTitle"), 1u);
+  const std::string d = b.Detalhe("ITextCtl::SetTitle");
   EXPECT_NE(d.find("AEECLSID_TEXTCTL (0x01003109)"), std::string::npos) << d;
   EXPECT_NE(d.find("r1=0x00000003"), std::string::npos) << d;
   EXPECT_NE(d.find("lr=0x000459cc"), std::string::npos) << d;
@@ -227,6 +228,7 @@ TEST(Classes, ObjetoDoClsidSoRespondeAsTresClasses) {
   EXPECT_EQ(ObjetoDoClsid(0x01028e3cu), ObjetoDaClasse(1));
   EXPECT_EQ(ObjetoDoClsid(0x01003109u), ObjetoDaClasse(2));
   EXPECT_EQ(ObjetoDoClsid(0x01001017u), ObjetoDaClasse(3));
+  EXPECT_EQ(ObjetoDoClsid(0x01030766u), ObjetoDaClasse(4));
   EXPECT_EQ(ObjetoDoClsid(0x01011810u), 0u);
   EXPECT_EQ(IndiceDaClasse(0x01003109u), static_cast<std::uint32_t>(Classe::kTextCtl));
   EXPECT_EQ(IndiceDaClasse(0x01001017u), static_cast<std::uint32_t>(Classe::kThread));
@@ -263,6 +265,79 @@ TEST(Classes, OThreadStartRecusaComNome) {
 //    unico pedido na fase do arranque e o `CreateInstance`). Logo nao ha um
 //    metodo para implementar, e todos recusam com o nome.
 // ---------------------------------------------------------------------------
+TEST(Classes, OBackDoAppHistoryDevolveNoSuchESemFalta) {
+  Bancada b;
+  const std::uint32_t hist = static_cast<std::uint32_t>(Classe::kAppHistory);
+  b.Cpu().Set(kR0, ObjetoDaClasse(hist));
+  EXPECT_TRUE(SlotDaClasseImplementado(hist, brew_slots::kAppHistory_Back));
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(hist) + brew_slots::kAppHistory_Back, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeNoSuch);
+  EXPECT_EQ(b.Faltas("IAppHistory::Back"), 0u);
+}
+
+TEST(Classes, OPNGDecoderTemCincoSlotsNaOrdemDoCabecalho) {
+  const std::uint32_t png =
+      static_cast<std::uint32_t>(Classe::kPNGDecoderBREW);
+  EXPECT_STREQ(NomeDaInterface(png), "IImageDecoder");
+  EXPECT_STREQ(NomeDaClasse(png), "AEECLSID_PNGDECODER_BREW");
+  EXPECT_STREQ(NomeDoSlotDaClasse(png, 3), "GetBitmap");
+  EXPECT_STREQ(NomeDoSlotDaClasse(png, 4), "GetRop");
+  for (std::uint32_t s = 2; s < 5; ++s) {
+    EXPECT_FALSE(SlotDaClasseImplementado(png, s)) << "slot " << s;
+  }
+}
+
+TEST(Classes, OPNGDecoderGetBitmapRecusaComNome) {
+  Bancada b;
+  const std::uint32_t png =
+      static_cast<std::uint32_t>(Classe::kPNGDecoderBREW);
+  b.Cpu().Set(kR0, ObjetoDaClasse(png));
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(png) + 3, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("IImageDecoder::GetBitmap"), 1u);
+}
+
+TEST(Classes, OTextCtlGuardaEstadoESemFalta) {
+  Bancada b;
+  const std::uint32_t tc = static_cast<std::uint32_t>(Classe::kTextCtl);
+  // IsActive comeca 0.
+  b.Cpu().Set(kR0, ObjetoDaClasse(tc));
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(tc) + brew_slots::kTextCtl_IsActive, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), 0u);
+  // SetActive(1) -> IsActive 1; SetActive(0) -> IsActive 0.
+  b.Cpu().Set(kR1, 1);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(tc) + brew_slots::kTextCtl_SetActive, b.T()));
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(tc) + brew_slots::kTextCtl_IsActive, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), 1u);
+  b.Cpu().Set(kR1, 0);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(tc) + brew_slots::kTextCtl_SetActive, b.T()));
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(tc) + brew_slots::kTextCtl_IsActive, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), 0u);
+  // SetInputMode devolve o anterior.
+  b.Cpu().Set(kR1, 3);
+  EXPECT_TRUE(
+      AtenderClasse(b.Cpu(), VtClasse(tc) + brew_slots::kTextCtl_SetInputMode, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), 0u);
+  b.Cpu().Set(kR1, 5);
+  EXPECT_TRUE(
+      AtenderClasse(b.Cpu(), VtClasse(tc) + brew_slots::kTextCtl_SetInputMode, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), 3u);
+  // SetRect/SetProperties/HandleEvent aceitam sem falta.
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(tc) + brew_slots::kTextCtl_SetRect, b.T()));
+  b.Cpu().Set(kR1, 0x80010000u);
+  EXPECT_TRUE(
+      AtenderClasse(b.Cpu(), VtClasse(tc) + brew_slots::kTextCtl_SetProperties, b.T()));
+  b.Cpu().Set(kR1, 0);
+  b.Cpu().Set(kR2, 0);
+  b.Cpu().Set(kR3, 0x000a1000u);
+  EXPECT_TRUE(
+      AtenderClasse(b.Cpu(), VtClasse(tc) + brew_slots::kTextCtl_HandleEvent, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), 0u);
+  EXPECT_EQ(b.Faltas("ITextCtl::SetActive"), 0u);
+  EXPECT_EQ(b.Faltas("ITextCtl::IsActive"), 0u);
+  EXPECT_EQ(b.Faltas("ITextCtl::SetInputMode"), 0u);
+}
+
 TEST(Classes, OValueModelNaoTemMetodoImplementadoEPorIssoRecusaComNome) {
   const std::uint32_t vm = static_cast<std::uint32_t>(Classe::kValueModel_1);
   for (std::uint32_t s = 0; s < brew_slots::kValueModelSlots; ++s) {

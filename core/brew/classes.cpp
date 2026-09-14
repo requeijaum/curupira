@@ -38,11 +38,23 @@ const char* NomeDoSlotThread(unsigned slot) {
   }
 }
 
+const char* NomeDoSlotPNGDecoderBREW(unsigned slot) {
+  switch (slot) {
+    case 0: return "AddRef";
+    case 1: return "Release";
+    case 2: return "QueryInterface";
+    case 3: return "GetBitmap";
+    case 4: return "GetRop";
+    default: return "?";
+  }
+}
+
 const char* (*const kNomeDoSlot[])(unsigned) = {
     &brew_slots::NomeDeAppHistory,
     &brew_slots::NomeDeValueModel,
     &brew_slots::NomeDeTextCtl,
     &NomeDoSlotThread,
+    &NomeDoSlotPNGDecoderBREW,
 };
 
 // Quantos slots cada interface TEM, do mesmo cabecalho (IThread: 12, medido em
@@ -52,6 +64,7 @@ const std::uint32_t kSlotsDaInterface[] = {
     brew_slots::kValueModelSlots,
     brew_slots::kTextCtlSlots,
     12,
+    5,
 };
 
 // OS NOMES QUE A DEMANDA VAI MOSTRAR. O CLSID vem da constante gerada em
@@ -67,6 +80,7 @@ constexpr Ficha kFichas[kQuantasClasses] = {
     {brew_clsids::kClsid_VALUEMODEL_1, "AEECLSID_VALUEMODEL_1", "IValueModel"},
     {brew_clsids::kClsid_TEXTCTL, "AEECLSID_TEXTCTL", "ITextCtl"},
     {brew_clsids::kClsid_THREAD, "AEECLSID_THREAD", "IThread"},
+    {brew_clsids::kClsid_PNGDECODER_BREW, "AEECLSID_PNGDECODER_BREW", "IImageDecoder"},
 };
 
 // OS TRES CLSIDs, lidos do `.inc` gerado. Se um deles divergir do cabecalho, a
@@ -79,6 +93,8 @@ static_assert(brew_clsids::kClsid_VALUEMODEL_1 == 0x01028e3cu,
               "AEECLSID_VALUEMODEL_1 tem de ser 0x01028e3c (AEECLSID_VALUEMODEL_1.bid:31)");
 static_assert(brew_clsids::kClsid_THREAD == 0x01001017u,
               "AEECLSID_THREAD tem de ser 0x01001017 (AEEClassIDs.h:84)");
+static_assert(brew_clsids::kClsid_PNGDECODER_BREW == 0x01030766u,
+              "AEECLSID_PNGDECODER_BREW tem de ser 0x01030766 (AEECPNGDecoderBREW.h:27)");
 
 // O `IAppHistory` TEM 16 slots, e o `Top` e o slot 5 -- nao um numero escrito
 // aqui: sai da cadeia de heranca (`INHERIT_IQI` = 3, mais `Forward`, `Back`,
@@ -113,8 +129,25 @@ std::uint32_t ObjetoDoClsid(std::uint32_t clsid) {
   return k < kQuantasClasses ? ObjetoDaClasse(k) : 0;
 }
 
+namespace {
+
+// Estado do unico ITextCtl (0x8F002000). Void methods sem retorno; o guest le
+// de volta via IsActive/GetInputMode. Sem Memoria aqui: SetRect aceita o
+// ponteiro sem o ler (validar rect exigiria Memoria no AtenderClasse).
+std::uint32_t g_texto_ativo = 0;
+std::uint32_t g_texto_props = 0;
+std::int32_t g_texto_modo = 0;
+
+}  // namespace
+
+void ReporEstadoTextCtl() {
+  g_texto_ativo = 0;
+  g_texto_props = 0;
+  g_texto_modo = 0;
+}
+
 bool SlotDaClasseImplementado(std::uint32_t k, std::uint32_t slot) {
-  // O UNICO METODO IMPLEMENTADO DESTAS TRES CLASSES, e a razao e uma medicao:
+  // Os METODOS IMPLEMENTADOS, e a razao e uma medicao:
   // o `tectoy` chama `IAppHistory::Top` (slot 5) no `EVT_APP_START`, e o
   // `Release` (slot 1) ja e servido pela IBase de todos os objectos.
   //
@@ -123,10 +156,26 @@ bool SlotDaClasseImplementado(std::uint32_t k, std::uint32_t slot) {
   // top-visible ("Rules on creating history entry for an app"), e esta maquina
   // tem UMA applet, criada e posta a correr por nos -- logo a lista nao esta
   // vazia, que e a unica condicao em que o `Top` devolve `AEE_EFAILED`.
-  return k == kClasseDoAppHistory && slot == brew_slots::kAppHistory_Top;
+  //
+  // O `Back` (slot 4) devolve `AEE_ENOSUCH` (39): com UMA entrada nao ha
+  // anterior, e o helper `IAppHistory_Bottom` do proprio cabecalho faz
+  // `while (Back() == SUCCESS)` esperando ENOSUCH como fim-de-lista.
+  if (k == kClasseDoAppHistory) {
+    return slot == brew_slots::kAppHistory_Top || slot == brew_slots::kAppHistory_Back;
+  }
+  if (k == static_cast<std::uint32_t>(Classe::kTextCtl)) {
+    // O pacote de estado do `zenonia` (6 pedidos na bateria): guarda estado,
+    // sem desenho. HandleEvent devolve FALSE (nao tratado); as void nao tocam r0.
+    return slot == brew_slots::kTextCtl_HandleEvent ||
+           slot == brew_slots::kTextCtl_SetActive || slot == brew_slots::kTextCtl_IsActive ||
+           slot == brew_slots::kTextCtl_SetRect || slot == brew_slots::kTextCtl_SetProperties ||
+           slot == brew_slots::kTextCtl_SetInputMode;
+  }
+  return false;
 }
 
 void ConstruirClasses(Memoria& mem, const Saidas& saidas, Traco& traco) {
+  ReporEstadoTextCtl();
   for (std::uint32_t k = 0; k < kQuantasClasses; ++k) {
     const std::uint32_t quantos = kSlotsDaInterface[k];
     if (quantos == 0 || quantos > kSlotsDaClasse) {
@@ -175,6 +224,45 @@ bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
   const std::uint32_t k = (indice - kVtableClasseBase) / kSlotsDaClasse;
   const std::uint32_t slot = (indice - kVtableClasseBase) % kSlotsDaClasse;
 
+  if (k == kClasseDoAppHistory && slot == brew_slots::kAppHistory_Back) {
+    // `int Back(po)` -- sem anterior na lista de 1: ENOSUCH, o fim-de-lista
+    // que o `IAppHistory_Bottom` do cabecalho espera (ver SlotDaClasseImplementado).
+    cpu.Set(kR0, kAeeNoSuch);
+    return true;
+  }
+  const std::uint32_t k_texto = static_cast<std::uint32_t>(Classe::kTextCtl);
+  if (k == k_texto && slot == brew_slots::kTextCtl_SetActive) {
+    // `void SetActive(po, boolean)`: r1 = 0/1. Guarda; void nao toca r0.
+    g_texto_ativo = (cpu.Get(kR1) != 0) ? 1u : 0u;
+    return true;
+  }
+  if (k == k_texto && slot == brew_slots::kTextCtl_IsActive) {
+    // `boolean IsActive(po)`: devolve o guardado.
+    cpu.Set(kR0, g_texto_ativo);
+    return true;
+  }
+  if (k == k_texto && slot == brew_slots::kTextCtl_SetRect) {
+    // `void SetRect(po, AEERect*)`: aceita sem ler (sem Memoria neste ramo).
+    return true;
+  }
+  if (k == k_texto && slot == brew_slots::kTextCtl_SetProperties) {
+    // `void SetProperties(po, uint32)`: guarda r1.
+    g_texto_props = cpu.Get(kR1);
+    (void)g_texto_props;
+    return true;
+  }
+  if (k == k_texto && slot == brew_slots::kTextCtl_SetInputMode) {
+    // `AEETextInputMode SetInputMode(po, m)`: devolve o anterior, guarda o novo.
+    const std::int32_t anterior = g_texto_modo;
+    g_texto_modo = static_cast<std::int32_t>(cpu.Get(kR1));
+    cpu.Set(kR0, static_cast<std::uint32_t>(anterior));
+    return true;
+  }
+  if (k == k_texto && slot == brew_slots::kTextCtl_HandleEvent) {
+    // `boolean HandleEvent(po, evt, w, dw)`: sem widgets, nada tratado -> FALSE.
+    cpu.Set(kR0, 0);
+    return true;
+  }
   if (SlotDaClasseImplementado(k, slot)) {
     // `int Top(po)` -- ver a justificacao em `SlotDaClasseImplementado`.
     cpu.Set(kR0, kAeeSuccess);

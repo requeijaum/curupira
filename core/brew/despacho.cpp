@@ -66,7 +66,8 @@ constexpr std::uint32_t kSlotIdGetFontMetrics = 1530, kSlotIdMeasureText = 1531,
                        kSlotIdDrawText = 1532, kSlotIdDrawRect = 1533, kSlotIdBitBlt = 1534,
                        kSlotIdSetColor = 1535, kSlotIdSetClipRect = 1536, kSlotIdUpdate = 1537,
                        kSlotIdCreateDIBitmap = 1538, kSlotIdBacklight = 1542;
-constexpr std::uint32_t kSlotIdGetDest = 1545,
+constexpr std::uint32_t kSlotIdMkDir = 1544,
+                       kSlotIdGetDest = 1545,
                        kSlotIdSetDest = 1546, kSlotIdRmDir = 1547, kSlotIdGetDeviceInfo = 1549,
                        kSlotIdGetDeviceBitmap = 1550, kSlotIdGetClipRect = 1551,
                        kSlotIdCancelTimer = 1552, kSlotIdSqlOpen = 1553, kSlotIdOpenFile = 1554,
@@ -1137,6 +1138,15 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           }
         }
         cpu.Set(kR0, 0);
+      } else if (idx == kSlotIdMkDir) {
+        // `int MkDir(IFileMgr *po, const char *pszDir)` -- IFileMgr slot 5.
+        // Mesma decisao do RmDir: VFS so de leitura, recusa em voz alta (P2).
+        std::string nome;
+        mem_.LerCadeia(cpu.Get(kR1), &nome, 512);
+        char det[96];
+        std::snprintf(det, sizeof(det), "MkDir %s", nome.c_str());
+        traco_.RegistarFalta(Area::Brew, "IFileMgr::MkDir", det);
+        cpu.Set(kR0, kAeeUnsupported);
       } else if (idx == kSlotIdRmDir) {
         // `int RmDir(IFileMgr *po, const char *pszDir)` -- IFileMgr slot 7.
         //
