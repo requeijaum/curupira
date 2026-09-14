@@ -1,0 +1,834 @@
+#include <gtest/gtest.h>
+
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+#include "core/audio/misturador.h"
+#include "core/brew/imedia.h"
+#include "core/cpu/arm_interpreter.h"
+#include "core/memoria/memoria.h"
+#include "core/traco/traco.h"
+
+using zb2::ArmInterpreter;
+using zb2::DestinoMemoria;
+using zb2::Memoria;
+using zb2::Traco;
+using zb2::brew::Media;
+
+namespace zb2::brew {
+namespace {
+
+// ---------------------------------------------------------------------------
+// MONTADOR MINIMO. Mesmo padrao (e mesma razao) do `tests/cpu_test.cpp`: as
+// instrucoes constroem-se a partir dos CAMPOS, e nao de literais hexadecimais.
+// Um literal escrito a mao ja acusou o emulador por um erro do teste.
+// ---------------------------------------------------------------------------
+constexpr std::uint32_t kAl = 0xEu;
+
+constexpr std::uint32_t DpImediato(std::uint32_t opcode, std::uint32_t rd, std::uint32_t rn,
+                                   std::uint32_t imm) {
+  return (kAl << 28) | (1u << 25) | ((opcode & 0xF) << 21) | ((rn & 0xF) << 16) |
+         ((rd & 0xF) << 12) | (imm & 0xFF);
+}
+constexpr std::uint32_t DpRegistrador(std::uint32_t opcode, std::uint32_t rd, std::uint32_t rn,
+                                      std::uint32_t rm) {
+  return (kAl << 28) | ((opcode & 0xF) << 21) | ((rn & 0xF) << 16) | ((rd & 0xF) << 12) |
+         (rm & 0xF);
+}
+// ARM ARM: LDR/STR imediato, pre-indexado, U=1 (soma), palavra (B=0).
+// O bit 20 e o L (1 = carrega, 0 = guarda). Faltava-o, e o `static_assert` logo
+// abaixo apanhou-o contra uma palavra lida de um modulo REAL -- que e para isso
+// que ele existe.
+constexpr std::uint32_t LdrImediato(std::uint32_t rd, std::uint32_t rn, std::uint32_t desloc) {
+  return (kAl << 28) | (1u << 26) | (1u << 24) | (1u << 23) | (1u << 20) | ((rn & 0xF) << 16) |
+         ((rd & 0xF) << 12) | (desloc & 0xFFF);
+}
+constexpr std::uint32_t StrImediato(std::uint32_t rd, std::uint32_t rn, std::uint32_t desloc) {
+  return (kAl << 28) | (1u << 26) | (1u << 24) | (1u << 23) | ((rn & 0xF) << 16) |
+         ((rd & 0xF) << 12) | (desloc & 0xFFF);
+}
+constexpr std::uint32_t SomaRegistrador(std::uint32_t rd, std::uint32_t rn, std::uint32_t rm) {
+  return DpRegistrador(0x4, rd, rn, rm);
+}
+constexpr std::uint32_t SomaImediata(std::uint32_t rd, std::uint32_t rn, std::uint32_t imm) {
+  return DpImediato(0x4, rd, rn, imm);
+}
+constexpr std::uint32_t MoveRegistrador(std::uint32_t rd, std::uint32_t rm) {
+  return DpRegistrador(0xD, rd, 0, rm);
+}
+constexpr std::uint32_t Bx(std::uint32_t rm) { return (kAl << 28) | 0x012FFF10u | (rm & 0xF); }
+constexpr std::uint32_t Blx(std::uint32_t rm) { return (kAl << 28) | 0x012FFF30u | (rm & 0xF); }
+
+// Confere o montador contra DUAS palavras que foram lidas do corpo de um titulo
+// real (`cnk2.mod`, no tratador do aviso de midia): se estes numeros nao
+// baterem, o montador esta errado e todos os testes abaixo medem outra coisa.
+static_assert(LdrImediato(3, 1, 8) == 0xE5913008u, "ldr r3,[r1,#8] do cnk2");
+static_assert(SomaImediata(3, 3, 1) == 0xE2833001u, "add r3,r3,#1 do cnk2");
+static_assert(MoveRegistrador(12, 13) == 0xE1A0C00Du, "mov r12,sp do cnk2");
+
+// --- os enderecos da bancada ------------------------------------------------
+constexpr std::uint32_t kSentinela = 0xEEEE0000u;
+constexpr std::uint32_t kTrampolim = 0x00100000u;
+constexpr std::uint32_t kTratador = 0x00100100u;
+constexpr std::uint32_t kDados = 0x00100200u;      // o `pUser` do callback
+constexpr std::uint32_t kMediaData = 0x00100300u;  // um `AEEMediaData`
+constexpr std::uint32_t kFicheiro = 0x00100400u;   // um nome de ficheiro
+constexpr std::uint32_t kSaida = 0x00100500u;      // onde o `GetMediaParm` escreve
+// O PCM fica LONGE das outras areas: um teste entrega 22050 amostras (44100
+// bytes), e uma area sobreposta fazia o teste medir os proprios dados de apoio.
+constexpr std::uint32_t kBuffer = 0x00140000u;
+
+// As 8 palavras que o `pUser` do callback recebe:
+//   0 = ultimo nCmd, 4 = ultimo nStatus, 8 = quantas vezes foi chamado,
+//   12 = ultimo pCmdData, 16 = ultimo dwSize
+constexpr std::uint32_t kOffUserContador = 8;
+
+// A faixa de saida tem de estar CONFIGURADA antes de o `Media` nascer: o
+// constructor guarda uma copia dela, e foi exatamente assim que um defeito real
+// apareceu (a vtable era escrita em enderecos derivados de uma base zero, e a
+// leitura de volta confirmava-os).
+Saidas FaixaDeSaidaDoTeste() {
+  Saidas s;
+  s.base = 0xF0000000u;
+  s.passo = 4;
+  s.quantos = 100000;
+  s.ativa = true;
+  return s;
+}
+
+class Bancada {
+ public:
+  Bancada() : cpu_(mem_, &traco_), media_(mem_, traco_, saidas_, misturador_, nullptr) {
+    mem_.EscritorUnico("teste_de_midia");
+    traco_.JuntarDestino(&destino_);
+    cpu_.ConfigurarSaidas(saidas_);
+
+    // O TRAMPOLIM: chama `vtable[r4]` de `po` com os argumentos que o C++ pos
+    // em r1..r3. Nao ha endereco absoluto no codigo do guest -- tudo e lido do
+    // objecto, e por isso o teste nao depende de onde o modulo foi carregado.
+    const std::uint32_t trampolim[] = {
+        MoveRegistrador(5, 14),         // mov r5, lr     (guarda o retorno)
+        LdrImediato(12, 0, 0),          // ldr r12,[r0]   (a vtable)
+        SomaRegistrador(12, 12, 4),     // add r12,r12,r4 (o deslocamento do slot)
+        LdrImediato(12, 12, 0),         // ldr r12,[r12]  (o endereco de saida)
+        Blx(12),                        // blx r12
+        MoveRegistrador(14, 5),         // mov lr, r5
+        Bx(14),                         // bx lr
+    };
+    // O TRATADOR: le os MESMOS dois campos que o tratador real do `cnk2` le
+    // (`+8` o nCmd, `+16` o nStatus), conta as chamadas, e guarda tambem
+    // `pCmdData` e `dwSize`.
+    const std::uint32_t tratador[] = {
+        LdrImediato(3, 1, 8),  StrImediato(3, 0, 0),    // nCmd    -> pUser+0
+        LdrImediato(3, 1, 16), StrImediato(3, 0, 4),    // nStatus -> pUser+4
+        LdrImediato(3, 0, 8),  SomaImediata(3, 3, 1), StrImediato(3, 0, 8),
+        LdrImediato(3, 1, 20), StrImediato(3, 0, 12),   // pCmdData
+        LdrImediato(3, 1, 24), StrImediato(3, 0, 16),   // dwSize
+        Bx(14),
+    };
+    PorPalavras(kTrampolim, trampolim, sizeof(trampolim) / sizeof(trampolim[0]));
+    PorPalavras(kTratador, tratador, sizeof(tratador) / sizeof(tratador[0]));
+    for (std::uint32_t k = 0; k < 8; ++k) mem_.Escrever32(kDados + k * 4, 0);
+    instalar_ = media_.Instalar();
+  }
+
+  const ResultadoCablagem& Instalacao() const { return instalar_; }
+
+  // Chama o slot `slot` do objecto `po`, com ate tres argumentos. O `r4` leva o
+  // deslocamento em bytes, e o `lr` leva a sentinela: o trampolim volta para la.
+  std::uint32_t Chamar(std::uint32_t slot, std::uint32_t po, std::uint32_t a1 = 0,
+                       std::uint32_t a2 = 0, std::uint32_t a3 = 0) {
+    cpu_.Set(kR0, po);
+    cpu_.Set(kR1, a1);
+    cpu_.Set(kR2, a2);
+    cpu_.Set(kR3, a3);
+    cpu_.Set(4, slot * 4);
+    cpu_.Set(kLR, kSentinela);
+    cpu_.Set(kPC, kTrampolim);
+    Correr();
+    return cpu_.Get(kR0);
+  }
+
+  std::uint32_t CriarMedia(std::uint32_t cls, std::uint32_t pponovo) {
+    const std::uint32_t r = media_.Criar(cls, pponovo);
+    codigo_de_criar_ = r;
+    return mem_.Ler32(pponovo);
+  }
+
+  void PorPcm(const std::vector<std::int16_t>& amostras) {
+    for (std::size_t k = 0; k < amostras.size(); ++k) {
+      const std::uint16_t par = static_cast<std::uint16_t>(amostras[k]);
+      mem_.Escrever8(kBuffer + static_cast<std::uint32_t>(k) * 2,
+                     static_cast<std::uint8_t>(par & 0xFF));
+      mem_.Escrever8(kBuffer + static_cast<std::uint32_t>(k) * 2 + 1,
+                     static_cast<std::uint8_t>((par >> 8) & 0xFF));
+    }
+    mem_.Escrever32(kMediaData + kOffMidiaClsData, kMmdBuffer);
+    mem_.Escrever32(kMediaData + kOffMidiaPData, kBuffer);
+    mem_.Escrever32(kMediaData + kOffMidiaDwSize, static_cast<std::uint32_t>(amostras.size() * 2));
+  }
+
+  std::uint32_t DefinirDados() {
+    return Chamar(brew_slots::kMedia_SetMediaParm, po_, kMmParmMediaData, kMediaData, 0);
+  }
+  std::uint32_t SetParm(std::int32_t id, std::int32_t p1, std::int32_t p2 = 0) {
+    return Chamar(brew_slots::kMedia_SetMediaParm, po_,
+                  static_cast<std::uint32_t>(id), static_cast<std::uint32_t>(p1),
+                  static_cast<std::uint32_t>(p2));
+  }
+  std::uint32_t GetParm(std::int32_t id, std::uint32_t pp1, std::uint32_t pp2 = 0) {
+    return Chamar(brew_slots::kMedia_GetMediaParm, po_,
+                  static_cast<std::uint32_t>(id), pp1, pp2);
+  }
+  void RegistrarNotify() { Chamar(brew_slots::kMedia_RegisterNotify, po_, kTratador, kDados); }
+  // AVANCAR entregando: as amostras sao consumidas e os avisos que nascem sao
+  // LEVADOS ao callback. Chamar `OMedia().Avancar` por fora do laco nao entrega
+  // nada -- o aviso fica em fila, que e o comportamento correto (a entrega e do
+  // laco), e por isso a bancada tem este metodo.
+  void Avancar(std::uint32_t amostras) {
+    media_.Avancar(amostras);
+    EntregarAvisos();
+  }
+  void Play() { Chamar(brew_slots::kMedia_Play, po_); }
+  void Stop() { Chamar(brew_slots::kMedia_Stop, po_); }
+  void Passo(std::uint32_t slots) { Chamar(brew_slots::kMedia_Seek, po_, slots, 0); }
+  std::uint32_t Avisos() const { return mem_.Ler32(kDados + kOffUserContador); }
+  std::uint32_t UltimoCmd() const { return mem_.Ler32(kDados + 0); }
+  std::uint32_t UltimoStatus() const { return mem_.Ler32(kDados + 4); }
+  std::uint32_t UltimoPcmdData() const { return mem_.Ler32(kDados + 12); }
+  std::uint32_t UltimoDwSize() const { return mem_.Ler32(kDados + 16); }
+
+  void ReporContador() { mem_.Escrever32(kDados + kOffUserContador, 0); }
+  void ApontarParaObjeto(std::uint32_t po) { po_ = po; }
+
+  Memoria& Mem() { return mem_; }
+  const ::zb2::Saidas& AsSaidas() const { return saidas_; }
+  Traco& OTraco() { return traco_; }
+  DestinoMemoria& Eventos() { return destino_; }
+  Media& OMedia() { return media_; }
+  audio::Misturador& OMisturador() { return misturador_; }
+
+ private:
+  void PorPalavras(std::uint32_t onde, const std::uint32_t* palavras, std::size_t quantas) {
+    for (std::size_t k = 0; k < quantas; ++k) {
+      mem_.Escrever32(onde + static_cast<std::uint32_t>(k) * 4, palavras[k]);
+    }
+  }
+
+  // O laco minimo da bancada. Faz o que o laco do motor faz para esta faixa:
+  // trata a IBase (AddRef/Release), entrega os indices de saida do IMedia, e
+  // leva os avisos ao callback do guest.
+  void Correr() {
+    for (int k = 0; k < 100000; ++k) {
+      const std::uint32_t pc = cpu_.Get(kPC);
+      if (pc == kSentinela) return;
+      std::uint32_t idx = 0;
+      if (saidas_.Contem(pc, &idx)) {
+        const std::uint32_t lr = cpu_.Get(kLR);
+        const std::uint32_t r0 = cpu_.Get(kR0);
+        if (idx == 3) {
+          const std::uint32_t n = mem_.Ler32(r0 + kOffObjRefs) + 1;
+          mem_.Escrever32(r0 + kOffObjRefs, n);
+          cpu_.Set(kR0, n);
+        } else if (idx == 4) {
+          const std::uint32_t n = mem_.Ler32(r0 + kOffObjRefs);
+          if (n > 0) mem_.Escrever32(r0 + kOffObjRefs, n - 1);
+          cpu_.Set(kR0, n > 0 ? n - 1 : 0);
+        } else {
+          EXPECT_TRUE(media_.Atender(idx, cpu_))
+              << "o indice de saida " << idx << " nao e do IMedia nem da IBase";
+        }
+        cpu_.Set(kPC, lr);
+        EntregarAvisos();
+        continue;
+      }
+      cpu_.Passo();
+    }
+    ADD_FAILURE() << "o guest nao voltou a sentinela";
+  }
+
+  // ENTREGA DOS AVISOS. O callback do guest e chamado como uma ENTRADA NO
+  // CONVIDADO a partir do hospedeiro: os 16 registradores e o CPSR sao guardados
+  // e repostos, porque no momento da entrega o guest tem registradores vivos que
+  // uma chamada de callback pode estragar. A arvore antiga tem esta primitiva
+  // medida (`HleRuntime::CallArmFunctionPreservingContext`,
+  // `core/brew/hle_runtime.cpp`), e e a mesma disciplina.
+  void EntregarAvisos() {
+    Media::Aviso a;
+    while (media_.RetirarAviso(&a)) {
+      if (a.fn == 0) continue;
+      const std::array<std::uint32_t, 16> guardados = GuardarRegistradores();
+      const std::uint32_t cpsr = cpu_.Cpsr();
+      cpu_.Set(kR0, a.usuario);
+      cpu_.Set(kR1, a.endereco);
+      cpu_.Set(kLR, kSentinela);
+      cpu_.Set(kPC, a.fn);
+      for (int k = 0; k < 4000 && cpu_.Get(kPC) != kSentinela; ++k) cpu_.Passo();
+      EXPECT_EQ(cpu_.Get(kPC), kSentinela) << "o callback do guest nao voltou";
+      ++avisos_entregues_;
+      for (int r = 0; r < 16; ++r) cpu_.Set(r, guardados[static_cast<std::size_t>(r)]);
+      cpu_.SetCpsr(cpsr);
+    }
+  }
+
+  std::array<std::uint32_t, 16> GuardarRegistradores() const {
+    std::array<std::uint32_t, 16> v{};
+    for (int r = 0; r < 16; ++r) v[static_cast<std::size_t>(r)] = cpu_.Get(r);
+    return v;
+  }
+
+  Traco traco_{"teste_de_midia"};
+  DestinoMemoria destino_;
+  Memoria mem_{&traco_};
+  Saidas saidas_ = FaixaDeSaidaDoTeste();
+  ArmInterpreter cpu_;
+  audio::Misturador misturador_;
+  Media media_;
+  ResultadoCablagem instalar_{};
+  std::uint32_t po_ = 0;
+  std::uint32_t codigo_de_criar_ = 0;
+  std::uint32_t avisos_entregues_ = 0;
+};
+
+std::vector<std::int16_t> Onda(std::size_t quantas, std::int16_t amplitude) {
+  std::vector<std::int16_t> v(quantas);
+  for (std::size_t k = 0; k < quantas; ++k) {
+    v[k] = ((k % 4) < 2) ? amplitude : static_cast<std::int16_t>(-amplitude);
+  }
+  return v;
+}
+
+// ---------------------------------------------------------------------------
+// A TABELA DE SLOTS: do cabecalho do SDK, e nao da memoria.
+// ---------------------------------------------------------------------------
+TEST(Media, ATabelaDeSlotsEADoSDK) {
+  // `INHERIT_IMedia` comeca em `INHERIT_IQI` (AddRef, Release, QueryInterface),
+  // e nao em `INHERIT_IBase`: quem contar tres slots de cabeca com a IBase erra
+  // TODOS os numeros por um -- foi o que ja aconteceu neste trabalho.
+  EXPECT_EQ(brew_slots::kMedia_RegisterNotify, 3u);
+  EXPECT_EQ(brew_slots::kMedia_GetState, 13u);
+  EXPECT_EQ(kSlotsDoMedia, 14u);
+  EXPECT_EQ(kIidMedia, 0x01005500u);
+}
+
+TEST(Media, OClsidDoMidiaOutMsgNaoEMPEG4) {
+  // ARMADILHA DECLARADA no cabecalho deste trabalho: `0x01005505` ja foi lido
+  // como MPEG4 uma vez. Em `AEEClassIDs.h` a familia comeca em 0x01005500:
+  // MIDIOUTMSG = +5 e MPEG4 = +7.
+  EXPECT_TRUE(ClasseDeMidia(0x01005505u));
+  EXPECT_STREQ(NomeDaClasseDeMidia(0x01005505u), "AEECLSID_MEDIAMIDIOUTMSG");
+  EXPECT_STREQ(NomeDaClasseDeMidia(0x01005507u), "AEECLSID_MEDIAMPEG4");
+  EXPECT_FALSE(ClasseDeMidia(0x01005505u + 0x100u));
+}
+
+TEST(Media, InstalarRecusaUmaFaixaDeSaidaNaoConfigurada) {
+  // PROVA DA GUARDA POR VIOLACAO, e esta guarda nasceu de um defeito REAL: o
+  // `Saidas` era copiado para dentro do objecto antes de o chamador o
+  // configurar, e a vtable era escrita em enderecos derivados de uma base ZERO.
+  // A leitura de volta CONFIRMAVA tudo -- lia o que se tinha acabado de
+  // escrever. So um teste com a faixa vazia denuncia isto.
+  Traco traco("teste_da_guarda");
+  Memoria mem(&traco);
+  audio::Misturador misturador;
+  Saidas vazias;  // ativa = false, quantos = 0
+  Media media(mem, traco, vazias, misturador, nullptr);
+  const ResultadoCablagem r = media.Instalar();
+  EXPECT_FALSE(r.ok);
+  EXPECT_NE(r.motivo.find("faixa de saida"), std::string::npos) << r.motivo;
+}
+
+TEST(Media, InstalarEscreveOsQuatorzeSlotsDoIMedia) {
+  Bancada b;
+  ASSERT_TRUE(b.Instalacao().ok) << b.Instalacao().motivo;
+  // Cada slot PROPRIO tem um endereco de saida diferente: um stub so para todos
+  // foi o defeito que deixou 86 377 chamadas de GL sem nome na arvore antiga.
+  for (std::uint32_t s = 2; s < kSlotsDoMedia; ++s) {
+    EXPECT_EQ(b.Mem().Ler32(b.AsSaidas().Endereco(kVtableDoMedia) + s * 4),
+              b.AsSaidas().Endereco(kBaseDoMedia + s))
+        << "slot " << s;
+  }
+  EXPECT_EQ(b.Mem().Ler32(b.AsSaidas().Endereco(kVtableDoMedia) + 0), b.AsSaidas().Endereco(3));
+  EXPECT_EQ(b.Mem().Ler32(b.AsSaidas().Endereco(kVtableDoMedia) + 4), b.AsSaidas().Endereco(4));
+}
+
+TEST(Media, AGuardaDaTabelaDeclaradaRecusaUmSlotPorPreencher) {
+  // PROVA DA GUARDA POR VIOLACAO, dentro do proprio teste: uma tabela a que
+  // falta o slot 13 tem de ser RECUSADA. Sem esta guarda, um slot por preencher
+  // era instalado em silencio -- que e exatamente o defeito dos 86 377
+  // `glCullFace` descartados na arvore antiga.
+  SlotDoMedia inteira[14];
+  for (std::uint32_t s = 0; s < 14; ++s) inteira[s] = {s, "x"};
+  EXPECT_TRUE(ConferirTabelaDeSlots(inteira, 14, 14).ok);
+  EXPECT_FALSE(ConferirTabelaDeSlots(inteira, 13, 14).ok);  // falta o slot 13
+
+  SlotDoMedia repetida[14];
+  for (std::uint32_t s = 0; s < 13; ++s) repetida[s] = {s, "x"};
+  repetida[13] = {12, "x"};  // o 12 duas vezes, o 13 nenhuma
+  const ResultadoCablagem r = ConferirTabelaDeSlots(repetida, 14, 14);
+  EXPECT_FALSE(r.ok);
+  // A guarda percorre os slots POR ORDEM: o primeiro problema que encontra e o
+  // 12 declarado duas vezes. E o motivo TEM de nomear o slot -- um "tabela
+  // invalida" sem nome obriga a procurar a mao, que e o defeito de instrumento
+  // que este projeto existe para nao repetir.
+  EXPECT_NE(r.motivo.find("slot 12"), std::string::npos) << r.motivo;
+  EXPECT_NE(r.motivo.find("2 vezes"), std::string::npos) << r.motivo;
+
+  // E a tabela VERDADEIRA passa, com os 14 slots.
+  EXPECT_TRUE(ConferirTabelaDeSlots(kTabelaDeSlotsDoMedia, kQuantosSlotsDoMediaDeclarados,
+                                    kSlotsDoMedia)
+                  .ok);
+  EXPECT_EQ(kQuantosSlotsDoMediaDeclarados, 14u);
+  EXPECT_STREQ(kTabelaDeSlotsDoMedia[2].nome, "IMedia::QueryInterface");
+  EXPECT_STREQ(kTabelaDeSlotsDoMedia[8].nome, "IMedia::Stop");
+}
+
+// ---------------------------------------------------------------------------
+// O CICLO DE VIDA, pelos SLOTS da vtable, com codigo do guest a correr.
+// ---------------------------------------------------------------------------
+namespace {
+constexpr std::uint32_t kPponovo = 0x00100A00u;
+}
+
+TEST(Media, CriarAceitaAMediaEEscreveOPonteiroNoGuest) {
+  Bancada b;
+  const std::uint32_t po = b.CriarMedia(kClasseMultimidia, kPponovo);
+  EXPECT_EQ(po, kObjMediaBase);
+  EXPECT_EQ(b.OMedia().ObjetosVivos(), 1u);
+  // O objecto e ROPI: `[0]` = a vtable, `[4]` = a contagem de referencias.
+  EXPECT_EQ(b.Mem().Ler32(po + kOffObjVtable), b.AsSaidas().Endereco(kVtableDoMedia));
+  EXPECT_EQ(b.Mem().Ler32(po + kOffObjRefs), 1u);
+  EXPECT_EQ(b.OMedia().EstadoDe(po), kMmEstadoOcioso);
+}
+
+TEST(Media, CriarRecusaUmaClasseQueNaoEMidia) {
+  // Recusar tem de ser RUIDOSO (P2): codigo do SDK, nada escrito na memoria do
+  // guest, e uma falta registada com o nome.
+  Bancada b;
+  b.Mem().Escrever32(kPponovo, 0xDEADBEEFu);
+  EXPECT_EQ(b.OMedia().Criar(0x01001001u, kPponovo), kAeeClasseNaoSuportada);
+  EXPECT_EQ(b.Mem().Ler32(kPponovo), 0xDEADBEEFu);
+  EXPECT_GE(b.OMedia().PedidosRecusados(), 1u);
+  EXPECT_NE(b.OMedia().UltimoMotivoDeRecusa().find("0x01001001"), std::string::npos);
+}
+
+TEST(Media, OMediaVaiAteOLimiteDeObjetosERecusa) {
+  // O `Release` do guest chega pela IBase, que e do MOTOR (slot 1 -> saida 4).
+  // Sem recolher os objectos libertados, o conjunto esgotava-se e o decimo
+  // setimo `CreateInstance` de midia respondia "sem memoria" -- um erro que
+  // parece do jogo e nao e.
+  Bancada b;
+  for (std::uint32_t k = 0; k < kMaxObjetosDeMidia; ++k) {
+    EXPECT_NE(b.CriarMedia(kClasseMultimidia, kPponovo), 0u) << "criacao " << k;
+  }
+  EXPECT_EQ(b.OMedia().ObjetosVivos(), kMaxObjetosDeMidia);
+  b.Mem().Escrever32(kPponovo, 0x1234u);
+  EXPECT_EQ(b.OMedia().Criar(kClasseMultimidia, kPponovo), kAeeSemMemoria);
+  EXPECT_EQ(b.Mem().Ler32(kPponovo), 0x1234u);  // nada foi escrito
+
+  // O guest solta UM (slot 1 = IBase::Release, pelo mesmo caminho do jogo), e a
+  // criacao seguinte volta a caber.
+  const std::uint32_t primeiro = kObjMediaBase;
+  b.ApontarParaObjeto(primeiro);
+  b.Chamar(1, primeiro, 0, 0, 0);  // vtable[1] = Release
+  EXPECT_EQ(b.Mem().Ler32(primeiro + kOffObjRefs), 0u);
+  EXPECT_NE(b.CriarMedia(kClasseMultimidia, kPponovo), 0u);
+}
+
+TEST(Media, SetMediaParmAceitaOsParametrosQueOSDKDefine) {
+  Bancada b;
+  const std::uint32_t po = b.CriarMedia(kClasseMultimidia, kPponovo);
+  b.ApontarParaObjeto(po);
+  b.PorPcm(Onda(64, 1000));
+  EXPECT_EQ(b.DefinirDados(), kAeeSucesso);
+  for (std::size_t k = 0; k < kQuantosParametrosDeMidia; ++k) {
+    const ParametroDeMidia& p = kParametrosDeMidia[k];
+    if (p.id == kMmParmMediaData) continue;  // ja tratado acima
+    if (p.no_set != TratamentoDeParametro::Aplicado &&
+        p.no_set != TratamentoDeParametro::Guardado) {
+      continue;  // os recusados e os so de leitura tem teste proprio
+    }
+    std::int32_t valor = 1;
+    switch (p.id) {
+      case kMmParmAudioDevice: valor = 9; break;      // AEE_SOUND_DEVICE_SPEAKER
+      case kMmParmAudioPath: valor = kMmCaminhoLocal; break;
+      case kMmParmVolume: valor = 90; break;
+      case kMmParmMute: valor = 0; break;
+      case kMmParmTempo: valor = 100; break;
+      case kMmParmTune: valor = 0x40; break;
+      case kMmParmPan: valor = kMmMaxPan / 2; break;
+      case kMmParmTickTime: valor = 1000; break;
+      case kMmParmRect: valor = 0; break;
+      case kMmParmPlayRepeat: valor = 1; break;
+      case kMmParmPos: valor = 0; break;
+      case kMmParmEnable: valor = kMmCapsAudio; break;
+      case kMmParmChannelShare: valor = 1; break;
+      case kMmParmRate: valor = 0x00010001; break;
+      case kMmParmPlayType: valor = kMmTipoNormal; break;
+      case kMmParmAudioSync: valor = 1; break;
+      case kMmParmNotes: valor = 8; break;
+      default: valor = 0; break;
+    }
+    EXPECT_EQ(b.SetParm(p.id, valor), kAeeSucesso) << p.nome;
+  }
+}
+
+TEST(Media, GetMediaParmDevolveOQueOSetGuardou) {
+  Bancada b;
+  const std::uint32_t po = b.CriarMedia(kClasseMultimidia, kPponovo);
+  b.ApontarParaObjeto(po);
+  // Os que o `Get` devolve em `pP1`. O `MM_PARM_VOLUME` e o caso que a arvore
+  // antiga ja tinha medido ("volume ja devolvido do estado").
+  EXPECT_EQ(b.SetParm(kMmParmVolume, 42), kAeeSucesso);
+  EXPECT_EQ(b.GetParm(kMmParmVolume, kSaida), kAeeSucesso);
+  EXPECT_EQ(b.Mem().Ler32(kSaida), 42u);
+  EXPECT_EQ(b.SetParm(kMmParmMute, 1), kAeeSucesso);
+  EXPECT_EQ(b.GetParm(kMmParmMute, kSaida), kAeeSucesso);
+  EXPECT_EQ(b.Mem().Ler32(kSaida), 1u);
+  EXPECT_EQ(b.SetParm(kMmParmPlayRepeat, 0), kAeeSucesso);
+  EXPECT_EQ(b.GetParm(kMmParmPlayRepeat, kSaida), kAeeSucesso);
+  EXPECT_EQ(b.Mem().Ler32(kSaida), 0u);
+}
+
+TEST(Media, OsParametrosSoDeLeituraRecusamOSet) {
+  // `AEEIMedia.h` marca `MM_PARM_CLSID`, `MM_PARM_CAPS` e `MM_PARM_SEEK_CAPS`
+  // como `Get`. Um `Set` neles nao pode "aceitar e guardar": recusa, com o nome.
+  Bancada b;
+  const std::uint32_t po = b.CriarMedia(kClasseMultimidia, kPponovo);
+  b.ApontarParaObjeto(po);
+  const std::int32_t so_de_leitura[] = {kMmParmClsid, kMmParmCaps, kMmParmSeekCaps};
+  for (const std::int32_t id : so_de_leitura) {
+    EXPECT_EQ(b.SetParm(id, 0), kAeeNaoSuportado) << id;
+    EXPECT_EQ(b.GetParm(id, kSaida, kSaida + 4), kAeeSucesso) << id;
+  }
+  // E o `Get` do CLSID devolve a classe com que o objecto nasceu.
+  b.GetParm(kMmParmClsid, kSaida);
+  EXPECT_EQ(b.Mem().Ler32(kSaida), kClasseMultimidia);
+  // O CAPS diz o que esta arvore faz mesmo: audio.
+  b.GetParm(kMmParmCaps, kSaida, kSaida + 4);
+  EXPECT_EQ(b.Mem().Ler32(kSaida), kMmCapsAudio);
+}
+
+TEST(Media, UmParametroForaDaFaixaERecusado) {
+  // `MM_PARM_VOLUME` e 0 a AEE_MAX_VOLUME (100). 101 nao e "quase 100".
+  Bancada b;
+  const std::uint32_t po = b.CriarMedia(kClasseMultimidia, kPponovo);
+  b.ApontarParaObjeto(po);
+  const std::uint32_t antes = b.OMedia().PedidosRecusados();
+  EXPECT_EQ(b.SetParm(kMmParmVolume, 101), kAeeParametroErrado);
+  EXPECT_EQ(b.SetParm(kMmParmMute, 2), kAeeParametroErrado);
+  EXPECT_EQ(b.SetParm(kMmParmTune, 0x41 + 1), kAeeParametroErrado);
+  EXPECT_EQ(b.SetParm(kMmParmPan, kMmMaxPan + 1), kAeeParametroErrado);
+  EXPECT_EQ(b.OMedia().PedidosRecusados(), antes + 4);
+}
+
+TEST(Media, UmParametroQueNaoExisteNoSDKERecusado) {
+  Bancada b;
+  const std::uint32_t po = b.CriarMedia(kClasseMultimidia, kPponovo);
+  b.ApontarParaObjeto(po);
+  EXPECT_EQ(b.SetParm(99, 0), kAeeParametroErrado);
+  EXPECT_EQ(b.GetParm(99, kSaida), kAeeParametroErrado);
+}
+
+TEST(Media, ORecordRecusaEDeixaFaltaRegistada) {
+  // P2: gravacao nao esta implementada, e o caminho RECUSA e REGISTA. Um
+  // "devolve sucesso e nao faz nada" aqui seria um stub silencioso.
+  Bancada b;
+  const std::uint32_t po = b.CriarMedia(kClasseMultimidia, kPponovo);
+  b.ApontarParaObjeto(po);
+  EXPECT_EQ(b.Chamar(brew_slots::kMedia_Record, po), static_cast<std::uint32_t>(kAeeNaoSuportado));
+  EXPECT_GE(b.OTraco().ContagemFaltas().count("IMedia::Record"), 1u);
+}
+
+TEST(Media, PlaySemDadosERecusado) {
+  Bancada b;
+  const std::uint32_t po = b.CriarMedia(kClasseMultimidia, kPponovo);
+  b.ApontarParaObjeto(po);
+  b.Chamar(brew_slots::kMedia_Play, po);
+  EXPECT_EQ(b.OMedia().EstadoDe(po), kMmEstadoOcioso);
+  EXPECT_GE(b.OTraco().ContagemFaltas().count("IMedia::Play"), 1u);
+}
+
+TEST(Media, OBufferComNumeroImparDeBytesERecusado) {
+  Bancada b;
+  const std::uint32_t po = b.CriarMedia(kClasseMultimidia, kPponovo);
+  b.ApontarParaObjeto(po);
+  b.Mem().Escrever32(kMediaData + kOffMidiaClsData, kMmdBuffer);
+  b.Mem().Escrever32(kMediaData + kOffMidiaPData, kBuffer);
+  b.Mem().Escrever32(kMediaData + kOffMidiaDwSize, 7);  // impar
+  EXPECT_EQ(b.DefinirDados(), kAeeParametroErrado);
+  EXPECT_EQ(b.OMedia().EstadoDe(po), kMmEstadoOcioso);
+}
+
+TEST(Media, ONomeDeFicheiroERecusadoEmVozAltaEComOMotivo) {
+  // Nao ha descodificador de audio nesta arvore. Aceitar o nome e nao tocar nada
+  // seria o stub proibido; a recusa diz QUAL das duas causas e (o ficheiro nao
+  // esta no VFS, ou esta e nao ha descodificador).
+  Bancada b;
+  const std::uint32_t po = b.CriarMedia(kClasseMultimidia, kPponovo);
+  b.ApontarParaObjeto(po);
+  const std::string nome = "sons/menu.wav";
+  for (std::size_t k = 0; k < nome.size(); ++k) {
+    b.Mem().Escrever8(kFicheiro + static_cast<std::uint32_t>(k),
+                      static_cast<std::uint8_t>(nome[k]));
+  }
+  b.Mem().Escrever8(kFicheiro + static_cast<std::uint32_t>(nome.size()), 0);
+  b.Mem().Escrever32(kMediaData + kOffMidiaClsData, kMmdNomeDeFicheiro);
+  b.Mem().Escrever32(kMediaData + kOffMidiaPData, kFicheiro);
+  b.Mem().Escrever32(kMediaData + kOffMidiaDwSize, 0);
+  EXPECT_EQ(b.DefinirDados(), kAeeNaoSuportado);
+  const auto& faltas = b.OTraco().ContagemFaltas();
+  ASSERT_GE(faltas.count("IMedia::SetMediaParm(MMD_FILE_NAME)"), 1u);
+  EXPECT_NE(b.OMedia().UltimoMotivoDeRecusa().find("menu.wav"), std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// OS AVISOS: O NUMERO. "O erro classico aqui e uma notificacao a mais ou a
+// menos" -- por isso estes testes CONTAM.
+// ---------------------------------------------------------------------------
+namespace {
+// Uma bancada pronta a tocar: objecto criado, callback registado, 200 amostras.
+void Preparar(Bancada& b, std::uint32_t* po, std::size_t amostras = 200) {
+  *po = b.CriarMedia(kClasseMultimidia, kPponovo);
+  b.ApontarParaObjeto(*po);
+  b.RegistrarNotify();
+  b.PorPcm(Onda(amostras, 4000));
+  ASSERT_EQ(b.DefinirDados(), kAeeSucesso);
+}
+}  // namespace
+
+TEST(Media, PlayAteOFimAvisaUmaVezSoComDone) {
+  Bancada b;
+  std::uint32_t po = 0;
+  Preparar(b, &po);
+  b.Play();
+  EXPECT_EQ(b.Avisos(), 0u);  // o Play em si NAO avisa: quem avisa e o FIM
+  b.Avancar(200);
+  EXPECT_EQ(b.Avisos(), 1u);
+  // Os dois campos que o tratador REAL do `cnk2` le: +8 o nCmd (4 = MM_CMD_PLAY)
+  // e +16 o nStatus (2 = MM_STATUS_DONE).
+  EXPECT_EQ(b.UltimoCmd(), static_cast<std::uint32_t>(kMmCmdPlay));
+  EXPECT_EQ(b.UltimoStatus(), static_cast<std::uint32_t>(kMmStatusDone));
+  EXPECT_EQ(b.OMedia().EstadoDe(po), kMmEstadoPronto);
+}
+
+TEST(Media, DepoisDoFimNaoHaUmSegundoAviso) {
+  // GUARDA CONTRA UMA NOTIFICACAO A MAIS. O estado muda para PRONTO antes de o
+  // aviso nascer; sem isso, cada volta seguinte do laco veria a mesma midia
+  // "acabada" e avisaria outra vez -- e um jogo que conta sons activos
+  // descontaria o mesmo som varias vezes.
+  Bancada b;
+  std::uint32_t po = 0;
+  Preparar(b, &po);
+  b.Play();
+  b.Avancar(200);
+  b.Avancar(200);
+  b.Avancar(1000);
+  EXPECT_EQ(b.Avisos(), 1u);
+  EXPECT_EQ(b.OMedia().AvisosEmitidos(), 1u);
+}
+
+TEST(Media, PlayDuranteReproducaoAvisaAbortEOProprioPedidoAvisaDone) {
+  // Um segundo `Play` no mesmo objecto RECLAMA o canal: o pedido antigo nao
+  // pode ficar sem aviso (seria um a menos), e o status dele e ABORT (3).
+  Bancada b;
+  std::uint32_t po = 0;
+  Preparar(b, &po);
+  b.Play();
+  b.Avancar(50);
+  b.Play();  // reclama
+  EXPECT_EQ(b.Avisos(), 1u);
+  EXPECT_EQ(b.UltimoCmd(), static_cast<std::uint32_t>(kMmCmdPlay));
+  EXPECT_EQ(b.UltimoStatus(), static_cast<std::uint32_t>(kMmStatusAbort));
+  b.Avancar(200);  // o segundo pedido chega ao fim
+  EXPECT_EQ(b.Avisos(), 2u);
+  EXPECT_EQ(b.UltimoStatus(), static_cast<std::uint32_t>(kMmStatusDone));
+}
+
+TEST(Media, StopSemNadaATocarNaoAvisa) {
+  // GUARDA CONTRA UMA NOTIFICACAO A MAIS, no sitio onde ela nasceria: um
+  // `Stop` sem reproducao em curso.
+  Bancada b;
+  std::uint32_t po = 0;
+  Preparar(b, &po);
+  b.Stop();
+  EXPECT_EQ(b.Avisos(), 0u);
+  EXPECT_EQ(b.OMedia().AvisosEmitidos(), 0u);
+}
+
+TEST(Media, StopDuranteReproducaoAvisaDoneUmaVez) {
+  Bancada b;
+  std::uint32_t po = 0;
+  Preparar(b, &po);
+  b.Play();
+  b.Avancar(50);
+  b.Stop();
+  EXPECT_EQ(b.Avisos(), 1u);
+  EXPECT_EQ(b.UltimoCmd(), static_cast<std::uint32_t>(kMmCmdPlay));
+  EXPECT_EQ(b.UltimoStatus(), static_cast<std::uint32_t>(kMmStatusDone));
+  // E um Stop repetido nao avisa outra vez.
+  b.Stop();
+  EXPECT_EQ(b.Avisos(), 1u);
+  EXPECT_EQ(b.OMedia().EstadoDe(po), kMmEstadoPronto);
+}
+
+TEST(Media, CadaPedidoAceiteDaExactamenteUmAviso) {
+  // A propriedade, medida em 20 voltas: 20 pedidos aceites (Play + fim) e 20
+  // avisos. Um aviso a mais ou a menos quebra a conta.
+  Bancada b;
+  std::uint32_t po = 0;
+  Preparar(b, &po);
+  for (int k = 0; k < 20; ++k) {
+    b.Play();
+    b.Avancar(200);
+  }
+  EXPECT_EQ(b.Avisos(), 20u);
+  EXPECT_EQ(b.OMedia().AvisosEmitidos(), 20u);
+  EXPECT_EQ(b.OMedia().AvisosPendentes(), 0u);
+}
+
+TEST(Media, UmaMidiaEmRepeticaoInfinitanNaoAvisaNunca) {
+  // `MM_PARM_PLAY_REPEAT` = 0 e "toca para sempre" (AEEIMedia.h). Um aviso DONE
+  // aqui seria o erro que o `cnk2` mediu: o jogo so toca a musica da pista
+  // quando a conta de sons activos zera, e a musica de menu e em laco.
+  Bancada b;
+  std::uint32_t po = 0;
+  Preparar(b, &po);
+  b.SetParm(kMmParmPlayRepeat, 0);
+  b.Play();
+  for (int k = 0; k < 10; ++k) b.Avancar(200);
+  EXPECT_EQ(b.Avisos(), 0u);
+  EXPECT_EQ(b.OMedia().EstadoDe(po), kMmEstadoTocando);
+}
+
+TEST(Media, SemCallbackRegistadoNaoHaAvisoAEntregar) {
+  // Registar o callback e OPCIONAL no SDK. Sem callback nao ha entrega, e isso
+  // fica escrito no traco -- nao e um aviso perdido.
+  Bancada b;
+  const std::uint32_t po = b.CriarMedia(kClasseMultimidia, kPponovo);
+  b.ApontarParaObjeto(po);
+  b.PorPcm(Onda(64, 1000));
+  ASSERT_EQ(b.DefinirDados(), kAeeSucesso);
+  b.Play();
+  b.Avancar(64);
+  EXPECT_EQ(b.OMedia().AvisosEmitidos(), 0u);
+  EXPECT_GE(b.OTraco().ContagemFaltas().count("IMedia::Record"), 0u);  // traco vivo
+}
+
+TEST(Media, OMisturadorContaAsAmostrasQueAMidiaEntrega) {
+  // O criterio da etapa 5, medido: "o misturador reporta amostras nao nulas".
+  Bancada b;
+  std::uint32_t po = 0;
+  Preparar(b, &po, 300);
+  b.Play();
+  b.Avancar(300);
+  const auto& m = b.OMisturador().MedidaAcumulada();
+  EXPECT_EQ(m.amostras_recebidas, 300u);
+  EXPECT_EQ(m.amostras_nao_nulas, 300u);
+  EXPECT_EQ(m.pico, 4000);
+  EXPECT_EQ(b.Avisos(), 1u);
+}
+
+TEST(Media, MudoNaoProduzPicoMasContinuaAContarAsAmostras) {
+  Bancada b;
+  std::uint32_t po = 0;
+  Preparar(b, &po, 100);
+  b.SetParm(kMmParmMute, 1);
+  b.Play();
+  b.Avancar(100);
+  const auto& m = b.OMisturador().MedidaAcumulada();
+  EXPECT_EQ(m.amostras_recebidas, 100u);
+  EXPECT_EQ(m.amostras_nao_nulas, 100u);
+  EXPECT_EQ(m.pico, 0);
+}
+
+TEST(Media, OVolumeChegaAoMisturadorPeloParametroDoSDK) {
+  Bancada b;
+  std::uint32_t po = 0;
+  Preparar(b, &po, 40);
+  b.SetParm(kMmParmVolume, 50);
+  b.Play();
+  b.Avancar(40);
+  EXPECT_EQ(b.OMisturador().MedidaAcumulada().pico, 2000);  // 4000 a metade
+}
+
+TEST(Media, GetTotalTimeAvisaComOTempoEmMilissegundos) {
+  // O SDK entrega o tempo total PELO AVISO (`pCmdData` = uint32 em ms). O tempo
+  // sai da taxa DECLARADA de 22050 Hz -- nao ha descodificador de WAV nesta
+  // arvore, e o numero diz isso no codigo.
+  Bancada b;
+  std::uint32_t po = 0;
+  Preparar(b, &po, 22050);
+  EXPECT_EQ(b.Chamar(brew_slots::kMedia_GetTotalTime, po), kAeeSucesso);
+  EXPECT_EQ(b.Avisos(), 1u);
+  EXPECT_EQ(b.UltimoCmd(), static_cast<std::uint32_t>(kMmCmdGetTotalTime));
+  EXPECT_EQ(b.UltimoStatus(), static_cast<std::uint32_t>(kMmStatusDone));
+  EXPECT_EQ(b.UltimoDwSize(), 4u);
+  EXPECT_EQ(b.Mem().Ler32(b.UltimoPcmdData()), 1000u);  // 22050 amostras a 22050 Hz
+}
+
+TEST(Media, OSeekDeTempoFuncionaEODeQuadrosRecusa) {
+  Bancada b;
+  std::uint32_t po = 0;
+  Preparar(b, &po, 22050);
+  // 500 ms a 22050 Hz = 11025 amostras.
+  EXPECT_EQ(b.Chamar(brew_slots::kMedia_Seek, po, kMmSeekModoTempo | kMmSeekInicio, 500),
+            kAeeSucesso);
+  EXPECT_EQ(b.Mem().Ler32(po + kOffObjPosicao), 11025u);
+  // Modalidade de QUADROS: nao ha video, logo recusa.
+  EXPECT_EQ(b.Chamar(brew_slots::kMedia_Seek, po, kMmSeekModoQuadro | kMmSeekInicio, 3),
+            static_cast<std::uint32_t>(kAeeNaoSuportado));
+  // E um alvo depois do fim tambem e recusado, em vez de silenciosamente travado.
+  EXPECT_EQ(b.Chamar(brew_slots::kMedia_Seek, po, kMmSeekModoTempo | kMmSeekInicio, 999999),
+            static_cast<std::uint32_t>(kAeeParametroErrado));
+}
+
+TEST(Media, OQueryInterfaceDevolveOMesmoObjetoSoParaOAEEIIDDoMedia) {
+  Bancada b;
+  const std::uint32_t po = b.CriarMedia(kClasseMultimidia, kPponovo);
+  b.ApontarParaObjeto(po);
+  EXPECT_EQ(b.Chamar(2 /*QueryInterface*/, po, kIidMedia, kSaida), kAeeSucesso);
+  EXPECT_EQ(b.Mem().Ler32(kSaida), po);
+  EXPECT_EQ(b.Mem().Ler32(po + kOffObjRefs), 2u);  // o SDK incrementa no sucesso
+  EXPECT_EQ(b.Chamar(2 /*QueryInterface*/, po, 0x01001001u, kSaida),
+            static_cast<std::uint32_t>(kAeeClasseNaoSuportada));
+  EXPECT_EQ(b.Mem().Ler32(kSaida), 0u);
+}
+
+TEST(Media, GetStateDizOTamanhoEAEstadoEPausaERetoma) {
+  Bancada b;
+  std::uint32_t po = 0;
+  Preparar(b, &po);
+  EXPECT_EQ(b.Chamar(brew_slots::kMedia_GetState, po, kSaida), kMmEstadoPronto);
+  EXPECT_EQ(b.Mem().Ler32(kSaida), 0u);  // pbStateChanging = falso
+  b.Play();
+  EXPECT_EQ(b.Chamar(brew_slots::kMedia_GetState, po, kSaida), kMmEstadoTocando);
+  b.Avancar(10);
+  EXPECT_EQ(b.Chamar(brew_slots::kMedia_Pause, po), kAeeSucesso);
+  EXPECT_EQ(b.OMedia().EstadoDe(po), kMmEstadoPausado);
+  const auto antes = b.OMisturador().MedidaAcumulada().amostras_recebidas;
+  b.Avancar(100);  // em pausa nao consome
+  EXPECT_EQ(b.OMisturador().MedidaAcumulada().amostras_recebidas, antes);
+  EXPECT_EQ(b.Chamar(brew_slots::kMedia_Resume, po), kAeeSucesso);
+  EXPECT_EQ(b.OMedia().EstadoDe(po), kMmEstadoTocando);
+  // Pausa fora de reproducao recusa.
+  b.Stop();
+  EXPECT_EQ(b.Chamar(brew_slots::kMedia_Pause, po), static_cast<std::uint32_t>(kAeeEstadoErrado));
+}
+
+TEST(Media, OsParametrosGuardadosFicamEscritosNoTraco) {
+  // Aceitar e guardar sem aplicar NAO pode ser silencioso (P2). Cada aceitacao
+  // deixa um evento com o nome e o valor do parametro.
+  Bancada b;
+  const std::uint32_t po = b.CriarMedia(kClasseMultimidia, kPponovo);
+  b.ApontarParaObjeto(po);
+  b.SetParm(kMmParmAudioPath, kMmCaminhoLocal);
+  b.SetParm(kMmParmPan, 64);
+  b.SetParm(kMmParmNotes, 8);
+  EXPECT_GE(b.Eventos().QuantosComNome("IMEDIA_PARM_GUARDADO"), 3u);
+}
+
+
+}  // namespace
+}  // namespace zb2::brew

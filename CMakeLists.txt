@@ -29,6 +29,8 @@ add_library(zb2_core STATIC
   core/brew/ihid_entrada.cpp
   core/brew/ihiddevice.cpp
   core/brew/igl.cpp
+  core/brew/imedia.cpp
+  core/audio/misturador.cpp
 )
 target_include_directories(zb2_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(zb2_core PRIVATE -Wall -Wextra)
@@ -53,6 +55,8 @@ add_executable(zb2_tests
   tests/bar_test.cpp
   tests/igl_test.cpp
   tests/mod_base_test.cpp
+  tests/media_test.cpp
+  tests/audio_test.cpp
 )
 # A RAIZ DO REPOSITORIO, para os testes que abrem ficheiros reais (o
 # `pacmania.bar` e o SDK) poderem dizer ONDE procuraram -- e SALTAR em vez de
@@ -138,3 +142,7 @@ set_tests_properties(regressao PROPERTIES
   # ZB2_DIR e a pasta de build. NAO se passa `ZB2_BUILD`: essa e o COMMIT que a
   # bateria grava no cabecalho, e o script vai busca-lo ao git na hora de correr.
   ENVIRONMENT "ZB2_DIR=${CMAKE_CURRENT_BINARY_DIR};ZB2_CORPUS=${ZB2_CORPUS};ZB2_MODS=${ZB2_MODS};ZB2_BASELINE=${ZB2_BASELINE}")
+# A SONDA DA ETAPA 5 (midia). E o comando que fica VERMELHO enquanto o motor nao
+# conhecer o AEECLSID_MEDIA: sai com 1, e imprime o numero medido.
+add_executable(zb2_sonda_media tools/sonda_media.cpp)
+target_link_libraries(zb2_sonda_media PRIVATE zb2_core)

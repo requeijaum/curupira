@@ -43,6 +43,11 @@ INTERFACES = [
     ("ISignalCtl", "platform/system/inc/AEEISignalCtl.h",   "#define INHERIT_ISignalCtl("),
     ("ISignalCBFactory", "platform/system/inc/AEEISignalCBFactory.h",
      "#define INHERIT_ISignalCBFactory("),
+    # A MIDIA (etapa 5). O `INHERIT_IMedia` comeca em `INHERIT_IQI`, e nao em
+    # `INHERIT_IBase`: o IMedia TEM `QueryInterface` (slot 2), e por isso os
+    # metodos proprios comecam no 3. Ler a linha da heranca e o que evita o erro
+    # de um que ja custou uma ronda inteira.
+    ("Media",    "platform/media/inc/AEEIMedia.h",        "#define INHERIT_IMedia("),
 ]
 
 

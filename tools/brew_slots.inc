@@ -194,4 +194,19 @@ constexpr unsigned kISignalCtl_Enable = 5;
 //   1 metodos; slot = 3 + posicao
 constexpr unsigned kISignalCBFactory_CreateSignal = 3;
 
+// platform/media/inc/AEEIMedia.h
+//   cabeca: INHERIT_IQI = 3 slots de cabeca
+//   11 metodos; slot = 3 + posicao
+constexpr unsigned kMedia_RegisterNotify = 3;
+constexpr unsigned kMedia_SetMediaParm = 4;
+constexpr unsigned kMedia_GetMediaParm = 5;
+constexpr unsigned kMedia_Play = 6;
+constexpr unsigned kMedia_Record = 7;
+constexpr unsigned kMedia_Stop = 8;
+constexpr unsigned kMedia_Seek = 9;
+constexpr unsigned kMedia_Pause = 10;
+constexpr unsigned kMedia_Resume = 11;
+constexpr unsigned kMedia_GetTotalTime = 12;
+constexpr unsigned kMedia_GetState = 13;
+
 }  // namespace brew_slots
