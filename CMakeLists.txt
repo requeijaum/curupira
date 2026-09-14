@@ -17,6 +17,7 @@ add_library(zb2_core STATIC
   core/memoria/memoria.cpp
   core/cpu/arm_interpreter.cpp
   core/carga/mod.cpp
+  core/carga/bar.cpp
   core/brew/ajudantes.cpp
   core/brew/formato.cpp
   core/brew/tela.cpp
@@ -48,7 +49,27 @@ add_executable(zb2_tests
   tests/brew_test.cpp
   tests/comparar_test.cpp
   tests/hid_test.cpp
+  tests/bar_test.cpp
 )
+# A RAIZ DO REPOSITORIO, para os testes que abrem ficheiros reais (o
+# `pacmania.bar` e o SDK) poderem dizer ONDE procuraram -- e SALTAR em vez de
+# passarem em silencio quando nao os encontram.
+#
+# Numa worktree do git, `.git` e um ficheiro ponteiro e o repositorio principal
+# e outro: `--git-common-dir` da o caminho do `.git` principal, e a raiz e a
+# pasta acima dele.
+find_package(Git QUIET)
+set(ZB2_RAIZ_DO_REPO "${CMAKE_CURRENT_SOURCE_DIR}/../../../..")
+if(GIT_FOUND)
+  execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse --path-format=absolute --git-common-dir
+                  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                  OUTPUT_VARIABLE ZB2_GIT_COMUM OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+  if(ZB2_GIT_COMUM)
+    get_filename_component(ZB2_GIT_COMUM "${ZB2_GIT_COMUM}" DIRECTORY)
+    set(ZB2_RAIZ_DO_REPO "${ZB2_GIT_COMUM}")
+  endif()
+endif()
+target_compile_definitions(zb2_tests PRIVATE ZB2_RAIZ_DO_REPO="${ZB2_RAIZ_DO_REPO}")
 target_link_libraries(zb2_tests PRIVATE zb2_core zb2_comparar_lib GTest::gtest_main)
 add_test(NAME fundacao COMMAND zb2_tests)
 
