@@ -64,6 +64,31 @@ constexpr std::uint32_t VtGenerico(std::uint32_t k) {
   return kVtableGenericoBase + k * kPassoGenerico;
 }
 
+// `AEEDeviceInfo`, TRANSCRITA de `platform/system/inc/AEEIShell.h`.
+//
+// Os campos escrevem-se por NOME e o `sizeof` vem do compilador, em vez de
+// numeros de offset escritos a mao. **Um offset escrito a mao ja divergiu uma
+// vez neste trabalho** -- os slots do IDisplay -- e o custo foi uma ronda.
+//
+// `EmptyEnum` e `unsigned` (AEEIShell.h linha 83). No ARM AAPCS o `uint32` alinha
+// a 4 e as bitfields `unsigned : 1` empacotam no mesmo `unsigned`, que e o mesmo
+// que o x86-64 faz aqui.
+struct AeeDeviceInfo {
+  std::uint16_t cx_screen, cy_screen, cx_alt_screen, cy_alt_screen, cx_scroll_bar;
+  std::uint16_t w_encoding, w_menu_text_scroll, n_color_depth;
+  unsigned unused2;
+  std::uint32_t w_menu_image_delay, dw_ram;
+  unsigned b_alt_display : 1, b_flip : 1, b_vibrator : 1, b_ext_speaker : 1, b_vr : 1,
+      b_pos_loc : 1, b_midi : 1, b_cmx : 1, b_pen : 1;
+  std::uint32_t dw_prompt_props;
+  std::uint16_t w_key_close_app, w_key_close_all_apps;
+  std::uint32_t dw_lang;
+  std::uint16_t w_struct_size;
+  std::uint32_t dw_net_linger, dw_sleep_defer;
+  std::uint16_t w_max_path;
+  std::uint32_t dw_platform_id;
+};
+
 // --- construcao -------------------------------------------------------------
 
 // Escreve um objecto ROPI: `[0]` = a vtable, `[4]` = a contagem de referencias, e

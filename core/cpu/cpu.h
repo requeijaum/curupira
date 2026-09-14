@@ -108,6 +108,12 @@ class ICpu {
 
   virtual void Repor(Reg pc, Reg sp) = 0;
 
+  // Quantas instrucoes o nucleo nao soube executar. Fica na INTERFACE, e nao no
+  // interpretador, porque o despacho de HLE tem de poder ser conduzido pelos dois
+  // nucleos -- e um contador de recusas que so um deles tem obriga o despacho a
+  // depender do concreto.
+  virtual std::uint64_t InstruscoesRecusadas() const { return 0; }
+
   void ConfigurarSaidas(const Saidas& s) { saidas_ = s; }
   const Saidas& GetSaidas() const { return saidas_; }
 

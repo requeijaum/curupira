@@ -27,7 +27,7 @@ class ArmInterpreter : public ICpu {
   void Repor(Reg pc, Reg sp) override;
 
   // --- consulta, para testes e diagnostico ---
-  std::uint64_t InstruscoesRecusadas() const { return recusadas_; }
+  std::uint64_t InstruscoesRecusadas() const override { return recusadas_; }
   // A ultima instrucao recusada, em hexadecimal, para o diagnostico dizer O QUE
   // faltou em vez de "falhou".
   std::uint32_t UltimaRecusada() const { return ultima_recusada_; }
