@@ -22,6 +22,7 @@ add_library(zb2_core STATIC
   core/brew/tela.cpp
   core/brew/vfs.cpp
   core/brew/arquivo.cpp
+  core/brew/interface.cpp
 )
 target_include_directories(zb2_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(zb2_core PRIVATE -Wall -Wextra)

@@ -8,6 +8,7 @@
 
 #include "core/brew/arquivo.h"
 #include "core/brew/formato.h"
+#include "core/brew/interface.h"
 #include "core/brew/tela.h"
 #include "core/brew/vfs.h"
 #include "core/memoria/memoria.h"
@@ -211,6 +212,111 @@ TEST_F(ArquivosTeste, ModoQueMudaOFicheiroERecusado) {
 TEST_F(ArquivosTeste, FicheiroInexistenteNaoAbre) {
   Arquivos a(&vfs_);
   EXPECT_EQ(a.Abrir("nao_existe.dat", 0x0001u, pasta_.string()), 0u);
+}
+
+// ---------------------------------------------------------------------------
+// INTERFACE. A construcao dos objectos e a cablagem das vtables.
+// ---------------------------------------------------------------------------
+
+TEST(Interface, OObjetoApontaParaAVtableEAIBaseEstaNosSlotsZeroEUm) {
+  Memoria mem(nullptr);
+  Saidas s;  // a faixa de saida, com os enderecos derivados do indice
+  ConstruirObjeto(mem, s, kObjShell, s.Endereco(kVtableShell), 64, kBaseDoShell);
+  EXPECT_EQ(mem.Ler32(kObjShell), s.Endereco(kVtableShell));
+  EXPECT_EQ(mem.Ler32(kObjShell + 4), 1u);
+  EXPECT_EQ(mem.Ler32(s.Endereco(kVtableShell) + 0), s.Endereco(3));  // AddRef
+  EXPECT_EQ(mem.Ler32(s.Endereco(kVtableShell) + 4), s.Endereco(4));  // Release
+}
+
+TEST(Interface, CadaSlotTemUmEnderecoDiferente) {
+  // Um stub so para todos dava "algo do shell" sem nome. Um endereco por slot e o
+  // que faz o registo de faltas dizer QUAL metodo foi pedido.
+  Memoria mem(nullptr);
+  Saidas s;
+  ConstruirObjeto(mem, s, kObjDisplay, s.Endereco(kVtableDisplay), 64, kVtableDisplay);
+  std::set<std::uint32_t> vistos;
+  for (std::uint32_t i = 2; i < 32; ++i) {
+    vistos.insert(mem.Ler32(s.Endereco(kVtableDisplay) + i * 4));
+  }
+  EXPECT_EQ(vistos.size(), 30u);
+}
+
+TEST(Interface, CablarEscreveEConfirma) {
+  Memoria mem(nullptr);
+  Saidas s;
+  ConstruirObjeto(mem, s, kObjDisplay, s.Endereco(kVtableDisplay), 64, kVtableDisplay);
+  const brew::Ligacao l[] = {
+      {kVtableDisplay, brew_slots::kDisplay_DrawText, 7777},
+      {kVtableDisplay, brew_slots::kDisplay_GetFontMetrics, 7778},
+  };
+  const auto r = Cablar(mem, s, l, 2);
+  EXPECT_TRUE(r.ok) << r.motivo;
+  EXPECT_EQ(mem.Ler32(s.Endereco(kVtableDisplay) + brew_slots::kDisplay_DrawText * 4),
+            s.Endereco(7777));
+}
+
+TEST(Interface, CablarRecusaOSlotDaIBase) {
+  // GUARDA PROVADA POR VIOLACAO: sem esta recusa, escrever no slot 2 (que num
+  // SDK em que a IBase tivesse tres membros seria `Release`) destruiria a IBase
+  // inteira sem nada a acusar.
+  Memoria mem(nullptr);
+  Saidas s;
+  ConstruirObjeto(mem, s, kObjDisplay, s.Endereco(kVtableDisplay), 64, kVtableDisplay);
+  const brew::Ligacao l[] = {{kVtableDisplay, 1, 1234}};
+  const auto r = Cablar(mem, s, l, 1);
+  EXPECT_FALSE(r.ok);
+  EXPECT_NE(r.motivo.find("IBase"), std::string::npos);
+  // E O SLOT NAO FOI TOCADO.
+  EXPECT_EQ(mem.Ler32(s.Endereco(kVtableDisplay) + 4), s.Endereco(4));
+}
+
+TEST(Interface, CablarAceitaOSlotUmDoObjetoFicheiro) {
+  // A UNICA EXCECAO, e ela e declarada: o objecto ficheiro nao tem `Release`, e o
+  // jogo fecha ficheiros com `IFILE_Release` (slot 1).
+  Memoria mem(nullptr);
+  Saidas s;
+  const brew::Ligacao l[] = {{kVtableFileObj, 1, 4242}};
+  const auto r = Cablar(mem, s, l, 1);
+  EXPECT_TRUE(r.ok) << r.motivo;
+}
+
+TEST(Interface, CablarRecusaUmSlotForaDaVtable) {
+  Memoria mem(nullptr);
+  Saidas s;
+  ConstruirObjeto(mem, s, kObjDisplay, s.Endereco(kVtableDisplay), 64, kVtableDisplay);
+  const brew::Ligacao l[] = {{kVtableDisplay, 999, 1234}};
+  const auto r = Cablar(mem, s, l, 1);
+  EXPECT_FALSE(r.ok);
+}
+
+TEST(Interface, CablarDetetaUmaCablagemPerdida) {
+  // ESTE E O TESTE QUE FALTAVA. A cablagem JA se perdeu uma vez sem sintoma: o
+  // `SetTimer` estava escrito e a funcionar, mas a entrada da vtable apontava
+  // para o stub que recusa. O sintoma era "falta SetTimer" depois de uma corrida
+  // de 4 minutos. Aqui a perda e detetada em microssegundos.
+  Memoria mem(nullptr);
+  Saidas s;
+  ConstruirObjeto(mem, s, kObjShell, s.Endereco(kVtableShell), 64, kBaseDoShell);
+  const brew::Ligacao l[] = {{kVtableShell, brew_slots::kShell_SetTimer, 5555}};
+  // Simula a perda: alguem escreveu outro valor por cima DEPOIS da cablagem.
+  mem.Escrever32(s.Endereco(kVtableShell) + brew_slots::kShell_SetTimer * 4, s.Endereco(1));
+  const auto r = Cablar(mem, s, l, 1);
+  EXPECT_TRUE(r.ok) << "a cablagem deve ser reescrita e confirmada";
+  EXPECT_EQ(mem.Ler32(s.Endereco(kVtableShell) + brew_slots::kShell_SetTimer * 4),
+            s.Endereco(5555));
+}
+
+TEST(Interface, AsConstantesDeSlotSaoAsDoCabecalho) {
+  // Guardas de sanidade sobre a geracao. Se alguem voltar a contar TRES membros
+  // na IBase, estes numeros mudam e o teste FICA VERMELHO.
+  EXPECT_EQ(brew_slots::kShell_CreateInstance, 2u);
+  EXPECT_EQ(brew_slots::kShell_QueryClass, 3u);
+  EXPECT_EQ(brew_slots::kShell_SetTimer, 11u);
+  EXPECT_EQ(brew_slots::kShell_CancelTimer, 12u);
+  EXPECT_EQ(brew_slots::kDisplay_GetFontMetrics, 2u);
+  EXPECT_EQ(brew_slots::kDisplay_DrawText, 4u);
+  EXPECT_EQ(brew_slots::kFileMgr_OpenFile, 2u);
+  EXPECT_EQ(brew_slots::kIFile_Seek, 7u);
 }
 
 }  // namespace

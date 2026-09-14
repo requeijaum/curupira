@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "core/brew/ajudantes.h"
+#include "core/brew/interface.h"
 #include "core/brew/tela.h"
 #include <filesystem>
 #include <set>
@@ -67,17 +68,11 @@ constexpr std::uint32_t kBaseDoSlot = 1000;
 // Os slots da vtable do IShell comecam aqui, para o mesmo efeito: saber QUAL
 // metodo da interface cada titulo chama, e nao so que chamou algum.
 constexpr std::uint32_t kBaseDoShell = 2000;
-constexpr std::uint32_t kVtableShell = 1000;
-constexpr std::uint32_t kVtableBitmap = 8000;
-constexpr std::uint32_t kVtableDisplay = 6000;
-constexpr std::uint32_t kVtableFileMgr = 7000;
 
 // Vtables das interfaces que o shell entrega. Cada uma tem slots com endereco
 // proprio, para o pedido seguinte ficar nomeado.
 constexpr std::uint32_t kBaseDoDisplay = 3000;
 constexpr std::uint32_t kBaseDoFileMgr = 4000;
-constexpr std::uint32_t kObjDisplay = 0x80030000u;
-constexpr std::uint32_t kObjFileMgr = 0x80040000u;
 constexpr std::uint32_t kIidDisplay = 0x01001001u;
 constexpr std::uint32_t kIidFileMgr = 0x01001003u;
 // Os IIDs que a bateria MEDIU como pedidos ao QueryInterface, com o nome do SDK
@@ -97,9 +92,6 @@ constexpr std::uint32_t kIidSqlMgr = 0x0102c4e8u;
 // e a bateria nomeava tudo como `IFileMgr::slot2007`, porque o nome sai do
 // intervalo da vtable. **A demanda ficava desonesta**: nao se sabia que metodo
 // cada titulo quer, que e o unico proposito desta lista.
-constexpr std::uint32_t kObjGenericoBase = 0x80060000u;
-constexpr std::uint32_t kVtableGenericoBase = 9000;
-constexpr std::uint32_t kPassoGenerico = 0x100;
 // A ordem desta tabela e a ordem em que os objectos sao construidos: o indice e
 // o que liga o IID ao objecto.
 struct GenericIfc { std::uint32_t iid; const char* nome; };
@@ -109,9 +101,6 @@ const GenericIfc kGenericos[] = {
     {0x0106c411u, "IHID"},     {0x0102c4e8u, "ISQLMgr"},
 };
 constexpr std::uint32_t kNGenericos = sizeof(kGenericos) / sizeof(kGenericos[0]);
-constexpr std::uint32_t ObjGenerico(std::uint32_t k) { return kObjGenericoBase + k * kPassoGenerico; }
-constexpr std::uint32_t VtGenerico(std::uint32_t k) { return kVtableGenericoBase + k * 64; }
-constexpr std::uint32_t kObjGenerico = 0x80060000u;  // mantido para o resto
 // Os slots do IFileMgr, na ordem que `platform/deprecated/inc/AEEFile.h` declara
 // em `INHERIT_IFileMgr`. A ORDEM E A DO SDK, lida campo a campo -- e nao
 // copiada de outro emulador, que foi o erro que a arvore antiga cometeu com os
@@ -183,8 +172,6 @@ constexpr std::uint32_t kSlotIdHeapLock = 1562;
 constexpr std::uint32_t kSlotIdFreeResData = 1563;
 constexpr std::uint32_t kSlotIdCheckPriv = 1564;
 constexpr std::uint32_t kSlotIdFileWrite = 1559;
-constexpr std::uint32_t kVtableFileObj = 9500;
-constexpr std::uint32_t kObjFileBase = 0x80070000u;
 
 // OS NUMEROS DE SLOT VEM DO CABECALHO, GERADOS.
 //
@@ -231,7 +218,6 @@ struct AeeDeviceInfo {
 }  // namespace brew
 
 constexpr std::uint32_t kSlotIdCreateDIBitmap = 1538;
-constexpr std::uint32_t kObjDibBase = 0x80050000u;
 // Os slots do IDisplay, na ordem que `platform/ui/inc/AEEIDisplay.h` declara em
 // `INHERIT_IDisplay`. Lido campo a campo.
 enum : std::uint32_t {
@@ -367,43 +353,6 @@ std::vector<Titulo> LerCorpus(const std::string& caminho) {
 // Com `pishell` a apontar para memoria sem vtable, r1 sai 0 e o `bx r1` salta
 // para zero -- que era, literalmente, o `saiu_do_modulo_para_0x0` que 61 dos 62
 // titulos davam.
-void ConstruirShell(Memoria& mem, const Saidas& s, std::uint32_t objeto, std::uint32_t vtable,
-                    std::uint32_t quantos_slots, std::uint32_t base_dos_slots = kBaseDoShell) {
-  mem.Escrever32(objeto, vtable);           // *(pishell) = vtable
-  mem.Escrever32(objeto + 4, 1);            // contagem de referencias
-  for (std::uint32_t i = 0; i < quantos_slots; ++i) {
-    // UM endereco por slot, para o registo dizer QUAL metodo do IShell foi
-    // chamado. Com um stub so para todos, 27 titulos pediam "algo do shell" e o
-    // numero nao tinha nome.
-    mem.Escrever32(vtable + i * 4, s.Endereco(base_dos_slots + i));
-  }
-  mem.Escrever32(vtable + 0, s.Endereco(3));   // AddRef
-  mem.Escrever32(vtable + 4, s.Endereco(4));   // Release
-}
-
-// Traduz um offset da tabela de ajudantes para o nome que o SDK lhe da. So os
-// que ja foram medidos; o resto fica com o offset, que ja e util porque ordena
-// a demanda.
-const char* NomeDoSlot(std::uint32_t off) {
-  switch (off) {
-    case 0x000: return "memmove";
-    case 0x004: return "memset";
-    case 0x008: return "strcpy";
-    case 0x00c: return "strcat";
-    case 0x010: return "strcmp";
-    case 0x014: return "strlen";
-    case 0x018: return "strchr";
-    case 0x01c: return "strrchr";
-    case 0x020: return "sprintf";
-    case 0x068: return "malloc";
-    case 0x06c: return "free";
-    case 0x088: return "OEMStrSize";
-    case 0x08c: return "GetAEEVersion";
-    case 0x09c: return "dbgprintf";
-    default: return nullptr;
-  }
-}
-
 // Sistema de ficheiros virtual MINIMO: os ficheiros que estao ao lado do
 // modulo, no disco do hospedeiro. Nao ha escrita, e uma tentativa de escrita
 // falha -- principio do desenho: nao escrever nas midias do utilizador.
@@ -517,13 +466,13 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         const std::uint32_t iid = cpu.Get(kR1);
         const std::uint32_t ppo = cpu.Get(kR2);
         std::uint32_t devolver = 0;
-        if (iid == kIidDisplay) devolver = kObjDisplay;
-        else if (iid == kIidFileMgr) devolver = kObjFileMgr;
+        if (iid == kIidDisplay) devolver = zb2::brew::kObjDisplay;
+        else if (iid == kIidFileMgr) devolver = zb2::brew::kObjFileMgr;
         // Os que tem objecto generico: o jogo fica com uma interface cujos
         // metodos recusam, e a bateria aprende quais sao.
         else {
           for (std::uint32_t k = 0; k < kNGenericos; ++k) {
-            if (iid == kGenericos[k].iid) devolver = ObjGenerico(k);
+            if (iid == kGenericos[k].iid) devolver = zb2::brew::ObjGenerico(k);
           }
         }
         if (ppo != 0) mem_ref.Escrever32(ppo, devolver);
@@ -544,14 +493,14 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         // Os objectos GENERICOS tem vtable propria por interface: sem isto o
         // `slot 7` de um `ISound` aparecia nomeado como `IFileMgr`, e a lista de
         // demanda mentia sobre o que os titulos pedem.
-        const std::uint32_t kgen = (idx >= kVtableGenericoBase)
-                                       ? (idx - kVtableGenericoBase) / 64u
+        const std::uint32_t kgen = (idx >= zb2::brew::kVtableGenericoBase)
+                                       ? (idx - zb2::brew::kVtableGenericoBase) / 64u
                                        : kNGenericos;
         if (kgen < kNGenericos) {
           iface = kGenericos[kgen].nome;
-          slot = idx - VtGenerico(kgen);
-        } else if (idx >= kVtableFileMgr) { iface = "IFileMgr"; slot = idx - kVtableFileMgr; }
-        else if (idx >= kVtableDisplay) { iface = "IDisplay"; slot = idx - kVtableDisplay; }
+          slot = idx - zb2::brew::VtGenerico(kgen);
+        } else if (idx >= zb2::brew::kVtableFileMgr) { iface = "IFileMgr"; slot = idx - zb2::brew::kVtableFileMgr; }
+        else if (idx >= zb2::brew::kVtableDisplay) { iface = "IDisplay"; slot = idx - zb2::brew::kVtableDisplay; }
         else { iface = "IShell"; slot = idx - kBaseDoShell; }
         std::snprintf(nome, sizeof(nome), "%s::slot%u", iface, slot);
         // Os ARGUMENTOS no detalhe: para o QueryInterface (slot 2) o r1 e o IID
@@ -772,7 +721,7 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         const std::uint32_t prof = cpu.Get(kR2) & 0xFFu;
         const std::uint32_t w = cpu.Get(kR3) & 0xFFFFu;
         const std::uint32_t h = mem_ref.Ler32(cpu.Get(kSP) + 0) & 0xFFFFu;
-        const std::uint32_t obj = kObjDibBase + g_dibs * 0x40;
+        const std::uint32_t obj = zb2::brew::kObjDibBase + g_dibs * 0x40;
         ++g_dibs;
         // O IDIB tem cabecalho proprio: dimensoes, profundidade, e o PASSAPORTE
         // de acesso aos pixels (`pData`), que o `IDIB_GetBuffer` devolve.
@@ -847,7 +796,7 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         // `IBitmap *GetDestination(IDisplay *po)` -- IDisplay slot 16.
         // Devolve o bitmap que esta a receber o desenho. O jogo usa-o para saber
         // o TAMANHO da tela (via IBitmap::GetInfo) antes de calcular posicoes.
-        const std::uint32_t obj = kObjDibBase + 0x300;
+        const std::uint32_t obj = zb2::brew::kObjDibBase + 0x300;
         mem_ref.Escrever32(obj + 0, g_vtable_bitmap);
         mem_ref.Escrever32(obj + 4, 1);
         mem_ref.Escrever32(obj + 8, 0);
@@ -861,7 +810,7 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         // So se ACEITA um bitmap nosso: aceitar um ponteiro qualquer poria o
         // desenho num sitio que nao existe.
         const std::uint32_t pdst = cpu.Get(kR1);
-        if (pdst >= kObjDibBase && pdst < kObjDibBase + 0x1000) {
+        if (pdst >= zb2::brew::kObjDibBase && pdst < zb2::brew::kObjDibBase + 0x1000) {
           g_destino = pdst;
           cpu.Set(kR0, 0);  // SUCCESS
         } else {
@@ -873,7 +822,7 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         // E o mesmo objecto que o `GetDestination` devolve.
         const std::uint32_t pp = cpu.Get(kR1);
         if (pp != 0) {
-          mem_ref.Escrever32(pp, kObjDibBase + 0x300);
+          mem_ref.Escrever32(pp, zb2::brew::kObjDibBase + 0x300);
           cpu.Set(kR0, 0);  // SUCCESS
         } else {
           cpu.Set(kR0, kAeeUnsupported);
@@ -1074,7 +1023,7 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
           if (!ok) {
             cpu.Set(kR0, 0);
           } else {
-            a.obj = kObjFileBase + g_n_arquivos * 0x40;
+            a.obj = zb2::brew::kObjFileBase + g_n_arquivos * 0x40;
             ++g_n_arquivos;
             g_arquivos.push_back(a);
             mem_ref.Escrever32(a.obj + 0, g_vtable_ficheiro);
@@ -1256,7 +1205,7 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         cpu.Set(kR0, 0);
       } else if (idx >= kBaseDoSlot) {
         const std::uint32_t off = (idx - kBaseDoSlot) * 4;
-        const char* conhecido = NomeDoSlot(off);
+        const char* conhecido = zb2::brew::NomeDoAjudante(off);
         char nome[64];
         if (conhecido != nullptr) {
           std::snprintf(nome, sizeof(nome), "AEEHelperFuncs[0x%03x] %s", off, conhecido);
@@ -1361,10 +1310,10 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   s.passo = 4;
   s.ativa = true;
   cpu.ConfigurarSaidas(s);
-  g_vtable_bitmap = s.Endereco(kVtableBitmap);
+  g_vtable_bitmap = s.Endereco(zb2::brew::kVtableBitmap);
   g_dir_actual = dir;
   g_pasta_actual = t.pasta;
-  g_vtable_ficheiro = s.Endereco(kVtableFileObj);
+  g_vtable_ficheiro = s.Endereco(zb2::brew::kVtableFileObj);
   g_arquivos.clear();
   g_n_arquivos = 0;
   // A TABELA UNICA: offset no `AEEHelperFuncs` x endereco de saida da
@@ -1422,15 +1371,16 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   // As vtables das interfaces ficam ACIMA da tabela de ajudantes, dentro da
   // mesma faixa de saida. Enderecos distintos por interface.
   const std::uint32_t kShell = 0x80020000u;
-  ConstruirShell(mem, s, kShell, s.Endereco(kVtableShell), 64);
+  zb2::brew::ConstruirObjeto(mem, s, kShell, s.Endereco(zb2::brew::kVtableShell),
+                             zb2::brew::kSlotsPorVtable, zb2::brew::kBaseDoShell);
 
   // As interfaces que o shell entrega por QueryInterface.
   //
   // MEDIDO, e e o que decidiu a ordem desta etapa: 22 titulos pedem
   // `AEECLSID_DISPLAY` e 4 pedem `AEECLSID_FILEMGR`, ambos pelo slot 2 do IShell
   // (QueryInterface) com o IID no r1 e o ponteiro de saida no r2.
-  ConstruirShell(mem, s, kObjDisplay, s.Endereco(kVtableDisplay), 64, kVtableDisplay);
-  ConstruirShell(mem, s, kObjFileMgr, s.Endereco(kVtableFileMgr), 64, kVtableFileMgr);
+  zb2::brew::ConstruirObjeto(mem, s, zb2::brew::kObjDisplay, s.Endereco(zb2::brew::kVtableDisplay), 64, zb2::brew::kVtableDisplay);
+  zb2::brew::ConstruirObjeto(mem, s, zb2::brew::kObjFileMgr, s.Endereco(zb2::brew::kVtableFileMgr), 64, zb2::brew::kVtableFileMgr);
 
   // Um objecto generico para as interfaces que ainda nao tem implementacao.
   //
@@ -1441,7 +1391,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   // parar. O que NAO se faz e devolver sucesso com um objecto que finge
   // funcionar (principio P2).
   for (std::uint32_t k = 0; k < kNGenericos; ++k) {
-    ConstruirShell(mem, s, ObjGenerico(k), s.Endereco(VtGenerico(k)), 64, VtGenerico(k));
+    zb2::brew::ConstruirObjeto(mem, s, zb2::brew::ObjGenerico(k), s.Endereco(zb2::brew::VtGenerico(k)), 64, zb2::brew::VtGenerico(k));
   }
   // Os slots do IFileMgr que o corpus pede, e que tem implementacao.
   // A TABELA UNICA DA CABLAGEM DAS VTABLES: objecto, slot, endereco de saida.
@@ -1458,42 +1408,42 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   // a cablagem e o unico sitio onde se declara o que existe.
   const struct { std::uint32_t vt; std::uint32_t slot; std::uint32_t saida; } kWire[] = {
       // IShell
-      {kVtableShell, brew_slots::kShell_SetTimer, kSlotIdSetTimer},
-      {kVtableShell, brew_slots::kShell_QueryClass, kSlotIdQueryClass},
-      {kVtableShell, brew_slots::kShell_GetDeviceInfo, kSlotIdGetDeviceInfo},
-      {kVtableShell, brew_slots::kShell_CancelTimer, kSlotIdCancelTimer},
-      {kVtableShell, brew_slots::kShell_FreeResData, kSlotIdFreeResData},
-      {kVtableShell, brew_slots::kShell_CheckPrivLevel, kSlotIdCheckPriv},
-      {kVtableDisplay, brew_slots::kDisplay_GetDeviceBitmap, kSlotIdGetDeviceBitmap},
-      {kVtableDisplay, brew_slots::kDisplay_GetClipRect, kSlotIdGetClipRect},
-      {VtGenerico(6), brew_slots::kSQLMgr_Open, kSlotIdSqlOpen},
-      {VtGenerico(0), brew_slots::kHeap1_Lock, kSlotIdHeapLock},
-      {kVtableFileMgr, brew_slots::kFileMgr_OpenFile, kSlotIdOpenFile},
-      {kVtableFileObj, brew_slots::kIAStream_Read, kSlotIdFileRead},
-      {kVtableFileObj, brew_slots::kIFile_Seek, kSlotIdFileSeek},
-      {kVtableFileObj, brew_slots::kIFile_GetInfo, kSlotIdFileInfo},
-      {kVtableFileObj, brew_slots::kIFile_Write, kSlotIdFileWrite},
-      {kVtableFileObj, 1, kSlotIdFileRelease},
+      {zb2::brew::kVtableShell, brew_slots::kShell_SetTimer, kSlotIdSetTimer},
+      {zb2::brew::kVtableShell, brew_slots::kShell_QueryClass, kSlotIdQueryClass},
+      {zb2::brew::kVtableShell, brew_slots::kShell_GetDeviceInfo, kSlotIdGetDeviceInfo},
+      {zb2::brew::kVtableShell, brew_slots::kShell_CancelTimer, kSlotIdCancelTimer},
+      {zb2::brew::kVtableShell, brew_slots::kShell_FreeResData, kSlotIdFreeResData},
+      {zb2::brew::kVtableShell, brew_slots::kShell_CheckPrivLevel, kSlotIdCheckPriv},
+      {zb2::brew::kVtableDisplay, brew_slots::kDisplay_GetDeviceBitmap, kSlotIdGetDeviceBitmap},
+      {zb2::brew::kVtableDisplay, brew_slots::kDisplay_GetClipRect, kSlotIdGetClipRect},
+      {zb2::brew::VtGenerico(6), brew_slots::kSQLMgr_Open, kSlotIdSqlOpen},
+      {zb2::brew::VtGenerico(0), brew_slots::kHeap1_Lock, kSlotIdHeapLock},
+      {zb2::brew::kVtableFileMgr, brew_slots::kFileMgr_OpenFile, kSlotIdOpenFile},
+      {zb2::brew::kVtableFileObj, brew_slots::kIAStream_Read, kSlotIdFileRead},
+      {zb2::brew::kVtableFileObj, brew_slots::kIFile_Seek, kSlotIdFileSeek},
+      {zb2::brew::kVtableFileObj, brew_slots::kIFile_GetInfo, kSlotIdFileInfo},
+      {zb2::brew::kVtableFileObj, brew_slots::kIFile_Write, kSlotIdFileWrite},
+      {zb2::brew::kVtableFileObj, 1, kSlotIdFileRelease},
       // IHIDDevice: slot 7 = GetNumberOfButtons
-      {VtGenerico(5), brew_slots::kHIDDevice_GetNumberOfButtons, kSlotIdGetNumButtons},
+      {zb2::brew::VtGenerico(5), brew_slots::kHIDDevice_GetNumberOfButtons, kSlotIdGetNumButtons},
       // IDisplay
-      {kVtableDisplay, kDisGetFontMetrics, kSlotIdGetFontMetrics},
-      {kVtableDisplay, kDisMeasureTextEx, kSlotIdMeasureText},
-      {kVtableDisplay, kDisDrawText, kSlotIdDrawText},
-      {kVtableDisplay, kDisDrawRect, kSlotIdDrawRect},
-      {kVtableDisplay, kDisBitBlt, kSlotIdBitBlt},
-      {kVtableDisplay, kDisSetColor, kSlotIdSetColor},
-      {kVtableDisplay, kDisSetClipRect, kSlotIdSetClipRect},
-      {kVtableDisplay, kDisUpdate, kSlotIdUpdate},
-      {kVtableDisplay, brew_slots::kDisplay_Backlight, kSlotIdBacklight},
-      {kVtableDisplay, kDisCreateDIBitmap, kSlotIdCreateDIBitmap},
-      {kVtableDisplay, brew_slots::kDisplay_SetDestination, kSlotIdSetDest},
-      {kVtableDisplay, brew_slots::kDisplay_GetDestination, kSlotIdGetDest},
+      {zb2::brew::kVtableDisplay, kDisGetFontMetrics, kSlotIdGetFontMetrics},
+      {zb2::brew::kVtableDisplay, kDisMeasureTextEx, kSlotIdMeasureText},
+      {zb2::brew::kVtableDisplay, kDisDrawText, kSlotIdDrawText},
+      {zb2::brew::kVtableDisplay, kDisDrawRect, kSlotIdDrawRect},
+      {zb2::brew::kVtableDisplay, kDisBitBlt, kSlotIdBitBlt},
+      {zb2::brew::kVtableDisplay, kDisSetColor, kSlotIdSetColor},
+      {zb2::brew::kVtableDisplay, kDisSetClipRect, kSlotIdSetClipRect},
+      {zb2::brew::kVtableDisplay, kDisUpdate, kSlotIdUpdate},
+      {zb2::brew::kVtableDisplay, brew_slots::kDisplay_Backlight, kSlotIdBacklight},
+      {zb2::brew::kVtableDisplay, kDisCreateDIBitmap, kSlotIdCreateDIBitmap},
+      {zb2::brew::kVtableDisplay, brew_slots::kDisplay_SetDestination, kSlotIdSetDest},
+      {zb2::brew::kVtableDisplay, brew_slots::kDisplay_GetDestination, kSlotIdGetDest},
       // IFileMgr
-      {kVtableFileMgr, kFmTest, kSlotIdFmTest},
-      {kVtableFileMgr, kFmGetFreeSpace, kSlotIdFmFree},
-      {kVtableFileMgr, kFmGetLastError, kSlotIdFmLastErr},
-      {kVtableFileMgr, 7, kSlotIdRmDir},
+      {zb2::brew::kVtableFileMgr, kFmTest, kSlotIdFmTest},
+      {zb2::brew::kVtableFileMgr, kFmGetFreeSpace, kSlotIdFmFree},
+      {zb2::brew::kVtableFileMgr, kFmGetLastError, kSlotIdFmLastErr},
+      {zb2::brew::kVtableFileMgr, 7, kSlotIdRmDir},
   };
   for (const auto& w : kWire) {
     // A GUARDA: um slot 0 num objecto ROPI e o `QueryInterface` da IBase, e a
@@ -1512,20 +1462,20 @@ Estado Medir(const Titulo& t, const std::string& dir) {
     // com `IFILE_Release(p)`, que e o slot 1. Sem esta excepcao, o fecho nao
     // existia e o `Release` da IBase (que faz `AddRef`/`Release` de objectos ROPI)
     // era chamado com um ponteiro de ficheiro.
-    const bool e_o_ficheiro = (w.vt == kVtableFileObj);
+    const bool e_o_ficheiro = (w.vt == zb2::brew::kVtableFileObj);
     if (w.slot < 2 && !e_o_ficheiro) {
       std::fprintf(stderr, "CABLAGEM RECUSADA: slot %u do objecto 0x%08x e da IBase\n",
                    w.slot, w.vt);
       std::abort();
     }
     // O FIM da vtable deste objecto, e nao a base da PRIMEIRA vtable generica.
-    // A guarda disparou na primeira versao porque comparava com `kVtableGenericoBase`
+    // A guarda disparou na primeira versao porque comparava com `zb2::brew::kVtableGenericoBase`
     // -- e cada vtable generica tem 64 slots, logo o fim de uma e o inicio da
     // seguinte, nao a base da serie. **A guarda estava certa no proposito e
     // errada na conta.**
-    const std::uint32_t fim = (w.vt >= kVtableGenericoBase)
-                                  ? VtGenerico((w.vt - kVtableGenericoBase) / 64u + 1u)
-                                  : kVtableGenericoBase;
+    const std::uint32_t fim = (w.vt >= zb2::brew::kVtableGenericoBase)
+                                  ? zb2::brew::VtGenerico((w.vt - zb2::brew::kVtableGenericoBase) / 64u + 1u)
+                                  : zb2::brew::kVtableGenericoBase;
     if (w.vt + w.slot >= fim) {
       std::fprintf(stderr, "CABLAGEM RECUSADA: slot %u de 0x%08x sai da vtable (fim 0x%08x)\n",
                    w.slot, w.vt, fim);
