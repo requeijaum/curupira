@@ -15,29 +15,33 @@ neste ficheiro:
      resultado -- a lista de demanda mostrou os tres offsets como
      `servico_sem_nome_idx1017/1020/1078`.
 
-MEDIDO COM ESTE PATCH APLICADO (62 titulos, corpus62.json, 2026-09-14):
-  antes:  AEEHelperFuncs[0x044] 1x, [0x050] 1x, [0x138] 2x  (3 offsets CRUS)
-  depois: 0 offsets crus; os tres passam a ter implementacao (pacmania)
-  `tools/comparar` contra tools/baseline/bateria.json: 0 regressoes, 0
-  melhorias, 4 neutros (as 3 faltas acima e a etiqueta de build).
-  carga 62 | modulo 62 | vtable 48 | applet 41 -- inalterado.
+GERADO CONTRA 96ede69 (o HEAD de agora), e VERIFICADO nessa base:
+    git apply <este ficheiro>            -> aplica limpo
+    cmake --build build -j4              -> 0 erros
+    ./build/zb2_tests                    -> 285 testes, 285 verdes
+    ./build/zb2_bateria ... /tmp/depois3.json
+      antes:  AEEHelperFuncs[0x044] 1x, [0x050] 1x, [0x138] 2x  (3 offsets CRUS)
+      depois: 0 offsets crus (o pacmania deixa de pedir os tres: ficam servidos)
+      carga 62 | modulo 62 | vtable 48 | applet 41  -- inalterado
+    ./build/zb2_comparar tools/baseline/bateria.json /tmp/depois3.json
+      -> 0 regressoes, 0 melhorias, 4 neutros (as 3 faltas acima e a etiqueta)
 
 Aplicar da RAIZ do repositorio:
     git apply research/sources/zeebulator/src2/tools/ajudantes_hook.patch
 
 diff --git a/research/sources/zeebulator/src2/core/brew/despacho.cpp b/research/sources/zeebulator/src2/core/brew/despacho.cpp
-index 140534f..ddecf27 100644
+index 4b330ef..c0e54cb 100644
 --- a/research/sources/zeebulator/src2/core/brew/despacho.cpp
 +++ b/research/sources/zeebulator/src2/core/brew/despacho.cpp
-@@ -4,6 +4,7 @@
- #include <cstring>
+@@ -5,6 +5,7 @@
  #include <set>
  
+ #include "core/audio/misturador.h"
 +#include "core/brew/ajudantes_extra.h"
  #include "core/brew/formato.h"
+ #include "core/brew/imedia.h"
  
- namespace zb2::brew {
-@@ -64,11 +65,29 @@ constexpr std::uint32_t kBaseDoSlot = 1000;
+@@ -71,11 +72,29 @@ constexpr std::uint32_t kBaseDoSlot = 1000;
  
  // Uma linha da tabela de ajudantes: o offset no `AEEHelperFuncs` e o endereco de
  // saida da implementacao.
@@ -72,7 +76,7 @@ index 140534f..ddecf27 100644
  
  struct LigacaoAjudante {
    std::uint32_t off;
-@@ -880,6 +899,19 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
+@@ -905,6 +924,19 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
          mem_.LerCadeia(r0, &msg, 512);
          traco_.Emitir(Area::Brew, Nivel::Depuracao, "GUEST_DBGPRINTF", msg);
          cpu.Set(kR0, 0);
