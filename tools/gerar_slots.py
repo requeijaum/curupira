@@ -48,6 +48,27 @@ INTERFACES = [
     # metodos proprios comecam no 3. Ler a linha da heranca e o que evita o erro
     # de um que ja custou uma ronda inteira.
     ("Media",    "platform/media/inc/AEEIMedia.h",        "#define INHERIT_IMedia("),
+    # A HIERARQUIA DE WIDGETS (IRootForm -> IForm -> IHandler, e
+    # IWidget -> IHandler; IDrawDecorator -> IDecorator -> IWidget).
+    #
+    # PORQUE ISTO ENTRA AQUI, e nao a mao: a bateria MEDIU, depois de o
+    # `EVT_APP_START` passar a ser entregue, pedidos a `IRootForm` -- uma camada
+    # que SO aparece quando o titulo chega ao codigo que constroi a propria
+    # interface. O numero de cada metodo sai da CADEIA de heranca lida do
+    # cabecalho, como todos os outros:
+    #     INHERIT_IHandler   = INHERIT_IQI(3) + 2 = 5
+    #     INHERIT_IForm      = IHandler           = 5
+    #     INHERIT_IRootForm  = IForm + 5          = 10
+    #     INHERIT_IWidget    = IHandler + 9       = 14
+    #     INHERIT_IDecorator = IWidget + 2        = 16
+    #     INHERIT_IDrawDecorator = IDecorator + 1 = 17
+    ("IHandler",  "platform/ui/inc/AEEIHandler.h",      "#define INHERIT_IHandler("),
+    ("IForm",     "platform/ui/inc/AEEIForm.h",         "#define INHERIT_IForm("),
+    ("IRootForm", "platform/ui/inc/AEEIRootForm.h",     "#define INHERIT_IRootForm("),
+    ("IWidget",   "platform/ui/inc/AEEIWidget.h",       "#define INHERIT_IWidget("),
+    ("IDecorator", "platform/ui/inc/AEEIDecorator.h",   "#define INHERIT_IDecorator("),
+    ("IDrawDecorator", "platform/ui/inc/AEEIDrawDecorator.h",
+     "#define INHERIT_IDrawDecorator("),
 ]
 
 
@@ -137,6 +158,48 @@ def _cabeca_do_bloco(bloco: str):
     return 2
 
 
+# O nome de cada slot da cabeca, na ordem. As MESMAS duas fontes que `CABECAS`
+# usa: `AEEIBase.h` (AddRef, Release) e `AEEIQI.h` (mais o QueryInterface).
+NOMES_DA_CABECA = {
+    "INHERIT_IQueryInterface": ["AddRef", "Release", "QueryInterface"],
+    "INHERIT_IQI": ["AddRef", "Release", "QueryInterface"],
+    "INHERIT_IBase": ["AddRef", "Release"],
+}
+
+
+def _nomes_da_raiz(nome_macro: str, profundidade: int = 0) -> list:
+    """Os NOMES dos slots da CABECA desta interface, na ordem.
+
+    PORQUE ISTO EXISTE: a cabeca (os slots 0..n-1) tambem tem NOME, e o
+    `QueryInterface` e o caso que o obrigou. `INHERIT_IHandler` comeca em
+    `INHERIT_IQI`, que ocupa TRES slots -- `AddRef`, `Release` e `QueryInterface`
+    -- e o `QueryInterface` nao e um "membro proprio" do IHandler, logo nao
+    aparecia em tabela nenhuma. Um `kIHandler_QueryInterface = 2` escrito a mao
+    seria exactamente o numero de slot transcrito de memoria que este gerador
+    existe para impedir.
+    """
+    if profundidade > 8:
+        raise SystemExit(f"cadeia de heranca demasiado funda em {nome_macro}")
+    if nome_macro in NOMES_DA_CABECA:
+        return list(NOMES_DA_CABECA[nome_macro])
+    for cab in SDK.rglob("*.h"):
+        try:
+            t = cab.read_text(errors="replace")
+        except OSError:
+            continue
+        i = t.find(f"#define {nome_macro}(")
+        if i < 0 or "\n" not in t[i:]:
+            continue
+        linhas = _linhas_do_macro(t, i)
+        if not linhas:
+            continue
+        pai = re.search(r"(INHERIT_\w+)\s*\(", linhas[0])
+        if not pai:
+            continue
+        return _nomes_da_raiz(pai.group(1), profundidade + 1) + _membros("".join(linhas[1:]))
+    raise SystemExit(f"nao consegui resolver os nomes da cabeca de {nome_macro}")
+
+
 def cabeca(caminho: Path, macro: str):
     t = caminho.read_text(errors="replace")
     i = t.find(macro)
@@ -188,7 +251,10 @@ def metodos(caminho: Path, macro: str):
         bloco = t[i:j] if j > 0 else t[i:i + 8000]
         pai = re.search(r"(INHERIT_\w+|INHERIT_IQueryInterface)\s*\(", bloco)
         quantos, origem = _raiz(pai.group(1)) if pai else (0, "interface raiz")
-        return _membros(bloco), quantos, f"AEEINTERFACE({nome_if}): {pai.group(1) if pai else '-'} = {quantos}"
+        nomes_cabeca = _nomes_da_raiz(pai.group(1)) if pai else []
+        return (_membros(bloco), quantos,
+                f"AEEINTERFACE({nome_if}): {pai.group(1) if pai else '-'} = {quantos}",
+                nomes_cabeca)
 
     linhas = _linhas_do_macro(t, i)
     # linhas[0] e a HERANCA (quando existe); o resto sao membros proprios.
@@ -197,10 +263,15 @@ def metodos(caminho: Path, macro: str):
         quantos, origem = _raiz(pai.group(1))
         corpo = "".join(linhas[1:])
         nota = f"{pai.group(1)} = {quantos} slots de cabeca"
+        nomes_cabeca = _nomes_da_raiz(pai.group(1))
     else:
         quantos, nota = 0, "interface raiz"
         corpo = "".join(linhas)
-    return _membros(corpo), quantos, nota
+        nomes_cabeca = []
+    if len(nomes_cabeca) != quantos:
+        raise SystemExit(
+            f"{macro}: a cabeca ocupa {quantos} slots e dei {len(nomes_cabeca)} nomes")
+    return _membros(corpo), quantos, nota, nomes_cabeca
 
 
 linhas = [
@@ -215,15 +286,148 @@ linhas = [
     "namespace brew_slots {",
 ]
 for nome, cab, macro in INTERFACES:
-    fns, base_off, nota = metodos(SDK / cab, macro)
+    fns, base_off, nota, nomes_cabeca = metodos(SDK / cab, macro)
     linhas.append(f"// {cab}")
     linhas.append(f"//   cabeca: {nota}")
     linhas.append(f"//   {len(fns)} metodos; slot = {base_off} + posicao")
+    # OS SLOTS DA CABECA TAMBEM TEM NOME. Sem isto, o `QueryInterface` -- que em
+    # `INHERIT_IQI` e o slot 2 -- nao existia em tabela nenhuma e teria de ser
+    # escrito a mao onde fosse preciso.
+    for k, fn in enumerate(nomes_cabeca):
+        linhas.append(f"constexpr unsigned k{nome}_{fn} = {k};")
     for k, fn in enumerate(fns):
         if fn in ("pfn",):
             continue
         linhas.append(f"constexpr unsigned k{nome}_{fn} = {k + base_off};")
     linhas.append("")
+# ---------------------------------------------------------------------------
+# AS CONSTANTES DAS PROPRIEDADES DA INTERFACE DE WIDGETS.
+# ---------------------------------------------------------------------------
+#
+# PORQUE ISTO ESTA AQUI E NAO ESCRITO A MAO: `PROP_FORM` e `0x5000` e o
+# `WID_FORM` e `PROP_FORM + 0` -- um deslocamento DENTRO da familia, nao um
+# numero solto. Um numero de offset transcrito de memoria ja divergiu uma vez
+# neste trabalho (os slots do IDisplay) e custou uma ronda inteira. Aqui a
+# expressao do cabecalho e LIDA e AVALIADA, com o valor que sai escrita ao lado
+# para quem le o `.inc` poder conferir sem abrir o cabecalho.
+#
+# Estas constantes aparecem no `r2` dos pedidos que a bateria MEDIU:
+#     IRootForm::slot3 r1=0x00000800 r2=0x00005000   -> EVT_WDG_GETPROPERTY, WID_FORM
+#     IRootForm::slot3 r1=0x00000801 r2=0x00005001   -> EVT_WDG_SETPROPERTY, WID_TITLE
+#     IRootForm::slot3 r1=0x00000800 r2=0x00005002   -> EVT_WDG_GETPROPERTY, WID_SOFTKEYS
+# -- medidos no `tectoy` (o Z-Wheel), ver o relatorio.
+CONSTANTES = [
+    ("AEEIForm.h", "platform/ui/inc/AEEIForm.h", [
+        "PROP_FORM", "WID_FORM", "WID_TITLE", "WID_SOFTKEYS", "WID_BACKGROUND",
+        "WID_CONTAINER", "WID_DECORATOR", "WID_BACKDROP", "WID_STATIC",
+        "FID_ACTIVE", "FID_ROOT", "FID_THEME", "FID_THEME_FNAME", "FID_TITLE",
+        "FID_BACKGROUND", "FID_VISIBLE", "FID_DISPLAY", "FID_THEME_BASENAME",
+    ]),
+    ("AEEWidgetProperties.h", "platform/ui/inc/AEEWidgetProperties.h", [
+        "PROP_BGCOLOR", "PROP_ACTIVE_BGCOLOR", "PROP_INACTIVE_BGCOLOR",
+        "PROP_FGCOLOR", "PROP_ACTIVE_FGCOLOR", "PROP_INACTIVE_FGCOLOR",
+        "PROP_BORDERCOLOR", "PROP_ACTIVE_BORDERCOLOR", "PROP_INACTIVE_BORDERCOLOR",
+        "PROP_BORDERSTYLE",
+    ]),
+    ("AEEIWidget.h", "platform/ui/inc/AEEIWidget.h", [
+        "EVT_WDG_SETPROPERTY", "EVT_WDG_GETPROPERTY", "EVT_WDG_SETFOCUS",
+        "EVT_WDG_HASFOCUS", "EVT_WDG_CANTAKEFOCUS", "EVT_WDG_SETLAYOUT",
+    ]),
+    # Os IIDs das interfaces da hierarquia. Sao o que o `QueryInterface` tem de
+    # responder -- e o valor TEM de vir do cabecalho: um IID escrito de memoria
+    # foi, nesta arvore, a causa medida de o `QueryInterface` deixar de responder
+    # ao `AEECLSID_DISPLAY` e a bateria cair de 22 applets para 1.
+    ("AEEIHandler.h", "platform/ui/inc/AEEIHandler.h", ["AEEIID_IHandler"]),
+    ("AEEIForm.h", "platform/ui/inc/AEEIForm.h", ["AEEIID_IForm"]),
+    ("AEEIRootForm.h", "platform/ui/inc/AEEIRootForm.h", ["AEEIID_IRootForm"]),
+    ("AEEIWidget.h", "platform/ui/inc/AEEIWidget.h", ["AEEIID_IWidget"]),
+    ("AEEIDecorator.h", "platform/ui/inc/AEEIDecorator.h", ["AEEIID_IDecorator"]),
+    # `AEEIID_IDrawDecorator` NAO ENTRA, e a razao e uma medicao: este SDK nao o
+    # DEFINE em cabecalho nenhum. `grep -rn AEEIID_IDrawDecorator` sobre a arvore
+    # extraida so encontra uma mencao na DOCUMENTACAO (`AEEIDrawDecorator.h:397`).
+    # Inventar o valor seria exactamente o defeito que este gerador existe para
+    # impedir -- e um valor de memoria ja regrediu a bateria uma vez.
+]
+
+
+def _todos_os_defines(sdk: Path):
+    """{nome: valor_em_texto} de TODOS os `#define NOME valor` dos cabecalhos.
+
+    Le so o `inc/` da plataforma: e onde estao os cabecalhos de interface. Um
+    `#define` com parametros (`NOME(...)`) nao entra -- nao e uma constante.
+    """
+    out = {}
+    for cab in sdk.rglob("*.h"):
+        try:
+            t = cab.read_text(errors="replace")
+        except OSError:
+            continue
+        for m in re.finditer(r"^[ \t]*#define[ \t]+([A-Za-z_]\w*)(?!\()[ \t]+([^\n]*?)[ \t]*$", t, re.M):
+            nome, valor = m.group(1), m.group(2).strip()
+            if valor and nome not in out:
+                out[nome] = valor
+    return out
+
+
+def valor_de(nome: str, defines: dict, profundidade: int = 0):
+    """O valor INTEIRO de uma constante, seguindo as referencias a outras.
+
+    Devolve `None` quando nao consegue -- e quem chama diz que nao conseguiu, em
+    vez de escrever um zero que pareceria uma medicao.
+    """
+    if profundidade > 8:
+        return None
+    if nome in ("TRUE", "FALSE"):
+        return 1 if nome == "TRUE" else 0
+    bruto = defines.get(nome)
+    if bruto is None:
+        m = re.match(r"^0[xX][0-9A-Fa-f]+$|^\d+$", nome)
+        if m:
+            return int(nome, 0)
+        return None
+    expr = bruto.split("//")[0].strip().rstrip("uUlL")
+    if re.match(r"^0[xX][0-9A-Fa-f]+$|^\d+$", expr):
+        return int(expr, 0)
+    # uma expressao: resolve cada NOME que la esteja e avalia-a em aritmetica
+    # inteira. A lista de operadores aceitos e curta de proposito -- `<<`, `|` e
+    # `~` nao aparecem nestas familias, e se aparecerem quero saber.
+    def trocar(m):
+        v = valor_de(m.group(0), defines, profundidade + 1)
+        return str(v) if v is not None else m.group(0)
+    substituido = re.sub(r"[A-Za-z_]\w*", trocar, expr)
+    if re.search(r"[A-Za-z_]", substituido):
+        return None
+    if not re.match(r"^[0-9+\-*/(). \t]+$", substituido):
+        return None
+    try:
+        return int(eval(substituido, {"__builtins__": {}}, {}))  # noqa: S307
+    except Exception:
+        return None
+
+
+def escrever_constantes(sdk: Path):
+    defines = _todos_os_defines(sdk)
+    linhas, faltam = [], []
+    for cab, caminho, nomes in CONSTANTES:
+        linhas.append(f"// {caminho}")
+        for nome in nomes:
+            v = valor_de(nome, defines)
+            if v is None:
+                faltam.append(f"{nome} ({caminho})")
+                continue
+            linhas.append(f"constexpr unsigned {nome} = {v}u;")
+        linhas.append("")
+    return linhas, faltam
+
+
+# As constantes das propriedades (ver a nota acima). Ficam DEPOIS dos slots e
+# DENTRO do mesmo namespace: sao a mesma classe de numero -- um valor da ABI
+# lido do cabecalho -- e por isso recebem a mesma guarda (`verificar_slots.sh`
+# regenera o ficheiro e compara).
+_cl, _falta = escrever_constantes(SDK)
+if _falta:
+    raise SystemExit("constantes nao resolvidas no SDK: " + ", ".join(_falta))
+linhas += _cl
 linhas.append("}  // namespace brew_slots")
 SAIDA.write_text("\n".join(linhas) + "\n")
 print(f"{SAIDA}: {len(linhas)} linhas")
@@ -250,11 +454,9 @@ print(f"{SAIDA}: {len(linhas)} linhas")
 # pede tem de ser o mesmo. Duas fontes independentes do SDK tem de concordar.
 
 # O nome dos slots herdados, na ordem. Vem de `AEEIBase.h` e `AEEIQI.h`.
-CABECAS_NOMES = {
-    "INHERIT_IQueryInterface": ["AddRef", "Release", "QueryInterface"],
-    "INHERIT_IQI": ["AddRef", "Release", "QueryInterface"],
-    "INHERIT_IBase": ["AddRef", "Release"],
-}
+# A MESMA tabela de cima, com o nome que o gerador do GL ja usava. Uma so fonte:
+# duas listas que tem de concordar sao zero listas.
+CABECAS_NOMES = NOMES_DA_CABECA
 
 
 def nomes_da_cabeca(pai: str):

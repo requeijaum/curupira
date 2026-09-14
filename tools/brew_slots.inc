@@ -10,6 +10,8 @@ namespace brew_slots {
 // platform/system/inc/AEEIShell.h
 //   cabeca: INHERIT_IBase = 2 slots de cabeca
 //   50 metodos; slot = 2 + posicao
+constexpr unsigned kShell_AddRef = 0;
+constexpr unsigned kShell_Release = 1;
 constexpr unsigned kShell_CreateInstance = 2;
 constexpr unsigned kShell_QueryClass = 3;
 constexpr unsigned kShell_GetDeviceInfo = 4;
@@ -64,6 +66,8 @@ constexpr unsigned kShell_AppIsInGroup = 51;
 // platform/ui/inc/AEEIDisplay.h
 //   cabeca: INHERIT_IBase = 2 slots de cabeca
 //   24 metodos; slot = 2 + posicao
+constexpr unsigned kDisplay_AddRef = 0;
+constexpr unsigned kDisplay_Release = 1;
 constexpr unsigned kDisplay_GetFontMetrics = 2;
 constexpr unsigned kDisplay_MeasureTextEx = 3;
 constexpr unsigned kDisplay_DrawText = 4;
@@ -92,6 +96,8 @@ constexpr unsigned kDisplay_SetPrefs = 25;
 // platform/deprecated/inc/AEEFile.h
 //   cabeca: INHERIT_IBase = 2 slots de cabeca
 //   19 metodos; slot = 2 + posicao
+constexpr unsigned kFileMgr_AddRef = 0;
+constexpr unsigned kFileMgr_Release = 1;
 constexpr unsigned kFileMgr_OpenFile = 2;
 constexpr unsigned kFileMgr_GetInfo = 3;
 constexpr unsigned kFileMgr_Remove = 4;
@@ -115,6 +121,9 @@ constexpr unsigned kFileMgr_GetFreeSpaceEx = 20;
 // platform/hardware/inc/AEEIHIDDevice.h
 //   cabeca: INHERIT_IQI = 3 slots de cabeca
 //   16 metodos; slot = 3 + posicao
+constexpr unsigned kHIDDevice_AddRef = 0;
+constexpr unsigned kHIDDevice_Release = 1;
+constexpr unsigned kHIDDevice_QueryInterface = 2;
 constexpr unsigned kHIDDevice_GetDeviceInfo = 3;
 constexpr unsigned kHIDDevice_GetDeviceStatus = 4;
 constexpr unsigned kHIDDevice_RegisterForStatusChange = 5;
@@ -135,6 +144,13 @@ constexpr unsigned kHIDDevice_GetRumbleStatus = 18;
 // platform/system/inc/OEM/AEEIHeap1.h
 //   cabeca: INHERIT_IRealloc = 7 slots de cabeca
 //   9 metodos; slot = 7 + posicao
+constexpr unsigned kHeap1_AddRef = 0;
+constexpr unsigned kHeap1_Release = 1;
+constexpr unsigned kHeap1_QueryInterface = 2;
+constexpr unsigned kHeap1_ErrRealloc = 3;
+constexpr unsigned kHeap1_ErrReallocName = 4;
+constexpr unsigned kHeap1_ErrReallocNoZI = 5;
+constexpr unsigned kHeap1_ErrReallocNameNoZI = 6;
 constexpr unsigned kHeap1_Lock = 7;
 constexpr unsigned kHeap1_Unlock = 8;
 constexpr unsigned kHeap1_Sentinel = 9;
@@ -148,12 +164,17 @@ constexpr unsigned kHeap1_Statistics = 15;
 // platform/deprecated/inc/AEESQL.h
 //   cabeca: AEEINTERFACE(ISQLMgr): INHERIT_IQueryInterface = 3
 //   2 metodos; slot = 3 + posicao
+constexpr unsigned kSQLMgr_AddRef = 0;
+constexpr unsigned kSQLMgr_Release = 1;
+constexpr unsigned kSQLMgr_QueryInterface = 2;
 constexpr unsigned kSQLMgr_Open = 3;
 constexpr unsigned kSQLMgr_Remove = 4;
 
 // platform/system/inc/AEEIAStream.h
 //   cabeca: INHERIT_IBase = 2 slots de cabeca
 //   3 metodos; slot = 2 + posicao
+constexpr unsigned kIAStream_AddRef = 0;
+constexpr unsigned kIAStream_Release = 1;
 constexpr unsigned kIAStream_Readable = 2;
 constexpr unsigned kIAStream_Read = 3;
 constexpr unsigned kIAStream_Cancel = 4;
@@ -161,6 +182,11 @@ constexpr unsigned kIAStream_Cancel = 4;
 // platform/deprecated/inc/AEEFile.h
 //   cabeca: INHERIT_IAStream = 5 slots de cabeca
 //   7 metodos; slot = 5 + posicao
+constexpr unsigned kIFile_AddRef = 0;
+constexpr unsigned kIFile_Release = 1;
+constexpr unsigned kIFile_Readable = 2;
+constexpr unsigned kIFile_Read = 3;
+constexpr unsigned kIFile_Cancel = 4;
 constexpr unsigned kIFile_Write = 5;
 constexpr unsigned kIFile_GetInfo = 6;
 constexpr unsigned kIFile_Seek = 7;
@@ -172,6 +198,9 @@ constexpr unsigned kIFile_Map = 11;
 // platform/hardware/inc/AEEIHID.h
 //   cabeca: INHERIT_IQI = 3 slots de cabeca
 //   5 metodos; slot = 3 + posicao
+constexpr unsigned kIHID_AddRef = 0;
+constexpr unsigned kIHID_Release = 1;
+constexpr unsigned kIHID_QueryInterface = 2;
 constexpr unsigned kIHID_CreateDevice = 3;
 constexpr unsigned kIHID_GetDeviceInfo = 4;
 constexpr unsigned kIHID_GetNextConnectEvent = 5;
@@ -181,22 +210,35 @@ constexpr unsigned kIHID_GetConnectedDevices = 7;
 // platform/system/inc/AEEISignal.h
 //   cabeca: INHERIT_IQI = 3 slots de cabeca
 //   1 metodos; slot = 3 + posicao
+constexpr unsigned kISignal_AddRef = 0;
+constexpr unsigned kISignal_Release = 1;
+constexpr unsigned kISignal_QueryInterface = 2;
 constexpr unsigned kISignal_Set = 3;
 
 // platform/system/inc/AEEISignalCtl.h
 //   cabeca: INHERIT_ISignal = 4 slots de cabeca
 //   2 metodos; slot = 4 + posicao
+constexpr unsigned kISignalCtl_AddRef = 0;
+constexpr unsigned kISignalCtl_Release = 1;
+constexpr unsigned kISignalCtl_QueryInterface = 2;
+constexpr unsigned kISignalCtl_Set = 3;
 constexpr unsigned kISignalCtl_Detach = 4;
 constexpr unsigned kISignalCtl_Enable = 5;
 
 // platform/system/inc/AEEISignalCBFactory.h
 //   cabeca: INHERIT_IQI = 3 slots de cabeca
 //   1 metodos; slot = 3 + posicao
+constexpr unsigned kISignalCBFactory_AddRef = 0;
+constexpr unsigned kISignalCBFactory_Release = 1;
+constexpr unsigned kISignalCBFactory_QueryInterface = 2;
 constexpr unsigned kISignalCBFactory_CreateSignal = 3;
 
 // platform/media/inc/AEEIMedia.h
 //   cabeca: INHERIT_IQI = 3 slots de cabeca
 //   11 metodos; slot = 3 + posicao
+constexpr unsigned kMedia_AddRef = 0;
+constexpr unsigned kMedia_Release = 1;
+constexpr unsigned kMedia_QueryInterface = 2;
 constexpr unsigned kMedia_RegisterNotify = 3;
 constexpr unsigned kMedia_SetMediaParm = 4;
 constexpr unsigned kMedia_GetMediaParm = 5;
@@ -208,5 +250,151 @@ constexpr unsigned kMedia_Pause = 10;
 constexpr unsigned kMedia_Resume = 11;
 constexpr unsigned kMedia_GetTotalTime = 12;
 constexpr unsigned kMedia_GetState = 13;
+
+// platform/ui/inc/AEEIHandler.h
+//   cabeca: INHERIT_IQI = 3 slots de cabeca
+//   2 metodos; slot = 3 + posicao
+constexpr unsigned kIHandler_AddRef = 0;
+constexpr unsigned kIHandler_Release = 1;
+constexpr unsigned kIHandler_QueryInterface = 2;
+constexpr unsigned kIHandler_HandleEvent = 3;
+constexpr unsigned kIHandler_SetHandler = 4;
+
+// platform/ui/inc/AEEIForm.h
+//   cabeca: INHERIT_IHandler = 5 slots de cabeca
+//   0 metodos; slot = 5 + posicao
+constexpr unsigned kIForm_AddRef = 0;
+constexpr unsigned kIForm_Release = 1;
+constexpr unsigned kIForm_QueryInterface = 2;
+constexpr unsigned kIForm_HandleEvent = 3;
+constexpr unsigned kIForm_SetHandler = 4;
+
+// platform/ui/inc/AEEIRootForm.h
+//   cabeca: INHERIT_IForm = 5 slots de cabeca
+//   5 metodos; slot = 5 + posicao
+constexpr unsigned kIRootForm_AddRef = 0;
+constexpr unsigned kIRootForm_Release = 1;
+constexpr unsigned kIRootForm_QueryInterface = 2;
+constexpr unsigned kIRootForm_HandleEvent = 3;
+constexpr unsigned kIRootForm_SetHandler = 4;
+constexpr unsigned kIRootForm_InsertForm = 5;
+constexpr unsigned kIRootForm_RemoveForm = 6;
+constexpr unsigned kIRootForm_GetForm = 7;
+constexpr unsigned kIRootForm_ResolveForm = 8;
+constexpr unsigned kIRootForm_GetClientRect = 9;
+
+// platform/ui/inc/AEEIWidget.h
+//   cabeca: INHERIT_IHandler = 5 slots de cabeca
+//   9 metodos; slot = 5 + posicao
+constexpr unsigned kIWidget_AddRef = 0;
+constexpr unsigned kIWidget_Release = 1;
+constexpr unsigned kIWidget_QueryInterface = 2;
+constexpr unsigned kIWidget_HandleEvent = 3;
+constexpr unsigned kIWidget_SetHandler = 4;
+constexpr unsigned kIWidget_GetPreferredExtent = 5;
+constexpr unsigned kIWidget_GetExtent = 6;
+constexpr unsigned kIWidget_SetExtent = 7;
+constexpr unsigned kIWidget_GetParent = 8;
+constexpr unsigned kIWidget_SetParent = 9;
+constexpr unsigned kIWidget_Draw = 10;
+constexpr unsigned kIWidget_IntersectOpaque = 11;
+constexpr unsigned kIWidget_GetModel = 12;
+constexpr unsigned kIWidget_SetModel = 13;
+
+// platform/ui/inc/AEEIDecorator.h
+//   cabeca: INHERIT_IWidget = 14 slots de cabeca
+//   2 metodos; slot = 14 + posicao
+constexpr unsigned kIDecorator_AddRef = 0;
+constexpr unsigned kIDecorator_Release = 1;
+constexpr unsigned kIDecorator_QueryInterface = 2;
+constexpr unsigned kIDecorator_HandleEvent = 3;
+constexpr unsigned kIDecorator_SetHandler = 4;
+constexpr unsigned kIDecorator_GetPreferredExtent = 5;
+constexpr unsigned kIDecorator_GetExtent = 6;
+constexpr unsigned kIDecorator_SetExtent = 7;
+constexpr unsigned kIDecorator_GetParent = 8;
+constexpr unsigned kIDecorator_SetParent = 9;
+constexpr unsigned kIDecorator_Draw = 10;
+constexpr unsigned kIDecorator_IntersectOpaque = 11;
+constexpr unsigned kIDecorator_GetModel = 12;
+constexpr unsigned kIDecorator_SetModel = 13;
+constexpr unsigned kIDecorator_SetWidget = 14;
+constexpr unsigned kIDecorator_GetWidget = 15;
+
+// platform/ui/inc/AEEIDrawDecorator.h
+//   cabeca: INHERIT_IDecorator = 16 slots de cabeca
+//   1 metodos; slot = 16 + posicao
+constexpr unsigned kIDrawDecorator_AddRef = 0;
+constexpr unsigned kIDrawDecorator_Release = 1;
+constexpr unsigned kIDrawDecorator_QueryInterface = 2;
+constexpr unsigned kIDrawDecorator_HandleEvent = 3;
+constexpr unsigned kIDrawDecorator_SetHandler = 4;
+constexpr unsigned kIDrawDecorator_GetPreferredExtent = 5;
+constexpr unsigned kIDrawDecorator_GetExtent = 6;
+constexpr unsigned kIDrawDecorator_SetExtent = 7;
+constexpr unsigned kIDrawDecorator_GetParent = 8;
+constexpr unsigned kIDrawDecorator_SetParent = 9;
+constexpr unsigned kIDrawDecorator_Draw = 10;
+constexpr unsigned kIDrawDecorator_IntersectOpaque = 11;
+constexpr unsigned kIDrawDecorator_GetModel = 12;
+constexpr unsigned kIDrawDecorator_SetModel = 13;
+constexpr unsigned kIDrawDecorator_SetWidget = 14;
+constexpr unsigned kIDrawDecorator_GetWidget = 15;
+constexpr unsigned kIDrawDecorator_SetDraw = 16;
+
+// platform/ui/inc/AEEIForm.h
+constexpr unsigned PROP_FORM = 20480u;
+constexpr unsigned WID_FORM = 20480u;
+constexpr unsigned WID_TITLE = 20481u;
+constexpr unsigned WID_SOFTKEYS = 20482u;
+constexpr unsigned WID_BACKGROUND = 20483u;
+constexpr unsigned WID_CONTAINER = 20488u;
+constexpr unsigned WID_DECORATOR = 20484u;
+constexpr unsigned WID_BACKDROP = 20489u;
+constexpr unsigned WID_STATIC = 20490u;
+constexpr unsigned FID_ACTIVE = 20580u;
+constexpr unsigned FID_ROOT = 20581u;
+constexpr unsigned FID_THEME = 20582u;
+constexpr unsigned FID_THEME_FNAME = 20584u;
+constexpr unsigned FID_TITLE = 20586u;
+constexpr unsigned FID_BACKGROUND = 20588u;
+constexpr unsigned FID_VISIBLE = 20603u;
+constexpr unsigned FID_DISPLAY = 20601u;
+constexpr unsigned FID_THEME_BASENAME = 20583u;
+
+// platform/ui/inc/AEEWidgetProperties.h
+constexpr unsigned PROP_BGCOLOR = 304u;
+constexpr unsigned PROP_ACTIVE_BGCOLOR = 305u;
+constexpr unsigned PROP_INACTIVE_BGCOLOR = 306u;
+constexpr unsigned PROP_FGCOLOR = 320u;
+constexpr unsigned PROP_ACTIVE_FGCOLOR = 321u;
+constexpr unsigned PROP_INACTIVE_FGCOLOR = 322u;
+constexpr unsigned PROP_BORDERCOLOR = 272u;
+constexpr unsigned PROP_ACTIVE_BORDERCOLOR = 273u;
+constexpr unsigned PROP_INACTIVE_BORDERCOLOR = 274u;
+constexpr unsigned PROP_BORDERSTYLE = 281u;
+
+// platform/ui/inc/AEEIWidget.h
+constexpr unsigned EVT_WDG_SETPROPERTY = 2049u;
+constexpr unsigned EVT_WDG_GETPROPERTY = 2048u;
+constexpr unsigned EVT_WDG_SETFOCUS = 1792u;
+constexpr unsigned EVT_WDG_HASFOCUS = 1793u;
+constexpr unsigned EVT_WDG_CANTAKEFOCUS = 1794u;
+constexpr unsigned EVT_WDG_SETLAYOUT = 2050u;
+
+// platform/ui/inc/AEEIHandler.h
+constexpr unsigned AEEIID_IHandler = 16865622u;
+
+// platform/ui/inc/AEEIForm.h
+constexpr unsigned AEEIID_IForm = 16856579u;
+
+// platform/ui/inc/AEEIRootForm.h
+constexpr unsigned AEEIID_IRootForm = 16856580u;
+
+// platform/ui/inc/AEEIWidget.h
+constexpr unsigned AEEIID_IWidget = 16865618u;
+
+// platform/ui/inc/AEEIDecorator.h
+constexpr unsigned AEEIID_IDecorator = 16865588u;
 
 }  // namespace brew_slots

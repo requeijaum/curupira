@@ -26,7 +26,11 @@ constexpr std::uint32_t kIidHeap = 0x01001002u;
 constexpr std::uint32_t kIidFile = 0x01001014u;
 constexpr std::uint32_t kIidSound = 0x01001056u;
 constexpr std::uint32_t kIidGraphics = 0x01002001u;
-constexpr std::uint32_t kIidRootForm = 0x01028e51u;
+// `kIidRootForm` deixou de estar aqui: este ficheiro tinha uma copia local do
+// mesmo numero que `core/brew/widget.h` declara, e **duas copias de um numero
+// medido sao duas chances de ele divergir** -- foi assim que o `kAeeUnsupported`
+// desta arvore passou a valer um codigo que nao existe em cabecalho nenhum. O
+// valor passou a vir de um sitio so.
 constexpr std::uint32_t kIidHid = 0x0106c411u;
 constexpr std::uint32_t kIidSqlMgr = 0x0102c4e8u;
 // As constantes que o despacho usa, todas derivadas dos cabecalhos gerados.
@@ -83,7 +87,36 @@ Despacho::Despacho(Memoria& mem, Traco& traco, Alocador& alocador, Vfs& vfs)
       vfs_(vfs),
       arquivos_(&vfs),
       sinais_(mem, traco),
-      ihid_(mem, traco, sinais_, entrada_) {}
+      ihid_(mem, traco, sinais_, entrada_),
+      widgets_(mem, traco) {}
+
+bool Despacho::InstalarWidgets(const Saidas& saidas) {
+  // IDEMPOTENTE: quem dirige o titulo pode chamar isto, e o `InstalarAjudantes`
+  // ja o chamou. Uma segunda chamada nao e um erro -- mas tambem nao pode
+  // REGISTAR uma falta, que seria um erro inventado pelo instrumento.
+  if (widgets_prontos_) return true;
+  std::string motivo;
+  if (!widgets_.Construir(saidas, &motivo)) {
+    // RECUSA RUIDOSA (P2): o `IRootForm` continua a existir, mas os slots dele
+    // recusam com nome -- e nao devolvem sucesso sem fazer nada.
+    traco_.RegistarFalta(Area::Brew, "os widgets nao foram construidos", motivo);
+    return false;
+  }
+  widgets_prontos_ = true;
+  return true;
+}
+
+bool Despacho::AtenderWidgets(ICpu& cpu, std::uint32_t indice) {
+  if (!widgets_prontos_) return false;
+  if (!widgets_.EMeu(indice)) return false;
+  // Os DOIS resultados contam como "atendido": `Feito` nao regista nada, e
+  // `NaoImplementado` ja registou o nome do que falta. O que NAO pode acontecer
+  // e cair no ramo generico e ser nomeado outra vez -- o registo diria
+  // `IRootForm::slot3` quando o que faltou foi, por exemplo, o `Draw` de um
+  // widget.
+  (void)widgets_.Atender(cpu, indice);
+  return true;
+}
 
 namespace {
 // Le uma cadeia do guest, com limite. Sem limite, um ponteiro errado percorre o
@@ -189,6 +222,12 @@ void Despacho::InstalarAjudantes(const Saidas& saidas, Endereco tabela) {
   for (const auto& lig : kLigados) {
     mem_.Escrever32(tabela + lig.off, saidas.Endereco(lig.saida));
   }
+  // O WIDGET, no fim da instalacao dos ajudantes. Fica AQUI -- e nao num sitio
+  // que a bateria tenha de chamar -- porque esta frente nao pode obrigar a mudar
+  // a ferramenta: `tools/bateria.cpp` e partilhado. O `InstalarWidgets` e
+  // idempotente, logo quem o quiser chamar explicitamente tambem pode.
+  (void)InstalarWidgets(saidas);
+
   const auto ja_tem = [&](std::uint32_t off) {
     for (const auto& lig : kLigados) {
       if (lig.off == off) return true;
@@ -209,9 +248,11 @@ void Despacho::InstalarAjudantes(const Saidas& saidas, Endereco tabela) {
 }
 
 bool Despacho::PrepararCallbackDoTemporizador(ICpu& cpu) {
-  if (!timer_.ativo || timer_.callback == 0) return false;
-  const std::uint32_t fn = mem_.Ler32(timer_.callback);
-  const std::uint32_t ctx = mem_.Ler32(timer_.callback + 4);
+  if (!timer_.ativo || timer_.pfn == 0) return false;
+  // O PAR `(funcao, contexto)` VEM DO PROPRIO `SetTimer`, e nao de um
+  // `AEECallback` lido da memoria: o cabecalho passa-os em dois argumentos.
+  const std::uint32_t fn = timer_.pfn;
+  const std::uint32_t ctx = timer_.puser;
   timer_.ativo = false;
   // A FAIXA DO MODULO VEM DE FORA (`DefinirFaixaDoModulo`), porque o TAMANHO e do
   // titulo que esta carregado. Base zero e o valor medido; sem tamanho definido,
@@ -330,6 +371,16 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           std::snprintf(det, sizeof(det), "iid=0x%08x ppo=0x%08x", iid, ppo);
           traco_.RegistarFalta(Area::Brew, "IShell::CreateInstance CLSID desconhecido", det);
         }
+      } else if (AtenderWidgets(cpu, idx)) {
+        // O WIDGET: `IRootForm`, `IForm`, `IHandler` e `IWidget`.
+        //
+        // ESTE RAMO VEM ANTES DO `idx >= kBaseDoShell`, e a razao e a classe de
+        // erro que ja apareceu duas vezes nesta arvore: os indices da raiz do
+        // `IRootForm` CAEM DENTRO da faixa generica (9000 + 4*64), e o ramo
+        // generico dava-lhes o nome certo mas o comportamento errado -- recusava
+        // e dizia `<interface>::slotN`. Com o ramo do widget a frente, o pedido
+        // e ATENDIDO e o nome so aparece quando o que faltou e mesmo um metodo
+        // que nao existe.
       } else if (idx >= kBaseDoShell) {
         // O NOME tem de dizer de QUE interface e o slot. Um so "IShell::slot"
         // para tudo dava `IShell::slot4004` para um metodo do IDisplay -- numero
@@ -616,18 +667,33 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         ++backlights_;
         cpu.Set(kR0, 0);
       } else if (idx == kSlotIdSetTimer) {
-        // `int SetTimer(IShell *po, AEECallback *pcb, int msecs)`. Guarda o
-        // pedido; quem o cumpre e o laco, adiante.
+        // `int SetTimer(IShell *po, int32 dwMsecs, void (*pfn)(void *), void *pUser)`
         //
-        // E o pedido de demanda mais alto do IShell, e faz sentido: em BREW o
-        // laco de quadro do jogo vive AQUI -- o app arma um temporizador e o
-        // proprio callback re-arma o seguinte. Sem isto nenhum jogo anda.
+        // ASSINATURA CORRIGIDA, e a correccao tira o laco de quadro de todos os
+        // titulos: o r1 e a DURACAO e o r2 e a FUNCAO. A versao anterior lia
+        // `r1` como ponteiro de `AEECallback` e `r2` como milissegundos.
+        //
+        // A prova sao DUAS fontes independentes, como o projecto exige:
+        //   1. o cabecalho, `platform/system/inc/AEEIShell.h:299`
+        //      (`INHERIT_IShell`): `int (*SetTimer)(iname *po, int32 dwMsecs,
+        //      void (*pfn)(void *), void * pUser)` -- e o inline, linha 403;
+        //   2. o codigo do guest, `mod/280214/asq.mod` em `0x8cf34`:
+        //      `mov r1,#100` (100 ms) e `ldr r2,[pc,#572]` (= `*0x8d18c` =
+        //      `0x8c3e8`, um endereco de CODIGO) com `mov r3,r5` (o contexto).
+        //      Um ponteiro de funcao lido de um literal, no r2 -- nao um periodo.
+        //
+        // CONSEQUENCIA MEDIDA da versao errada: `PrepararCallbackDoTemporizador`
+        // fazia `Ler32(100)` e recusava ("fora do modulo"). NENHUM titulo do
+        // corpus armava um temporizador, e sem laco de quadro nenhum chega ao
+        // codigo que desenha. E o pedido de demanda mais alto do IShell.
         timer_.ativo = true;
-        timer_.callback = cpu.Get(kR1);
-        timer_.vence_em_ms = agora_ms_ + static_cast<std::int64_t>(cpu.Get(kR2));
+        timer_.pfn = cpu.Get(kR2);
+        timer_.puser = cpu.Get(kR3);
+        timer_.vence_em_ms = agora_ms_ + static_cast<std::int64_t>(cpu.Get(kR1));
         traco_.Emitir(Area::Guarda, Nivel::Depuracao, "SET_TIMER",
-                     "cb=0x" + std::to_string(timer_.callback) + " em " +
-                         std::to_string(cpu.Get(kR2)) + " ms");
+                     "pfn=0x" + std::to_string(timer_.pfn) + " puser=0x" +
+                         std::to_string(timer_.puser) + " em " +
+                         std::to_string(cpu.Get(kR1)) + " ms");
         cpu.Set(kR0, kAeeSuccess);
       } else if (idx == kSlotIdGetUpTime) {
         cpu.Set(kR0, static_cast<std::uint32_t>(agora_ms_));
@@ -679,12 +745,14 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         }
         cpu.Set(kR0, 0);
       } else if (idx == kSlotIdCancelTimer) {
-        // `void CancelTimer(IShell *po, AEECallback *pcb)` -- IShell slot 12.
+        // `int CancelTimer(IShell *po, void (*pfn)(void *), void *pUser)` --
+        // IShell slot 12 (`AEEIShell.h:300`, e o inline na linha 408). Os campos
+        // veem SEPARADOS aqui tambem, pela mesma razao do `SetTimer`.
         //
-        // Desarma o temporizador. So se desarma se for o MESMO callback: cancelar
-        // um temporizador alheio pararia o laco de quadro de outra coisa.
-        timer_.ativo = false;
-        cpu.Set(kR0, 0);
+        // So se desarma se for o MESMO callback: cancelar um temporizador alheio
+        // pararia o laco de quadro de outra coisa.
+        if (timer_.ativo && timer_.pfn == cpu.Get(kR1)) timer_.ativo = false;
+        cpu.Set(kR0, kAeeSuccess);
       } else if (idx == kSlotIdHeapLock || idx == kSlotIdHeapLock + 0) {
         // `int Lock(IHeap1 *po)` -- IHeap1 slot 7. Bloqueia o heap para uso
         // exclusivo.
@@ -929,7 +997,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
     // que faz vencer os temporizadores. Dois relogios dentro da mesma corrida
     // seriam duas fontes de tempo -- e o P4 existe para haver uma.
     if (entrada_pronta_) entrada_.Repor(static_cast<std::uint32_t>(agora_ms_));
-    if (timer_.ativo && agora_ms_ >= timer_.vence_em_ms && timer_.callback != 0) {
+    if (timer_.ativo && agora_ms_ >= timer_.vence_em_ms && timer_.pfn != 0) {
       // UMA SO IMPLEMENTACAO do disparo do callback: a mesma que quem dirige o
       // titulo de fora usa. Duas copias disto divergiriam -- e a copia que aqui
       // estava guardava um `pc_salvo`/`lr_salvo` que nunca serviu para nada.
