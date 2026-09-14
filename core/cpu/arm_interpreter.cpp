@@ -264,6 +264,177 @@ Reg ArmInterpreter::OperandoDeslocado(std::uint32_t instr, std::uint32_t pc, boo
   return Deslocar(valor, tipo, quantidade, c_, carry_out);
 }
 
+// ---------------------------------------------------------------------------
+// O GRUPO "EXTRA LOAD/STORE" (ARM ARM A5.3.4): LDRH, STRH, LDRSB, LDRSH,
+// LDRD e STRD.
+// ---------------------------------------------------------------------------
+//
+// PORQUE ESTE GRUPO TEM DE SER UMA FAMILIA PROPRIA, e a medicao que o obrigou:
+//
+// `ldrd r8, sb, [sp, #0x20]` -- palavra 0xE1CD82D0, no `a3d.mod` em 0x55C0 --
+// tem os bits 27-25 = 000, que e o MESMO campo que o primeiro nivel de
+// descodificacao usa para "dados processados". Sem o ramo abaixo ele cai no
+// `DadosProcessados`, que o le como `BIC r8, sp, r0, LSR r2` e escreve em r8 o
+// valor `sp & ~0` = o proprio SP.
+//
+// O efeito medido, com o espiao de escrita no descarregador de `ESPIAO=0x8020001c`:
+//
+//   [DEBUG-pilha1] pc=0000563c alvo=8020001c 0x00000000 -> 0x8007ffcc
+//                  r0=00000001 r1=0000551c sp=8007ffcc lr=000055f0
+//
+// 0x563C e o `stmib r4, {r0, r6, r8, sb}` do `AEEStaticMod_New` compilado, que
+// escreve `pMe->pfnModCrInst` em `+12`. O valor vem de r8, r8 vem do `ldrd`, e
+// o `ldrd` devia ler os argumentos 5 e 6 do `AEEStaticMod_New` -- que o
+// `AEEMod_Load` empurra como ZERO (`platform/system/src/AEEModGen.c`:
+// `AEEStaticMod_New(sizeof(AEEMod), pIShell, ph, ppMod, NULL, NULL)`).
+//
+// Com `+12` a zero, o `AEEMod_CreateInstance` do modulo toma o caminho `beq`
+// (o `else` do `if (pme->pfnModCrInst)`) e chama o `AEEClsCreateInstance`. Com
+// `+12` a apontar para a PILHA, o modulo faz `bxne ip` para um endereco de
+// dados -- e **21 dos 62 titulos saiam do modulo com o PC na pilha**.
+//
+// AS FORMAS ABAIXO FORAM DESCODIFICADAS, e nao escritas de memoria. O oraculo e
+// o `arm-none-eabi-objdump` (binutils), e o mapa campo-a-campo esta fixado pelo
+// teste `ExtraPalavraMedidaDoA3d` em `tests/cpu_test.cpp`. As familias:
+//
+//   bits 7-4 = 1011 (0xB) -> meia-palavra      L=1 LDRH   / L=0 STRH
+//   bits 7-4 = 1101 (0xD) -> L=0 LDRD          L=1 LDRSB
+//   bits 7-4 = 1111 (0xF) -> L=0 STRD          L=1 LDRSH
+//
+// Repare-se que no caso da palavra dupla o bit 20 (o `L` das outras) e ZERO nas
+// DUAS direccoes: quem separa LDRD de STRD e o campo 7-4 (D contra F). Foi essa
+// a leitura que enganou a primeira versao desta nota.
+//
+// O que NAO esta implementado RECUSA com o nome (P2): as formas nao
+// privilegiadas (`*T`), o `Rt` impar no LDRD/STRD, o `Rt`/`Rn` = PC, o
+// desalinhamento no LDRD/STRD e o offset de registrador com os bits 11-8
+// diferentes de zero.
+namespace {
+bool EhTransferenciaExtra(std::uint32_t instr) {
+  // bits 27-25 = 000 (o grupo), bit 7 = 1 e bit 4 = 1 (o campo `1 S H 1`) e
+  // bits 6-5 diferentes de 00. O campo 6-5 = 00 e o que exclui o
+  // `MUL`/`UMULL`/`SWP` (bits 7-4 = 1001), que vivem no mesmo espaco; o bit 7 = 0
+  // e o que exclui os dados processados com registrador de deslocamento
+  // (`<op> Rd, Rn, Rm, <shift> Rs`, bits 7-4 = 0_shift_1).
+  return (instr & 0x0E000000u) == 0u && (instr & 0x90u) == 0x90u && (instr & 0x60u) != 0u;
+}
+}  // namespace
+
+void ArmInterpreter::TransferenciaExtra(std::uint32_t instr, std::uint32_t pc) {
+  const std::uint32_t campo = (instr >> 4) & 0xFu;  // 1 S H 1
+  const bool p = ((instr >> 24) & 1u) != 0;
+  const bool u = ((instr >> 23) & 1u) != 0;
+  const bool com_imediato = ((instr >> 22) & 1u) != 0;
+  const bool w = ((instr >> 21) & 1u) != 0;
+  const bool carrega = ((instr >> 20) & 1u) != 0;
+  const std::uint32_t rn = (instr >> 16) & 0xFu;
+  const std::uint32_t rt = (instr >> 12) & 0xFu;
+  const std::uint32_t rm = instr & 0xFu;
+  const std::uint32_t imm4h = (instr >> 8) & 0xFu;
+  const std::uint32_t imm4l = instr & 0xFu;
+
+  // A ARMADILHA DESTE GRUPO, e a razao de a verificacao ter sido feita no
+  // binutils: no caso da PALAVRA DUPLA o bit 20 (`L`) e ZERO nas DUAS direccoes
+  // (`ldrd r8, [sp, #32]` = 0xE1CD82D0 e `strd r4, [r0, #8]` = 0xE1C040F8).
+  // Quem separa LDRD de STRD e o campo 7-4: 1101 (D) carrega, 1111 (F) guarda.
+  // Ler o bit 20 aqui troca a leitura pela escrita -- e a primeira versao deste
+  // codigo faze-lo-ia em silencio se o teste `ExtraLdrd*` nao existisse.
+  const bool palavra_dupla = !carrega && (campo == 0xDu || campo == 0xFu);
+  const bool dupla_carrega = (campo == 0xDu);
+
+  if (rn == 15 || rt == 15) {
+    Recusar(instr, pc, "extra load/store com Rn ou Rt = PC e UNPREDICTABLE no ARM");
+    return;
+  }
+  if (!p && w) {
+    Recusar(instr, pc, "forma nao privilegiada do extra load/store (LDRHT/STRHT/LDRSBT/LDRSHT) nao implementada");
+    return;
+  }
+  if (palavra_dupla && (rt & 1u) != 0) {
+    Recusar(instr, pc, "LDRD/STRD com Rt impar e UNPREDICTABLE no ARM");
+    return;
+  }
+  if (w && rn == rt) {
+    Recusar(instr, pc, "extra load/store com escrita na base e Rd = Rn e UNPREDICTABLE no ARM");
+    return;
+  }
+
+  Reg deslocamento = 0;
+  if (com_imediato) {
+    deslocamento = (imm4h << 4) | imm4l;
+  } else {
+    if (imm4h != 0) {
+      Recusar(instr, pc, "offset de registrador com os bits 11-8 diferentes de zero nao implementado");
+      return;
+    }
+    if (palavra_dupla) {
+      if (!u) {  // P=0, U=0 no LDRD/STRD e UNPREDICTABLE (conferido no binutils)
+        Recusar(instr, pc, "LDRD/STRD com offset de registrador, P=0 e U=0 nao e forma valida");
+        return;
+      }
+    } else if (!(p && !w && u)) {
+      // A forma de registrador da meia-palavra e do sinalizado e so uma:
+      // `[Rn, Rm]` -- P=1, W=0, U=1. As outras nao existem (o binutils
+      // descodifica-as como UNDEFINED).
+      Recusar(instr, pc, "offset de registrador nesta forma de extra load/store nao e valido no ARM");
+      return;
+    }
+    deslocamento = Get(static_cast<int>(rm));
+  }
+
+  // OS VALORES DE ORIGEM SAO LIDOS ANTES DE A BASE ANDAR. No pos-indexado o
+  // `Rn` muda durante a instrucao e o `Rt` pode ser o mesmo registrador: ler
+  // primeiro tira a duvida de ordem. O caso com escrita na base e `Rn == Rt` ja
+  // foi RECUSADO acima, porque no ARM e UNPREDICTABLE.
+  const Reg valor_lo = Get(static_cast<int>(rt));
+  const Reg valor_hi = palavra_dupla ? Get(static_cast<int>(rt + 1)) : 0;
+
+  const Reg base = Get(static_cast<int>(rn));
+  Reg endereco = base;
+  if (p) {
+    endereco = u ? base + deslocamento : base - deslocamento;
+  } else if (u) {
+    Set(static_cast<int>(rn), base + deslocamento);  // pos-indexado
+  } else {
+    Set(static_cast<int>(rn), base - deslocamento);  // pos-indexado a descer
+  }
+  if (p && w) Set(static_cast<int>(rn), endereco);
+
+  if (palavra_dupla) {
+    if ((endereco & 3u) != 0u) {
+      Recusar(instr, pc, "LDRD/STRD em endereco desalinhado (o ARM exige alinhamento de 4)");
+      return;
+    }
+    if (dupla_carrega) {
+      Set(static_cast<int>(rt), mem_.Ler32(endereco));
+      Set(static_cast<int>(rt + 1), mem_.Ler32(endereco + 4u));
+    } else {
+      mem_.Escrever32(endereco, valor_lo);
+      mem_.Escrever32(endereco + 4u, valor_hi);
+    }
+    return;
+  }
+
+  if (campo == 0xBu) {  // meia-palavra
+    if (carrega) {
+      Set(static_cast<int>(rt), mem_.Ler16(endereco));  // zero-extendido
+    } else {
+      mem_.Escrever16(endereco, static_cast<std::uint16_t>(valor_lo & 0xFFFFu));
+    }
+    return;
+  }
+
+  if (campo == 0xDu) {  // LDRSB
+    const auto b = static_cast<std::int8_t>(mem_.Ler8(endereco));
+    Set(static_cast<int>(rt), static_cast<Reg>(static_cast<std::int32_t>(b)));
+    return;
+  }
+
+  // campo == 0xF: LDRSH
+  const auto h = static_cast<std::int16_t>(mem_.Ler16(endereco));
+  Set(static_cast<int>(rt), static_cast<Reg>(static_cast<std::int32_t>(h)));
+}
+
 void ArmInterpreter::DadosProcessados(std::uint32_t instr, std::uint32_t pc) {
   const std::uint32_t opcode = (instr >> 21) & 0xF;
   const uint32_t rn = (instr >> 16) & 0xF;
@@ -539,6 +710,17 @@ void ArmInterpreter::ExecutarArm(std::uint32_t instr, std::uint32_t pc) {
   const std::uint32_t g = (instr >> 25) & 7;
 
   if (g == 0) {
+    // O GRUPO "EXTRA LOAD/STORE" VEM PRIMEIRO, e a ordem e a licao mais
+    // repetida desta arvore: **do mais especifico para o mais generico**.
+    //
+    // Sem este ramo, o `LDRD`/`STRD`/`LDRH`/`STRH`/`LDRSB`/`LDRSH` cai no
+    // `DadosProcessados` -- que os le como `BIC`/`TEQ` e escreve registradores
+    // com lixo. Ver `TransferenciaExtra`.
+    if (EhTransferenciaExtra(instr)) {
+      TransferenciaExtra(instr, pc);
+      Set(kPC, pc + 4);
+      return;
+    }
     // Grupo das multiplicacoes e do misc, com formas especificas.
     // BX e BLX (forma de registrador). Partilham quase tudo; o que os separa
     // sao os bits 7-4: 0001 para BX, 0011 para BLX -- que alem de saltar guarda

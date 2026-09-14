@@ -145,6 +145,52 @@ constexpr std::uint32_t Swi(std::uint32_t imediato) {
   return (kAl << 28) | 0x0F000000u | (imediato & 0x00FFFFFFu);
 }
 
+
+// --- grupo "extra load/store" -----------------------------------------------
+//
+// As palavras abaixo foram conferidas com o `arm-none-eabi-objdump` (binutils),
+// e nao escritas de memoria. O teste `ExtraPalavraMedidaDoA3d` fixa a palavra
+// REAL lida do corpus contra estes construtores -- se um campo mudar de sitio,
+// o teste acusa o construtor e nao o emulador.
+constexpr std::uint32_t ExtraL(  std::uint32_t campo, std::uint32_t rt, std::uint32_t rn,
+                                 std::uint32_t deslocamento, bool carrega, bool escreve_na_base = false,
+                                 bool subtrai = false, bool pre_indexado = true) {
+  return (kAl << 28) | (pre_indexado ? (1u << 24) : 0u) | (subtrai ? 0u : (1u << 23)) |
+         (1u << 22) | (escreve_na_base ? (1u << 21) : 0u) | (carrega ? (1u << 20) : 0u) |
+         ((rn & 0xF) << 16) | ((rt & 0xF) << 12) | (((deslocamento >> 4) & 0xF) << 8) |
+         ((campo & 0xF) << 4) | (deslocamento & 0xF);
+}
+constexpr std::uint32_t LdrdImediato(std::uint32_t rt, std::uint32_t rn, std::uint32_t deslocamento,
+                                     bool escreve_na_base = false) {
+  return ExtraL(0xD, rt, rn, deslocamento, false, escreve_na_base);
+}
+constexpr std::uint32_t StrdImediato(std::uint32_t rt, std::uint32_t rn, std::uint32_t deslocamento,
+                                     bool escreve_na_base = false) {
+  return ExtraL(0xF, rt, rn, deslocamento, false, escreve_na_base);
+}
+constexpr std::uint32_t LdrhImediato(std::uint32_t rt, std::uint32_t rn, std::uint32_t deslocamento,
+                                     bool escreve_na_base = false) {
+  return ExtraL(0xB, rt, rn, deslocamento, true, escreve_na_base);
+}
+constexpr std::uint32_t StrhImediato(std::uint32_t rt, std::uint32_t rn, std::uint32_t deslocamento,
+                                     bool escreve_na_base = false) {
+  return ExtraL(0xB, rt, rn, deslocamento, false, escreve_na_base);
+}
+constexpr std::uint32_t LdrsbImediato(std::uint32_t rt, std::uint32_t rn, std::uint32_t deslocamento) {
+  return ExtraL(0xD, rt, rn, deslocamento, true);
+}
+constexpr std::uint32_t LdrshImediato(std::uint32_t rt, std::uint32_t rn, std::uint32_t deslocamento) {
+  return ExtraL(0xF, rt, rn, deslocamento, true);
+}
+// A forma NAO PRIVILEGIADA (`LDRHT`/`STRHT`): P=0 e W=1. Nao esta implementada,
+// e o teste desta guarda exige que ela RECUSE -- nao que ela faca "alguma coisa".
+constexpr std::uint32_t StrhNaoPrivilegiado(std::uint32_t rt, std::uint32_t rn,
+                                            std::uint32_t deslocamento) {
+  return (kAl << 28) | (0u << 24) | (1u << 23) | (1u << 22) | (1u << 21) | (0u << 20) |
+         ((rn & 0xF) << 16) | ((rt & 0xF) << 12) | (((deslocamento >> 4) & 0xF) << 8) | 0xB0u |
+         (deslocamento & 0xF);
+}
+
 // Escreve instrucoes ARM a partir de um endereco e corre.
 class Bancada {
  public:
@@ -583,4 +629,228 @@ TEST(Cpu, ARecusaEscreveNoTracoComOPcEAsBandeiras) {
   EXPECT_EQ(e.nivel, Nivel::Erro);
   EXPECT_EQ(e.nome, "INSTRUCAO_RECUSADA");
   EXPECT_NE(e.detalhe.find("0xf2000000"), std::string::npos) << "o detalhe nomeia a instrucao";
+}
+
+// ===========================================================================
+// O grupo "extra load/store" -- a parede dos 21 titulos que saltavam para a PILHA
+// ===========================================================================
+//
+// MEDIDO, com o espiao de escrita em `0x8020001c` (o campo `+12` do objecto do
+// modulo) e o traco `[DEBUG-pilha1]`:
+//
+//   pc=0000563c alvo=8020001c 0x00000000 -> 0x8007ffcc  sp=8007ffcc
+//
+// `0x563C` e o `stmib r4, {r0, r6, r8, sb}` do `AEEStaticMod_New`, que escreve
+// `pMe->pfnModCrInst` em `+12` com o valor que veio do `ldrd r8, sb, [sp,#0x20]`
+// em `0x55C0`. Devia ler os argumentos 5 e 6 (que o `AEEMod_Load` empurra como
+// zero) e em vez disso o interpretador executava um `BIC r8, sp, r0, LSR r2`.
+
+TEST(Cpu, ExtraPalavraMedidaDoA3d) {
+  // A palavra REAL, lida do FICHEIRO `a3d.mod` no offset 0x55C0, descodificada
+  // pelo `arm-none-eabi-objdump` como `ldrd r8, sb, [sp, #0x20]`. Este teste
+  // existe para que um erro NOS CONSTRUTORES de campos abaixo acuse os
+  // construtores, e nao o emulador -- foi o que aconteceu com o `MLA` na etapa 1.
+  // As palavras a direita foram IMPRESSAS pelo binutils, e nao escritas a mao.
+  // A primeira versao deste teste tinha cinco delas erradas -- e foram os
+  // construtores a acusar o TESTE, que e o que se quer que aconteca (o
+  // contrario foi o erro do `MLA`, na etapa 1: o teste acusava o emulador).
+  EXPECT_EQ(LdrdImediato(8, 13, 0x20), 0xE1CD82D0u);   // ldrd  r8, [sp, #32]
+  EXPECT_EQ(StrdImediato(4, 0, 0x8), 0xE1C040F8u);     // strd  r4, [r0, #8]
+  EXPECT_EQ(LdrhImediato(1, 4, 0x20), 0xE1D412B0u);    // ldrh  r1, [r4, #32]
+  EXPECT_EQ(StrhImediato(1, 4, 0x20), 0xE1C412B0u);    // strh  r1, [r4, #32]
+  EXPECT_EQ(LdrsbImediato(1, 4, 0x20), 0xE1D412D0u);   // ldrsb r1, [r4, #32]
+  EXPECT_EQ(LdrshImediato(1, 4, 0x20), 0xE1D412F0u);   // ldrsh r1, [r4, #32]
+  EXPECT_EQ(LdrdImediato(8, 13, 0x20, true), 0xE1ED82D0u);  // ldrd r8, [sp, #32]!
+}
+
+TEST(Cpu, ExtraLdrdCarregaDoisRegistradoresDaPilha) {
+  // A cena do `a3d`, reduzida ao essencial: a pilha tem 0x11111111 e 0x22222222
+  // nos argumentos 5 e 6, e o `ldrd r8, sb, [sp, #0x20]` tem de os carregar.
+  // O valor de partida de r8 e NAO ZERO de proposito: com zero, uma guarda que
+  // nao escrevesse nada passava verde.
+  Bancada b;
+  // O SP e o da cena medida: 0x8007FFCC e onde o `AEEStaticMod_New` fica depois
+  // do proprio `push`, logo `[sp, #0x20]` e 0x8007FFEC -- a area dos argumentos
+  // 5 e 6 que o chamador preencheu com zero.
+  b.R(13, 0x8007FFCCu);
+  b.R(8, 0xDEADBEEFu);
+  b.R(9, 0xDEADBEEFu);
+  b.Mem().Escrever32(0x8007FFECu, 0x11111111u);
+  b.Mem().Escrever32(0x8007FFF0u, 0x22222222u);
+  b.Instrucao(LdrdImediato(8, 13, 0x20));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(8), 0x11111111u) << "o primeiro registrador vem da pilha";
+  EXPECT_EQ(b.R(9), 0x22222222u) << "o segundo registrador vem da pilha";
+}
+
+TEST(Cpu, ExtraLdrdNaoDevolveOEnderecoDaPilha) {
+  // A REGRESSAO, como teste proprio. Sem `TransferenciaExtra` o `LDRD` cai no
+  // `DadosProcessados`, que o le como um `BIC`: o resultado passa a ser o bit a
+  // bit do primeiro operando, e com o deslocamento a zero isso e o PROPRIO SP.
+  // Medido: 0x8007FFCC. E este valor que fazia 21 titulos saltarem para a pilha.
+  Bancada b;
+  b.R(13, 0x8007FFCCu);
+  b.R(8, 0u);
+  b.R(0, 0u);   // o `BIC` errado usava o r0 como quantidade de deslocamento
+  b.R(2, 0u);
+  b.Mem().Escrever32(0x8007FFECu, 0x11111111u);
+  b.Mem().Escrever32(0x8007FFF0u, 0x22222222u);
+  b.Instrucao(LdrdImediato(8, 13, 0x20));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_NE(b.R(8), 0x8007FFCCu) << "o SP nao e o valor guardado na pilha";
+  EXPECT_NE(b.R(8), 0x8007FFECu) << "nem o endereco de onde se leu";
+  EXPECT_EQ(b.R(8), 0x11111111u);
+}
+
+TEST(Cpu, ExtraLdrdComEscritaNaBaseAndaComOPonteiro) {
+  // `ldrd r8, sb, [sp, #0x20]!` -- pre-indexado com escrita na base.
+  Bancada b;
+  b.R(13, 0x8007FFCCu);
+  b.Mem().Escrever32(0x8007FFECu, 0xAAAA0001u);
+  b.Mem().Escrever32(0x8007FFF0u, 0xAAAA0002u);
+  b.Instrucao(LdrdImediato(8, 13, 0x20, /*escreve_na_base=*/true));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(8), 0xAAAA0001u);
+  EXPECT_EQ(b.R(9), 0xAAAA0002u);
+  EXPECT_EQ(b.R(13), 0x8007FFECu) << "o `!` anda com a base";
+}
+
+TEST(Cpu, ExtraStrdEscreveDoisRegistradoresSeguidos) {
+  Bancada b;
+  b.R(4, 0x5A5A5A5Au);
+  b.R(5, 0xA5A5A5A5u);
+  b.Instrucao(StrdImediato(4, 0, 0x8));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.Mem().Ler32(0x8u), 0x5A5A5A5Au);
+  EXPECT_EQ(b.Mem().Ler32(0xCu), 0xA5A5A5A5u);
+}
+
+TEST(Cpu, ExtraLdrhZeraOsBitsDeCima) {
+  // `LDRH` e sem sinal: 0xFFFFFFFF no destino tem de ficar 0x00001234.
+  Bancada b;
+  b.R(0, 0x00020000u);
+  b.R(1, 0xFFFFFFFFu);
+  b.Mem().Escrever16(0x00020010u, 0x1234u);
+  b.Instrucao(LdrhImediato(1, 0, 0x10));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(1), 0x00001234u) << "a meia-palavra entra nos 16 bits de baixo";
+}
+
+TEST(Cpu, ExtraStrhEscreveSoDoisBytes) {
+  // O STRH nao pode escrever os 32 bits: se escrevesse, apagava o vizinho.
+  Bancada b;
+  b.R(0, 0x00020000u);
+  b.R(1, 0x0000ABCDu);
+  b.Mem().Escrever32(0x00020010u, 0xFFFFFFFFu);
+  b.Instrucao(StrhImediato(1, 0, 0x10));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.Mem().Ler32(0x00020010u), 0xFFFFABCDu) << "so os 16 bits de baixo mudam";
+}
+
+TEST(Cpu, ExtraLdrhPosIndexadoAndaComABase) {
+  // P=0 e W=0: `ldrh r1, [r0], #0x10`.
+  Bancada b;
+  b.R(0, 0x00020000u);
+  b.Mem().Escrever16(0x00020000u, 0x1234u);
+  // `ldrh r1, [r0], #16` (conferido com o binutils): le na base e so DEPOIS
+  // anda com a base. Uma versao anterior deste teste punha o valor no endereco
+  // de destino e acusava o emulador por um erro do teste.
+  constexpr std::uint32_t kLdrhPosIndexado = ExtraL(0xB, 1, 0, 0x10, true, false, false, false);
+  EXPECT_EQ(kLdrhPosIndexado, 0xE0D011B0u);
+  b.Instrucao(kLdrhPosIndexado);
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(1), 0x1234u);
+  EXPECT_EQ(b.R(0), 0x00020010u) << "o pos-indexado anda com a base DEPOIS de ler";
+}
+
+TEST(Cpu, ExtraLdrsbEstendeOSinalDoByte) {
+  // 0x80 e -128 em 8 bits: o resultado tem de ser 0xFFFFFF80.
+  Bancada b;
+  b.R(0, 0x00020000u);
+  b.Mem().Escrever8(0x00020010u, 0x80u);
+  b.Instrucao(LdrsbImediato(1, 0, 0x10));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(1), 0xFFFFFF80u);
+}
+
+TEST(Cpu, ExtraLdrshEstendeOSinalDaMeiaPalavra) {
+  Bancada b;
+  b.R(0, 0x00020000u);
+  b.Mem().Escrever16(0x00020010u, 0x8001u);
+  b.Instrucao(LdrshImediato(1, 0, 0x10));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(1), 0xFFFF8001u);
+}
+
+TEST(Cpu, ExtraFormaNaoPrivilegiadaERecusadaEmVozAlta) {
+  // P2: o caminho nao implementado RECUSA e REGISTA. Aceitar o `STRHT` e
+  // executa-lo como se fosse um `STRH` seria o stub silencioso outra vez.
+  Bancada b;
+  const std::uint64_t antes = b.Cpu().InstruscoesRecusadas();
+  b.Instrucao(StrhNaoPrivilegiado(1, 0, 0x10));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.Cpu().InstruscoesRecusadas(), antes + 1);
+  EXPECT_EQ(b.Cpu().UltimaRecusada(), StrhNaoPrivilegiado(1, 0, 0x10));
+  EXPECT_EQ(b.Mem().Ler32(0x10u), 0u) << "uma recusa nao escreve memoria";
+}
+
+TEST(Cpu, ExtraLdrdComRtImparERecusado) {
+  // ARM ARM A8.8.72: `LDRD` com Rt impar e UNPREDICTABLE. Escolher um par de
+  // registradores por conta propria seria inventar comportamento.
+  Bancada b;
+  const std::uint64_t antes = b.Cpu().InstruscoesRecusadas();
+  b.Instrucao(LdrdImediato(9, 0, 0x8));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.Cpu().InstruscoesRecusadas(), antes + 1);
+}
+
+TEST(Cpu, ExtraContinuaADescodificarOMulNoMesmoEspaco) {
+  // A guarda de ORDEM: o `MUL` tem os bits 27-25 = 000 e os bits 7-4 = 1001, o
+  // MESMO espaco do grupo extra load/store. Se o ramo novo engolir o `MUL`, o
+  // sintoma e um registrador a ficar com lixo -- e foi assim que esta familia de
+  // erro apareceu seis vezes nesta arvore.
+  Bancada b;
+  b.R(1, 7);
+  b.R(2, 6);
+  b.Instrucao(Mul(0, 1, 2));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(0), 42u);
+  EXPECT_EQ(b.Cpu().InstruscoesRecusadas(), 0u);
+}
+
+TEST(Cpu, ExtraLdrdDesalinhadoERecusadoEmVozAlta) {
+  // O ARM exige alinhamento de 4 no LDRD/STRD. A nossa memoria e esparsa e
+  // atenderia o pedido desalinhado sem dizer nada -- e um titulo que dependesse
+  // disso nao teria sintoma nenhum.
+  Bancada b;
+  b.R(0, 0x00020002u);
+  const std::uint64_t antes = b.Cpu().InstruscoesRecusadas();
+  b.Instrucao(LdrdImediato(2, 0, 0));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.Cpu().InstruscoesRecusadas(), antes + 1);
+}
+
+TEST(Cpu, ExtraComRtIgualAoPcERecusado) {
+  // `ldrh pc, [r0]` e UNPREDICTABLE. Deixar cair no `DadosProcessados` era o
+  // que acontecia antes; agora recusa com o nome.
+  Bancada b;
+  const std::uint64_t antes = b.Cpu().InstruscoesRecusadas();
+  b.Instrucao(LdrhImediato(15, 0, 0));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.Cpu().InstruscoesRecusadas(), antes + 1);
+  EXPECT_EQ(b.Cpu().UltimaRecusada(), LdrhImediato(15, 0, 0));
 }

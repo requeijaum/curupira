@@ -74,6 +74,10 @@ class ArmInterpreter : public ICpu {
 
   // Familias do ARM.
   void DadosProcessados(std::uint32_t instr, std::uint32_t pc);
+  // O grupo "extra load/store": LDRH/STRH/LDRSB/LDRSH/LDRD/STRD. Existe como
+  // familia propria porque os bits 27-25 destas instrucoes sao 000 -- os mesmos
+  // do grupo de dados processados.
+  void TransferenciaExtra(std::uint32_t instr, std::uint32_t pc);
   void TransferenciaSimples(std::uint32_t instr, std::uint32_t pc);
   void Bloco(std::uint32_t instr, std::uint32_t pc);
   void Bifurcar(std::uint32_t instr, std::uint32_t pc);

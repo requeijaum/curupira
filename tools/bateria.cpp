@@ -673,6 +673,14 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   e.vtable = dentro == 4;
 
   const std::uint32_t ci = mem.Ler32(vtable + 8);
+  // O SLOT DE SAIDA E LIMPO ANTES DA FASE, como a plataforma faz.
+  //
+  // MEDIDO (fifa09 0x15950248, nfs 0xe59fa250): sem isto, o slot fica com o que
+  // a fase de CARGA la deixou, e `e.create = mem.Ler32(kPPObj) != 0` passa a
+  // medir "o slot tem lixo", nao "o `CreateInstance` criou o applet". O
+  // `AEEStaticMod_New` do SDK faz `*ppMod = NULL;` na primeira linha; isto e o
+  // mesmo, do lado do instrumento.
+  mem.Escrever32(kPPObj, 0);
   cpu.Repor(ci, kPilha);
   // ASSINATURA MEDIDA, por desmonte e por traco de registradores:
   //   r0 = po (o modulo), r1 = pIShell, r2 = ClsId, r3 = ppApplet
