@@ -27,6 +27,9 @@
 #include <vector>
 
 #include "core/brew/ajudantes.h"
+#include <filesystem>
+#include <set>
+
 #include "core/carga/mod.h"
 #include "core/cpu/arm_interpreter.h"
 #include "core/memoria/memoria.h"
@@ -62,6 +65,18 @@ constexpr std::uint32_t kObjDisplay = 0x80030000u;
 constexpr std::uint32_t kObjFileMgr = 0x80040000u;
 constexpr std::uint32_t kIidDisplay = 0x01001001u;
 constexpr std::uint32_t kIidFileMgr = 0x01001003u;
+// Os slots do IFileMgr, na ordem que `platform/deprecated/inc/AEEFile.h` declara
+// em `INHERIT_IFileMgr`. A ORDEM E A DO SDK, lida campo a campo -- e nao
+// copiada de outro emulador, que foi o erro que a arvore antiga cometeu com os
+// slots do IGLES11.
+enum : std::uint32_t {
+  kFmQueryInterface = 2,
+  kFmOpenFile = 3,
+  kFmGetInfo = 4,
+  kFmTest = 8,
+  kFmGetFreeSpace = 9,
+  kFmGetLastError = 10,
+};
 constexpr std::uint32_t kSlotDbgPrintf = 0x09c;
 // Os helpers mais basicos. Sao funcoes PURAS, sem estado e sem interface: a
 // semantica vem do C e do SDK, e um teste pode compara-las com a libc do
@@ -84,6 +99,9 @@ constexpr std::uint32_t kSlotIdStrcpy = 1505;
 constexpr std::uint32_t kSlotIdMemmove = 1506;
 constexpr std::uint32_t kSlotIdStrcmp = 1507;
 constexpr std::uint32_t kSlotIdStrchr = 1508;
+constexpr std::uint32_t kSlotIdFmTest = 1510;
+constexpr std::uint32_t kSlotIdFmFree = 1511;
+constexpr std::uint32_t kSlotIdFmLastErr = 1512;
 constexpr std::uint32_t kSlotGetAeeVersion = 0x08c;
 
 struct Titulo {
@@ -190,6 +208,34 @@ const char* NomeDoSlot(std::uint32_t off) {
     case 0x09c: return "dbgprintf";
     default: return nullptr;
   }
+}
+
+// Sistema de ficheiros virtual MINIMO: os ficheiros que estao ao lado do
+// modulo, no disco do hospedeiro. Nao ha escrita, e uma tentativa de escrita
+// falha -- principio do desenho: nao escrever nas midias do utilizador.
+std::set<std::string>* g_vfs = nullptr;
+bool g_vfs_registado = false;
+bool vfs_tem(const std::string& nome) {
+  if (g_vfs == nullptr) return false;
+  std::string limpo = nome;
+  // Normaliza como as rotas do BREW fazem: barras invertidas viram normais,
+  // barras repetidas colapsam, e uma barra no inicio ancora no modulo.
+  for (char& ch : limpo) {
+    if (ch == '\\') ch = '/';
+    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+  }
+  while (limpo.find("//") != std::string::npos) limpo.replace(limpo.find("//"), 2, "/");
+  while (!limpo.empty() && limpo.front() == '/') limpo.erase(0, 1);
+  while (limpo.rfind("./", 0) == 0) limpo.erase(0, 2);
+  // `..` so sobe ate a raiz do modulo -- a mesma regra que o zeebx mediu nos
+  // Zeebo Extreme, mas aqui o que importa e nao sair da pasta.
+  while (limpo.rfind("../", 0) == 0) limpo.erase(0, 3);
+  if (g_vfs->count(limpo) != 0) return true;
+  // Se sobrar uma pasta a frente, tenta o nome base: os jogos montam
+  // "pasta/ficheiro" para recursos que estao soltos na pasta do titulo.
+  const size_t barra = limpo.rfind('/');
+  if (barra != std::string::npos) return g_vfs->count(limpo.substr(barra + 1)) != 0;
+  return false;
 }
 
 void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& traco,
@@ -335,6 +381,24 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         static std::uint32_t semente = 0x12345678u;
         semente = semente * 1103515245u + 12345u;
         cpu.Set(kR0, (semente >> 16) & 0x7FFFu);
+      } else if (idx == kSlotIdFmTest) {
+        // `int Test(IFileMgr *po, const char *pszName)` -- devolve AEE_SUCCESS
+        // se o ficheiro existe no sistema de ficheiros virtual.
+        std::string nome;
+        mem_ref.LerCadeia(cpu.Get(kR1), &nome, 512);
+        const std::uint32_t existe = vfs_tem(nome) ? kAeeSuccess : kAeeFailed;
+        traco.Emitir(Area::Brew, Nivel::Depuracao, "FM_TEST",
+                                        nome + (existe == 0 ? " -> OK" : " -> MISS"));
+        cpu.Set(kR0, existe);
+      } else if (idx == kSlotIdFmFree) {
+        // `uint32 GetFreeSpace(IFileMgr *po, uint32 *pdwTotal)`. Valor
+        // DECLARADO: nao ha disco neste emulador, e inventar um espaco
+        // plausivel e melhor do que devolver zero -- zero faria um jogo recusar
+        // gravar. Fica registado como valor declarado.
+        if (cpu.Get(kR1) != 0) mem_ref.Escrever32(cpu.Get(kR1), 0x00100000u);
+        cpu.Set(kR0, 0x00080000u);
+      } else if (idx == kSlotIdFmLastErr) {
+        cpu.Set(kR0, 0);
       } else if (idx == kBaseDoSlot + 500) {
         // dbgprintf
         std::string msg;
@@ -383,13 +447,31 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   bool ok = false;
   const std::vector<std::uint8_t> imagem = Ler(dir + "/" + t.pasta + "/" + t.mod + ".mod", &ok);
   if (!ok) { e.motivo = "mod_ausente"; return e; }
-  e.tamanho = static_cast<std::uint32_t>(imagem.size());
-
   Tempo tempo;
   Traco traco("bateria", &tempo);
   DestinoMemoria dm;            // para a lista final poder dizer os ARGUMENTOS
   traco.JuntarDestino(&dm);
   Memoria mem(&traco);
+  // Registar os ficheiros irmaos do modulo no VFS, UMA vez por titulo.
+  {
+    std::set<std::string> ficheiros;
+    std::error_code ec;
+    for (const auto& entrada : std::filesystem::directory_iterator(
+             dir + "/" + t.pasta, std::filesystem::directory_options::skip_permission_denied, ec)) {
+      if (!entrada.is_regular_file(ec)) continue;
+      std::string n = entrada.path().filename().string();
+      for (char& ch : n) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+      ficheiros.insert(n);
+    }
+    static std::set<std::string> guardado;
+    guardado = ficheiros;
+    g_vfs = &guardado;
+    if (!g_vfs_registado) {
+      traco.Emitir(Area::Carga, Nivel::Informacao, "VFS",
+                   std::to_string(ficheiros.size()) + " ficheiros do titulo registados");
+      g_vfs_registado = true;
+    }
+  }
   mem.EscritorUnico("cpu");
   ArmInterpreter cpu(mem, &traco);
   Alocador al(mem, kHeap, kHeapTam, &traco);
@@ -470,6 +552,10 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   // (QueryInterface) com o IID no r1 e o ponteiro de saida no r2.
   ConstruirShell(mem, s, kObjDisplay, s.Endereco(kVtableDisplay), 64, kVtableDisplay);
   ConstruirShell(mem, s, kObjFileMgr, s.Endereco(kVtableFileMgr), 64, kVtableFileMgr);
+  // Os slots do IFileMgr que o corpus pede, e que tem implementacao.
+  mem.Escrever32(s.Endereco(kVtableFileMgr + kFmTest), s.Endereco(kSlotIdFmTest));
+  mem.Escrever32(s.Endereco(kVtableFileMgr + kFmGetFreeSpace), s.Endereco(kSlotIdFmFree));
+  mem.Escrever32(s.Endereco(kVtableFileMgr + kFmGetLastError), s.Endereco(kSlotIdFmLastErr));
 
   const auto carga = CarregarMod(mem, imagem, kBase, kTabela, &traco);
   if (!carga.ok) { e.motivo = "carga_recusada:" + carga.motivo; return e; }
@@ -569,7 +655,8 @@ int main(int argc, char** argv) {
             ",\"applet\":" + (e.create ? "true" : "false") +
             ",\"passos_carga\":" + std::to_string(e.passos_carga) +
             ",\"passos_create\":" + std::to_string(e.passos_create) +
-            ",\"recusadas\":" + std::to_string(e.recusadas) + "},\n";
+            ",\"recusadas\":" + std::to_string(e.recusadas) +
+            ",\"motivo\":\"" + e.motivo + "\"" + "},\n";
   }
   // O JSON tem de ser VALIDO: uma virgula a mais no fim torna-o ilegivel para
   // quem o for ler, e ele existe exactamente para ser comparado entre corridas.
@@ -598,3 +685,4 @@ int main(int argc, char** argv) {
   }
   return 0;
 }
+
