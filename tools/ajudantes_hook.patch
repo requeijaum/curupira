@@ -27,12 +27,12 @@ GERADO CONTRA 96ede69 (o HEAD de agora), e VERIFICADO nessa base:
       -> 0 regressoes, 0 melhorias, 4 neutros (as 3 faltas acima e a etiqueta)
 
 Aplicar da RAIZ do repositorio:
-    git apply research/sources/zeebulator/src2/tools/ajudantes_hook.patch
+    git apply curupira/tools/ajudantes_hook.patch
 
-diff --git a/research/sources/zeebulator/src2/core/brew/despacho.cpp b/research/sources/zeebulator/src2/core/brew/despacho.cpp
+diff --git a/curupira/core/brew/despacho.cpp b/curupira/core/brew/despacho.cpp
 index 4b330ef..c0e54cb 100644
---- a/research/sources/zeebulator/src2/core/brew/despacho.cpp
-+++ b/research/sources/zeebulator/src2/core/brew/despacho.cpp
+--- a/curupira/core/brew/despacho.cpp
++++ b/curupira/core/brew/despacho.cpp
 @@ -5,6 +5,7 @@
  #include <set>
  
