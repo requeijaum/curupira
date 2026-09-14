@@ -43,8 +43,9 @@ add_executable(zb2_tests
   tests/cpu_test.cpp
   tests/carga_test.cpp
   tests/brew_test.cpp
+  tests/comparar_test.cpp
 )
-target_link_libraries(zb2_tests PRIVATE zb2_core GTest::gtest_main)
+target_link_libraries(zb2_tests PRIVATE zb2_core zb2_comparar_lib GTest::gtest_main)
 add_test(NAME fundacao COMMAND zb2_tests)
 
 # A GUARDA DOS SLOTS. Corre o gerador e compara com o ficheiro versionado.
@@ -58,3 +59,42 @@ target_link_libraries(zb2_sonda_mod PRIVATE zb2_core)
 
 add_executable(zb2_bateria tools/bateria.cpp)
 target_link_libraries(zb2_bateria PRIVATE zb2_core)
+
+# ---------------------------------------------------------------------------
+# O COMPARADOR (etapa 9 do PLANO): o juiz das regressoes.
+#
+# A biblioteca existe porque o `main` do comparador tem de ser o MESMO codigo que
+# o teste prova. Um teste com uma copia da regra prova que o teste e consistente
+# consigo mesmo, e nao que a ferramenta esta certa.
+add_library(zb2_comparar_lib STATIC tools/comparar.cpp)
+target_include_directories(zb2_comparar_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(zb2_comparar_lib PRIVATE -Wall -Wextra)
+
+add_executable(zb2_comparar tools/comparar_main.cpp)
+target_link_libraries(zb2_comparar PRIVATE zb2_comparar_lib)
+
+# As guardas do comparador, chamadas pelo BINARIO e pelo codigo de saida (e nao
+# so pela API): o que o `ctest` tem de provar e o que o CI vai ver -- um codigo de
+# saida distinto por cada tipo de falha.
+add_test(NAME comparar_guardas COMMAND zb2_tests --gtest_filter=Comparar.*)
+add_test(NAME comparar_shell
+  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/comparar_guarda.sh $<TARGET_FILE:zb2_comparar>)
+
+# A CORRIDA DE REGRESSAO. Precisa do corpus E da midia (o corpus62.json aponta
+# para pastas de `debug_nand/mod`, que vive num disco externo). Sem a midia o
+# teste e SKIP (codigo 77) e nao "passou": um teste que passa sem ter corrido e
+# pior do que um teste vermelho -- e a mesma regra de `slots_do_sdk`.
+set(ZB2_CORPUS "$ENV{ZB2_CORPUS}" CACHE STRING "caminho do corpus62.json")
+if(NOT ZB2_CORPUS)
+  set(ZB2_CORPUS "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/corpus62.json")
+endif()
+set(ZB2_MODS "$ENV{ZB2_MODS}" CACHE STRING "directorio com as pastas de mods do corpus")
+set(ZB2_BASELINE "$ENV{ZB2_BASELINE}" CACHE STRING "corrida de referencia guardada")
+if(NOT ZB2_BASELINE)
+  set(ZB2_BASELINE "${CMAKE_CURRENT_SOURCE_DIR}/tools/baseline/bateria.json")
+endif()
+add_test(NAME regressao
+  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/regressao.sh)
+set_tests_properties(regressao PROPERTIES
+  SKIP_RETURN_CODE 77
+  ENVIRONMENT "ZB2_BUILD=${CMAKE_CURRENT_BINARY_DIR};ZB2_CORPUS=${ZB2_CORPUS};ZB2_MODS=${ZB2_MODS};ZB2_BASELINE=${ZB2_BASELINE}")
