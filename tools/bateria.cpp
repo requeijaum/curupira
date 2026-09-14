@@ -63,6 +63,27 @@ constexpr std::uint32_t kObjFileMgr = 0x80040000u;
 constexpr std::uint32_t kIidDisplay = 0x01001001u;
 constexpr std::uint32_t kIidFileMgr = 0x01001003u;
 constexpr std::uint32_t kSlotDbgPrintf = 0x09c;
+// Os helpers mais basicos. Sao funcoes PURAS, sem estado e sem interface: a
+// semantica vem do C e do SDK, e um teste pode compara-las com a libc do
+// hospedeiro -- que e como a arvore antiga fechou a duvida sobre `strcmp` e
+// `strstr`. Aqui implementam-se porque a bateria os pediu POR DEMANDA.
+constexpr std::uint32_t kSlotMemmove = 0x000;
+constexpr std::uint32_t kSlotMemset = 0x004;
+constexpr std::uint32_t kSlotStrcpy = 0x008;
+constexpr std::uint32_t kSlotStrcmp = 0x010;
+constexpr std::uint32_t kSlotStrlen = 0x014;
+constexpr std::uint32_t kSlotStrchr = 0x018;
+constexpr std::uint32_t kSlotStrtowstr = 0x040;
+constexpr std::uint32_t kSlotAeeGetRand = 0x0a8;
+constexpr std::uint32_t kSlotIdStrtowstr = 1500;
+constexpr std::uint32_t kSlotIdGetAeeVersion = 1501;
+constexpr std::uint32_t kSlotIdAeeGetRand = 1502;
+constexpr std::uint32_t kSlotIdStrlen = 1503;
+constexpr std::uint32_t kSlotIdMemset = 1504;
+constexpr std::uint32_t kSlotIdStrcpy = 1505;
+constexpr std::uint32_t kSlotIdMemmove = 1506;
+constexpr std::uint32_t kSlotIdStrcmp = 1507;
+constexpr std::uint32_t kSlotIdStrchr = 1508;
 constexpr std::uint32_t kSlotGetAeeVersion = 0x08c;
 
 struct Titulo {
@@ -236,6 +257,84 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         traco.RegistarFalta(Area::Brew, nome, det);
         cpu.Set(kR0, kAeeUnsupported);
         if (++saidas > 200) { *motivo = "parou_em_slot_nao_implementado"; return; }
+      } else if (idx == kSlotIdStrlen) {
+        // size_t strlen(const char *s) -- conta ate ao NUL, sem limite
+        // artificial: a memoria do guest responde zero onde nao ha nada.
+        std::uint32_t n = 0;
+        while (mem_ref.Ler8(r0 + n) != 0) ++n;
+        cpu.Set(kR0, n);
+      } else if (idx == kSlotIdMemset) {
+        // void *memset(void *d, int c, size_t n) -- devolve o destino
+        const std::uint32_t n = cpu.Get(kR2);
+        for (std::uint32_t i = 0; i < n; ++i) mem_ref.Escrever8(r0 + i, static_cast<std::uint8_t>(cpu.Get(kR1)));
+        cpu.Set(kR0, r0);
+      } else if (idx == kSlotIdStrcpy) {
+        const std::uint32_t src = cpu.Get(kR1);
+        std::uint32_t i = 0;
+        for (;;) {
+          const std::uint8_t b = mem_ref.Ler8(src + i);
+          mem_ref.Escrever8(r0 + i, b);
+          if (b == 0) break;
+          ++i;
+        }
+        cpu.Set(kR0, r0);
+      } else if (idx == kSlotIdStrcmp) {
+        const std::uint32_t a2 = r0, b2 = cpu.Get(kR1);
+        std::uint32_t i = 0;
+        for (;;) {
+          const std::uint8_t ca = mem_ref.Ler8(a2 + i), cb2 = mem_ref.Ler8(b2 + i);
+          if (ca != cb2 || ca == 0 || cb2 == 0) {
+            cpu.Set(kR0, static_cast<std::uint32_t>(static_cast<std::int32_t>(ca) -
+                                                    static_cast<std::int32_t>(cb2)));
+            break;
+          }
+          ++i;
+        }
+      } else if (idx == kSlotIdStrchr) {
+        const std::uint8_t c2 = static_cast<std::uint8_t>(cpu.Get(kR1));
+        std::uint32_t i = 0, achou = 0;
+        for (;;) {
+          const std::uint8_t b = mem_ref.Ler8(r0 + i);
+          if (b == c2) { achou = r0 + i; break; }
+          if (b == 0) break;
+          ++i;
+        }
+        cpu.Set(kR0, achou);
+      } else if (idx == kSlotIdMemmove) {
+        const std::uint32_t src = cpu.Get(kR1), n = cpu.Get(kR2);
+        std::vector<std::uint8_t> copia(n);   // copia intermediaria: o C permite sobreposicao
+        mem_ref.LerBloco(src, copia.data(), n);
+        mem_ref.EscreverBloco(r0, copia.data(), n);
+        cpu.Set(kR0, r0);
+      } else if (idx == kSlotIdStrtowstr) {
+        // AECHAR *strtowstr(const char *pszIn, AECHAR *pDest, int nSize).
+        // AECHAR e UTF-16; nSize e em CARACTERES, e a funcao termina o destino.
+        const std::uint32_t destino = cpu.Get(kR1);
+        const std::uint32_t tam = cpu.Get(kR2);
+        std::uint32_t i = 0;
+        for (; static_cast<int>(i) + 1 < static_cast<int>(tam); ++i) {
+          const std::uint8_t c2 = mem_ref.Ler8(r0 + i);
+          mem_ref.Escrever16(destino + i * 2, c2);
+          if (c2 == 0) break;
+        }
+        if (static_cast<int>(i) + 1 >= static_cast<int>(tam) && destino != 0) {
+          mem_ref.Escrever16(destino + (tam - 1) * 2, 0);
+        }
+        cpu.Set(kR0, destino);
+      } else if (idx == kSlotIdGetAeeVersion) {
+        // Devolve a versao, e escreve-a em *pVer quando ha ponteiro. 4.0.2
+        // codificada como o SDK a codifica: AEE_VER(4,0,2).
+        const std::uint32_t pver = cpu.Get(kR1);
+        const std::uint32_t ver = 0x00400002u;
+        if (pver != 0) mem_ref.Escrever32(pver, ver);
+        cpu.Set(kR0, ver);
+      } else if (idx == kSlotIdAeeGetRand) {
+        // `aee_GetRand` -- gerador DETERMINISTA (principio P4). Um gerador do
+        // sistema tornaria duas corridas diferentes, e o emulador deixaria de
+        // ser reproduzivel -- que e o que sustenta todas as medicoes.
+        static std::uint32_t semente = 0x12345678u;
+        semente = semente * 1103515245u + 12345u;
+        cpu.Set(kR0, (semente >> 16) & 0x7FFFu);
       } else if (idx == kBaseDoSlot + 500) {
         // dbgprintf
         std::string msg;
@@ -307,6 +406,15 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   // malloc, medido (16 titulos). Le a cadeia de formato do guest e escreve-a.
   // Nao interpreta os `%` -- o texto cru ja diz de que titulo se trata.
   mem.Escrever32(kTabela + kSlotDbgPrintf, s.Endereco(kBaseDoSlot + 500));
+  mem.Escrever32(kTabela + kSlotStrlen, s.Endereco(kSlotIdStrlen));
+  mem.Escrever32(kTabela + kSlotMemset, s.Endereco(kSlotIdMemset));
+  mem.Escrever32(kTabela + kSlotStrcpy, s.Endereco(kSlotIdStrcpy));
+  mem.Escrever32(kTabela + kSlotStrcmp, s.Endereco(kSlotIdStrcmp));
+  mem.Escrever32(kTabela + kSlotStrchr, s.Endereco(kSlotIdStrchr));
+  mem.Escrever32(kTabela + kSlotMemmove, s.Endereco(kSlotIdMemmove));
+  mem.Escrever32(kTabela + kSlotStrtowstr, s.Endereco(kSlotIdStrtowstr));
+  mem.Escrever32(kTabela + kSlotGetAeeVersion, s.Endereco(kSlotIdGetAeeVersion));
+  mem.Escrever32(kTabela + kSlotAeeGetRand, s.Endereco(kSlotIdAeeGetRand));
   // TODOS os outros slots da tabela recebem um endereco que RECUSA em voz alta,
   // em vez de ficarem a ZERO.
   //
@@ -318,8 +426,28 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   //
   // E o principio P2 do desenho: stub silencioso e proibido. Aqui o "silencio"
   // era literalmente o endereco zero.
+  // QUEM JA TEM IMPLEMENTACAO. O laco abaixo enche o resto com o stub que
+  // recusa -- e tem de SALTAR estes, senao sobrescreve-os.
+  //
+  // Esta lista existe por causa do erro mais reincidente desta sessao, que
+  // apareceu QUATRO vezes: um passo generico a atropelar trabalho especifico. As
+  // tres primeiras foram na ordem dos testes de descodificacao; esta foi um laco
+  // de preenchimento a apagar implementacoes ja escritas -- e o sintoma era a
+  // bateria continuar a dizer "falta strlen" com o `strlen` escrito e a
+  // funcionar. Com uma lista explicita, o erro passa a ser impossivel por
+  // construcao, em vez de depender de a ordem estar certa.
+  const std::uint32_t implementados[] = {
+      kSlotMemmove, kSlotMemset, kSlotStrcpy, kSlotStrcmp, kSlotStrlen, kSlotStrchr,
+      kSlotStrtowstr, kSlotGetAeeVersion, kSlotAeeGetRand, kSlotDbgPrintf,
+  };
+  const auto ja_tem = [&](std::uint32_t off) {
+    for (std::uint32_t x : implementados) {
+      if (x == off) return true;
+    }
+    return false;
+  };
   for (std::uint32_t off = 0; off < 117 * 4; off += 4) {
-    if (off == 0x68 || off == 0x6c) continue;
+    if (off == 0x68 || off == 0x6c || ja_tem(off)) continue;
     // UM endereco de saida POR OFFSET, e nao um stub generico para todos.
     //
     // MOTIVO, medido: com um stub so, 44 titulos pediam algo e o registo dizia
