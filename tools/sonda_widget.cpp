@@ -171,6 +171,44 @@ int main(int argc, char** argv) {
                                s.Endereco(zb2::brew::VtGenerico(k)), 64,
                                zb2::brew::VtGenerico(k));
   }
+  // A CABLAGEM DOS SLOTS IMPLEMENTADOS. E a MESMA tabela de `tools/bateria.cpp`
+  // (`kWire`), e ela tem de estar aqui: sem ela a sonda reportaria como "falta" um
+  // metodo que o despacho ATENDE -- um pedido servido pela bateria e nao pela
+  // sonda. **Um instrumento que nao reproduz a cablagem da ferramenta mede a
+  // ferramenta errada.** Os indices de saida sao os mesmos numeros; a duplicacao
+  // e conhecida e esta declarada no relatorio.
+  const struct { std::uint32_t vt; std::uint32_t slot; std::uint32_t saida; } kWire[] = {
+      {zb2::brew::kVtableShell, brew_slots::kShell_SetTimer, 1520},
+      {zb2::brew::kVtableShell, brew_slots::kShell_QueryClass, 1541},
+      {zb2::brew::kVtableShell, brew_slots::kShell_GetDeviceInfo, 1549},
+      {zb2::brew::kVtableShell, brew_slots::kShell_CancelTimer, 1552},
+      {zb2::brew::kVtableShell, brew_slots::kShell_FreeResData, 1563},
+      {zb2::brew::kVtableShell, brew_slots::kShell_CheckPrivLevel, 1564},
+      {zb2::brew::kVtableDisplay, brew_slots::kDisplay_GetDeviceBitmap, 1550},
+      {zb2::brew::kVtableDisplay, brew_slots::kDisplay_GetClipRect, 1551},
+      {zb2::brew::kVtableDisplay, brew_slots::kDisplay_GetFontMetrics, 1530},
+      {zb2::brew::kVtableDisplay, brew_slots::kDisplay_MeasureTextEx, 1531},
+      {zb2::brew::kVtableDisplay, brew_slots::kDisplay_DrawText, 1532},
+      {zb2::brew::kVtableDisplay, brew_slots::kDisplay_DrawRect, 1533},
+      {zb2::brew::kVtableDisplay, brew_slots::kDisplay_BitBlt, 1534},
+      {zb2::brew::kVtableDisplay, brew_slots::kDisplay_SetColor, 1535},
+      {zb2::brew::kVtableDisplay, brew_slots::kDisplay_SetClipRect, 1536},
+      {zb2::brew::kVtableDisplay, brew_slots::kDisplay_Update, 1537},
+      {zb2::brew::kVtableDisplay, brew_slots::kDisplay_Backlight, 1542},
+      {zb2::brew::kVtableDisplay, brew_slots::kDisplay_CreateDIBitmap, 1538},
+      {zb2::brew::kVtableDisplay, brew_slots::kDisplay_SetDestination, 1546},
+      {zb2::brew::kVtableDisplay, brew_slots::kDisplay_GetDestination, 1545},
+      {zb2::brew::VtGenerico(6), brew_slots::kSQLMgr_Open, 1553},
+      {zb2::brew::VtGenerico(0), brew_slots::kHeap1_Lock, 1562},
+      {zb2::brew::kVtableFileMgr, brew_slots::kFileMgr_OpenFile, 1554},
+      {zb2::brew::kVtableFileObj, brew_slots::kIAStream_Read, 1555},
+      {zb2::brew::kVtableFileObj, brew_slots::kIFile_Seek, 1556},
+      {zb2::brew::kVtableFileObj, brew_slots::kIFile_GetInfo, 1557},
+      {zb2::brew::kVtableFileObj, brew_slots::kIFile_Write, 1559},
+  };
+  for (const auto& w : kWire) {
+    mem.Escrever32(s.Endereco(w.vt) + w.slot * 4, s.Endereco(w.saida));
+  }
 
   const zb2::ResultadoDaCarga carga = CarregarMod(mem, imagem, kBase, kTabela, &traco);
   if (!carga.ok) {
@@ -250,6 +288,15 @@ int main(int argc, char** argv) {
       de_interface += par.second;
     }
   }
+  // OS ARGUMENTOS, e nao so o nome. Uma falta sem os argumentos obriga a correr
+  // a sonda outra vez com o traco ligado para saber O QUE foi pedido -- e um
+  // instrumento que obriga a dois passos para dar uma resposta e meio instrumento.
+  for (const auto& ev : dm.eventos) {
+    if (ev.nome.rfind("NAO_IMPLEMENTADO: ", 0) == 0) {
+      std::printf("   [detalhe] %s  %s\n", ev.nome.substr(18).c_str(), ev.detalhe.c_str());
+    }
+  }
+
   const zb2::brew::Widgets& w = despacho.WidgetsRef();
   std::printf("widget: propriedades_lidas=%u escritas=%u widgets_entregues=%u recusas=%zu\n",
               w.PropriedadesLidas(), w.PropriedadesEscritas(), w.WidgetsEntregues(),
