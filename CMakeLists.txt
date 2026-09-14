@@ -15,6 +15,7 @@ endif()
 add_library(zb2_core STATIC
   core/traco/traco.cpp
   core/memoria/memoria.cpp
+  core/cpu/arm_interpreter.cpp
 )
 target_include_directories(zb2_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(zb2_core PRIVATE -Wall -Wextra)
@@ -31,6 +32,7 @@ FetchContent_MakeAvailable(googletest)
 enable_testing()
 add_executable(zb2_tests
   tests/fundacao_test.cpp
+  tests/cpu_test.cpp
 )
 target_link_libraries(zb2_tests PRIVATE zb2_core GTest::gtest_main)
 add_test(NAME fundacao COMMAND zb2_tests)
