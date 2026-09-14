@@ -535,6 +535,37 @@ TEST(Widget, OSetPropertyDeFidActiveDeixaRastoComONome) {
          "pode ser";
 }
 
+TEST(Widget, OAppStartNaRaizGuardaEDevolveTrue) {
+  Bancada b;
+  // AEEAppStart em kArg0: error=0, clsApp, display.
+  b.Mem().Escrever32(0x80100000u, 0);
+  b.Mem().Escrever32(0x80100004u, 0x0100104fu);
+  b.Mem().Escrever32(0x80100008u, 0x80030000u);
+  b.Cpu().Set(kR0, 0x80060400u);
+  b.Cpu().Set(kR1, 0);
+  b.Cpu().Set(kR2, 0);
+  b.Cpu().Set(kR3, 0x80100000u);
+  const std::uint32_t antes = b.D().WidgetsRef().ArranquesNaRaiz();
+  const std::uint32_t r = b.ChamaRootFormSlot(
+      brew_slots::kIHandler_HandleEvent, 0x80060400u, 0, 0, 0x80100000u);
+  EXPECT_NE(r, 0u);
+  EXPECT_EQ(b.D().WidgetsRef().ArranquesNaRaiz(), antes + 1);
+  EXPECT_EQ(b.Faltas("IRootForm HandleEvent nao atendido"), 0u);
+}
+
+TEST(Widget, OQueryClassRespondeOTituloEAsClassesServidas) {
+  Bancada b;
+  // AppHistory e classe servida -> TRUE mesmo sem CLSID do titulo.
+  EXPECT_EQ(b.ChamaSaida(1541, 0x80020000u, 0x0100104fu), 1u);
+  EXPECT_EQ(b.ChamaSaida(1541, 0x80020000u, 0x12345678u), 0u);
+  EXPECT_EQ(b.ChamaSaida(1541, 0x80020000u, 0x01001001u), 1u);
+  b.D().SituarTitulo("d", "p", 0x010292c3u);
+  EXPECT_EQ(b.ChamaSaida(1541, 0x80020000u, 0x010292c3u), 1u);
+  EXPECT_EQ(b.ChamaSaida(1541, 0x80020000u, 0x01001017u), 1u);
+  EXPECT_EQ(b.ChamaSaida(1541, 0x80020000u, 0x01030766u), 1u);
+  EXPECT_EQ(b.ChamaSaida(1541, 0x80020000u, 0x12345678u), 0u);
+}
+
 TEST(Widget, OSetPropertyDeFidVisibleDeixaRastoComONome) {
   Bancada b;
   const std::uint32_t r =

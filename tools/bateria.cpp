@@ -531,7 +531,9 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   // apontaria para memoria morta. A primeira versao fazia isso e o resultado era
   // uma falha de segmentacao no SEGUNDO titulo.
   despacho.TelaRef().Limpar();
-  despacho.SituarTitulo(dir, t.pasta);
+  const std::uint32_t clsid_do_titulo =
+      static_cast<std::uint32_t>(std::strtoul(t.clsid.c_str(), nullptr, 0));
+  despacho.SituarTitulo(dir, t.pasta, clsid_do_titulo);
   despacho.DefinirVtableBitmap(s.Endereco(zb2::brew::kVtableBitmap));
   despacho.DefinirVtableFicheiro(s.Endereco(zb2::brew::kVtableFileObj));
 
@@ -727,7 +729,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   // o CLSID nem a ordem dos argumentos: era o SHELL em falta.
   cpu.Set(kR0, modulo);
   cpu.Set(kR1, kShell);
-  cpu.Set(kR2, static_cast<std::uint32_t>(std::strtoul(t.clsid.c_str(), nullptr, 0)));
+  cpu.Set(kR2, clsid_do_titulo);
   cpu.Set(kR3, kPPObj);
   cpu.Set(kLR, kSentinela);
   std::string motivo_create;
@@ -738,6 +740,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   }
   e.recusadas = cpu.InstruscoesRecusadas();
   g_applet = mem.Ler32(kPPObj);  // para o `GetAppInstance`
+  g_despacho->DefinirApplet(g_applet);
   e.create = mem.Ler32(kPPObj) != 0;
 
   e.motivo += " | create:" + motivo_create;
@@ -780,8 +783,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
       constexpr std::uint32_t kAppStart = 0x000A0000u + 0x1000u;
       for (std::uint32_t k = 0; k < 32; ++k) mem.Escrever8(kAppStart + k, 0);
       mem.Escrever32(kAppStart + 0, 0);  // error
-      mem.Escrever32(kAppStart + 4,
-                     static_cast<std::uint32_t>(std::strtoul(t.clsid.c_str(), nullptr, 0)));
+      mem.Escrever32(kAppStart + 4, clsid_do_titulo);
       mem.Escrever32(kAppStart + 8, zb2::brew::kObjDisplay);
       mem.Escrever32(kAppStart + 12, 0);
       mem.Escrever32(kAppStart + 16, 0);

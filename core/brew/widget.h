@@ -213,6 +213,8 @@ class Widgets {
   std::size_t FormasNaPilha() const { return pilha_.size(); }
   std::uint32_t FormaNoTopo() const { return pilha_.empty() ? 0 : pilha_.back(); }
 
+  std::uint32_t ArranquesNaRaiz() const { return arranque_cont_; }
+
   // Tudo o que ESTE modulo recusou, por nome. O `Traco` ja tem a contagem global;
   // esta lista e local, para um teste poder afirmar sobre ela sem depender da
   // ferramenta -- e para o relatorio poder dizer o que ficou por fazer sem
@@ -249,6 +251,11 @@ class Widgets {
   // O `HandlerDesc` instalado na raiz (`IHandler::SetHandler`).
   std::uint32_t pfn_ = 0, cxt_ = 0, livre_ = 0;
   // A pilha de formas (`IRootForm`). Guarda os ponteiros que o jogo empurrou.
+  // Arranque (EVT_APP_START=0) entregue a raiz: guardado para inspecao.
+  std::uint32_t arranque_cont_ = 0;
+  std::uint32_t arranque_erro_ = 0;
+  std::uint32_t arranque_cls_ = 0;
+  std::uint32_t arranque_display_ = 0;
   std::vector<std::uint32_t> pilha_;
   std::uint32_t lidas_ = 0, escritas_ = 0, entregues_ = 0, desenhos_ = 0;
   std::vector<std::string> recusas_;

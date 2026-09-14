@@ -207,10 +207,15 @@ class Despacho {
 
   // O que o despacho precisa de saber do titulo actual. Posto UMA vez por titulo,
   // no inicio -- e nao um estado que passa de um titulo para o outro.
-  void SituarTitulo(const std::string& dir, const std::string& pasta) {
+  void SituarTitulo(const std::string& dir, const std::string& pasta,
+                    std::uint32_t clsid = 0) {
     dir_ = dir;
     pasta_ = pasta;
+    clsid_titulo_ = clsid;
+    tem_clsid_ = (clsid != 0);
   }
+  std::uint32_t ClsidDoTitulo() const { return clsid_titulo_; }
+  bool TemClsidDoTitulo() const { return tem_clsid_; }
   // --- O GL (etapa 6) ------------------------------------------------------
   //
   // O `Igl` e o `Egl` vivem AQUI, e nao na ferramenta: a cablagem e do motor.
@@ -291,6 +296,8 @@ class Despacho {
 
   std::string dir_;
   std::string pasta_;
+  std::uint32_t clsid_titulo_ = 0;
+  bool tem_clsid_ = false;
   std::uint32_t faixa_base_ = 0;
   std::uint32_t faixa_fim_ = 0;
 };

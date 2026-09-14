@@ -1170,11 +1170,16 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // stub silencioso.
         const std::uint32_t cls = cpu.Get(kR1);
         const std::uint32_t pai = cpu.Get(kR2);
+        // O proprio titulo + as 5 classes que o CreateInstance serve: antes
+        // devolvia FALSE para o proprio app, incoerente com o CreateInstance.
+        const bool e_o_titulo = (tem_clsid_ && cls == clsid_titulo_);
+        const bool e_classe_servida = (IndiceDaClasse(cls) < kQuantasClasses);
         const bool conhecida = (cls == kIidDisplay || cls == kIidFileMgr ||
                                 cls == kIidHeap || cls == kIidFile || cls == kIidSound ||
                                 cls == kIidGraphics || cls == kIidRootForm ||
                                 cls == kIidHid || cls == kIidSqlMgr ||
-                                (entrada_pronta_ && cls == kClsidSignalCBFactory));
+                                (entrada_pronta_ && cls == kClsidSignalCBFactory) ||
+                                e_o_titulo || e_classe_servida);
         if (pai != 0) {
           // AEEAppInfo: cls(0), pszName(4), pszIcon(8), dwIconSize(12), ...
           mem_.Escrever32(pai + 0, cls);

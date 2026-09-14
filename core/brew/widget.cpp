@@ -382,6 +382,22 @@ Atendido Widgets::AtenderRootForm(ICpu& cpu, std::uint32_t slot) {
         cpu.Set(kR0, 1);
         return Atendido::Feito;
       }
+      if (evt == 0) {
+        // `EVT_APP_START` (AEEEvent.h:23) entregue a raiz: guarda o arranque
+        // para inspecao (error/cls/display de [d+0/+4/+8] quando d != 0) e
+        // devolve TRUE sem empilhar forma nem despachar: pilha vazia = entrega
+        // final. Sem `d` (=0) continua TRUE -- arranque sem args e legal.
+        ++arranque_cont_;
+        if (d != 0) {
+          arranque_erro_ = mem_.Ler32(d);
+          arranque_cls_ = mem_.Ler32(d + 4);
+          arranque_display_ = mem_.Ler32(d + 8);
+        }
+        traco_.Emitir(Area::Brew, Nivel::Depuracao, "ROOTFORM_APP_START",
+                      "arranque guardado na raiz");
+        cpu.Set(kR0, 1);
+        return Atendido::Feito;
+      }
       // QUALQUER OUTRO EVENTO. O contrato do `IRootForm` e entregar os eventos
       // que ele nao trata a forma que esta no TOPO da pilha. Nao ha formas na
       // pilha (nada empurrou nenhuma), logo a resposta honesta e FALSE -- e fica
