@@ -166,6 +166,7 @@ constexpr std::uint32_t kSlotIdGetDest = 1545;
 constexpr std::uint32_t kSlotIdSetDest = 1546;
 constexpr std::uint32_t kSlotIdRmDir = 1547;
 constexpr std::uint32_t kSlotIdGetFontMetricsAlias = 1548;
+constexpr std::uint32_t kSlotIdGetDeviceInfo = 1549;
 
 // OS NUMEROS DE SLOT VEM DO CABECALHO, GERADOS.
 //
@@ -182,6 +183,34 @@ constexpr std::uint32_t kSlotIdGetFontMetricsAlias = 1548;
 // -- a assinatura EXATA do `GetFontMetrics`, e eu recusava-o porque tinha o 2
 // como `Release`. **O jogo estava certo e eu errado.**
 #include "brew_slots.inc"
+
+// `AEEDeviceInfo`, TRANSCRITA de `platform/system/inc/AEEIShell.h`.
+//
+// Os campos escrevem-se por NOME com `offsetof`-equivalente (a struct e o layout
+// do compilador), e nao por numero de offset escrito a mao. **Um offset escrito a
+// mao ja divergiu uma vez nesta sessao** -- os slots do IDisplay -- e o custo foi
+// uma ronda inteira.
+//
+// `EmptyEnum` e `unsigned` (AEEIShell.h linha 83). No ARM AAPCS o `uint32` alinha
+// a 4 e as bitfields `unsigned : 1` empacotam no mesmo `unsigned`, que e o mesmo
+// que o x86-64 faz aqui.
+namespace brew {
+struct AeeDeviceInfo {
+  std::uint16_t cx_screen, cy_screen, cx_alt_screen, cy_alt_screen, cx_scroll_bar;
+  std::uint16_t w_encoding, w_menu_text_scroll, n_color_depth;
+  unsigned unused2;
+  std::uint32_t w_menu_image_delay, dw_ram;
+  unsigned b_alt_display : 1, b_flip : 1, b_vibrator : 1, b_ext_speaker : 1, b_vr : 1,
+      b_pos_loc : 1, b_midi : 1, b_cmx : 1, b_pen : 1;
+  std::uint32_t dw_prompt_props;
+  std::uint16_t w_key_close_app, w_key_close_all_apps;
+  std::uint32_t dw_lang;
+  std::uint16_t w_struct_size;
+  std::uint32_t dw_net_linger, dw_sleep_defer;
+  std::uint16_t w_max_path;
+  std::uint32_t dw_platform_id;
+};
+}  // namespace brew
 
 constexpr std::uint32_t kSlotIdCreateDIBitmap = 1538;
 constexpr std::uint32_t kObjDibBase = 0x80050000u;
@@ -493,7 +522,7 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         if (devolver == 0) {
           char det[96];
           std::snprintf(det, sizeof(det), "iid=0x%08x ppo=0x%08x", iid, ppo);
-          traco.RegistarFalta(Area::Brew, "IShell::QueryInterface IID desconhecido", det);
+          traco.RegistarFalta(Area::Brew, "IShell::CreateInstance CLSID desconhecido", det);
         }
       } else if (idx >= kBaseDoShell) {
         // O NOME tem de dizer de QUE interface e o slot. Um so "IShell::slot"
@@ -809,6 +838,42 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         } else {
           cpu.Set(kR0, kAeeUnsupported);
         }
+      } else if (idx == kSlotIdGetDeviceInfo) {
+        // `void GetDeviceInfo(IShell *po, AEEDeviceInfo *pi)` -- IShell slot 4,
+        // e a demanda MAIS ALTA do corpus: 18 titulos.
+        //
+        // O jogo le daqui o TAMANHO DO ECRA e a profundidade de cor, para calcular
+        // posicoes e para decidir que superficies pode criar. Sem isto, 18 titulos
+        // pediam-no e nao recebiam nada.
+        //
+        // 320x240 e 16 bits: os valores do ZEEBO, DECLARADOS como tal.
+        const std::uint32_t pi = cpu.Get(kR1);
+        if (pi != 0) {
+          brew::AeeDeviceInfo di{};
+          di.cx_screen = 320; di.cy_screen = 240;
+          di.cx_alt_screen = 320; di.cy_alt_screen = 240;
+          di.cx_scroll_bar = 10;
+          di.w_encoding = 0;          // AEE_ENC_UNICODE
+          di.w_menu_text_scroll = 30;
+          di.n_color_depth = 16;
+          di.unused2 = 0;
+          di.w_menu_image_delay = 100;
+          di.dw_ram = 0;              // deprecated no cabecalho
+          di.b_alt_display = 0; di.b_flip = 0; di.b_vibrator = 0; di.b_ext_speaker = 0;
+          di.b_vr = 0; di.b_pos_loc = 0; di.b_midi = 1; di.b_cmx = 0; di.b_pen = 1;
+          di.dw_prompt_props = 0;
+          di.w_key_close_app = 0; di.w_key_close_all_apps = 0;
+          di.dw_lang = 0;             // AEE_LNG_ENGLISH
+          di.w_struct_size = static_cast<std::uint16_t>(sizeof(brew::AeeDeviceInfo));
+          di.dw_net_linger = 0; di.dw_sleep_defer = 0;
+          di.w_max_path = 256;
+          di.dw_platform_id = 0;
+          const auto* b = reinterpret_cast<const std::uint8_t*>(&di);
+          for (std::size_t k = 0; k < sizeof(brew::AeeDeviceInfo); ++k) {
+            mem_ref.Escrever8(pi + static_cast<std::uint32_t>(k), b[k]);
+          }
+        }
+        cpu.Set(kR0, 0);
       } else if (idx == kSlotIdRmDir) {
         // `int RmDir(IFileMgr *po, const char *pszDir)` -- IFileMgr slot 7.
         //
@@ -1068,6 +1133,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
       // IShell
       {kVtableShell, brew_slots::kShell_SetTimer, kSlotIdSetTimer},
       {kVtableShell, brew_slots::kShell_QueryClass, kSlotIdQueryClass},
+      {kVtableShell, brew_slots::kShell_GetDeviceInfo, kSlotIdGetDeviceInfo},
       // IHIDDevice: slot 7 = GetNumberOfButtons
       {VtGenerico(5), brew_slots::kHIDDevice_GetNumberOfButtons, kSlotIdGetNumButtons},
       // IDisplay
