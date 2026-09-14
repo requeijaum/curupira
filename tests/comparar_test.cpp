@@ -4,7 +4,10 @@
 //   (a) um titulo que PIORA faz o comparador falhar, com o numero;
 //   (b) uma diferenca de CONFIGURACAO e recusada, e nao comparada;
 //   (c) um titulo que MELHORA nao pode falhar;
-//   (d) um campo que a tabela nao declara e uma recusa, e nao um silencio.
+//   (d) um campo que a tabela nao declara e uma recusa, e nao um silencio;
+//   (e) a PROVENIENCIA: dois corpus diferentes com os mesmos 62 pasta/mod nao se
+//       comparam (recusa 3), um modulo de outro tamanho tambem nao, e um `build`
+//       diferente NAO recusa -- comparar duas versoes do emulador e o uso normal.
 //
 // Cada um destes testes foi PROVADO POR VIOLACAO: a guarda correspondente em
 // tools/comparar.cpp foi quebrada de proposito e o teste ficou VERMELHO. O log
@@ -55,7 +58,8 @@ struct Ficha {
 
 const char* B(bool v) { return v ? "true" : "false"; }
 
-std::string Montar(const std::vector<Ficha>& fichas) {
+// O CORPO: a lista de fichas, que e a mesma nas duas formas.
+std::string Corpo(const std::vector<Ficha>& fichas) {
   std::ostringstream s;
   s << "[";
   for (std::size_t i = 0; i < fichas.size(); ++i) {
@@ -70,8 +74,33 @@ std::string Montar(const std::vector<Ficha>& fichas) {
       << ",\"cores\":" << f.cores << ",\"textos\":" << f.textos
       << ",\"blits\":" << f.blits << ",\"faltas\":" << f.faltas << "}";
   }
-  s << "\n]\n";
+  s << "\n]";
   return s.str();
+}
+
+// A LISTA NUA, a forma antiga (antes do commit cfb031e): continua aceite, para as
+// corridas ja guardadas por ai. Ver `Comparar.CabecalhoIgualNaoFalha` para a forma
+// nova -- os testes da lista nua provam que a transicao nao quebrou.
+std::string Montar(const std::vector<Ficha>& fichas) { return Corpo(fichas) + "\n"; }
+
+// Duas entradas DIFERENTES, para o teste poder dizer "isto nao e o mesmo corpus"
+// sem depender do SHA-256 verdadeiro (que tem vectores proprios em
+// tests/sha256_test.cpp). O que se prova aqui e a REACCAO a diferenca.
+const char* kShaA =
+    "348106f1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad8b";
+const char* kShaB =
+    "348106f1bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbd8b";
+
+// A corrida COM cabecalho de proveniencia, na forma que o `bateria.cpp` escreve
+// desde cfb031e. `titulos_do_cabecalho` existe para o teste poder escrever um
+// cabecalho que CONTRADIGA a lista (o -1 significa "a contagem certa").
+std::string MontarCom(const std::vector<Ficha>& fichas, const std::string& sha = kShaA,
+                      const std::string& build = "buildA", long titulos_do_cabecalho = -1) {
+  const long n = (titulos_do_cabecalho >= 0) ? titulos_do_cabecalho
+                                             : static_cast<long>(fichas.size());
+  return "{\n  \"config\": {\"corpus_sha256\": \"" + sha + "\", \"titulos\": " +
+         std::to_string(n) + ", \"build\": \"" + build + "\"},\n  \"titulos\": " +
+         Corpo(fichas) + "\n}\n";
 }
 
 std::string Tem(const std::string& texto, const std::string& agulha) {
@@ -239,10 +268,13 @@ TEST(Comparar, JsonCortadoERecusado) {
   EXPECT_TRUE(Contem(r.relatorio, "a.json")) << r.relatorio;
 }
 
-TEST(Comparar, NaoEListaERecusado) {
+// Um objecto de topo que nao seja a forma declarada (nem a lista nua, nem
+// `config` + `titulos`) recusa, e a mensagem diz QUAIS sao as duas formas.
+TEST(Comparar, ObjetoForaDaFormaERecusado) {
   const auto r = CompararTextos("{}", "{}", "a.json", "b.json");
   EXPECT_EQ(r.codigo, kFormato) << r.relatorio;
-  EXPECT_TRUE(Contem(r.relatorio, "LISTA")) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "lista nua de fichas")) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "`config` e `titulos`")) << r.relatorio;
 }
 
 TEST(Comparar, ContagemNegativaERecusada) {
@@ -352,4 +384,124 @@ TEST(Comparar, CadaCampoMaiorMelhorFalhaAoCair) {
     const auto r = CompararTextos(Montar({antes}), Montar({depois}), "a.json", "b.json");
     EXPECT_EQ(r.codigo, kRegressao) << campo << "\n" << r.relatorio;
   }
+}
+
+// ---------------------------------------------------------------------------
+// O CABECALHO DE PROVENIENCIA (forma escrita pelo `bateria.cpp` desde cfb031e).
+//
+// A guarda de configuracao tinha um buraco: derivava a identidade da lista de
+// `pasta/mod`, logo dois corpus DIFERENTES que mantivessem os mesmos 62 pasta/mod
+// eram indistinguiveis -- e duas dumps da mesma ROM dao o mesmo corpus com bytes
+// diferentes. Estes testes fecham-no.
+// ---------------------------------------------------------------------------
+
+TEST(Comparar, CabecalhoIgualNaoFalha) {
+  const std::string doc = MontarCom({{}});
+  const auto r = CompararTextos(doc, doc, "a.json", "b.json");
+  EXPECT_EQ(r.codigo, kSemRegressao) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "proveniencia da referencia: corpus_sha256=")) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "SEM REGRESSOES")) << r.relatorio;
+}
+
+// (b) GUARDA COMPLETA: MESMOS titulos, corpus DIFERENTE. Sem o cabecalho este caso
+// passava como comparacao valida.
+TEST(Comparar, CorpusDiferenteComOsMesmosTitulosERecusado) {
+  Ficha a;
+  Ficha b;
+  b.pasta = "276212";
+  b.mod = "pacmania";
+  const auto r =
+      CompararTextos(MontarCom({a, b}, kShaA), MontarCom({a, b}, kShaB), "ref.json", "nova.json");
+  EXPECT_EQ(r.codigo, kConfigIncompativel) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "cabecalho.corpus_sha256")) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, kShaA)) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, kShaB)) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "Nenhum numero foi comparado")) << r.relatorio;
+  EXPECT_FALSE(Contem(r.relatorio, "REGRESSOES")) << r.relatorio;
+}
+
+// Sem proveniencia NAO se recusa -- nao saber nao e "ser diferente" -- mas tambem
+// nao passa calado: fica dito, e a palavra e "SEM PROVENIENCIA".
+TEST(Comparar, SemProvenienciaNaoRecusaMasDiz) {
+  const auto r = CompararTextos(MontarCom({{}}, kShaA), MontarCom({{}}, "desconhecido"), "a.json",
+                                "b.json");
+  EXPECT_EQ(r.codigo, kSemRegressao) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "SEM PROVENIENCIA")) << r.relatorio;
+}
+
+// `build` divergente e o uso NORMAL da ferramenta: comparar duas versoes do
+// emulador. Se fosse criterio, o comparador recusaria a comparacao para que existe.
+TEST(Comparar, BuildDiferenteNaoFalha) {
+  const auto r = CompararTextos(MontarCom({{}}, kShaA, "abc1234"),
+                                MontarCom({{}}, kShaA, "def5678"), "a.json", "b.json");
+  EXPECT_EQ(r.codigo, kSemRegressao) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "cabecalho.build")) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "REGRESSOES (0)")) << r.relatorio;
+}
+
+// Corpo e cabecalho a discordar e uma mentira do instrumento: recusa de formato,
+// e nao uma comparacao com menos titulos.
+TEST(Comparar, CabecalhoQueContradizAListaERecusado) {
+  Ficha a;
+  Ficha b;
+  b.pasta = "276212";
+  b.mod = "pacmania";
+  const std::string doc = MontarCom({a, b}, kShaA, "buildA", 61);
+  const auto r = CompararTextos(doc, doc, "a.json", "b.json");
+  EXPECT_EQ(r.codigo, kFormato) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "o cabecalho declara 61 titulos e a lista tem 2")) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "mentira do instrumento")) << r.relatorio;
+}
+
+// O cabecalho tem a sua propria lista de campos declarados: um campo novo la
+// dentro tambem e uma recusa com o nome, e nao um silencio.
+TEST(Comparar, ChaveDesconhecidaNoCabecalhoERecusada) {
+  std::string doc = MontarCom({{}});
+  const std::string alvo = "\"build\": \"buildA\"";
+  const std::size_t p = doc.find(alvo);
+  ASSERT_NE(p, std::string::npos);
+  doc.insert(p + alvo.size(), ", \"sobra\": 1");
+  const auto r = CompararTextos(doc, doc, "a.json", "b.json");
+  EXPECT_EQ(r.codigo, kFormato) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "campo desconhecido no cabecalho 'sobra'")) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "kCabecalho")) << r.relatorio;
+}
+
+TEST(Comparar, ChaveDesconhecidaNoTopoERecusada) {
+  std::string doc = MontarCom({{}});
+  doc.insert(1, "\"extra\": 1, ");
+  const auto r = CompararTextos(doc, doc, "a.json", "b.json");
+  EXPECT_EQ(r.codigo, kFormato) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "chave desconhecida 'extra'")) << r.relatorio;
+}
+
+// Uma corrida com proveniencia e outra sem: de uma delas NAO SE SABE qual corpus
+// correu. Recusa, e nao uma comparacao a meias.
+TEST(Comparar, UmaCorridaComCabecalhoEOutraSemERecusada) {
+  const auto r = CompararTextos(MontarCom({{}}), Montar({{}}), "ref.json", "nova.json");
+  EXPECT_EQ(r.codigo, kConfigIncompativel) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "COM cabecalho")) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "SEM cabecalho")) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "--atualizar")) << r.relatorio;
+}
+
+// AO CONTRARIO do `build`, o `tamanho` do `.mod` e IDENTIDADE: um modulo de outro
+// tamanho e outro ficheiro, e nao um emulador pior.
+TEST(Comparar, ModComOutroTamanhoERecusado) {
+  Ficha antes;
+  antes.tamanho = 90068;
+  Ficha depois;
+  depois.tamanho = 91000;
+  const auto r = CompararTextos(MontarCom({antes}), MontarCom({depois}), "ref.json", "nova.json");
+  EXPECT_EQ(r.codigo, kConfigIncompativel) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "imicro3d (12875): tamanho 90068 -> 91000")) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "Nenhum numero foi comparado")) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "--atualizar")) << r.relatorio;
+}
+
+TEST(Comparar, MesmoTamanhoNaoRecusa) {
+  Ficha a;
+  a.tamanho = 90068;
+  const auto r = CompararTextos(MontarCom({a}), MontarCom({a}), "a.json", "b.json");
+  EXPECT_EQ(r.codigo, kSemRegressao) << r.relatorio;
 }
