@@ -162,6 +162,13 @@ int MedirOMotor() {
   zb2::brew::ConstruirObjeto(mem, s, zb2::brew::kObjShell, s.Endereco(zb2::brew::kVtableShell),
                              zb2::brew::kSlotsPorVtable, zb2::brew::kBaseDoShell);
   EscreverTrampolim(mem);
+  // O TRATADOR E O BLOCO DE DADOS dele tem de estar na memoria ANTES de o guest os
+  // usar. Sem isto, o endereco do callback tem ZEROS e o guest corre `andeq` (NOP)
+  // ate ao limite de passos -- e o aviso entregue fica a parecer PERDIDO.
+  // [DEBUG-midia] foi o que custou um diagnostico nesta etapa: o objecto acabava em
+  // estado PRONTO (a midia correu) e o contador do guest ficava a zero.
+  EscreverTratador(mem);
+  for (std::uint32_t k = 0; k < 8; ++k) mem.Escrever32(kDados + k * 4, 0);
 
   constexpr std::uint32_t kPponovo = 0x00100B00u;
   mem.Escrever32(kPponovo, 0xDEADBEEFu);
