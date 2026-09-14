@@ -443,6 +443,11 @@ int main(int argc, char** argv) {
             ",\"passos_create\":" + std::to_string(e.passos_create) +
             ",\"recusadas\":" + std::to_string(e.recusadas) + "},\n";
   }
+  // O JSON tem de ser VALIDO: uma virgula a mais no fim torna-o ilegivel para
+  // quem o for ler, e ele existe exactamente para ser comparado entre corridas.
+  // O texto termina em "},\n", logo a virgula esta em `size-2` e nao em
+  // `size-3` -- errei o indice a primeira vez e o JSON continuou invalido.
+  if (json.size() > 3 && json[json.size() - 2] == ',') json.erase(json.size() - 2, 1);
   json += "]\n";
 
   std::printf("\n== %d titulos | carga %d | ponteiro de modulo %d | applet %d ==\n", (int)titulos.size(),
