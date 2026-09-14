@@ -298,6 +298,7 @@ struct Estado {
   bool create = false;
   std::uint64_t passos_carga = 0;
   std::uint64_t passos_create = 0;
+  std::uint64_t passos_start = 0;
   std::uint64_t recusadas = 0;
   std::uint32_t pixels = 0;
   std::uint32_t cores = 0;
@@ -634,6 +635,50 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   e.recusadas = cpu.InstruscoesRecusadas();
   g_applet = mem.Ler32(kPPObj);  // para o `GetAppInstance`
   e.create = mem.Ler32(kPPObj) != 0;
+
+  // ==================== O `EVT_APP_START` -- A PAREDE ====================
+  //
+  // Ate aqui a bateria criava o applet e PARAVA. E um applet criado nao faz nada:
+  // **o jogo vive dentro do `HandleEvent`**, que e onde ele monta o ecra, carrega os
+  // recursos, arma o temporizador do laco de quadro e regista os callbacks.
+  //
+  // Sem esta chamada, 41 dos 62 titulos ficavam com um applet nao nulo e um estado
+  // que nao avanca -- e a lista de demanda ficava quase vazia, porque **os jogos
+  // nunca chegavam a pedir nada**.
+  //
+  // A ABI, lida de `platform/system/inc/AEEIApplet.h`:
+  //
+  //     #define INHERIT_IApplet(iname) \
+  //        INHERIT_IBase(iname); \
+  //        boolean (*HandleEvent)(iname *po, AEEEvent evt, uint16 wp, uint32 dwp)
+  //
+  // `INHERIT_IBase` ocupa DOIS slots (`AddRef`, `Release`), logo o `HandleEvent` esta
+  // no indice 2 -- o TERCEIRO. E `EVT_APP_START = 0`
+  // (`platform/system/inc/AEEEvent.h:23`), com `dwParam` a ser um `AEEAppStart*`.
+  //
+  // `wp` e `dwp` vao a ZERO: o cabecalho diz que o `dwParam` e um `AEEAppStart *`, e
+  // nao ha medicao nenhuma do que ele deva apontar. Passar zero e nao o inventar.
+  if (e.create) {
+    const std::uint32_t applet = mem.Ler32(kPPObj);
+    const std::uint32_t vapp = mem.Ler32(applet);
+    const std::uint32_t handle = mem.Ler32(vapp + 2 * 4);
+    if (handle >= kBase && handle < kBase + e.tamanho) {
+      cpu.Repor(handle, kPilha);
+      cpu.Set(kR0, applet);
+      cpu.Set(kR1, 0);  // EVT_APP_START
+      cpu.Set(kR2, 0);  // wp
+      cpu.Set(kR3, 0);  // dwp
+      cpu.Set(kLR, kSentinela);
+      const zb2::brew::ResultadoFase r = g_despacho->Correr(cpu, kLimite, kPPObj);
+      e.passos_start = r.passos;
+      e.motivo += " | start:" + r.motivo;
+    } else {
+      // O vtable do applet NAO esta dentro do modulo: registar e NAO chamar. Chamar
+      // um endereco desconhecido poria o PC em memoria que nao existe, e o defeito
+      // apareceria como `saiu_do_modulo` sem dizer por que.
+      e.motivo += " | start:handle_fora_do_modulo";
+    }
+  }
   e.motivo += " | create:" + motivo_create;
   if (!e.create) e.motivo += "_sem_applet";
   for (const auto& par : traco.ContagemFaltas()) e.faltas[par.first] = par.second;
@@ -707,7 +752,7 @@ int main(int argc, char** argv) {
             ",\"passos_carga\":" + std::to_string(e.passos_carga) +
             ",\"passos_create\":" + std::to_string(e.passos_create) +
             ",\"recusadas\":" + std::to_string(e.recusadas) +
-            ",\"motivo\":\"" + e.motivo + "\"" +
+            ",\"passos_start\":" + std::to_string(e.passos_start) + ",\"motivo\":\"" + e.motivo + "\"" +
             ",\"pixels\":" + std::to_string(e.pixels) +
             ",\"cores\":" + std::to_string(e.cores) +
             ",\"textos\":" + std::to_string(e.textos) +
