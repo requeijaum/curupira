@@ -4,8 +4,6 @@
 #include <cstring>
 #include <set>
 
-#include <chrono>
-
 #include "core/brew/formato.h"
 
 namespace zb2::brew {
@@ -155,7 +153,6 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
   ResultadoFase resultado;
   std::uint32_t saidas = 0;
   bool continuar_no_laco = false;
-  const auto inicio = std::chrono::steady_clock::now();
   while (resultado.passos < limite) {
     // O ORCAMENTO DE TEMPO, verificado a cada 65536 passos.
     //
@@ -163,14 +160,18 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
     // custo e nulo. O motivo fica REGISTADO: um titulo que bate no orcamento nao
     // e um titulo que falhou -- e um titulo que ainda estava a andar, e isso
     // muda o que se conclui dele.
-    if ((resultado.passos & 0xFFFFull) == 0) {
-      const auto agora = std::chrono::steady_clock::now();
-      const auto s = std::chrono::duration_cast<std::chrono::seconds>(agora - inicio).count();
-      if (s >= kOrcamentoSegundos) {
-        resultado.motivo = "orcamento_de_tempo";
-        return resultado;
-      }
-    }
+    // O ORCAMENTO DE FASE PASSA A SER EM PASSOS, e nao em relogio do hospedeiro.
+    //
+    // Era `std::chrono::steady_clock`, e isso e uma violacao do P4
+    // (determinismo por construcao): o emulador passava a medir a CARGA DA
+    // MAQUINA. Ficou LATENTE enquanto o limite de passos dominou -- os 36 titulos
+    // com `orcamento_esgotado` param exactamente em 4000000 passos, nenhum pelo
+    // relogio. Mas no dia em que um titulo ficasse mais lento por passo, a
+    // bateria acusaria regressoes de JOGABILIDADE que eram regressoes de
+    // CARGA -- e o `tools/comparar` (etapa 9) acreditaria nelas.
+    //
+    // Achado pelo sub-agente `regressoes`, na revisao da etapa 9. **O agente que
+    // constroi o juiz foi quem viu que o juiz ia julgar a coisa errada.**
     const std::uint32_t pc = cpu.Get(kPC);
     if (pc == kSentinela) {
       // A sentinela tem dois significados: o retorno da chamada de entrada, ou

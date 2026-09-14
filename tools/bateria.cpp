@@ -352,6 +352,17 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   bool ok = false;
   const std::vector<std::uint8_t> imagem = Ler(dir + "/" + t.pasta + "/" + t.mod + ".mod", &ok);
   if (!ok) { e.motivo = "mod_ausente"; return e; }
+  // O TAMANHO DA IMAGEM. Este campo ficou a ZERO durante varias rondas, porque a
+  // linha foi removida no commit `d75281d` e nada acusou.
+  //
+  // A CONSEQUENCIA NAO ERA SO UM CAMPO BONITO A ZERO: o `vtable` compara
+  // `alvo >= kBase && alvo < kBase + e.tamanho`, e com o tamanho a zero isso e
+  // sempre FALSO. **Um dos quatro degraus do arranque estava morto**, e a bateria
+  // imprimia `vtable NAO` nos 62 titulos -- que eu lia como "os modulos nao tem
+  // vtable" em vez de "o campo nao mede nada".
+  //
+  // **Um campo que nao mede e pior do que um campo ausente: um ausente nao se le.**
+  e.tamanho = static_cast<std::uint32_t>(imagem.size());
   // O framebuffer e POR TITULO: um estado que passa de um titulo para o outro
   // tornaria a medida incomparavel -- que e o defeito de metodo mais repetido
   // desta sessao.
@@ -592,9 +603,6 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   cpu.Set(kR2, static_cast<std::uint32_t>(std::strtoul(t.clsid.c_str(), nullptr, 0)));
   cpu.Set(kR3, kPPObj);
   cpu.Set(kLR, kSentinela);
-  // O orcamento de tempo comeca a contar AQUI, e cobre a fase de criacao, que e
-  // a que passou a ser cara.
-  const auto t0 = std::chrono::steady_clock::now();
   std::string motivo_create;
   {
     const zb2::brew::ResultadoFase r = g_despacho->Correr(cpu, kLimite, kPPObj);
