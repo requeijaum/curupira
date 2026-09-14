@@ -1,0 +1,376 @@
+[
+  {
+    "folder": "12875",
+    "mod": "imicro3d",
+    "clsid_hex": "0x10292c3",
+    "assets": "none"
+  },
+  {
+    "folder": "263019",
+    "mod": "chessbots",
+    "clsid_hex": "0x10413c3",
+    "assets": "none"
+  },
+  {
+    "folder": "274214",
+    "mod": "cnk2",
+    "clsid_hex": "0x1081984",
+    "assets": "none",
+    "max_steps": 186486543
+  },
+  {
+    "folder": "274259",
+    "mod": "a3d",
+    "clsid_hex": "0x1081970",
+    "assets": "bar"
+  },
+  {
+    "folder": "274754",
+    "mod": "ddragonz",
+    "clsid_hex": "0x102f789",
+    "assets": "ggz"
+  },
+  {
+    "folder": "274755",
+    "mod": "tectoy",
+    "clsid_hex": "0x1070798",
+    "assets": "none"
+  },
+  {
+    "folder": "274791",
+    "mod": "zeebo_app",
+    "clsid_hex": "0x1072195",
+    "assets": "none"
+  },
+  {
+    "folder": "274802",
+    "mod": "quake",
+    "clsid_hex": "0x1087a3c",
+    "assets": "none"
+  },
+  {
+    "folder": "274803",
+    "mod": "fifa09",
+    "clsid_hex": "0x1087ae8",
+    "assets": "none",
+    "max_steps": 483295456
+  },
+  {
+    "folder": "274804",
+    "mod": "brainchallenge",
+    "clsid_hex": "0x1030005",
+    "assets": "bar"
+  },
+  {
+    "folder": "276121",
+    "mod": "nfs",
+    "clsid_hex": "0x108c0bc",
+    "assets": "none"
+  },
+  {
+    "folder": "276151",
+    "mod": "alpineracerex",
+    "clsid_hex": "0x1073825",
+    "assets": "bar"
+  },
+  {
+    "folder": "276152",
+    "mod": "ridgeracer",
+    "clsid_hex": "0x1087b73",
+    "assets": "bar"
+  },
+  {
+    "folder": "276153",
+    "mod": "quake2brew",
+    "clsid_hex": "0x1087c1c",
+    "assets": "none"
+  },
+  {
+    "folder": "276154",
+    "mod": "prey3d",
+    "clsid_hex": "0x108d48e",
+    "assets": "none"
+  },
+  {
+    "folder": "276212",
+    "mod": "pacmania",
+    "clsid_hex": "0x1087b72",
+    "assets": "bar"
+  },
+  {
+    "folder": "276675",
+    "mod": "bio4_brew",
+    "clsid_hex": "0x108af6c",
+    "assets": "none"
+  },
+  {
+    "folder": "276731",
+    "mod": "tekken2",
+    "clsid_hex": "0x108d1b7",
+    "assets": "bar"
+  },
+  {
+    "folder": "276809",
+    "mod": "Rolimaz",
+    "clsid_hex": "0x108c0bb",
+    "assets": "none"
+  },
+  {
+    "folder": "277083",
+    "mod": "bjt",
+    "clsid_hex": "0x108c1e1",
+    "assets": "none"
+  },
+  {
+    "folder": "277229",
+    "mod": "game",
+    "clsid_hex": "0x10903c6",
+    "assets": "none"
+  },
+  {
+    "folder": "277285",
+    "mod": "AirRacez",
+    "clsid_hex": "0x108ff06",
+    "assets": "none"
+  },
+  {
+    "folder": "277380",
+    "mod": "gof",
+    "clsid_hex": "0x108fab8",
+    "assets": "none"
+  },
+  {
+    "folder": "277455",
+    "mod": "zenonia",
+    "clsid_hex": "0xbf2e2021",
+    "assets": "bar"
+  },
+  {
+    "folder": "277495",
+    "mod": "reksio",
+    "clsid_hex": "0x102febd",
+    "assets": "none"
+  },
+  {
+    "folder": "277534",
+    "mod": "zeebotennis",
+    "clsid_hex": "0x108eff9",
+    "assets": "none"
+  },
+  {
+    "folder": "277727",
+    "mod": "Bajaz",
+    "clsid_hex": "0x108ff07",
+    "assets": "none"
+  },
+  {
+    "folder": "278200",
+    "mod": "heavyweaponbrew",
+    "clsid_hex": "0x10978a2",
+    "assets": "bar"
+  },
+  {
+    "folder": "278212",
+    "mod": "zeebovolley",
+    "clsid_hex": "0x108ff15",
+    "assets": "none"
+  },
+  {
+    "folder": "278282",
+    "mod": "rmp",
+    "clsid_hex": "0x108fab9",
+    "assets": "none"
+  },
+  {
+    "folder": "278283",
+    "mod": "JetBoardz",
+    "clsid_hex": "0x108ff14",
+    "assets": "none"
+  },
+  {
+    "folder": "278285",
+    "mod": "Boiaz",
+    "clsid_hex": "0x108ff13",
+    "assets": "none"
+  },
+  {
+    "folder": "278738",
+    "mod": "dodgeball",
+    "clsid_hex": "0x108ff16",
+    "assets": "none"
+  },
+  {
+    "folder": "278962",
+    "mod": "peggle",
+    "clsid_hex": "0x1099cd6",
+    "assets": "bar"
+  },
+  {
+    "folder": "278965",
+    "mod": "toyraidzeebo",
+    "clsid_hex": "0x1095146",
+    "assets": "none"
+  },
+  {
+    "folder": "278986",
+    "mod": "cninja",
+    "clsid_hex": "0x10924de",
+    "assets": "none"
+  },
+  {
+    "folder": "278987",
+    "mod": "spinmast",
+    "clsid_hex": "0x10924e1",
+    "assets": "none"
+  },
+  {
+    "folder": "278988",
+    "mod": "strhoop",
+    "clsid_hex": "0x10924e2",
+    "assets": "none"
+  },
+  {
+    "folder": "279036",
+    "mod": "game",
+    "clsid_hex": "0x10963a5",
+    "assets": "none"
+  },
+  {
+    "folder": "279125",
+    "mod": "supbtime",
+    "clsid_hex": "0x10924e3",
+    "assets": "none"
+  },
+  {
+    "folder": "279126",
+    "mod": "karnovr",
+    "clsid_hex": "0x10924dd",
+    "assets": "none"
+  },
+  {
+    "folder": "279159",
+    "mod": "zeebopeteca",
+    "clsid_hex": "0x108ff18",
+    "assets": "none"
+  },
+  {
+    "folder": "279173",
+    "mod": "wizdfire",
+    "clsid_hex": "0x10924e4",
+    "assets": "none"
+  },
+  {
+    "folder": "279200",
+    "mod": "magdrop3",
+    "clsid_hex": "0x10924e0",
+    "assets": "none"
+  },
+  {
+    "folder": "279233",
+    "mod": "darkseal",
+    "clsid_hex": "0x10924df",
+    "assets": "none"
+  },
+  {
+    "folder": "279369",
+    "mod": "abd",
+    "clsid_hex": "0x108e356",
+    "assets": "bar"
+  },
+  {
+    "folder": "279380",
+    "mod": "footparty",
+    "clsid_hex": "0x108ff19",
+    "assets": "none"
+  },
+  {
+    "folder": "279382",
+    "mod": "zeeboids",
+    "clsid_hex": "0x108ff1a",
+    "assets": "none"
+  },
+  {
+    "folder": "279394",
+    "mod": "rocketweb",
+    "clsid_hex": "0x1080f0c",
+    "assets": "bar"
+  },
+  {
+    "folder": "279712",
+    "mod": "zumar",
+    "clsid_hex": "0x109af55",
+    "assets": "none"
+  },
+  {
+    "folder": "279888",
+    "mod": "baddudes",
+    "clsid_hex": "0x109ec1b",
+    "assets": "none"
+  },
+  {
+    "folder": "279889",
+    "mod": "hbarrel",
+    "clsid_hex": "0x109ec1c",
+    "assets": "none"
+  },
+  {
+    "folder": "280173",
+    "mod": "allstarcards",
+    "clsid_hex": "0x10940da",
+    "assets": "bar"
+  },
+  {
+    "folder": "280214",
+    "mod": "asq",
+    "clsid_hex": "0x109da8e",
+    "assets": "bar"
+  },
+  {
+    "folder": "280221",
+    "mod": "ironsight",
+    "clsid_hex": "0x109da8f",
+    "assets": "bar"
+  },
+  {
+    "folder": "280238",
+    "mod": "pbc",
+    "clsid_hex": "0x10a1241",
+    "assets": "none"
+  },
+  {
+    "folder": "280386",
+    "mod": "alice",
+    "clsid_hex": "0x10a2337",
+    "assets": "none"
+  },
+  {
+    "folder": "280394",
+    "mod": "recklessracing",
+    "clsid_hex": "0x109da91",
+    "assets": "none"
+  },
+  {
+    "folder": "280463",
+    "mod": "torkandkral",
+    "clsid_hex": "0x10a6d13",
+    "assets": "bar"
+  },
+  {
+    "folder": "280602",
+    "mod": "rt2",
+    "clsid_hex": "0x109da90",
+    "assets": "none"
+  },
+  {
+    "folder": "280634",
+    "mod": "activitycenter",
+    "clsid_hex": "0x10a2335",
+    "assets": "none"
+  },
+  {
+    "folder": "280647",
+    "mod": "funsoccer",
+    "clsid_hex": "0x108ff17",
+    "assets": "none"
+  }
+]

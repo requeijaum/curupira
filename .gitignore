@@ -1,0 +1,23 @@
+# builds
+build/
+build-*/
+*.o
+*.a
+
+# logs e estado local
+*.log
+*.savestate
+
+# python
+__pycache__/
+*.pyc
+
+# FICHEIROS QUE NAO ENTRAM NUNCA, por decisao de clean-room (ver README):
+# SDK, firmware, e conteudo de jogos. Nao ha nenhum destes no repositorio, e esta
+# lista existe para continuar assim.
+*.mod
+*.bar
+*.mif
+*.sig
+*.ggz
+*.pakz

@@ -75,6 +75,7 @@ _procurar_corpus() {
     echo "AVISO: ZB2_CORPUS='$ZB2_CORPUS' nao existe. A PROCURAR em vez de saltar." >&2
   fi
   for c in \
+    "$RAIZ/corpus62.json" \
     "$RAIZ/../research/sources/scripts/corpus62.json" \
     "$RAIZ/../../scripts/corpus62.json" \
     "$RAIZ/research/sources/scripts/corpus62.json" \
