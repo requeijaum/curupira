@@ -923,18 +923,36 @@ TEST(Media, UmCallbackQueNaoVoltaERegistadoENaoDaSucesso) {
   EXPECT_EQ(b.Cpu().Get(kPC), pc_antes);
 }
 
-TEST(Media, AEntregaTiraUmAvisoDeCadaVezEDepoisDizQueNaoHaNenhum) {
+TEST(Media, CadaEntregaLevaUmAvisoEMaisNenhum) {
+  // COM DOIS AVISOS EM FILA, e nao um de cada vez: e assim que a propriedade
+  // "uma entrega = um callback" e testada de verdade. Com a fila a esvaziar-se
+  // de uma vez, o jogo perde avisos que contava -- o mesmo defeito de contagem
+  // (uma a mais ou a menos) que a etapa existe para fechar.
   Bancada b;
-  std::uint32_t po = 0;
-  Preparar(b, &po, 100);
-  b.Play();
-  b.Avancar(100);           // 1 aviso, entregue pela bancada
-  b.Play();
-  b.Avancar(100);           // 2.o aviso
-  EXPECT_EQ(b.Avisos(), 2u);
+  b.PorPcm(Onda(200, 3000));
+  const std::uint32_t primeiro = b.CriarMedia(kClasseMultimidia, kPponovo);
+  b.Chamar(brew_slots::kMedia_RegisterNotify, primeiro, kTratador, kDados);
+  b.Chamar(brew_slots::kMedia_SetMediaParm, primeiro, kMmParmMediaData, kMediaData, 0);
+  const std::uint32_t segundo = b.CriarMedia(kClasseMultimidia, kPponovo);
+  ASSERT_NE(segundo, primeiro);
+  b.Chamar(brew_slots::kMedia_RegisterNotify, segundo, kTratador, kDados);
+  b.Chamar(brew_slots::kMedia_SetMediaParm, segundo, kMmParmMediaData, kMediaData, 0);
+
+  b.Chamar(brew_slots::kMedia_Play, primeiro);
+  b.Chamar(brew_slots::kMedia_Play, segundo);
+  b.AvancarSemEntregar(200);  // as duas chegam ao fim: DOIS avisos em fila
+  ASSERT_EQ(b.OMedia().AvisosPendentes(), 2u);
+
+  const std::uint32_t antes = b.Mem().Ler32(kDados + kOffUserContador);
+  EXPECT_TRUE(b.OMedia().EntregarAviso(b.Cpu(), kSentinela, 20000));
+  EXPECT_EQ(b.OMedia().AvisosPendentes(), 1u) << "uma entrega leva UM aviso";
+  EXPECT_EQ(b.Mem().Ler32(kDados + kOffUserContador), antes + 1);
+  EXPECT_TRUE(b.OMedia().EntregarAviso(b.Cpu(), kSentinela, 20000));
   EXPECT_EQ(b.OMedia().AvisosPendentes(), 0u);
-  EXPECT_FALSE(b.OMedia().EntregarAviso(b.Cpu(), kSentinela, 100));
+  EXPECT_EQ(b.Mem().Ler32(kDados + kOffUserContador), antes + 2);
   EXPECT_EQ(b.OMedia().AvisosEntregues(), 2u);
+  EXPECT_FALSE(b.OMedia().EntregarAviso(b.Cpu(), kSentinela, 200000));
+  EXPECT_EQ(b.OMedia().AvisosEntregues(), 2u) << "sem aviso na fila nao ha entrega";
 }
 
 }  // namespace

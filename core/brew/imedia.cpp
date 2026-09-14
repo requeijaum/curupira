@@ -394,7 +394,11 @@ bool Media::EntregarAviso(ICpu& cpu, std::uint32_t sentinela, std::uint64_t limi
                 std::to_string(a.status) + ")");
   }
 
-  // 3. REPOR: os registradores, o CPSR, e o PC.
+  // 3. REPOR: os registradores (o r15 E o PC, logo este laco repoe tambem o PC),
+  //    o CPSR, e -- explicitamente -- o PC do laco. A linha do PC e redudante com
+  //    o laco de proposito: ela diz em voz alta o que a reposicao do r15 faz, e
+  //    foi um teste de violacao (tirar so esta linha) que provou a redundancia
+  //    em vez de a supor.
   for (int r = 0; r < 16; ++r) cpu.Set(r, guardados[static_cast<std::size_t>(r)]);
   cpu.SetCpsr(cpsr_guardado);
   cpu.Set(kPC, pc_do_laco);
