@@ -22,6 +22,7 @@
 
 #include "core/audio/misturador.h"
 #include "core/brew/ajudantes.h"
+#include "core/brew/recursos.h"
 
 // A CABLAGEM DO GL (etapa 6): o IGL e o IEGL. Ver docs/rewrite/REMENDO-GL-DESPACHO.md.
 //
@@ -243,6 +244,10 @@ class Despacho {
   Alocador& al_;
   Vfs& vfs_;
   Arquivos arquivos_;
+  // Recursos do `.bar`: conhece a VFS e o alocador do GUEST. O despacho fica só
+  // com a ABI (registros/pilha); as três formas de LoadResDataEx têm testes em
+  // `tests/recursos_test.cpp`.
+  Recursos recursos_;
   Tela tela_;
   // O MISTURADOR e o IMedia. O `Media` tem referencias dentro, logo NAO e
   // atribuivel: nasce no `InstalarAjudantes`, quando a faixa de saida ja esta

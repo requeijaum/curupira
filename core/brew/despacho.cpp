@@ -115,11 +115,23 @@ Despacho::Despacho(Memoria& mem, Traco& traco, Alocador& alocador, Vfs& vfs)
       al_(alocador),
       vfs_(vfs),
       arquivos_(&vfs),
+      // A pasta do título só fica conhecida em `SituarTitulo`, depois do
+      // construtor. A lambda lê dir_/pasta_ NO MOMENTO DO PEDIDO; não captura uma
+      // cópia vazia agora. E usa a mesma VFS do OpenFile, uma só verdade sobre o
+      // que existe no pacote.
+      recursos_(mem, alocador,
+                 [this](const std::string& ficheiro, std::vector<std::uint8_t>* bytes,
+                        std::string* motivo) {
+                   return LeitorDaPasta(dir_ + "/" + pasta_, &vfs_)(ficheiro, bytes, motivo);
+                 },
+                 &traco),
       sinais_(mem, traco),
       ihid_(mem, traco, sinais_, entrada_),
-      widgets_(mem, traco),
+      // Ordem igual à DECLARAÇÃO em despacho.h: C++ constrói por declaração,
+      // não pela ordem que parece aqui. O -Wreorder apanhou esta divergência.
       igl_(mem, traco),
-      egl_(mem, traco) {}
+      egl_(mem, traco),
+      widgets_(mem, traco) {}
 
 // A INSTALACAO DO GL. Devolve quantos slots foram cablados NO TOTAL (0 = falhou).
 //
@@ -538,6 +550,37 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         std::uint32_t retorno = 0;
         egl_.Executar(idx - kVtableIegl, av, &retorno);
         cpu.Set(kR0, retorno);
+      } else if (idx == kBaseDoShell + brew_slots::kShell_LoadResDataEx) {
+        // `void *LoadResDataEx(IShell*, const char *pszResFile, uint16 id,
+        //                      ResType type, void *pBuf, uint32 *pnBufSize)`.
+        // A ABI AAPCS põe pBuf/pnBufSize na pilha. A semântica das três formas
+        // vive em `Recursos`, onde é testada contra o contrato do SDK:
+        //  pBuf=-1 -> tamanho + retorno -1; pBuf=0 -> alocar; outro -> copiar.
+        const std::uint32_t sp = cpu.Get(kSP);
+        PedidoDeRecurso pedido;
+        pedido.ficheiro = LerTextoDe(mem_, cpu.Get(kR1), 512);
+        pedido.id = static_cast<std::uint16_t>(cpu.Get(kR2));
+        pedido.tipo = static_cast<std::uint16_t>(cpu.Get(kR3));
+        pedido.buffer = mem_.Ler32(sp);
+        pedido.pn_tamanho = mem_.Ler32(sp + 4);
+        const ResultadoDoRecurso r = recursos_.Atender(pedido);
+        cpu.Set(kR0, r.ponteiro);  // 0 em recusa, como o SDK exige.
+      } else if (idx == kBaseDoShell + brew_slots::kShell_LoadResString) {
+        // `int LoadResString(IShell*, const char*, uint16, AECHAR*, int)`.
+        const std::uint32_t sp = cpu.Get(kSP);
+        PedidoDeTexto pedido;
+        pedido.ficheiro = LerTextoDe(mem_, cpu.Get(kR1), 512);
+        pedido.id = static_cast<std::uint16_t>(cpu.Get(kR2));
+        pedido.destino = cpu.Get(kR3);
+        pedido.n_bytes = mem_.Ler32(sp);
+        const ResultadoDoTexto r = recursos_.ServirTexto(pedido);
+        cpu.Set(kR0, r.ok ? r.caracteres : kAeeUnsupported);
+      } else if (idx == kSlotIdFreeResData) {
+        // Esta vtable usa endereço específico (1563), não `kBaseDoShell+20`.
+        // Só `Recursos` sabe quais ponteiros ele próprio alocou; passar outro ao
+        // alocador corromperia o heap silenciosamente.
+        (void)recursos_.Libertar(cpu.Get(kR1));
+        cpu.Set(kR0, kAeeSuccess);  // método void; a recusa fica no Traco.
       } else if (idx >= kBaseDoShell) {
         // O NOME tem de dizer de QUE interface e o slot. Um so "IShell::slot"
         // para tudo dava `IShell::slot4004` para um metodo do IDisplay -- numero
@@ -922,12 +965,6 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // memoria do guest, e nao ha threads de subsistema. Devolver sucesso e a
         // resposta CORRECTA, e nao um stub: o contrato e "a partir daqui es o
         // unico a mexer", e isso ja e verdade.
-        cpu.Set(kR0, 0);
-      } else if (idx == kSlotIdFreeResData) {
-        // `void FreeResData(IShell *po, void *pData)` -- IShell slot 20.
-        // Liberta o que o `LoadResData` devolveu. Enquanto os recursos nao
-        // existirem, nao ha nada para libertar -- e passar um ponteiro alheio ao
-        // alocador seria pior do que nao fazer nada.
         cpu.Set(kR0, 0);
       } else if (idx == kSlotIdCheckPriv) {
         // `boolean CheckPrivLevel(IShell *po, uint32 dwPriv)` -- IShell slot 39.
