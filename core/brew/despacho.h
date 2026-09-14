@@ -22,6 +22,24 @@
 
 #include "core/audio/misturador.h"
 #include "core/brew/ajudantes.h"
+
+// A CABLAGEM DO GL (etapa 6): o IGL e o IEGL. Ver docs/rewrite/REMENDO-GL-DESPACHO.md.
+//
+// ESTE `#define` E A GUARDA DO TESTE. O `tests/gl_cablagem_test.cpp` corre de
+// verdade quando ele existe e SALTA com o motivo escrito quando nao existe -- e um
+// teste que passa sem ter corrido e pior do que um teste vermelho.
+#define ZB2_CABLAGEM_GL 1
+#include "core/brew/egl.h"
+#include "core/brew/igl.h"
+
+// A CABLAGEM DO GL (etapa 6): o IGL e o IEGL. Ver docs/rewrite/REMENDO-GL-DESPACHO.md.
+//
+// ESTE `#define` E A GUARDA DO TESTE. O `tests/gl_cablagem_test.cpp` corre de
+// verdade quando ele existe e SALTA com o motivo escrito quando nao existe -- e um
+// teste que passa sem ter corrido e pior do que um teste vermelho.
+#define ZB2_CABLAGEM_GL 1
+#include "core/brew/egl.h"
+#include "core/brew/igl.h"
 #include "core/brew/ihiddevice.h"
 #include "core/brew/arquivo.h"
 #include "core/brew/imedia.h"
@@ -179,6 +197,21 @@ class Despacho {
     dir_ = dir;
     pasta_ = pasta;
   }
+  // --- O GL (etapa 6) ------------------------------------------------------
+  //
+  // O `Igl` e o `Egl` vivem AQUI, e nao na ferramenta: a cablagem e do motor.
+  // `InstalarGl` escreve as duas vtables na faixa de saida e CONFIRMA com leitura
+  // de volta (cada modulo ja faz a sua); e o `Correr` que entrega os pedidos.
+  std::uint32_t InstalarGl(const Saidas& saidas);
+  Igl& IglRef() { return igl_; }
+  const Igl& IglRef() const { return igl_; }
+  Egl& EglRef() { return egl_; }
+  const Egl& EglRef() const { return egl_; }
+
+  // --- O GL (etapa 6) ------------------------------------------------------
+  //
+  // O `Igl` e o `Egl` vivem AQUI, e nao na ferramenta: a cablagem e do motor.
+
   void DefinirVtableBitmap(std::uint32_t v) { vtable_bitmap_ = v; }
   void DefinirVtableFicheiro(std::uint32_t v) { vtable_ficheiro_ = v; }
   void DefinirApplet(std::uint32_t v) { applet_ = v; }
@@ -210,6 +243,14 @@ class Despacho {
 
   std::int64_t agora_ms_ = 0;
   Temporizador timer_;
+
+  // O GL e o EGL. Depois do que eles nao usam e antes de nada que os use: a ordem
+  // de declaracao e a ordem de construcao.
+  Igl igl_;
+  Egl egl_;
+
+  // O GL e o EGL. Depois do que eles nao usam e antes de nada que os use: a ordem
+  // de declaracao e a ordem de construcao.
   // O WIDGET. Depois de `tela_` e dos objectos do shell, porque e construido por
   // `InstalarAjudantes` e nao no construtor.
   Widgets widgets_;

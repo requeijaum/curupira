@@ -114,7 +114,32 @@ Despacho::Despacho(Memoria& mem, Traco& traco, Alocador& alocador, Vfs& vfs)
       arquivos_(&vfs),
       sinais_(mem, traco),
       ihid_(mem, traco, sinais_, entrada_),
-      widgets_(mem, traco) {}
+      widgets_(mem, traco),
+      igl_(mem, traco),
+      egl_(mem, traco) {}
+
+// A INSTALACAO DO GL. Devolve quantos slots foram cablados NO TOTAL (0 = falhou).
+//
+// AS FAIXAS SAO 30000 E 31000, e nao 20000/21000: a faixa 20000 esta ocupada pela
+// ENTRADA (`tools/bateria.cpp` instala-a em 20000; 32 + 16 slots, de 20000 a 20047)
+// e as duas escrevem nos MESMOS enderecos. Os numeros medidos estao no comentario
+// das constantes em `core/brew/igl.h`.
+std::uint32_t Despacho::InstalarGl(const Saidas& saidas) {
+  const std::uint32_t a = igl_.Instalar(saidas);
+  const std::uint32_t b = egl_.Instalar(saidas);
+  if (a == 0 || b == 0) return 0;
+  // DOIS OBJECTOS NO MESMO ENDERECO dariam uma vtable a servir as duas interfaces.
+  // Cada `Instalar` confere a sua vtable; nada confere que os dois objectos sao
+  // distintos, e um `if` custa menos do que uma ronda a olhar para o sitio errado.
+  if (igl_.Objeto() == egl_.Objeto()) {
+    traco_.RegistarFalta(Area::Video, "cablagem_do_GL",
+                         "o IGL e o IEGL ficaram no mesmo endereco de objecto");
+    return 0;
+  }
+  traco_.Emitir(Area::Video, Nivel::Informacao, "GL_CABLADO",
+                "IGL em 0x800B0000 (faixa 30000) e IEGL em 0x800B1000 (faixa 31000)");
+  return a + b;
+}
 
 bool Despacho::InstalarWidgets(const Saidas& saidas) {
   // IDEMPOTENTE: quem dirige o titulo pode chamar isto, e o `InstalarAjudantes`
@@ -268,6 +293,14 @@ void Despacho::InstalarAjudantes(const Saidas& saidas, Endereco tabela) {
     }
     return false;
   };
+  // O GL entra AQUI, junto da tabela de ajudantes: e o mesmo passo de construcao
+  // do sistema, e nao um segundo caminho que alguem tem de lembrar de chamar.
+  const std::uint32_t slots_gl = InstalarGl(saidas);
+  if (slots_gl == 0) {
+    traco_.RegistarFalta(Area::Video, "cablagem_do_GL",
+                         "o IGL e/ou o IEGL nao cablaram; os pedidos de GL vao recusar");
+  }
+
   for (std::uint32_t off = 0; off < 117 * 4; off += 4) {
     if (off == 0x68 || off == 0x6c || ja_tem(off)) continue;
     // UM endereco de saida POR OFFSET, e nao um stub generico para todos.
@@ -391,6 +424,12 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         }
         if (iid == kIidDisplay) devolver = zb2::brew::kObjDisplay;
         else if (iid == kIidFileMgr) devolver = zb2::brew::kObjFileMgr;
+        // O GL E O EGL (AEEGL.h). O `ddragonz` cria um objecto com o AEECLSID_GL
+        // (0x01014bc3) e passa o resultado como `gpIGL` (0x11d61c-0x11d634).
+        // O AEECLSID_EGL (0x01014bc4) NAO aparece em nenhum dos 4 titulos com
+        // wrapper -- esta linha vem do cabecalho e nao de uma medicao do corpus.
+        else if (iid == zb2::brew::kClsidIgl) devolver = igl_.Objeto();
+        else if (iid == zb2::brew::kClsidIegl) devolver = egl_.Objeto();
         // A ENTRADA. O `AEECLSID_HID` deixou de ser um objecto GENERICO: existe um
         // IHID a serio. E a fabrica de sinais tambem (0x01041207, pedida por 37
         // dos 62 titulos -- medido), porque sem ela o jogo nao tem como pedir o
@@ -425,6 +464,35 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // e dizia `<interface>::slotN`. Com o ramo do widget a frente, o pedido
         // e ATENDIDO e o nome so aparece quando o que faltou e mesmo um metodo
         // que nao existe.
+      } else if (idx >= kVtableIgl && idx < kVtableIgl + gl_slots::kIglSlots) {
+        // O GL. ESTE RAMO VEM ANTES DO `idx >= kBaseDoShell`, e por isso e que ele
+        // esta escrito AQUI e nao no fim da cadeia: a faixa e 30000+ e o ramo
+        // generico (2000) engole-a e da-lhe o nome de um metodo do IFileMgr.
+        // **Do mais especifico para o mais generico -- oito casos neste trabalho.**
+        //
+        // O `po` NAO E PASSADO: medido no `conftest.elf` (gli.h documenta as seis
+        // instrucoes do `glCullFace`), o wrapper carrega um argumento por registo e
+        // nao toca no r0. So os slots da cabeca (AddRef/Release/QueryInterface) o
+        // recebem, e esses vao em `a.reg[0]`.
+        ArgumentosGl av;
+        for (int k2 = 0; k2 < 4; ++k2) av.reg[k2] = cpu.Get(kR0 + k2);
+        av.sp = cpu.Get(kSP);
+        av.lr = cpu.Get(kLR);
+        std::uint32_t retorno = 0;
+        igl_.Executar(idx - kVtableIgl, av, &retorno);
+        cpu.Set(kR0, retorno);
+      } else if (idx >= kVtableIegl && idx < kVtableIegl + gl_slots::kIeglSlots) {
+        // O IEGL, pela mesma razao e com a mesma forma. Sem ele NENHUM `gl*` do
+        // jogo acontece: o wrapper do SDK chama `eglInitialize`/`eglChooseConfig`/
+        // `eglCreateWindowSurface`/`eglMakeCurrent` ANTES do primeiro `gl*`
+        // (medido no `ddragonz.mod`, 0x11d6c4-0x11d890).
+        ArgumentosGl av;
+        for (int k2 = 0; k2 < 4; ++k2) av.reg[k2] = cpu.Get(kR0 + k2);
+        av.sp = cpu.Get(kSP);
+        av.lr = cpu.Get(kLR);
+        std::uint32_t retorno = 0;
+        egl_.Executar(idx - kVtableIegl, av, &retorno);
+        cpu.Set(kR0, retorno);
       } else if (idx >= kBaseDoShell) {
         // O NOME tem de dizer de QUE interface e o slot. Um so "IShell::slot"
         // para tudo dava `IShell::slot4004` para um metodo do IDisplay -- numero
