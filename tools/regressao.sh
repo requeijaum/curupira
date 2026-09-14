@@ -50,7 +50,40 @@ fi
 export ZB2_BUILD
 BATERIA="${ZB2_BATERIA:-$BUILD/zb2_bateria}"
 COMPARAR="${ZB2_COMPARAR:-$BUILD/zb2_comparar}"
-CORPUS="${ZB2_CORPUS:-$RAIZ/../../scripts/corpus62.json}"
+# O CORPUS PROCURA-SE, e nao se assume um caminho relativo.
+#
+# O caminho era `$RAIZ/../../scripts/corpus62.json`, que valia quando este ficheiro
+# vivia em `research/sources/zeebulator/src2/tools/`. Quando a arvore passou a
+# `curupira/` na raiz do repositorio, o caminho deixou de existir -- e o script
+# passou a SAIR 77, ou seja **SALTADO**, que o ctest traduz em "nao correu".
+#
+# **Um teste que salta por um caminho partido e pior do que um teste vermelho: nao
+# deixa rasto no ctest.** (Foi assim que se descobriu: `ctest` a dizer 7/7 com um
+# SALTADO pelo meio.)
+#
+# Agora procura-se por uma lista de sitios plausiveis, e o primeiro que exista ganha.
+_procurar_corpus() {
+  # UM CAMINHO DADO MAS INEXISTENTE NAO SE ACEITA EM SILENCIO.
+  #
+  # Havia isto: `if [ -n "$ZB2_CORPUS" ]; then echo "$ZB2_CORPUS"; return; fi`. Com
+  # um caminho velho no ambiente (o CMake guardava um, relativo a `src2/`), o script
+  # usava-o, nao encontrava nada, e saia 77 -- **"saltado", que o ctest mostra como
+  # nao-falha.** O aviso fica no stderr, e a procura continua.
+  if [ -n "${ZB2_CORPUS:-}" ]; then
+    if [ -r "$ZB2_CORPUS" ]; then echo "$ZB2_CORPUS"; return; fi
+    echo "AVISO: ZB2_CORPUS='$ZB2_CORPUS' nao existe. A PROCURAR em vez de saltar." >&2
+  fi
+  for c in \
+    "$RAIZ/../research/sources/scripts/corpus62.json" \
+    "$RAIZ/../../scripts/corpus62.json" \
+    "$RAIZ/research/sources/scripts/corpus62.json" \
+    "$RAIZ/scripts/corpus62.json"
+  do
+    if [ -r "$c" ]; then (cd "$(dirname "$c")" && printf '%s/%s\n' "$(pwd)" "$(basename "$c")"); return; fi
+  done
+  echo ""
+}
+CORPUS="$(_procurar_corpus)"
 MODS="${ZB2_MODS:-/media/rafaelfrequiao/8C5F-19E51/zeebo/ROMs/debug_nand/mod}"
 BASE="${ZB2_BASELINE:-$RAIZ/tools/baseline/bateria.json}"
 RASCUNHO="${ZB2_SCRATCH:-/tmp}"

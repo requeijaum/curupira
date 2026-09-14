@@ -147,10 +147,17 @@ add_test(NAME comparar_shell
 # para pastas de `debug_nand/mod`, que vive num disco externo). Sem a midia o
 # teste e SKIP (codigo 77) e nao "passou": um teste que passa sem ter corrido e
 # pior do que um teste vermelho -- e a mesma regra de `slots_do_sdk`.
-set(ZB2_CORPUS "$ENV{ZB2_CORPUS}" CACHE STRING "caminho do corpus62.json")
-if(NOT ZB2_CORPUS)
-  set(ZB2_CORPUS "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/corpus62.json")
-endif()
+# O CORPUS NAO TEM CAMINHO POR OMISSAO AQUI, e a razao e um defeito medido.
+#
+# Havia `"${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/corpus62.json"`, que estava certo
+# enquanto esta arvore vivia em `research/sources/zeebulator/src2/`. Quando ela passou
+# a `curupira/`, na raiz, o caminho deixou de existir -- e o efeito NAO foi um erro:
+# foi o `regressao.sh` a sair 77 e o ctest a dizer **"SALTADO"**, com 7/7 verdes.
+#
+# **Um caminho invalido produz um teste que nao corre, e um teste que nao corre
+# parece um teste que passou.** Deixar o `regressao.sh` procurar o corpus e o unico
+# sitio onde a procura pode ser corrigida uma vez.
+set(ZB2_CORPUS "$ENV{ZB2_CORPUS}" CACHE STRING "caminho do corpus62.json (vazio = procurar)")
 set(ZB2_MODS "$ENV{ZB2_MODS}" CACHE STRING "directorio com as pastas de mods do corpus")
 set(ZB2_BASELINE "$ENV{ZB2_BASELINE}" CACHE STRING "corrida de referencia guardada")
 if(NOT ZB2_BASELINE)
