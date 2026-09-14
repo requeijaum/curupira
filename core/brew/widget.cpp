@@ -19,14 +19,63 @@ namespace {
 // Este modulo tinha uma copia propria deles em duas das frentes anteriores, e a
 // copia fez o que as copias fazem.
 
-// O `AEERect` tem quatro `int32` seguidos: x, y, dx, dy (`AEEStdDef.h`).
-void EscreverRect(Memoria& mem, std::uint32_t onde, std::uint32_t x, std::uint32_t y,
-                  std::uint32_t dx, std::uint32_t dy) {
+// --- AS STRUCTS DO GUEST TEM O TAMANHO DO CABECALHO --------------------------
+//
+// MEDIDO, e este era o defeito mais caro deste ficheiro:
+//
+//   `AEERect` (`platform/ui/inc/AEERect.h:23-26`):
+//       typedef struct { int16 x, y; int16 dx, dy; } AEERect;        -> 8 BYTES
+//   `WidgetExtent` (`platform/ui/inc/AEEIWidget.h:38-43`):
+//       typedef struct { int width; int height; } WidgetExtent;      -> 8 BYTES
+//
+// Aqui escrevia-se QUATRO palavras de 32 bits (16 bytes) nas duas, e lia-se
+// quatro da `WidgetExtent`. O comentario que la estava dizia "quatro `int32`
+// seguidos ... (`AEEStdDef.h`)" -- e o `AEEStdDef.h` nao define a `AEERect`.
+//
+// O sintoma tem duas metades, e as duas sao mudas: (a) a struct do guest sai com
+// outros valores (o campo 1 lia o par (x,y) empacotado); (b) os 8 bytes SEGUINTES
+// sao sobrescritos -- e a struct do guest pode estar na pilha ou dentro de outro
+// objecto, logo o vizinho e que paga.
+//
+// So se ve com uma SENTINELA a seguir a struct: o teste antigo escrevia e lia
+// quatro `uint32` e passava, porque **encodava a mesma suposicao errada**.
+
+// A `AEERect` DO GUEST: quatro `int16`. E ESTA que se usa quando o ponteiro vem
+// do titulo (`IRootForm::GetClientRect`).
+void EscreverRectDoGuest(Memoria& mem, std::uint32_t onde, std::uint32_t x, std::uint32_t y,
+                         std::uint32_t dx, std::uint32_t dy) {
+  if (onde == 0) return;
+  mem.Escrever16(onde + 0, static_cast<std::uint16_t>(x));
+  mem.Escrever16(onde + 2, static_cast<std::uint16_t>(y));
+  mem.Escrever16(onde + 4, static_cast<std::uint16_t>(dx));
+  mem.Escrever16(onde + 6, static_cast<std::uint16_t>(dy));
+}
+
+// O rect DENTRO DO NOSSO objecto de widget (`widget.h`, `kW_Rect`): quatro
+// `uint32` no nosso esquema, que nao e o do guest. Duas coisas diferentes com o
+// mesmo nome foram o que produziu o defeito -- por isso sao duas funcoes com
+// nomes diferentes.
+void EscreverRectNoObjeto(Memoria& mem, std::uint32_t onde, std::uint32_t x, std::uint32_t y,
+                          std::uint32_t dx, std::uint32_t dy) {
   if (onde == 0) return;
   mem.Escrever32(onde + 0, x);
   mem.Escrever32(onde + 4, y);
   mem.Escrever32(onde + 8, dx);
   mem.Escrever32(onde + 12, dy);
+}
+
+// `WidgetExtent`: dois `int` -- LARGURA e ALTURA, e nao um rect.
+void EscreverExtent(Memoria& mem, std::uint32_t onde, std::uint32_t largura,
+                    std::uint32_t altura) {
+  if (onde == 0) return;
+  mem.Escrever32(onde + 0, largura);
+  mem.Escrever32(onde + 4, altura);
+}
+
+void LerExtent(const Memoria& mem, std::uint32_t onde, std::uint32_t* largura,
+               std::uint32_t* altura) {
+  *largura = onde == 0 ? 0 : mem.Ler32(onde + 0);
+  *altura = onde == 0 ? 0 : mem.Ler32(onde + 4);
 }
 
 }  // namespace
@@ -79,7 +128,7 @@ bool Widgets::Construir(const Saidas& saidas, std::string* motivo) {
     // O rect começa no ecra inteiro: um widget sem `SetExtent` tem de ter uma
     // extensao definida, e "toda a tela" e a resposta que o cabecalho descreve
     // para o contentor raiz.
-    EscreverRect(mem_, objeto + kW_Rect, 0, 0, kLarguraDoEcra, kAlturaDoEcra);
+    EscreverRectNoObjeto(mem_, objeto + kW_Rect, 0, 0, kLarguraDoEcra, kAlturaDoEcra);
     mem_.Escrever32(objeto + kW_CorDeFundo, 0);
     mem_.Escrever32(objeto + kW_CorDeFrente, 0);
     mem_.Escrever32(objeto + kW_Modelo, 0);
@@ -257,9 +306,32 @@ Atendido Widgets::AtenderRootForm(ICpu& cpu, std::uint32_t slot) {
           return Atendido::Feito;
         }
         if (w == FID_ACTIVE || w == FID_VISIBLE) {
+          // O VALOR NAO E APLICADO, E O REGISTO DI-LO.
+          //
+          // NAO HA MODELO DE VISIBILIDADE nem rasterizador de widgets: nada fica
+          // visivel nem activo por causa deste pedido. E a MESMA situacao do TEMA,
+          // seis linhas abaixo -- e ate agora tinha a resposta OPOSTA: o tema
+          // registava, e o `FID_ACTIVE`/`FID_VISIBLE` devolviam TRUE com um
+          // `++escritas_` e mais nada.
+          //
+          // O SINTOMA, medido: `escritas_` e um contador AGREGADO, logo quem lia a
+          // bateria sabia que "alguma propriedade foi escrita" e NAO QUAL. Com um
+          // nome no registo, a lista de demanda passa a dizer o que falta em vez de
+          // somar tudo numa linha so.
+          //
+          // O TRUE fica: o pedido foi ENTENDIDO, que e o que o contrato promete.
+          // O que nao pode ficar e um TRUE mudo (P2).
+          char det[96];
+          std::snprintf(det, sizeof(det), "w=0x%04x d=0x%08x", w, d);
+          traco_.RegistarFalta(Area::Brew,
+                               w == FID_ACTIVE ? "IRootForm FID_ACTIVE nao aplicado"
+                                               : "IRootForm FID_VISIBLE nao aplicado",
+                               det);
+          recusas_.push_back(w == FID_ACTIVE ? "FID_ACTIVE nao aplicado"
+                                             : "FID_VISIBLE nao aplicado");
           ++escritas_;
           cpu.Set(kR0, 1);
-          return Atendido::Feito;
+          return Atendido::NaoImplementado;
         }
         if (w == FID_THEME || w == FID_THEME_FNAME || w == FID_THEME_BASENAME) {
           // O tema NAO e aplicado: nao ha `IResFile` nem ficheiro de tema lido.
@@ -414,7 +486,7 @@ Atendido Widgets::AtenderRootForm(ICpu& cpu, std::uint32_t slot) {
         const std::uint32_t c = papel_form_ != 0 ? papel_form_ : Widget(kWidgetDoForm);
         mem_.Escrever32(pc2, c);
       }
-      EscreverRect(mem_, pr, 0, 0, kLarguraDoEcra, kAlturaDoEcra);
+      EscreverRectDoGuest(mem_, pr, 0, 0, kLarguraDoEcra, kAlturaDoEcra);
       cpu.Set(kR0, 0);
       return Atendido::Feito;
     }
@@ -542,26 +614,33 @@ Atendido Widgets::AtenderWidget(ICpu& cpu, std::uint32_t k, std::uint32_t slot) 
 
     case kIWidget_GetPreferredExtent:
     case kIWidget_GetExtent: {
-      // `void GetExtent(IWidget *po, AEERect *prc)` -- a extensao que o widget
-      // tem. E escrita a pedido, e o `SetExtent` e que a define.
+      // `void GetExtent(IWidget *pif, WidgetExtent *pWExtent)` -- `AEEIWidget.h:103`.
+      // A struct do guest tem DOIS `int`: largura e altura (`:38-43`), e nao um
+      // `AEERect`. A extensao guardada tem a largura em `kW_Rect + 8` e a altura
+      // em `kW_Rect + 12` (o nosso esquema interno, declarado em `widget.h`).
       const std::uint32_t pr = cpu.Get(kR1);
-      EscreverRect(mem_, pr, mem_.Ler32(objeto + kW_Rect + 0), mem_.Ler32(objeto + kW_Rect + 4),
-                   mem_.Ler32(objeto + kW_Rect + 8), mem_.Ler32(objeto + kW_Rect + 12));
+      EscreverExtent(mem_, pr, mem_.Ler32(objeto + kW_Rect + 8), mem_.Ler32(objeto + kW_Rect + 12));
       ++lidas_;
       cpu.Set(kR0, 1);
       return Atendido::Feito;
     }
 
     case kIWidget_SetExtent: {
+      // `void SetExtent(IWidget *pif, WidgetExtent *pWExtent)` -- idem. O
+      // cabecalho do `IWidget` diz que a `WidgetExtent` define "width and height,
+      // without defining the bounds or placement of the widget": logo a ORIGEM
+      // nao vem daqui, e fica a zero.
       const std::uint32_t pr = cpu.Get(kR1);
       if (pr == 0) {
         cpu.Set(kR0, 0);
         return Atendido::Feito;
       }
-      mem_.Escrever32(objeto + kW_Rect + 0, mem_.Ler32(pr + 0));
-      mem_.Escrever32(objeto + kW_Rect + 4, mem_.Ler32(pr + 4));
-      mem_.Escrever32(objeto + kW_Rect + 8, mem_.Ler32(pr + 8));
-      mem_.Escrever32(objeto + kW_Rect + 12, mem_.Ler32(pr + 12));
+      std::uint32_t largura = 0, altura = 0;
+      LerExtent(mem_, pr, &largura, &altura);
+      mem_.Escrever32(objeto + kW_Rect + 0, 0);
+      mem_.Escrever32(objeto + kW_Rect + 4, 0);
+      mem_.Escrever32(objeto + kW_Rect + 8, largura);
+      mem_.Escrever32(objeto + kW_Rect + 12, altura);
       ++escritas_;
       cpu.Set(kR0, 1);
       return Atendido::Feito;
@@ -621,6 +700,8 @@ ResumoDeWidget Widgets::Resumo(std::uint32_t k) const {
   const std::uint32_t objeto = Widget(k);
   if (objeto == 0) return r;
   r.objeto = objeto;
+  r.largura = mem_.Ler32(objeto + kW_Rect + 8);
+  r.altura = mem_.Ler32(objeto + kW_Rect + 12);
   r.pai = mem_.Ler32(objeto + kW_Pai);
   r.cor_de_fundo = mem_.Ler32(objeto + kW_CorDeFundo);
   r.modelo = mem_.Ler32(objeto + kW_Modelo);

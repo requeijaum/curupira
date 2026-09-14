@@ -59,3 +59,41 @@ if maus:
     sys.exit(1)
 print("OK: ajudantes_slots.inc corresponde a AEEStdLib.h (%d campos)." % len(valores))
 PY
+
+# A REFERENCIA DE LINHA, conferida contra o cabecalho.
+#
+# PORQUE ESTA GUARDA EXISTE, medido: cada registo do `.inc` cita a linha do
+# cabecalho onde o campo esta, e o campo existe para a medicao ser LOCALIZAVEL
+# sem contar campos a mao. **17 dos 117 citavam a linha do COMENTARIO DE SECCAO
+# acima da declaracao** (o `malloc` citava `// Memory allocation routines` no
+# lugar da declaracao), porque o gerador tomava por posicao do campo o primeiro
+# caracter nao branco do bloco -- e o bloco comeca no comentario.
+#
+# Um numero de linha errado nao da erro nenhum: quem o segue encontra um
+# comentario e conclui que o campo esta noutro sitio. E preciso uma guarda, e
+# ela e esta -- o diff do ficheiro gerado NAO a apanha, porque o `.inc` e
+# regerado a partir do mesmo gerador e concorda consigo proprio.
+python3 - "$SDK" "$RAIZ/tools/ajudantes_slots.inc" <<'PY'
+import os, re, sys
+sdk, inc_path = sys.argv[1], sys.argv[2]
+cab = os.path.join(sdk, "platform", "system", "inc", "AEEStdLib.h")
+linhas_do_cabecalho = open(cab, encoding="latin-1").read().splitlines()
+inc = open(inc_path, encoding="utf-8").read()
+registos = re.findall(r'\{0x([0-9A-F]{3}), "(\w+)", "(?:[^"\\]|\\.)*", (\d+)\},', inc)
+maus = []
+for off, nome, ln in registos:
+    n = int(ln)
+    if n < 1 or n > len(linhas_do_cabecalho) or not re.search(
+        r"\(\s*\*\s*" + nome + r"\s*\)", linhas_do_cabecalho[n - 1]
+    ):
+        texto = linhas_do_cabecalho[n - 1].strip()[:60] if 0 < n <= len(linhas_do_cabecalho) else "FORA"
+        maus.append("0x%s %s: linha %d -> %r" % (off, nome, n, texto))
+if maus:
+    print("FALHA: a linha citada NAO e a da declaracao, em %d de %d campos:"
+          % (len(maus), len(registos)))
+    for m in maus[:20]:
+        print("   " + m)
+    print("Corre: python3 tools/nomear_ajudantes.py \"$SDK\" tools/ajudantes_slots.inc")
+    sys.exit(1)
+print("OK: as %d referencias de linha levam a declaracao no cabecalho." % len(registos))
+PY

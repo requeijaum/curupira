@@ -133,16 +133,30 @@ def extrair_membros(texto):
                     raise SystemExit(
                         "ERRO: membro sem nome extraivel: %r" % texto_m[:120]
                     )
+                # A LINHA CITADA E A DA DECLARACAO, E NAO A DO COMENTARIO ACIMA.
+                #
+                # MEDIDO: com esta conta a apontar para o primeiro caracter nao
+                # branco do BRUTO (que inclui o comentario de seccao), 17 dos 117
+                # campos citavam a linha do comentario -- o `malloc` citava a linha
+                # 93, que e `// Memory allocation routines`, e nao a 95, que e a
+                # declaracao. Este campo existe para a medicao ser LOCALIZAVEL sem
+                # contar campos a mao, e 17 numeros que nao levam ao sitio sao 17
+                # medicoes que nao existem (P1).
+                #
+                # O ponto seguro e o do proprio `(*nome)`: ele esta sempre na linha
+                # da declaracao, e a ultima ocorrencia e a da declaracao (o texto
+                # antes dele e comentario).
                 pos = comeco if comeco is not None else 0
-                # a linha do primeiro caracter NAO-BRANCO do membro
-                desloc = pos
-                while desloc < len(corpo) and corpo[desloc].isspace():
-                    desloc += 1
+                local = list(
+                    re.finditer(r"\(\s*\*\s*" + re.escape(nome_m.group(1)) + r"\s*\)", bruto)
+                )
+                if not local:
+                    raise SystemExit("ERRO: nao localizei a declaracao de %s" % nome_m.group(1))
                 membros.append(
                     {
                         "texto": texto_m,
                         "nome": nome_m.group(1),
-                        "linha": texto.count("\n", 0, inicio + 1 + desloc) + 1,
+                        "linha": texto.count("\n", 0, inicio + 1 + pos + local[-1].start()) + 1,
                         "offset": 4 * len(membros),
                     }
                 )
