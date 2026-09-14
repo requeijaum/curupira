@@ -24,6 +24,8 @@ add_library(zb2_core STATIC
   core/brew/arquivo.cpp
   core/brew/interface.cpp
   core/brew/despacho.cpp
+  core/brew/ihid_entrada.cpp
+  core/brew/ihiddevice.cpp
 )
 target_include_directories(zb2_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(zb2_core PRIVATE -Wall -Wextra)
@@ -43,6 +45,7 @@ add_executable(zb2_tests
   tests/cpu_test.cpp
   tests/carga_test.cpp
   tests/brew_test.cpp
+  tests/hid_test.cpp
 )
 target_link_libraries(zb2_tests PRIVATE zb2_core GTest::gtest_main)
 add_test(NAME fundacao COMMAND zb2_tests)
