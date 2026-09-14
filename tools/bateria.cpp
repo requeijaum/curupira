@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "core/brew/ajudantes.h"
+#include "core/brew/tela.h"
 #include <filesystem>
 #include <set>
 
@@ -178,6 +179,9 @@ constexpr std::uint32_t kSlotIdFileInfo = 1557;
 constexpr std::uint32_t kSlotIdFileRelease = 1558;
 constexpr std::uint32_t kSlotIdSprintf = 1560;
 constexpr std::uint32_t kSlotIdVsprintf = 1561;
+constexpr std::uint32_t kSlotIdHeapLock = 1562;
+constexpr std::uint32_t kSlotIdFreeResData = 1563;
+constexpr std::uint32_t kSlotIdCheckPriv = 1564;
 constexpr std::uint32_t kSlotIdFileWrite = 1559;
 constexpr std::uint32_t kVtableFileObj = 9500;
 constexpr std::uint32_t kObjFileBase = 0x80070000u;
@@ -241,61 +245,12 @@ enum : std::uint32_t {
   kDisCreateDIBitmap = brew_slots::kDisplay_CreateDIBitmap,
   kDisSetClipRect = brew_slots::kDisplay_SetClipRect,
 };
-// FRAMEBUFFER DE SOFTWARE.
-//
-// Existe para haver uma medida VISUAL que nao dependa de capturar ecra: quantos
-// pixels distintos cada titulo escreveu, e de que cor. E a versao honesta de
-// "o jogo desenha" -- e foi um censo a medir imagem, e nao jogabilidade, que
-// deu veredictos errados na arvore antiga.
-constexpr int kLargura = 640;
-constexpr int kAltura = 480;
-struct Framebuffer {
-  std::vector<std::uint32_t> cores{kLargura * kAltura, 0};
-  std::uint32_t cor_atual = 0;
-  std::uint32_t escritos = 0;
-  std::uint32_t clip[4] = {0, 0, kLargura, kAltura};
-  void Ponto(int x, int y) {
-    if (x < clip[0] || y < clip[1] || x >= clip[0] + clip[2] || y >= clip[1] + clip[3]) return;
-    if (x < 0 || y < 0 || x >= kLargura || y >= kAltura) return;
-    cores[static_cast<size_t>(y) * kLargura + x] = cor_atual;
-    ++escritos;
-  }
-  void Retangulo(std::uint32_t x, std::uint32_t y, std::uint32_t w, std::uint32_t h,
-                 bool preencher) {
-    // LIMITE ANTES DE PERCORRER, e nao so dentro do `Ponto`.
-    //
-    // O `Ponto` ja recusa o que sai do ecra, mas o LACO corria na mesma `w*h`
-    // vezes. Com uma rect grande vinda do guest isso sao milhares de milhoes de
-    // iteracoes: o `pacmania` passou a levar mais de 900 s e a bateria inteira
-    // deixou de acabar.
-    //
-    // **Um limite verificado so no destino nao limita o trabalho.** O trabalho
-    // tem de ser limitado ANTES de comecar.
-    if (x >= static_cast<std::uint32_t>(kLargura) || y >= static_cast<std::uint32_t>(kAltura)) return;
-    if (w > static_cast<std::uint32_t>(kLargura) - x) w = static_cast<std::uint32_t>(kLargura) - x;
-    if (h > static_cast<std::uint32_t>(kAltura) - y) h = static_cast<std::uint32_t>(kAltura) - y;
-    if (preencher) {
-      for (std::uint32_t j = 0; j < h; ++j) {
-        for (std::uint32_t i = 0; i < w; ++i) Ponto(static_cast<int>(x + i), static_cast<int>(y + j));
-      }
-    } else {
-      for (std::uint32_t i = 0; i < w; ++i) {
-        Ponto(static_cast<int>(x + i), static_cast<int>(y));
-        Ponto(static_cast<int>(x + i), static_cast<int>(y + h - 1));
-      }
-      for (std::uint32_t j = 0; j < h; ++j) {
-        Ponto(static_cast<int>(x), static_cast<int>(y + j));
-        Ponto(static_cast<int>(x + w - 1), static_cast<int>(y + j));
-      }
-    }
-  }
-  std::uint32_t CoresDistintas() const {
-    std::set<std::uint32_t> s;
-    for (std::uint32_t v : cores) s.insert(v);
-    return static_cast<std::uint32_t>(s.size());
-  }
-};
-Framebuffer g_fb;
+
+// A TELA VEM DO MOTOR (`core/brew/tela.h`). Aqui havia uma copia, e era a
+// segunda verdade sobre o mesmo assunto: a ferramenta desenhava numa tela que
+// nenhuma frente podia ver, e nenhum teste lhe chegava.
+zb2::brew::Tela g_tela;  // a tela do motor, nao uma copia local
+
 std::uint32_t g_textos = 0;
 std::uint32_t g_blits = 0;
 std::uint32_t g_updates = 0;
@@ -609,8 +564,31 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         // FONTE (`AEE_FONT_NORMAL = 0x8000`) no r1 -- argumento que nenhum metodo
         // daquele slot aceita -- sem forma de saber de onde vinha a chamada. Com o
         // LR, vai-se ao sitio e le-se a instrucao.
-        std::snprintf(det, sizeof(det), "r0=0x%08x r1=0x%08x r2=0x%08x lr=0x%08x", r0, cpu.Get(kR1),
-                      cpu.Get(kR2), cpu.Get(kLR));
+        // r3 E OS ARGUMENTOS NA PILHA entram tambem: ha metodos com SEIS
+        // argumentos (`LoadResDataEx`, `MeasureTextEx`), e sem eles nao se sabe
+        // o que o pedido quer -- so se sabe que existe.
+        const std::uint32_t sp = cpu.Get(kSP);
+        // SE O r1 FOR UM PONTEIRO PARA TEXTO, LE-SE O TEXTO.
+        //
+        // Um nome de ficheiro de recurso diz mais do que o numero do ponteiro --
+        // e foi assim que se descobriu que o `pacmania` pede um recurso de um
+        // ficheiro concreto. Sem isto ficava-se a olhar para 0x80202a70.
+        char txt[48] = {0};
+        const std::uint32_t possivel = cpu.Get(kR1);
+        if (possivel >= 0x00100000u && possivel < 0x81000000u) {
+          bool imprimivel = true;
+          for (int k = 0; k < 40; ++k) {
+            const std::uint8_t ch = mem_ref.Ler8(possivel + static_cast<std::uint32_t>(k));
+            if (ch == 0) break;
+            if (ch < 0x20 || ch > 0x7e) { imprimivel = false; break; }
+            txt[k] = static_cast<char>(ch);
+          }
+          if (!imprimivel) txt[0] = 0;
+        }
+        std::snprintf(det, sizeof(det),
+                      "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x sp0=0x%08x sp1=0x%08x lr=0x%08x txt=%s",
+                      r0, cpu.Get(kR1), cpu.Get(kR2), cpu.Get(kR3), mem_ref.Ler32(sp),
+                      mem_ref.Ler32(sp + 4), cpu.Get(kLR), txt);
         traco.RegistarFalta(Area::Brew, nome, det);
         cpu.Set(kR0, kAeeUnsupported);
         if (++saidas > 200) { *motivo = "parou_em_slot_nao_implementado"; return; }
@@ -694,18 +672,16 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         cpu.Set(kR0, (semente >> 16) & 0x7FFFu);
       } else if (idx == kSlotIdSetColor) {
         // `void SetColor(IDisplay *po, RGBVAL rgb)`. O Zeebo usa RGB565.
-        g_fb.cor_atual = cpu.Get(kR1) & 0xFFFFu;
+        g_tela.CorAtual(cpu.Get(kR1));
         cpu.Set(kR0, 0);
       } else if (idx == kSlotIdSetClipRect) {
         // `void SetClipRect(IDisplay *po, AEERect *prc)` -- prc nulo limpa o clip.
         const std::uint32_t prc = cpu.Get(kR1);
         if (prc == 0) {
-          g_fb.clip[0] = 0; g_fb.clip[1] = 0; g_fb.clip[2] = kLargura; g_fb.clip[3] = kAltura;
+          g_tela.ClipLimpo();
         } else {
-          g_fb.clip[0] = static_cast<std::uint32_t>(static_cast<std::int32_t>(mem_ref.Ler32(prc)));
-          g_fb.clip[1] = static_cast<std::uint32_t>(static_cast<std::int32_t>(mem_ref.Ler32(prc + 4)));
-          g_fb.clip[2] = mem_ref.Ler32(prc + 8);
-          g_fb.clip[3] = mem_ref.Ler32(prc + 12);
+          g_tela.Clip(mem_ref.Ler32(prc), mem_ref.Ler32(prc + 4), mem_ref.Ler32(prc + 8),
+                      mem_ref.Ler32(prc + 12));
         }
         cpu.Set(kR0, 0);
       } else if (idx == kSlotIdDrawRect) {
@@ -725,8 +701,8 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
           // Os bits do `AEERectFlags`: DRAW = contorno, FILL = cheio.
           const bool contorno = (flags & 0x01u) != 0, cheio = (flags & 0x02u) != 0;
           if (cheio || contorno) {
-            g_fb.cor_atual = cheio ? clrfill : clrframe;
-            g_fb.Retangulo(x, y, w, h, cheio);
+            g_tela.CorAtual(cheio ? clrfill : clrframe);
+            g_tela.Retangulo(x, y, w, h, cheio);
           }
         }
         cpu.Set(kR0, 0);
@@ -749,11 +725,11 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         const std::uint32_t prcfundo = mem_ref.Ler32(cpu.Get(kSP) + 8);
         if (prcfundo != 0) {
           // O fundo e pedido explicitamente: pinta-se com a cor actual antes.
-          g_fb.Retangulo(mem_ref.Ler32(prcfundo), mem_ref.Ler32(prcfundo + 4),
-                         mem_ref.Ler32(prcfundo + 8), mem_ref.Ler32(prcfundo + 12), true);
+          g_tela.Retangulo(mem_ref.Ler32(prcfundo), mem_ref.Ler32(prcfundo + 4),
+                           mem_ref.Ler32(prcfundo + 8), mem_ref.Ler32(prcfundo + 12), true);
         }
         const std::uint32_t larg = (nchars > 0 ? nchars : 1) * 8;
-        for (std::uint32_t i = 0; i < larg; ++i) g_fb.Ponto(static_cast<int>(x + i), static_cast<int>(y));
+        for (std::uint32_t i = 0; i < larg; ++i) g_tela.Ponto(static_cast<int>(x + i), static_cast<int>(y));
         ++g_textos;
         cpu.Set(kR0, static_cast<std::uint32_t>(larg));
       } else if (idx == kSlotIdBitBlt) {
@@ -777,9 +753,8 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
             for (std::int32_t i = 0; i < cx; ++i) {
               const std::uint32_t u = static_cast<std::uint32_t>(xs + i);
               const std::uint32_t v = static_cast<std::uint32_t>(ys + j);
-              g_fb.cor_atual =
-                  mem_ref.Ler16(origem + (v * static_cast<std::uint32_t>(cx) + u) * 2);
-              g_fb.Ponto(xd + i, yd + j);
+              g_tela.CorAtual(mem_ref.Ler16(origem + (v * static_cast<std::uint32_t>(cx) + u) * 2));
+              g_tela.Ponto(xd + i, yd + j);
             }
           }
           ++g_blits;
@@ -876,8 +851,8 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         mem_ref.Escrever32(obj + 0, g_vtable_bitmap);
         mem_ref.Escrever32(obj + 4, 1);
         mem_ref.Escrever32(obj + 8, 0);
-        mem_ref.Escrever32(obj + 12, kLargura);
-        mem_ref.Escrever32(obj + 16, kAltura);
+        mem_ref.Escrever32(obj + 12, zb2::brew::Tela::kLargura);
+        mem_ref.Escrever32(obj + 16, zb2::brew::Tela::kAltura);
         mem_ref.Escrever32(obj + 20, 16);
         g_destino = obj;
         cpu.Set(kR0, obj);
@@ -908,10 +883,11 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         // Devolve o clip ACTUAL, que o `SetClipRect` guardou.
         const std::uint32_t prc = cpu.Get(kR1);
         if (prc != 0) {
-          mem_ref.Escrever32(prc + 0, g_fb.clip[0]);
-          mem_ref.Escrever32(prc + 4, g_fb.clip[1]);
-          mem_ref.Escrever32(prc + 8, g_fb.clip[2]);
-          mem_ref.Escrever32(prc + 12, g_fb.clip[3]);
+          const std::uint32_t* c = g_tela.ClipAtual();
+          mem_ref.Escrever32(prc + 0, c[0]);
+          mem_ref.Escrever32(prc + 4, c[1]);
+          mem_ref.Escrever32(prc + 8, c[2]);
+          mem_ref.Escrever32(prc + 12, c[3]);
         }
         cpu.Set(kR0, 0);
       } else if (idx == kSlotIdCancelTimer) {
@@ -921,6 +897,27 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         // um temporizador alheio pararia o laco de quadro de outra coisa.
         g_timer.ativo = false;
         cpu.Set(kR0, 0);
+      } else if (idx == kSlotIdHeapLock || idx == kSlotIdHeapLock + 0) {
+        // `int Lock(IHeap1 *po)` -- IHeap1 slot 7. Bloqueia o heap para uso
+        // exclusivo.
+        //
+        // NAO ha nada a bloquear: o principio P6 do desenho e UM ESCRITOR para a
+        // memoria do guest, e nao ha threads de subsistema. Devolver sucesso e a
+        // resposta CORRECTA, e nao um stub: o contrato e "a partir daqui es o
+        // unico a mexer", e isso ja e verdade.
+        cpu.Set(kR0, 0);
+      } else if (idx == kSlotIdFreeResData) {
+        // `void FreeResData(IShell *po, void *pData)` -- IShell slot 20.
+        // Liberta o que o `LoadResData` devolveu. Enquanto os recursos nao
+        // existirem, nao ha nada para libertar -- e passar um ponteiro alheio ao
+        // alocador seria pior do que nao fazer nada.
+        cpu.Set(kR0, 0);
+      } else if (idx == kSlotIdCheckPriv) {
+        // `boolean CheckPrivLevel(IShell *po, uint32 dwPriv)` -- IShell slot 39.
+        // Responde TRUE aos privilegios de que este emulador precisa: ficheiro,
+        // percentagem de memoria, e o nivel de sistema. Recusar faria o jogo
+        // desistir de escrever onde tem de escrever.
+        cpu.Set(kR0, 1);
       } else if (idx == kSlotIdSprintf || idx == kSlotIdVsprintf) {
         // `int sprintf(char *pBuf, const char *pFmt, ...)`  -- AEEHelperFuncs
         // 0x020. E `int vsprintf(char *pBuf, const char *pFmt, va_list)` -- 0x13c.
@@ -1326,7 +1323,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   // O framebuffer e POR TITULO: um estado que passa de um titulo para o outro
   // tornaria a medida incomparavel -- que e o defeito de metodo mais repetido
   // desta sessao.
-  g_fb = Framebuffer{};
+  g_tela.Limpar();
   g_textos = g_blits = g_updates = g_dibs = 0;
 
   Tempo tempo;
@@ -1465,9 +1462,12 @@ Estado Medir(const Titulo& t, const std::string& dir) {
       {kVtableShell, brew_slots::kShell_QueryClass, kSlotIdQueryClass},
       {kVtableShell, brew_slots::kShell_GetDeviceInfo, kSlotIdGetDeviceInfo},
       {kVtableShell, brew_slots::kShell_CancelTimer, kSlotIdCancelTimer},
+      {kVtableShell, brew_slots::kShell_FreeResData, kSlotIdFreeResData},
+      {kVtableShell, brew_slots::kShell_CheckPrivLevel, kSlotIdCheckPriv},
       {kVtableDisplay, brew_slots::kDisplay_GetDeviceBitmap, kSlotIdGetDeviceBitmap},
       {kVtableDisplay, brew_slots::kDisplay_GetClipRect, kSlotIdGetClipRect},
       {VtGenerico(6), brew_slots::kSQLMgr_Open, kSlotIdSqlOpen},
+      {VtGenerico(0), brew_slots::kHeap1_Lock, kSlotIdHeapLock},
       {kVtableFileMgr, brew_slots::kFileMgr_OpenFile, kSlotIdOpenFile},
       {kVtableFileObj, brew_slots::kIAStream_Read, kSlotIdFileRead},
       {kVtableFileObj, brew_slots::kIFile_Seek, kSlotIdFileSeek},
@@ -1609,8 +1609,8 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   e.motivo += " | create:" + motivo_create;
   if (!e.create) e.motivo += "_sem_applet";
   for (const auto& par : traco.ContagemFaltas()) e.faltas[par.first] = par.second;
-  e.pixels = g_fb.escritos;
-  e.cores = g_fb.CoresDistintas();
+  e.pixels = g_tela.Escritos();
+  e.cores = g_tela.CoresDistintas();
   e.textos = g_textos;
   e.blits = g_blits;
   dm_eventos = dm.eventos;

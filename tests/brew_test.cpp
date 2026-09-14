@@ -1,0 +1,217 @@
+#include <gtest/gtest.h>
+
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
+
+#include "core/brew/arquivo.h"
+#include "core/brew/formato.h"
+#include "core/brew/tela.h"
+#include "core/brew/vfs.h"
+#include "core/memoria/memoria.h"
+
+namespace zb2::brew {
+namespace {
+
+// Escreve uma cadeia no guest. Sem isto, cada teste teria o seu laco.
+void PorCadeia(Memoria& mem, Endereco onde, const std::string& s) {
+  for (std::size_t k = 0; k < s.size(); ++k) {
+    mem.Escrever8(onde + static_cast<Endereco>(k), static_cast<std::uint8_t>(s[k]));
+  }
+  mem.Escrever8(onde + static_cast<Endereco>(s.size()), 0);
+}
+
+std::string LerCadeia(Memoria& mem, Endereco onde) {
+  std::string s;
+  for (int k = 0; k < 512; ++k) {
+    const char ch = static_cast<char>(mem.Ler8(onde + static_cast<Endereco>(k)));
+    if (ch == 0) break;
+    s.push_back(ch);
+  }
+  return s;
+}
+
+// ---------------------------------------------------------------------------
+// FORMATO. Os testes comparam com o `snprintf` DO SISTEMA: e a unica referencia
+// que nao fui eu que escrevi, e foi escrita para isto.
+// ---------------------------------------------------------------------------
+
+std::string Formata(const std::string& formato, const std::vector<std::uint32_t>& args) {
+  Memoria mem(nullptr);
+  constexpr Endereco kBuf = 0x00100000;
+  constexpr Endereco kFmt = 0x00101000;
+  PorCadeia(mem, kFmt, formato);
+  Formatar(mem, kBuf, kFmt, args.data(), static_cast<int>(args.size()));
+  return LerCadeia(mem, kBuf);
+}
+
+TEST(Formato, InteiroComSinal) {
+  char esperado[64];
+  std::snprintf(esperado, sizeof(esperado), "%d", -12345);
+  EXPECT_EQ(Formata("%d", {static_cast<std::uint32_t>(-12345)}), esperado);
+}
+
+TEST(Formato, HexadecimalComLargura) {
+  // `%08x` e o que o BREW usa para identificadores. Sem a largura, o jogo le um
+  // numero mais curto do que espera.
+  char esperado[64];
+  std::snprintf(esperado, sizeof(esperado), "%08x", 0x1a2bu);
+  EXPECT_EQ(Formata("%08x", {0x1a2bu}), esperado);
+}
+
+TEST(Formato, CadeiaLiteraleEUmInteiro) {
+  Memoria mem(nullptr);
+  constexpr Endereco kBuf = 0x00100000, kFmt = 0x00101000, kArg = 0x00102000;
+  PorCadeia(mem, kFmt, "n=%s/%d");
+  PorCadeia(mem, kArg, "oi");
+  const std::uint32_t args[2] = {kArg, 7};
+  Formatar(mem, kBuf, kFmt, args, 2);
+  EXPECT_EQ(LerCadeia(mem, kBuf), "n=oi/7");
+}
+
+TEST(Formato, PorCentoDuploNaoConsomeArgumento) {
+  EXPECT_EQ(Formata("100%%", {}), "100%");
+}
+
+TEST(Formato, EspecificadorDesconhecidoSaiComoEstava) {
+  // Um especificador que nao se conhece NAO pode virar lixo silencioso: sai como
+  // veio, para o defeito ser visivel no texto.
+  EXPECT_EQ(Formata("%q", {}), "%q");
+}
+
+TEST(Formato, NaoPassaDaMemoriaEscrita) {
+  // Um `%s` apontado a memoria virgem tem de parar. Sem limite, percorreria o
+  // espaco todo.
+  const std::string s = Formata("%s", {0x7F000000u});
+  EXPECT_LT(s.size(), 16u);
+}
+
+// ---------------------------------------------------------------------------
+// TELA. A medida VISUAL, e o limite que ela ja deixou passar uma vez.
+// ---------------------------------------------------------------------------
+
+TEST(Tela, RetanguloCheioContaOsPixels) {
+  Tela t;
+  t.Retangulo(0, 0, 10, 5, true);
+  EXPECT_EQ(t.Escritos(), 50u);
+}
+
+TEST(Tela, RetanguloEnormeNaoPercorreOEspacoTodo) {
+  // MEDIDO, e foi a causa de mais de 900 segundos para UM titulo: o laco corria
+  // `w*h` vezes porque o limite estava so no `Ponto`. Este teste falha por
+  // DEMORA se o limite voltar para o sitio errado.
+  Tela t;
+  t.Retangulo(0, 0, 0xFFFFFFF0u, 0xFFFFFFF0u, true);
+  EXPECT_LE(t.Escritos(), static_cast<std::uint32_t>(Tela::kLargura * Tela::kAltura));
+}
+
+TEST(Tela, ClipLimitaAEscrita) {
+  Tela t;
+  t.Clip(10, 10, 4, 4);
+  t.Retangulo(0, 0, 100, 100, true);
+  EXPECT_EQ(t.Escritos(), 16u);
+}
+
+TEST(Tela, CorDistintaConta) {
+  Tela t;
+  t.CorAtual(0x1234);
+  t.Retangulo(0, 0, 4, 4, true);
+  t.CorAtual(0x5678);
+  t.Retangulo(4, 0, 4, 4, true);
+  EXPECT_EQ(t.CoresDistintas(), 3u);  // as duas cores e o fundo
+}
+
+// ---------------------------------------------------------------------------
+// VFS. A normalizacao e UMA SO, e por isso e que se testa.
+// ---------------------------------------------------------------------------
+
+TEST(Vfs, BarrasEEspacosColapsam) {
+  Vfs v;
+  const std::string n = v.Normalizar("\\pasta//sub\\x.dat");
+  EXPECT_EQ(n, "");  // nao registado -> vazio, mas sem rebentar
+}
+
+TEST(Vfs, PontoPontoNaoSaiDaPasta) {
+  Vfs v;
+  // O `..` e RETIRADO, e nao resolvido para o pai: um titulo que peca `../../x`
+  // fica com `x` dentro da sua propria pasta.
+  EXPECT_EQ(v.Normalizar("../../x"), "");
+  EXPECT_EQ(v.Normalizar("../x"), "");
+}
+
+// ---------------------------------------------------------------------------
+// FICHEIROS. Um ficheiro de verdade, num directoria temporaria.
+// ---------------------------------------------------------------------------
+
+class ArquivosTeste : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    pasta_ = std::filesystem::temp_directory_path() / "zb2_teste_arquivos";
+    std::filesystem::create_directories(pasta_);
+    std::ofstream f(pasta_ / "dados.bin", std::ios::binary);
+    for (int k = 0; k < 256; ++k) f.put(static_cast<char>(k));
+    f.close();
+    vfs_.Registar(pasta_.string());
+  }
+  void TearDown() override { std::filesystem::remove_all(pasta_); }
+
+  Vfs vfs_;
+  std::filesystem::path pasta_;
+  Memoria mem_{nullptr};
+};
+
+TEST_F(ArquivosTeste, LeOPedidoEEncurtaNoFim) {
+  Arquivos a(&vfs_);
+  const std::uint32_t id = a.Abrir("dados.bin", 0x0001u, pasta_.string());
+  ASSERT_NE(id, 0u);
+  constexpr Endereco kDest = 0x00100000;
+  EXPECT_EQ(a.Ler(id, mem_, kDest, 10), 10);
+  EXPECT_EQ(mem_.Ler8(kDest), 0);
+  EXPECT_EQ(mem_.Ler8(kDest + 9), 9);
+  // Pede mais do que resta: curto, e nao inventado.
+  EXPECT_EQ(a.Ler(id, mem_, kDest, 1000), 246);
+  EXPECT_EQ(a.Ler(id, mem_, kDest, 10), 0);
+}
+
+TEST_F(ArquivosTeste, PosicionaEmRelacaoAoInicioEaoFim) {
+  Arquivos a(&vfs_);
+  const std::uint32_t id = a.Abrir("dados.bin", 0x0001u, pasta_.string());
+  ASSERT_NE(id, 0u);
+  EXPECT_EQ(a.Posicionar(id, 0, 10), 10);
+  EXPECT_EQ(a.Posicionar(id, 1, 5), 15);
+  EXPECT_EQ(a.Posicionar(id, 2, 0), 256);
+  // Fora do ficheiro: -1, e a posicao NAO muda.
+  EXPECT_EQ(a.Posicionar(id, 0, 999), -1);
+  EXPECT_EQ(a.Posicionar(id, 0, 256), 256);
+}
+
+TEST_F(ArquivosTeste, InformacaoTrazOTamanho) {
+  Arquivos a(&vfs_);
+  const std::uint32_t id = a.Abrir("dados.bin", 0x0001u, pasta_.string());
+  ASSERT_NE(id, 0u);
+  constexpr Endereco kInfo = 0x00100000;
+  EXPECT_TRUE(a.Informacao(id, mem_, kInfo));
+  EXPECT_EQ(mem_.Ler32(kInfo + 8), 256u);
+}
+
+TEST_F(ArquivosTeste, ModoQueMudaOFicheiroERecusado) {
+  // `_OFM_CREATE` (4) e `_OFM_APPEND` (8) mudam o ficheiro. A VFS e so de leitura
+  // por DECISAO, e a recusa e em voz alta: um objecto nulo, e nao um ficheiro que
+  // finge aceitar escrita.
+  Arquivos a(&vfs_);
+  EXPECT_EQ(a.Abrir("novo.bin", 0x0004u, pasta_.string()), 0u);
+  EXPECT_EQ(a.Abrir("dados.bin", 0x0008u, pasta_.string()), 0u);
+  EXPECT_EQ(a.Abrir("dados.bin", 0x0002u, pasta_.string()), 0u);
+  EXPECT_TRUE(a.ModoMudaOFicheiro(0x0004u | 0x0001u));
+  EXPECT_FALSE(a.ModoMudaOFicheiro(0x0001u));
+}
+
+TEST_F(ArquivosTeste, FicheiroInexistenteNaoAbre) {
+  Arquivos a(&vfs_);
+  EXPECT_EQ(a.Abrir("nao_existe.dat", 0x0001u, pasta_.string()), 0u);
+}
+
+}  // namespace
+}  // namespace zb2::brew
