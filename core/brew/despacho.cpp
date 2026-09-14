@@ -34,7 +34,8 @@ constexpr std::uint32_t kAeeSuccess = 0;
 constexpr std::uint32_t kAeeFailed = 1;
 constexpr std::uint32_t kAeeUnsupported = 0xE0000001u;
 constexpr std::uint32_t kSentinela = 0xFFFFFFF0u;
-constexpr std::uint32_t kBase = 0x00100000u;
+// A base do modulo. MEDIDA: ver `tests/mod_base_test.cpp` e o `bateria.cpp`.
+constexpr std::uint32_t kBase = 0x00000000u;
 constexpr int kOrcamentoSegundos = 25;
 constexpr std::uint32_t kSlotIdStrlen = 1503, kSlotIdMemset = 1504, kSlotIdStrcpy = 1505;
 constexpr std::uint32_t kSlotIdMemmove = 1506, kSlotIdStrcmp = 1507, kSlotIdStrchr = 1508;

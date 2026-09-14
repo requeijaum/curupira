@@ -152,14 +152,32 @@ TEST(Carga, OCarregadorEscreveATabelaEmBaseMenosQuatro) {
   EXPECT_EQ(r.ponto_de_entrada, 0x00100000u);
 }
 
-TEST(Carga, BaseDemasiadoBaixaERecusada) {
-  // Com base < 4 nao ha sitio para o ponteiro da ROPI. Recusar e melhor do que
-  // escrever em `0xffffffff` e seguir.
-  Memoria mem;
+TEST(Carga, UmaBaseBaixaEACEITE) {
+  // ESTE TESTE AFIRMAVA O CONTRARIO, e a mudanca e deliberada.
+  //
+  // Ele dizia "com base < 4 nao ha sitio para o ponteiro da ROPI, logo recusa".
+  // **A premissa era uma crenca, e a medicao derrubou-a:** os literais de um `.mod`
+  // sao OFFSETS DO FICHEIRO usados como enderecos ABSOLUTOS, logo a base certa e
+  // ZERO -- e a guarda `base < 4` PROIBIA exactamente o unico valor que faz o
+  // modulo funcionar.
+  //
+  //     base 0x00100000:  modulo 48 | applet 22
+  //     base 0x00000000:  modulo 62 | applet 41
+  //
+  // A prova esta em `tests/mod_base_test.cpp`: com a base a zero, 51 literais do
+  // `pacmania.mod` caem em cima de cadeias reais; com a base antiga, ZERO.
+  //
+  // **Nao se "corrige" um teste que codifica comportamento antigo sem dizer por
+  // que.** O por que esta aqui, e a medicao esta no outro ficheiro.
+  Memoria mem(nullptr);
   const std::vector<std::uint8_t> imagem = {1, 2, 3, 4};
   const auto r = CarregarMod(mem, imagem, 2, 0x80010000u, nullptr);
-  EXPECT_FALSE(r.ok);
-  EXPECT_FALSE(r.motivo.empty());
+  EXPECT_TRUE(r.ok) << r.motivo;
+  // O ponteiro ROPI vai para `base - 4`, com o wrap-around do `uint32_t`.
+  EXPECT_EQ(mem.Ler32(0xFFFFFFFEu), 0x80010000u);
+  // E a imagem fica onde foi pedida.
+  EXPECT_EQ(mem.Ler8(2), 1);
+  EXPECT_EQ(mem.Ler8(5), 4);
 }
 
 TEST(Carga, ImagemVaziaERecusada) {

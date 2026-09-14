@@ -43,7 +43,15 @@ using namespace zb2;
 
 namespace {
 
-constexpr std::uint32_t kBase = 0x00100000u;
+// A BASE DO MODULO, MEDIDA -- e nao a convencao `0x00100000` que eu tinha
+// herdado.
+//
+// Os literais de um `.mod` sao OFFSETS DO FICHEIRO usados como ENDERECOS
+// ABSOLUTOS: com a base a zero, 51 literais do `pacmania.mod` caem exactamente em
+// cima de cadeias reais; com a base 0x00100000, ZERO. Ver `tests/mod_base_test.cpp`.
+//
+// O efeito nos 62 titulos: `modulo 48 -> 62` e `applet 22 -> 41`.
+constexpr std::uint32_t kBase = 0x00000000u;
 constexpr std::uint32_t kPilha = 0x80080000u;
 constexpr std::uint32_t kHeap = 0x80200000u;
 constexpr std::uint32_t kHeapTam = 0x00C00000u;
