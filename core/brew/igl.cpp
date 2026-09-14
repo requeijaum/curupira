@@ -157,7 +157,8 @@ const char* Nome(ResultadoGl r) {
   return "?";
 }
 
-Igl::Igl(Memoria& mem, Traco& traco) : mem_(mem), traco_(traco) {
+Igl::Igl(Memoria& mem, Traco& traco)
+    : mem_(mem), traco_(traco), rasterizador_(mem, destino_) {
   Identidade(mv_.m[0]);
   Identidade(proj_.m[0]);
   Identidade(tex_.m[0]);
@@ -188,17 +189,124 @@ std::uint32_t Igl::Instalar(const Saidas& saidas) {
     }
   }
 
-  // O QUE ESTA ETAPA NAO FAZ, REGISTADO UMA VEZ E COM NOME.
+  // O QUE O RASTERIZADOR FAZ, E O QUE NAO FAZ, REGISTADO UMA VEZ E COM NOME.
   //
-  // Nao e um aviso de rodape: e o que impede o proximo a ler este modulo e a
-  // concluir que a geometria desenhada aqui aparece em algum lado. O caminho do
-  // DESENHO recusa em voz alta em `glDrawArrays`/`glDrawElements`.
-  traco_.RegistarFalta(Area::Video, "rasterizador_de_GL",
-                       "o estado e a interface existem; nenhum pixel e escrito. "
-                       "Medido: 0 pixels em 62 titulos antes desta etapa.");
+  // ESTE REGISTO SUBSTITUI UMA FALTA, e a substituicao e o ponto: aqui estava
+  //
+  //     traco_.RegistarFalta(Area::Video, "rasterizador_de_GL",
+  //                          "o estado e a interface existem; nenhum pixel e escrito. "
+  //                          "Medido: 0 pixels em 62 titulos antes desta etapa.");
+  //
+  // que era verdade antes de `core/video/rasterizador.cpp` existir e passaria a
+  // ser MENTIRA no minuto seguinte (P7: um log so entra se puder ser verdadeiro).
+  // O que fica escrito e o que o rasterizador faz, e o que ficou de fora -- com o
+  // ficheiro onde a lista completa esta.
+  traco_.Emitir(Area::Video, Nivel::Informacao, "RASTERIZADOR",
+                "TRIANGLES/STRIP/FAN, cor por vertice, textura GL_NEAREST, teste de "
+                "profundidade e descarte de faces; AFIM e sem blending/stencil/mipmaps "
+                "(lista completa no topo de core/video/rasterizador.h). Escreve na Tela "
+                "quando o despacho a liga (Igl::DefinirTela)");
   traco_.Emitir(Area::Video, Nivel::Informacao, "IGL_INSTALADO",
                 "80 slots (AEEGL.h), objecto em 0x800B0000, vtable cablada e conferida");
   return kIglSlots;
+}
+
+// --- O RETRATO DO ESTADO PARA O RASTERIZADOR ---------------------------------
+
+video::EstadoDeRasterizacao Igl::MontarEstado() const {
+  using namespace gl_slots;
+  video::EstadoDeRasterizacao e;
+  for (int k = 0; k < 16; ++k) {
+    e.modelview[k] = mv_.m[mv_.topo][k];
+    e.projection[k] = proj_.m[proj_.topo][k];
+  }
+  for (int k = 0; k < 4; ++k) e.viewport[k] = viewport_[k];
+  e.cor = video::Desempacotar(cor_);
+  e.cor_de_limpeza = video::Desempacotar(cor_limpeza_);
+  e.mascara_de_limpeza = mascara_limpeza_;
+  e.profundidade_de_limpeza = profundidade_limpeza_;
+
+  // UM ARRAY SO ESTA LIGADO SE AS DUAS COISAS FOREM VERDADE: o
+  // `glEnableClientState` e o `gl*Pointer` que o definiu. O `igl.cpp` ja guarda
+  // as duas separadas de proposito (o `glEnable(GL_TEXTURE_2D)` NAO pode ligar o
+  // array de coordenadas), e o rasterizador ve o resultado dessa separacao.
+  const auto copiar = [&](std::uint32_t alvo, video::ArrayDoCliente* destino) {
+    const ArrayDeVertices* a = Array(alvo);
+    if (a == nullptr) return;
+    destino->tamanho = a->tamanho;
+    destino->tipo = a->tipo;
+    destino->passo = a->passo;
+    destino->ponteiro = a->ponteiro;
+    destino->ligado = ArrayDeClienteLigado(alvo);
+  };
+  copiar(GL_VERTEX_ARRAY, &e.vertices);
+  copiar(GL_COLOR_ARRAY, &e.cores);
+  copiar(GL_TEXTURE_COORD_ARRAY, &e.coordenadas_de_textura);
+  e.cor_por_vertice = e.cores.ligado;
+
+  // A TEXTURA LIGADA SO CONTA COM O `GL_TEXTURE_2D` LIGADO: e o que o GL faz. Uma
+  // textura com o alvo desligado nao e amostrada, e o desenho usa a cor.
+  if (InterruptorLigado(GL_TEXTURE_2D) && textura_ligada_ != 0) {
+    const EstadoDaTextura* t = Textura(textura_ligada_);
+    if (t != nullptr) {
+      e.textura_ligada = true;
+      e.textura.existe = true;
+      e.textura.comprimida = t->comprimida;
+      e.textura.largura = t->largura;
+      e.textura.altura = t->altura;
+      e.textura.formato = t->formato_do_pixel;
+      e.textura.tipo = t->tipo;
+      e.textura.ponteiro = t->ponteiro;
+    }
+  }
+
+  e.sombreado_plano = (shade_model_ == GL_FLAT);
+  e.teste_de_profundidade = InterruptorLigado(GL_DEPTH_TEST);
+  e.escrever_profundidade = depth_mask_;
+  e.funcao_de_profundidade = depth_func_;
+  e.descartar_faces = InterruptorLigado(GL_CULL_FACE);
+  e.descartar_face = cull_face_;
+  e.orientacao_da_frente = front_face_;
+
+  // O QUE OS TITULOS LIGARAM E O RASTERIZADOR NAO FAZ. Cada nome vai para o
+  // traco (uma vez, no `RegistarRessalvas`), com o nome do que falta -- e nao em
+  // silencio, que foi o que o `glCullFace` fez 86 377 vezes na arvore antiga.
+  const struct { std::uint32_t cap; const char* nome; } por_fazer[] = {
+      {GL_BLEND, "blending_de_GL_sem_rasterizador"},
+      {GL_LIGHTING, "iluminacao_de_GL_sem_rasterizador"},
+      {GL_FOG, "nevoa_de_GL_sem_rasterizador"},
+      {GL_ALPHA_TEST, "alpha_test_de_GL_sem_rasterizador"},
+      {GL_NORMALIZE, "normalizacao_de_normais_sem_rasterizador"},
+      {GL_POLYGON_OFFSET_FILL, "polygon_offset_sem_rasterizador"},
+      {GL_SCISSOR_TEST, "scissor_sem_rasterizador"},
+      {GL_DITHER, "dithering_sem_rasterizador"},
+  };
+  for (const auto& f : por_fazer) {
+    if (InterruptorLigado(f.cap)) e.capacidades_por_fazer.push_back(f.nome);
+  }
+  if (color_mask_ != 0x0000000Fu) {
+    e.capacidades_por_fazer.push_back("glColorMask_de_GL_sem_rasterizador");
+  }
+  // O FILTRO DA TEXTURA. O rasterizador amostra sempre o texel mais proximo; um
+  // titulo que peca GL_LINEAR fica com essa diferenca escrita, e nao silenciosa.
+  for (const std::uint32_t pname : {GL_TEXTURE_MIN_FILTER, GL_TEXTURE_MAG_FILTER}) {
+    const std::vector<std::uint32_t>* v = Parametro(kIgl_TexParameterx, pname);
+    if (v != nullptr && !v->empty() && (*v)[0] != GL_NEAREST) {
+      e.capacidades_por_fazer.push_back("filtro_de_textura_alem_de_GL_NEAREST");
+      break;
+    }
+  }
+  return e;
+}
+
+void Igl::RegistarRessalvas(const video::EstadoDeRasterizacao& e) {
+  for (const std::string& nome : e.capacidades_por_fazer) {
+    if (recusas_.find(nome) != recusas_.end()) continue;
+    recusas_[nome] = 1;
+    traco_.RegistarFalta(Area::Video, nome,
+                         "capacidade ligada pelo titulo e NAO implementada no rasterizador "
+                         "(lista no topo de core/video/rasterizador.h)");
+  }
 }
 
 // --- leitura dos argumentos --------------------------------------------------
@@ -520,9 +628,20 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
       }
       mascara_limpeza_ = a.reg[0];
       ++limpezas_;
-      return feito_com(1,
-                       "sem rasterizador: nenhum pixel escrito (a mascara e a cor de limpeza "
-                       "foram acumuladas)");
+      // SEM TELA, O `glClear` RECUSA. A mascara e a cor FICAM acumuladas (o
+      // estado existe e e observavel), mas "feito" sem um pixel escrito seria o
+      // stub mudo que esta reescrita existe para nao repetir.
+      if (!destino_.Pronto()) {
+        return recusa_com(1,
+                          "mascara e cor de limpeza acumuladas, mas o IGL NAO TEM TELA LIGADA "
+                          "(Igl::DefinirTela) e nenhum pixel foi escrito");
+      }
+      const video::EstadoDeRasterizacao estado = MontarEstado();
+      RegistarRessalvas(estado);
+      std::string motivo;
+      const std::uint64_t escritos = rasterizador_.Limpar(estado, &motivo);
+      if (escritos == 0 && !motivo.empty()) return recusa_com(1, motivo);
+      return feito_com(1, "glClear escreveu " + std::to_string(escritos) + " pixels na Tela");
     }
 
     // --- interruptores ------------------------------------------------------
@@ -631,14 +750,31 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
       t.largura = larg;
       t.altura = alt;
       t.formato = formato;
+      // OS DOIS CAMPOS QUE O RASTERIZADOR PRECISA PARA LER OS TEXELS: o formato
+      // do pixel (6.o argumento) e o tipo do elemento (8.o). Sem eles o
+      // rasterizador teria de adivinhar quantos bytes tem cada texel, e um palpite
+      // errado daria uma imagem errada SEM sintoma.
+      t.formato_do_pixel = c.args[6];
       t.tipo = c.args[7];
+      t.ponteiro = c.args[8];
       ++t.uploade;
-      return feito_com(9, "os pixels ficam na memoria do guest: nao ha copia nem rasterizador");
+      return feito_com(9, "os pixels ficam na memoria do guest e sao lidos na amostragem "
+                          "(nao ha copia no acto do glTexImage2D)");
     }
     case kIgl_TexSubImage2D: {
       if (!esp(9)) return recusa("argumentos na pilha sem sp valido");
       if (textura_ligada_ == 0) return recusa("sem textura ligada");
-      return feito_com(9, "registado; os pixels nao sao copiados (sem rasterizador)");
+      // Os argumentos sao (alvo, nivel, x, y, larg, alt, formato, tipo, pixels).
+      // Guarda-se o ponteiro tal como veio: a amostragem le os texels dessa
+      // memoria, como se a textura tivesse sido enviada inteira de uma vez. A
+      // consequencia (um buffer reutilizado para outra textura) esta escrita no
+      // topo de `core/video/rasterizador.h`.
+      EstadoDaTextura& t = texturas_[textura_ligada_];
+      t.formato_do_pixel = c.args[6];
+      t.tipo = c.args[7];
+      t.ponteiro = c.args[8];
+      ++t.uploade;
+      return feito_com(9, "os pixels ficam na memoria do guest e sao lidos na amostragem");
     }
     case kIgl_CompressedTexImage2D: {
       if (!esp(8)) return recusa("argumentos na pilha sem sp valido");
@@ -699,8 +835,11 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
       viewport_[3] = a.reg[3];
       return feito(4);
     case kIgl_Scissor:
+      // O valor fica guardado, e o rasterizador NAO o aplica (o `glClear` cobre a
+      // tela toda e o desenho nao e limitado por ele). Dizer "feito" aqui e
+      // aceitavel porque o ESTADO mudou mesmo; nao dizer a diferenca nao era.
       parametros_[ChaveDeParametro(slot, 0)] = {a.reg[0], a.reg[1], a.reg[2], a.reg[3]};
-      return feito(4);
+      return feito_com(4, "o rectangulo ficou guardado; o rasterizador nao aplica o scissor");
     case kIgl_LineWidthx: {
       if (Fixo(0, a) <= 0.0f) return recusa("largura de linha nao positiva");
       parametros_[ChaveDeParametro(slot, 0)] = {a.reg[0]};
@@ -776,9 +915,21 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
       if (quantos == 0) return recusa("desenho com zero vertices");
       ++desenhos_;
       vertices_ += quantos;
-      return recusa_com(3, "geometria submetida (" + std::to_string(quantos) +
-                               " vertices, primeiro " + std::to_string(primeiro) +
-                               "): NAO HA RASTERIZADOR, nenhum pixel escrito");
+      if (!destino_.Pronto()) {
+        return recusa_com(3, "geometria submetida (" + std::to_string(quantos) +
+                                 " vertices, primeiro " + std::to_string(primeiro) +
+                                 "), mas o IGL NAO TEM TELA LIGADA (Igl::DefinirTela): "
+                                 "nenhum pixel escrito");
+      }
+      const video::EstadoDeRasterizacao estado = MontarEstado();
+      RegistarRessalvas(estado);
+      video::PedidoDeDesenho pedido;
+      pedido.primitiva = modo;
+      pedido.primeiro = primeiro;
+      pedido.quantos = quantos;
+      std::string motivo;
+      if (!rasterizador_.Desenhar(estado, pedido, &motivo)) return recusa_com(3, motivo);
+      return feito_com(3, motivo);
     }
     case kIgl_DrawElements: {
       const std::uint32_t modo = a.reg[0], quantos = a.reg[1], tipo = a.reg[2], indices = a.reg[3];
@@ -790,14 +941,30 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
       if (!ArrayDeClienteLigado(GL_VERTEX_ARRAY)) {
         return recusa("desenho sem array de vertices ligado");
       }
+      if (quantos == 0) return recusa("desenho com zero indices");
       ++desenhos_;
       vertices_ += quantos;
-      return recusa_com(4, "geometria submetida (" + std::to_string(quantos) +
-                               " indices): NAO HA RASTERIZADOR, nenhum pixel escrito");
+      if (!destino_.Pronto()) {
+        return recusa_com(4, "geometria submetida (" + std::to_string(quantos) +
+                                 " indices), mas o IGL NAO TEM TELA LIGADA: nenhum pixel escrito");
+      }
+      const video::EstadoDeRasterizacao estado = MontarEstado();
+      RegistarRessalvas(estado);
+      video::PedidoDeDesenho pedido;
+      pedido.primitiva = modo;
+      pedido.quantos = quantos;
+      pedido.por_indices = true;
+      pedido.tipo_do_indice = tipo;
+      pedido.endereco_dos_indices = indices;
+      std::string motivo;
+      if (!rasterizador_.Desenhar(estado, pedido, &motivo)) return recusa_com(4, motivo);
+      return feito_com(4, motivo);
     }
     case kIgl_Finish:
     case kIgl_Flush:
-      return feito_com(0, "nada esta pendente: nao ha rasterizador");
+      // O desenho deste rasterizador e IMEDIATO: `glDrawArrays` ja escreveu os
+      // pixels quando volta. Nao ha fila de comandos para esvaziar.
+      return feito_com(0, "nada esta pendente: o rasterizador desenha no proprio glDrawArrays");
 
     // --- consultas ----------------------------------------------------------
     case kIgl_GetError:
@@ -829,7 +996,11 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
       // `strstr` sem testar o nulo) que torna isto uma armadilha. Recusa-se.
       return recusa("sem medida do que a maquina responde (glGetString)");
     case kIgl_ReadPixels:
-      return recusa("nao ha framebuffer de onde ler");
+      // O framebuffer agora EXISTE (a Tela), mas a `core/brew/tela.h` nao expoe
+      // nenhuma leitura de pixel: `Escritos()`, `CoresDistintas()` e
+      // `CoresEm(x,y,w,h)` contam, e nao devolvem a cor de um pixel. Ler seria
+      // preciso e ajuda a dizer onde a recusa esta.
+      return recusa("a Tela nao tem leitura de pixel (tela.h nao expoe nenhum `Ler`)");
 
     default:
       return sem();

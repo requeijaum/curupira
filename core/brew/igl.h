@@ -49,6 +49,7 @@
 #include "core/cpu/cpu.h"
 #include "core/memoria/memoria.h"
 #include "core/traco/traco.h"
+#include "core/video/rasterizador.h"
 #include "tools/gl_slots.inc"
 
 namespace zb2::brew {
@@ -152,7 +153,16 @@ struct ChamadaGl {
 // com que tamanho, com que formato e quantas vezes.
 struct EstadoDaTextura {
   std::uint32_t largura = 0, altura = 0;
+  // `formato` e o formato INTERNO (o 3.o argumento do `glTexImage2D`); o
+  // `formato_do_pixel` e o 6.o (GL_RGBA, GL_RGB, GL_LUMINANCE) e o `tipo` e o
+  // 8.o. O rasterizador precisa dos dois ultimos para ler os texels: sem eles
+  // teria de adivinhar quantos bytes tem cada texel.
   std::uint32_t formato = 0, tipo = 0;
+  std::uint32_t formato_do_pixel = 0;
+  // O NONO ARGUMENTO: os texels, NA MEMORIA DO GUEST. Nao ha copia no acto do
+  // `glTexImage2D` (o rasterizador le de la a cada amostragem) -- e isso esta
+  // escrito no topo de `core/video/rasterizador.h`, com a consequencia.
+  std::uint32_t ponteiro = 0;
   std::uint32_t uploade = 0;
   bool comprimida = false;
 };
@@ -201,6 +211,17 @@ class Igl {
   std::uint32_t Objeto() const { return objeto_; }
   std::uint32_t Vtable() const { return vtable_; }
 
+  // --- O RASTERIZADOR (etapa 3/6) -----------------------------------------
+  //
+  // A SUPERFICIE ONDE OS PIXELS SAO ESCRITOS. E a `core/brew/tela.h` do motor,
+  // ligada de FORA (pelo `despacho.cpp`, que e quem tem a tela): sem ela,
+  // `glClear`/`glDrawArrays`/`glDrawElements` RECUSAM com o motivo escrito, e
+  // nao escrevem para um buffer proprio -- uma segunda tela daria uma medida
+  // (`PIXELS`/`CORES`) que nao mede o que o titulo escreveu na tela do emulador.
+  void DefinirTela(Tela* tela) { destino_.ApontarPara(tela); }
+  bool TemTela() const { return destino_.Pronto(); }
+  const video::Rasterizador& RasterizadorRef() const { return rasterizador_; }
+
   // O DESPACHO. Chamado quando o PC entra no endereco de saida do slot.
   // `retorno`, quando nao nulo, recebe o r0 da funcao.
   ResultadoGl Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32_t* retorno);
@@ -239,6 +260,14 @@ class Igl {
   const std::vector<ChamadaGl>& Ultimas() const { return ultimas_; }
 
  private:
+  // O RETRATO DO ESTADO no instante do desenho, para o rasterizador. E um
+  // retrato (valores), e nao uma referencia a este objecto: o rasterizador nao
+  // precisa de conhecer o IGL para ser testavel em isolamento.
+  video::EstadoDeRasterizacao MontarEstado() const;
+  // As capacidades que o titulo ligou e que o rasterizador nao faz entram UMA vez
+  // cada nas faltas: um aviso por desenho encheria o traco de um titulo de 60
+  // quadros com a mesma linha, e um aviso nenhum seria o stub mudo outra vez.
+  void RegistarRessalvas(const video::EstadoDeRasterizacao& e);
   ResultadoGl Recusar(const std::string& motivo, ChamadaGl& c);
   ResultadoGl NaoTem(ChamadaGl& c);
   void Registar(const ChamadaGl& c);
@@ -249,6 +278,10 @@ class Igl {
 
   Memoria& mem_;
   Traco& traco_;
+  // A ORDEM DE DECLARACAO E A ORDEM DE CONSTRUCAO: o `destino_` nasce antes do
+  // `rasterizador_`, que guarda uma referencia a ele.
+  video::DestinoTela destino_;
+  video::Rasterizador rasterizador_;
   std::uint32_t objeto_ = 0, vtable_ = 0;
 
   std::uint32_t modo_ = kModoModelView;

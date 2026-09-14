@@ -392,18 +392,25 @@ TEST(EstadoGl, DrawArraysSemArrayLigadoRecusaENaoContaVertices) {
   EXPECT_EQ(b.igl.Desenhos(), 0u);
 }
 
-TEST(EstadoGl, DrawArraysSemRasterizadorRecusaMasContaAGeometria) {
+TEST(EstadoGl, DrawArraysSemTelaRecusaMasContaAGeometria) {
+  // ESTE TESTE MUDOU DE NOME E DE ASSERT NO COMMIT DO RASTERIZADOR, e a mudanca
+  // e a informacao: o que faltava a 13/09 era o rasterizador, e o que falta
+  // agora a este `Banco` e a SUPERFICIE -- o `Banco` do teste nao tem `Tela`
+  // nenhuma, e o `Igl` so desenha para uma tela ligada por
+  // `Igl::DefinirTela`. Sem ela a recusa continua a ser recusa, e nao "sucesso
+  // sem pixel" (P2). Os pixels a serio estao em `tests/rasterizador_test.cpp`.
   Banco b;
   b.igl.Executar(kIgl_EnableClientState, Args(GL_VERTEX_ARRAY), nullptr);
   b.igl.Executar(kIgl_VertexPointer, Args(3, GL_FLOAT, 0, 0x00200000u), nullptr);
+  EXPECT_FALSE(b.igl.TemTela());
   const auto r = b.igl.Executar(kIgl_DrawArrays, Args(GL_TRIANGLES, 0, 30), nullptr);
-  // RECUSA, e nao "sucesso": nao ha rasterizador, e nenhum pixel fica escrito.
+  // RECUSA, e nao "sucesso": sem tela nenhum pixel fica escrito.
   EXPECT_EQ(r, ResultadoGl::Recusado);
   // Mas a geometria foi mesmo submetida, e isso mede-se.
   EXPECT_EQ(b.igl.Desenhos(), 1u);
   EXPECT_EQ(b.igl.Vertices(), 30u);
   const std::string motivo = b.igl.Ultimas().back().motivo;
-  EXPECT_NE(motivo.find("RASTERIZADOR"), std::string::npos) << motivo;
+  EXPECT_NE(motivo.find("TELA LIGADA"), std::string::npos) << motivo;
 }
 
 TEST(EstadoGl, DrawArraysComPrimitivaInvalidaRecusa) {
@@ -472,10 +479,13 @@ TEST(RegistoGl, AContagemPorSlotDizQuemPedeOQue) {
             b.igl.Chamadas());
 }
 
-TEST(RegistoGl, ClearAcumulaODizSemRasterizador) {
+TEST(RegistoGl, ClearAcumulaODizESemTelaRecusa) {
+  // MESMA MUDANCA DO TESTE ACIMA, e pelo mesmo motivo: o que faltava era a
+  // superfice. O ESTADO continua a ser acumulado -- e o que este teste protege --
+  // mas "feito" sem um pixel escrito seria o stub mudo (P2).
   Banco b;
   b.igl.Executar(kIgl_ClearColorx, Args(Fixo(1.0f), Fixo(1.0f), Fixo(1.0f), Fixo(1.0f)), nullptr);
-  EXPECT_EQ(b.igl.Executar(kIgl_Clear, Args(GL_COLOR_BUFFER_BIT), nullptr), ResultadoGl::Feito);
+  EXPECT_EQ(b.igl.Executar(kIgl_Clear, Args(GL_COLOR_BUFFER_BIT), nullptr), ResultadoGl::Recusado);
   EXPECT_EQ(b.igl.Limpezas(), 1u);
   EXPECT_EQ(b.igl.MascaraDeLimpeza(), GL_COLOR_BUFFER_BIT);
   EXPECT_EQ(b.igl.CorDeLimpeza(), 0xFFFFFFFFu);

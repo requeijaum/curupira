@@ -34,6 +34,7 @@ add_library(zb2_core STATIC
   core/brew/igl.cpp
   core/brew/imedia.cpp
   core/audio/misturador.cpp
+  core/video/rasterizador.cpp
 )
 target_include_directories(zb2_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(zb2_core PRIVATE -Wall -Wextra)
@@ -64,6 +65,7 @@ add_executable(zb2_tests
   tests/media_test.cpp
   tests/widget_test.cpp
   tests/audio_test.cpp
+  tests/rasterizador_test.cpp
 )
 # A RAIZ DO REPOSITORIO, para os testes que abrem ficheiros reais (o
 # `pacmania.bar` e o SDK) poderem dizer ONDE procuraram -- e SALTAR em vez de
