@@ -9,7 +9,8 @@ Tudo o que esta aqui foi medido nesta arvore; os comandos estao escritos.
 |---|---|---|---|
 | slots do `IMedia` implementados | 0 | **14** (3 da `INHERIT_IQI` + 11 do cabecalho) | `./build/zb2_sonda_media` (imprime `Instalar() OK`) |
 | o motor entrega um `IMedia`? | **NAO**: `r0=0x00000003` (`AEE_ECLASSNOTSUPPORT`), `*ppobj=0`, falta `IShell::CreateInstance CLSID desconhecido` x1, saida **1** |  **SIM** na copia com o remendo: `r0=0`, `*ppobj=0x80090000`, saida **0** | `./build/zb2_sonda_media` |
-| testes | 87 | **130** | `./build/zb2_tests` |
+| testes | 87 | **203** (157 da integracao das outras frentes + 46 desta) | `./build/zb2_tests` |
+| entrega do aviso ao guest | nao existia | 1 aviso por chamada, com os 16 registradores e o CPSR repostos | `./build/zb2_tests --gtest_filter=Media.*` |
 | amostras no misturador, 1 s de midia | 0 | recebidas **22050**, nao nulas **11025**, pico **2400**, 23 blocos | `./build/zb2_sonda_media` |
 
 O misturador NAO toca som: ele CONTA. O criterio da etapa ("o misturador reporta
@@ -75,6 +76,29 @@ o MESMO comando imprime:
   (`platform/deprecated/inc/AEEISource.h:40`). E `0x01005505` NAO e MPEG4: e
   `AEECLSID_MEDIAMIDIOUTMSG` (MPEG4 = +7). Ha teste para os dois nomes.
 
+## A ENTREGA do aviso ao guest (a classe de defeito que nao tinha teste)
+
+`Media::EntregarAviso(cpu, sentinela, limite_de_passos)` corre UM aviso pendente no
+callback do jogo. As tres regras, e a medicao de cada uma:
+
+1. **Os 16 registradores e o CPSR sao guardados e repostos.** O callback e codigo do
+   guest chamado a partir do laco, e no momento da entrega o guest tem registradores
+   VIVOS -- pode estar a meio de um quadro. A arvore antiga tem esta primitiva
+   medida (`HleRuntime::CallArmFunctionPreservingContext`,
+   `core/brew/hle_runtime.cpp`): guarda `array<uint32_t,16>` + CPSR, chama com o LR
+   na sentinela, corre ate o PC voltar a sentinela, e repoe.
+2. **O PC e reposto.** Em ARM o `r15` E o PC, logo o proprio laco de reposicao o
+   repoe -- e a linha `cpu.Set(kPC, ...)` ficou por cima, explicita e REDUNDANTE. Isto
+   foi MEDIDO: tirar so essa linha nao faz nenhum teste ficar vermelho, e o
+   comentario no codigo diz isso em vez de supor o contrario.
+3. **Um callback que nao volta e REGISTADO (P2)**, com o endereco e o pedido, e o
+   emulador continua em vez de girar para sempre.
+
+Tres testes cobrem-no: um callback DESTRUIDOR que escreve 1..13 em r0-r12 e mexe nas
+bandeiras (a reposicao e comparada com uma FOTOGRAFIA do estado, e nao com valores
+escritos a mao); um callback que nunca volta (`b .`) com o PC reposto; e DOIS avisos
+em fila, para a propriedade ser "uma entrega leva um aviso", e nao "um de cada vez".
+
 ## O que os testes contam
 
 `tests/media_test.cpp` (33) corre **codigo ARM de verdade** numa bancada: um
@@ -105,8 +129,32 @@ Cada uma foi quebrada de proposito, e o teste que a cobre ficou VERMELHO:
 7. zeros contados como amostras nao nulas -> 1
 8. bloco vazio contado como bloco -> 1
 9. duas vozes encostadas em vez de somadas -> 2
+10. a entrega sem repor os registradores -> 1
+11. um callback que nao volta dado como ENTREGUE -> 1
+12. a entrega a esvaziar a fila inteira de uma vez (com DOIS avisos em fila) -> 1
 
-Depois de repor: 130 testes verdes. O guiao e `/tmp/provar_guardas.py`.
+Duas violacoes ensinaram mais do que confirmar: a da reposicao so do PC nao fez
+vermelho nenhum (a reposicao do `r15` ja a faz, ver acima), e a do esvaziamento da
+fila so ficou vermelha DEPOIS de o teste passar a criar dois avisos em fila -- com um
+so, a propriedade nao estava a ser testada. As duas estao registadas assim mesmo.
+
+Depois de repor: 203 testes verdes. Guioes: `/tmp/provar_guardas2.py` e
+`/tmp/prova_fila.py`.
+
+## A ORDEM na cablagem, e a faixa de indices
+
+O `despacho.{h,cpp}` e partilhado com a frente da ENTRADA (`etapa8-cablagem`), e o
+pai mandou: **a entrada aplica primeiro, o IMedia aplica depois, sobre o resultado.**
+Concordo, e a razao nao e so a fila: o `Media` e criado com a faixa de saida JA
+CONFIGURADA (guarda uma copia dela), e se o `quantos` for mexido depois da criacao, a
+vtable do IMedia fica escrita num intervalo que a faixa ja nao cobre.
+
+**Faixa que o IMedia ocupa**: indices de saida 4000..4063 (as saidas do objecto) e
+4100..4163 (a vtable), provados livres por `static_assert` contra as faixas vizinhas
+(1000..1116 ajudantes, 2000 shell, 3000 vtable do shell, 6000 IDisplay, 7000
+IFileMgr, 8000 bitmap, 9000 genericas, 9500 ficheiro). O `Instalar` RECUSA se a faixa
+nao cobrir esses indices -- guarda provada por violacao. Se a entrada precisar deste
+intervalo, o IMedia muda de sitio com UMA constante e tres `static_assert`.
 
 ## O remendo que falta (ficheiros PARTILHADOS, nao tocados)
 
