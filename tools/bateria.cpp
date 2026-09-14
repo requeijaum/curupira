@@ -59,7 +59,33 @@ constexpr std::uint32_t kTabela = 0x80010000u;
 constexpr std::uint32_t kPPMod = 0x00090000u;
 constexpr std::uint32_t kPPObj = 0x00090010u;
 constexpr std::uint32_t kSentinela = 0xFFFFFFF0u;
+// O primeiro indice da faixa da ENTRADA (etapa 8). Os indices desta faixa tem de
+// caber em `Saidas::quantos` (100000, acima): um endereco de saida fora da faixa
+// nunca e reconhecido, e o modulo atenderia zero chamadas em silencio.
+constexpr std::uint32_t kBaseDasEntradas = 20000;
 constexpr std::uint64_t kLimite = 4000000ull;
+
+// QUANTOS QUADROS DO LACO DE EVENTO CORRER DEPOIS DO `CreateInstance`.
+//
+// MEDIDO, e foi o que faltava para a etapa 8: sem isto a bateria mede o ARRANQUE.
+// Em BREW o laco de quadro do jogo so comeca quando o applet arma o temporizador e
+// o sistema o chama. Um menu que navega precisa de MUITOS quadros depois disso.
+//
+// O valor por omissao e ZERO, e e deliberado: sem `ZB2_QUADROS` a bateria da
+// EXACTAMENTE os numeros que dava antes desta mudanca.
+constexpr int kQuadrosPorOmissao = 0;
+
+// ENTREGAR O `EVT_APP_START` AO APPLET.
+//
+// MEDIDO: o `IModule::CreateInstance` de um applet BREW constroi o objecto e
+// VOLTA. O trabalho a serio -- carregar recursos, armar o temporizador do laco de
+// quadro -- acontece quando o SHELL entrega `EVT_APP_START` (0, `AEEEvent.h:23`)
+// ao `HandleEvent` do applet, que e o SLOT 2 da vtable DELE (AddRef=0, Release=1,
+// HandleEvent=2). Sem isto a Z-Wheel faz 255 passos no `create`, arma ZERO
+// temporizadores e desenha 0 pixels.
+//
+// Por omissao DESLIGADO: sem a variavel, os numeros sao os de sempre.
+constexpr int kEventosPorOmissao = 0;
 
 // ORCAMENTO DE TEMPO POR FASE, em segundos.
 //
@@ -161,7 +187,6 @@ constexpr std::uint32_t kSlotIdSetColor = 1535;
 constexpr std::uint32_t kSlotIdSetClipRect = 1536;
 constexpr std::uint32_t kSlotIdUpdate = 1537;
 constexpr std::uint32_t kSlotIdBacklight = 1542;
-constexpr std::uint32_t kSlotIdGetConnectedDevices = 1565;
 constexpr std::uint32_t kSlotIdGetDest = 1545;
 constexpr std::uint32_t kSlotIdSetDest = 1546;
 constexpr std::uint32_t kSlotIdRmDir = 1547;
@@ -305,6 +330,10 @@ struct Estado {
   std::uint32_t textos = 0;
   std::uint32_t blits = 0;
   std::uint32_t tamanho = 0;
+  // Quantos quadros do laco de evento correram (so com `ZB2_QUADROS`), e se o
+  // `EVT_APP_START` foi entregue (so com `ZB2_EVT_START`).
+  int quadros = 0;
+  int eventos = 0;
   std::string motivo;   // porque parou, quando parou
   std::map<std::string, std::uint64_t> faltas;
 };
@@ -357,6 +386,12 @@ std::vector<Titulo> LerCorpus(const std::string& caminho) {
 // Com `pishell` a apontar para memoria sem vtable, r1 sai 0 e o `bx r1` salta
 // para zero -- que era, literalmente, o `saiu_do_modulo_para_0x0` que 61 dos 62
 // titulos davam.
+// Quantos quadros do laco de evento correr por titulo, e se o `EVT_APP_START` e
+// entregue. Zero = os numeros de sempre.
+int g_quadros = kQuadrosPorOmissao;
+int g_eventos = kEventosPorOmissao;
+bool g_trace = false;
+
 Estado Medir(const Titulo& t, const std::string& dir) {
   Estado e;
   bool ok = false;
@@ -419,6 +454,15 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   vfs_do_titulo.Registar(dir + "/" + t.pasta);
   zb2::brew::Despacho despacho(mem, traco, al, vfs_do_titulo);
   despacho.InstalarAjudantes(s, kTabela);
+  if (const char* qu = std::getenv("ZB2_QUADROS")) g_quadros = std::atoi(qu);
+  if (const char* ev = std::getenv("ZB2_EVT_START")) g_eventos = std::atoi(ev);
+  if (const char* tr = std::getenv("ZB2_TRACE")) g_trace = std::atoi(tr) != 0;
+  // A ENTRADA (etapa 8). Sem guiao (`ZB2_ENTRADA`) o controle fica em repouso; com
+  // um guiao invalido a instalacao RECUSA e diz por que, e a corrida segue sem
+  // entrada -- e nao com meia entrada.
+  if (!despacho.InstalarEntrada(s, kBaseDasEntradas)) {
+    std::fprintf(stderr, "ENTRADA NAO INSTALADA -- ver as faltas\n");
+  }
   g_despacho = &despacho;
   // A TELA E LIMPA AQUI, e nao no inicio do `Medir`: o `Despacho` vive no
   // ambito desta funcao, e um ponteiro guardado de um titulo para o outro
@@ -485,21 +529,6 @@ Estado Medir(const Titulo& t, const std::string& dir) {
       {zb2::brew::kVtableFileObj, brew_slots::kIFile_GetInfo, kSlotIdFileInfo},
       {zb2::brew::kVtableFileObj, brew_slots::kIFile_Write, kSlotIdFileWrite},
       {zb2::brew::kVtableFileObj, 1, kSlotIdFileRelease},
-      // IHIDDevice: slot 7 = GetNumberOfButtons
-      // IHID (nao IHIDDevice): o slot 7 e `GetConnectedDevices`, e NAO o
-      // `GetNumberOfButtons` do IHIDDevice.
-      //
-      // MEDIDO, e o defeito foi meu: aqui estava
-      // `{VtGenerico(5), kHIDDevice_GetNumberOfButtons, ...}`, que poe um metodo de
-      // uma interface no slot de OUTRA. `VtGenerico(5)` e o IHID, e o slot 7 do
-      // IHID e `GetConnectedDevices` (cabecalho `AEEIHID.h`). Um jogo que peca a
-      // lista de aparelhos recebia `r0=14` -- nao zero, logo "falhou" -- e desistia
-      // ALI, antes de chegar ao modulo de entrada.
-      //
-      // **Uma interface cruzada nao da erro de compilacao nem de execucao: da um
-      // numero plausivel no sitio errado.** Achado pelo sub-agente `hid-entrada`.
-      {zb2::brew::VtGenerico(5), brew_slots::kIHID_GetConnectedDevices,
-       kSlotIdGetConnectedDevices},
       // IDisplay
       {zb2::brew::kVtableDisplay, kDisGetFontMetrics, kSlotIdGetFontMetrics},
       {zb2::brew::kVtableDisplay, kDisMeasureTextEx, kSlotIdMeasureText},
@@ -578,6 +607,10 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   if (!carga.ok) { e.motivo = "carga_recusada:" + carga.motivo; return e; }
   e.carga = true;
 
+  // A FAIXA DO MODULO DO TITULO, para o modulo da entrada poder recusar um
+  // callback que aponte para fora dela. A base e ZERO (medida); o TAMANHO vem do
+  // carregador.
+  despacho.DefinirFaixaDoModulo(kBase, carga.tamanho);
   cpu.Repor(kBase, kPilha);
   cpu.Set(kR0, kShell);                 // o IShell minimo mas real
   cpu.Set(kR2, kPPMod);
@@ -682,6 +715,61 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   e.motivo += " | create:" + motivo_create;
   if (!e.create) e.motivo += "_sem_applet";
   for (const auto& par : traco.ContagemFaltas()) e.faltas[par.first] = par.second;
+  // O EVENTO DE ARRANQUE (ver `kEventosPorOmissao`).
+  int eventos_dados = 0;
+  if (g_eventos != 0 && g_applet != 0) {
+    const std::uint32_t vtable = mem.Ler32(g_applet);
+    const std::uint32_t handle_event = mem.Ler32(vtable + 8);  // slot 2
+    if (handle_event >= kBase && handle_event < kBase + e.tamanho) {
+      // `AEEAppStart` (AEEAppStart.h): error, clsApp, pDisplay, rc, pszArgs.
+      constexpr std::uint32_t kAppStart = 0x00090000u + 0x1000u;
+      for (std::uint32_t k = 0; k < 32; ++k) mem.Escrever8(kAppStart + k, 0);
+      mem.Escrever32(kAppStart + 4,
+                     static_cast<std::uint32_t>(std::strtoul(t.clsid.c_str(), nullptr, 0)));
+      mem.Escrever32(kAppStart + 8, zb2::brew::kObjDisplay);
+      // 320x240: o tamanho que o despacho publica no `IShell::GetDeviceInfo`.
+      mem.Escrever32(kAppStart + 20, 320);
+      mem.Escrever32(kAppStart + 24, 240);
+      cpu.Set(kR0, g_applet);
+      cpu.Set(kR1, 0);  // EVT_APP_START
+      cpu.Set(kR2, kAppStart);
+      cpu.Set(kR3, 0);
+      cpu.Set(kLR, kSentinela);
+      cpu.Set(kPC, handle_event);
+      const zb2::brew::ResultadoFase re = g_despacho->Correr(cpu, kLimite, kPPObj);
+      e.motivo += " | start:" + re.motivo;
+      ++eventos_dados;
+    } else {
+      e.motivo += " | sem_handle_event";
+    }
+  }
+  e.eventos = eventos_dados;
+
+  // O LACO DE QUADRO, quando pedido. Cada volta poe o callback de temporizador
+  // armado pelo titulo no PC e corre-o ate ele voltar a sentinela -- e o proprio
+  // callback re-arma o seguinte, que e como um laco de quadro se sustenta em BREW.
+  int quadros_corridos = 0;
+  for (int q = 0; q < g_quadros; ++q) {
+    if (!g_despacho->PrepararCallbackDoTemporizador(cpu)) break;  // o laco acabou
+    const zb2::brew::ResultadoFase rq = g_despacho->Correr(cpu, kLimite, kPPObj);
+    ++quadros_corridos;
+    if (rq.motivo != "retornou") {
+      e.motivo += " | quadro:" + rq.motivo;
+      break;
+    }
+  }
+  e.quadros = quadros_corridos;
+
+  // O TRACO CRU, quando pedido (`ZB2_TRACE=1`). Existe para a pergunta que a
+  // tabela NAO responde: um titulo que volta do arranque sem pedir nada que falte
+  // -- nao se ve, pela tabela, o que ele ANDOU a fazer.
+  if (g_trace) {
+    std::fprintf(stderr, "== traco de %s (%zu eventos) ==\n", t.mod.c_str(), dm_eventos.size());
+    for (const auto& ev : dm_eventos) {
+      std::fprintf(stderr, "  [%s] %s %s\n", Nome(ev.area), ev.nome.c_str(), ev.detalhe.c_str());
+    }
+  }
+
   e.pixels = g_despacho->TelaRef().Escritos();
   e.cores = g_despacho->TelaRef().CoresDistintas();
   e.textos = g_textos;
@@ -701,7 +789,7 @@ int main(int argc, char** argv) {
   if (titulos.empty()) { std::fprintf(stderr, "corpus vazio ou ilegivel\n"); return 2; }
 
   std::printf("%-16s %-8s %-6s %-6s %-6s %8s %8s %8s %5s  %s\n", "titulo", "tamanho", "carga",
-              "modulo", "vtable", "carga_p", "cria_p", "PIXELS", "CORES", "motivo");
+              "modulo", "vtable", "carga_p", "cria_p", "QUADROS", "PIXELS", "CORES", "motivo");
   int carregam = 0, com_modulo = 0, com_applet = 0;
   // Nome -> conjunto de detalhes distintos vistos (para a lista final dizer os
   // ARGUMENTOS, e nao so a contagem).
@@ -740,10 +828,10 @@ int main(int argc, char** argv) {
         faltas_detalhe[ev.nome.substr(18)][ev.detalhe]++;
       }
     }
-    std::printf("%-16s %-8u %-6s %-6s %-6s %8" PRIu64 " %8" PRIu64 " %8u %5u  %s\n", t.mod.c_str(),
-                e.tamanho, e.carga ? "sim" : "NAO", e.modulo ? "sim" : "NAO",
-                e.vtable ? "sim" : "NAO", e.passos_carga, e.passos_create, e.pixels, e.cores,
-                e.motivo.c_str());
+    std::printf("%-16s %-8u %-6s %-6s %-6s %8" PRIu64 " %8" PRIu64 " %6d %8u %5u  %s\n",
+                t.mod.c_str(), e.tamanho, e.carga ? "sim" : "NAO", e.modulo ? "sim" : "NAO",
+                e.vtable ? "sim" : "NAO", e.passos_carga, e.passos_create, e.quadros, e.pixels,
+                e.cores, e.motivo.c_str());
     json += "  {\"mod\":\"" + t.mod + "\",\"pasta\":\"" + t.pasta + "\",\"tamanho\":" +
             std::to_string(e.tamanho) + ",\"carga\":" + (e.carga ? "true" : "false") +
             ",\"modulo\":" + (e.modulo ? "true" : "false") +

@@ -37,12 +37,25 @@
 
 namespace zb2 {
 
-// Codigos de erro do BREW que usamos. `AEEError.h` do SDK.
+// Codigos de erro do BREW que usamos. Os valores estao em
+// `platform/system/inc/AEEStdErr.h`, com o numero da linha ao lado -- e este
+// enum e a UNICA fonte deles.
+//
+// PORQUE ISTO ESTAVA A FAZER FALTA: o `despacho.cpp` tinha uma copia propria
+// destes numeros no seu `namespace` anonimo, e a copia tinha
+// `kAeeUnsupported = 0xE0000001`. Esse valor nao existe em cabecalho nenhum (o
+// `AEE_EUNSUPPORTED` e 20, AEEStdErr.h:36), e a copia local ESCONDIA o enum --
+// logo todo o "nao implementado" desta arvore respondia um codigo que jogo nenhum
+// conhece. **Duas copias de um numero medido sao duas chances de ele divergir**,
+// e esta divergiu.
 enum : std::int32_t {
-  kAeeSuccess = 0,
-  kAeeFailed = 1,
-  kAeeClassNotSupported = 3,
-  kAeeUnsupported = 20,
+  kAeeSuccess = 0,             // AEEStdErr.h:16
+  kAeeFailed = 1,              // AEEStdErr.h:17
+  kAeeClassNotSupported = 3,   // AEEStdErr.h:19
+  kAeeBadParm = 14,            // AEEStdErr.h:30
+  kAeeUnsupported = 20,        // AEEStdErr.h:36
+  kAeeNoSuch = 39,             // AEEStdErr.h:55
+  kAeeNoMore = 47,             // AEEStdErr.h:63
 };
 
 // Alocador do sistema. Vive aqui e nao no modulo porque e o sistema que o

@@ -27,6 +27,7 @@
 #include <string>
 #include <vector>
 
+#include "core/brew/ajudantes.h"
 #include "core/brew/interface.h"
 #include "core/cpu/cpu.h"
 #include "core/memoria/memoria.h"
@@ -68,15 +69,9 @@ constexpr std::uint32_t kIidISignalCBFactory = 0x01043541u; // AEEISignalCBFacto
 // deles -- o que fecha o caminho: o Z-Wheel cria a fabrica de sinais.
 constexpr std::uint32_t kClsidSignalCBFactory = 0x01041207u;
 
-// Os codigos de erro, de `platform/system/inc/AEEStdErr.h` (numero da linha entre
-// parenteses). Escritos por nome no codigo e conferidos aqui UMA vez:
-constexpr std::uint32_t kAeeSuccess = 0;            // AEEStdErr.h:16
-constexpr std::uint32_t kAeeFailed = 1;             // AEEStdErr.h:17
-constexpr std::uint32_t kAeeClassNotSupported = 3;  // AEEStdErr.h:19
-constexpr std::uint32_t kAeeBadParm = 14;           // AEEStdErr.h:30
-constexpr std::uint32_t kAeeUnsupported = 20;       // AEEStdErr.h:36
-constexpr std::uint32_t kAeeNoSuch = 39;            // AEEStdErr.h:39
-constexpr std::uint32_t kAeeNoMore = 47;            // AEEStdErr.h:47
+// Os codigos de erro vem do enum de `core/brew/ajudantes.h` -- UMA fonte so para
+// toda a arvore. Este modulo tinha uma copia propria deles, e a copia fez o que
+// as copias fazem: divergiu (ver o comentario do enum).
 
 // O objecto SINAL, como o nosso HLE o constroi na memoria do guest.
 //
@@ -117,13 +112,15 @@ constexpr std::uint32_t kPassoDoSinal = 0x40u;
 // ele, `CreateSignal` RECUSA (P2) em vez de escrever fora da faixa.
 constexpr std::uint32_t kSinaisDisponiveis = 4;
 
-// A faixa onde o modulo do titulo e carregado.
+// A faixa onde o modulo do titulo e carregado, usada para RECUSAR um callback que
+// aponte para fora do modulo em vez de saltar para o vazio em silencio (P2).
 //
-// DUPLICADO de `core/brew/despacho.cpp` (`kBase`), e pela mesma razao: la esta
-// dentro de um `namespace` anonimo. Serve para RECUSAR um callback que aponte
-// para fora do modulo, em vez de saltar para o vazio em silencio (P2).
-constexpr std::uint32_t kBaseDoModulo = 0x00100000u;
-constexpr std::uint32_t kFimDoModulo = 0x01100000u;
+// A BASE E ZERO, e isso e MEDIDO: os literais de um `.mod` sao offsets do ficheiro
+// usados como enderecos absolutos (`tests/mod_base_test.cpp`: 51 literais do
+// `pacmania.mod` caem em cima de cadeias reais com base zero, zero com a base
+// antiga `0x00100000`). A faixa NAO pode ser uma constante: o TAMANHO depende do
+// titulo, e quem o sabe e quem carrega o modulo -- por isso ha um `DefinirFaixa`.
+constexpr std::uint32_t kBaseDoModulo = 0x00000000u;
 
 // ---------------------------------------------------------------------------
 // EntradaDoZeebo -- a lista de eventos PRE-DEFINIDA
@@ -238,6 +235,16 @@ class Sinais {
 
   void DefinirSentinela(std::uint32_t s) { sentinela_ = s; }
 
+  // A faixa do modulo do titulo: base e TAMANHO. Sem isto definido o tamanho e
+  // zero, e TODO o callback e recusado -- o que e a resposta certa para "nao sei
+  // onde esta o codigo do titulo", e nao um salto para o desconhecido.
+  void DefinirFaixaDoModulo(std::uint32_t base, std::uint32_t tamanho) {
+    base_do_modulo_ = base;
+    tamanho_do_modulo_ = tamanho;
+  }
+  std::uint32_t BaseDoModulo() const { return base_do_modulo_; }
+  std::uint32_t TamanhoDoModulo() const { return tamanho_do_modulo_; }
+
   // --- consulta, para testes e para o relatorio ---------------------------
   std::uint32_t ObjetoSinal(std::uint32_t n) const;
   std::uint32_t QuantosSinais() const { return quantos_sinais_; }
@@ -266,6 +273,8 @@ class Sinais {
   std::uint32_t marcados_ = 0;
   std::uint32_t entregues_ = 0;
   std::uint32_t sentinela_ = kSentinelaPadrao;
+  std::uint32_t base_do_modulo_ = kBaseDoModulo;
+  std::uint32_t tamanho_do_modulo_ = 0;
 
   std::deque<std::pair<std::uint32_t, std::uint32_t>> pendentes_;  // (pfn, pUser)
 };

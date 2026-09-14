@@ -52,6 +52,7 @@ add_executable(zb2_tests
   tests/brew_test.cpp
   tests/comparar_test.cpp
   tests/hid_test.cpp
+  tests/entrada_despacho_test.cpp
   tests/bar_test.cpp
   tests/igl_test.cpp
   tests/mod_base_test.cpp

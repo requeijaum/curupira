@@ -30,9 +30,12 @@ constexpr std::uint32_t kIidRootForm = 0x01028e51u;
 constexpr std::uint32_t kIidHid = 0x0106c411u;
 constexpr std::uint32_t kIidSqlMgr = 0x0102c4e8u;
 // As constantes que o despacho usa, todas derivadas dos cabecalhos gerados.
-constexpr std::uint32_t kAeeSuccess = 0;
-constexpr std::uint32_t kAeeFailed = 1;
-constexpr std::uint32_t kAeeUnsupported = 0xE0000001u;
+//
+// OS CODIGOS DE ERRO JA NAO ESTAO AQUI. Estavam, com `kAeeUnsupported` a valer
+// `0xE0000001` -- um valor que nao existe em cabecalho nenhum -- e a copia local
+// ESCONDIA o enum de `ajudantes.h` (onde o `AEE_EUNSUPPORTED` e 20,
+// AEEStdErr.h:36). Tirei a copia: agora o nome resolve para o enum, e ha um
+// numero medido num sitio so.
 constexpr std::uint32_t kSentinela = 0xFFFFFFF0u;
 // A base do modulo. MEDIDA: ver `tests/mod_base_test.cpp` e o `bateria.cpp`.
 constexpr std::uint32_t kBase = 0x00000000u;
@@ -49,7 +52,7 @@ constexpr std::uint32_t kSlotIdGetFontMetrics = 1530, kSlotIdMeasureText = 1531,
                        kSlotIdDrawText = 1532, kSlotIdDrawRect = 1533, kSlotIdBitBlt = 1534,
                        kSlotIdSetColor = 1535, kSlotIdSetClipRect = 1536, kSlotIdUpdate = 1537,
                        kSlotIdCreateDIBitmap = 1538, kSlotIdBacklight = 1542;
-constexpr std::uint32_t kSlotIdGetConnectedDevices = 1565, kSlotIdGetDest = 1545,
+constexpr std::uint32_t kSlotIdGetDest = 1545,
                        kSlotIdSetDest = 1546, kSlotIdRmDir = 1547, kSlotIdGetDeviceInfo = 1549,
                        kSlotIdGetDeviceBitmap = 1550, kSlotIdGetClipRect = 1551,
                        kSlotIdCancelTimer = 1552, kSlotIdSqlOpen = 1553, kSlotIdOpenFile = 1554,
@@ -74,7 +77,13 @@ struct LigacaoAjudante {
 }  // namespace
 
 Despacho::Despacho(Memoria& mem, Traco& traco, Alocador& alocador, Vfs& vfs)
-    : mem_(mem), traco_(traco), al_(alocador), vfs_(vfs), arquivos_(&vfs) {}
+    : mem_(mem),
+      traco_(traco),
+      al_(alocador),
+      vfs_(vfs),
+      arquivos_(&vfs),
+      sinais_(mem, traco),
+      ihid_(mem, traco, sinais_, entrada_) {}
 
 namespace {
 // Le uma cadeia do guest, com limite. Sem limite, um ponteiro errado percorre o
@@ -95,6 +104,55 @@ std::uint32_t IdentificadorDeFicheiro(std::uint32_t obj) {
   return (obj >= kObjFileBase) ? (obj - kObjFileBase) / 0x40 : 0;
 }
 }  // namespace
+
+bool Despacho::InstalarEntrada(const Saidas& saidas, std::uint32_t base) {
+  if (entrada_pronta_) {
+    traco_.RegistarFalta(Area::Entrada, "InstalarEntrada", "a entrada ja estava instalada");
+    return false;
+  }
+
+  // O GUIAO DA ENTRADA, e de onde ele vem.
+  //
+  // `ZB2_ENTRADA` e o TEXTO do guiao, com `;` a separar os eventos (o formato esta
+  // em `core/brew/ihid_entrada.h`). Ler o guiao do AMBIENTE e aceitavel dentro do
+  // P4 -- e CONFIGURACAO lida UMA vez no arranque, e nao tempo nem aleatoriedade
+  // lidos a cada passo: a mesma linha de comando com a mesma variavel da a mesma
+  // corrida. O que continua proibido (e nao existe) e ler o teclado do hospedeiro
+  // ou o relogio do hospedeiro.
+  //
+  // Sem a variavel o controle fica em REPOUSO -- quatro eixos no centro medido
+  // (128) e nenhum botao premido.
+  if (const char* guiao = std::getenv("ZB2_ENTRADA")) {
+    if (*guiao != '\0') {
+      std::string texto(guiao);
+      for (char& c : texto) {
+        if (c == ';') c = '\n';
+      }
+      std::string motivo;
+      if (!EntradaDoZeebo::Ler(texto, &entrada_, &motivo)) {
+        // RECUSA RUIDOSA: um guiao invalido NAO e aplicado pela metade.
+        traco_.RegistarFalta(Area::Entrada, "ZB2_ENTRADA", motivo);
+        return false;
+      }
+    }
+  }
+
+  if (!sinais_.Construir(saidas, base)) return false;
+  if (!ihid_.Construir(saidas, base + Sinais::kSlotsNecessarios)) return false;
+  base_da_entrada_ = base;
+  entrada_pronta_ = true;
+  traco_.Emitir(Area::Entrada, Nivel::Informacao, "ENTRADA_INSTALADA",
+                "base=" + std::to_string(base) + " eventos_do_guiao=" +
+                    std::to_string(entrada_.Quantos()) + " ihid=0x" +
+                    std::to_string(ihid_.EnderecoDoIhid()) + " fabrica=0x" +
+                    std::to_string(sinais_.EnderecoDaFabrica()));
+  return true;
+}
+
+bool Despacho::AtenderEntrada(ICpu& cpu, std::uint32_t indice) {
+  if (!entrada_pronta_) return false;
+  return sinais_.Atender(cpu, indice) || ihid_.Atender(cpu, indice);
+}
 
 void Despacho::InstalarAjudantes(const Saidas& saidas, Endereco tabela) {
   // A TABELA UNICA: offset no `AEEHelperFuncs` x endereco de saida da
@@ -150,6 +208,28 @@ void Despacho::InstalarAjudantes(const Saidas& saidas, Endereco tabela) {
   }
 }
 
+bool Despacho::PrepararCallbackDoTemporizador(ICpu& cpu) {
+  if (!timer_.ativo || timer_.callback == 0) return false;
+  const std::uint32_t fn = mem_.Ler32(timer_.callback);
+  const std::uint32_t ctx = mem_.Ler32(timer_.callback + 4);
+  timer_.ativo = false;
+  // A FAIXA DO MODULO VEM DE FORA (`DefinirFaixaDoModulo`), porque o TAMANHO e do
+  // titulo que esta carregado. Base zero e o valor medido; sem tamanho definido,
+  // nenhum callback e aceite -- que e a resposta certa para "nao sei onde esta o
+  // codigo do titulo".
+  // O TAMANHO vem do `Sinais`, que e quem o guarda (`DefinirFaixaDoModulo`): dois
+  // sitios a guardar a mesma faixa seriam dois sitios a divergir.
+  if (fn < sinais_.BaseDoModulo() || fn >= sinais_.BaseDoModulo() + sinais_.TamanhoDoModulo()) {
+    traco_.RegistarFalta(Area::Guarda, "callback_de_temporizador",
+                         "funcao 0x" + std::to_string(fn) + " fora do modulo");
+    return false;
+  }
+  cpu.Set(kLR, kSentinela);       // o retorno do callback volta para ca
+  cpu.Set(kPC, fn);
+  cpu.Set(kR0, ctx);
+  return true;
+}
+
 ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp_saida) {
   ResultadoFase resultado;
   std::uint32_t saidas = 0;
@@ -203,6 +283,13 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         const std::uint32_t n = mem_.Ler32(r0 + 4);
         if (n > 0) mem_.Escrever32(r0 + 4, n - 1);
         cpu.Set(kR0, n > 0 ? n - 1 : 0);
+      } else if (AtenderEntrada(cpu, idx)) {
+        // A ENTRADA (etapa 8): IHID, IHIDDevice e os sinais do BREW.
+        //
+        // ESTE RAMO VEM ANTES DOS OUTROS, e nao por gosto: os indices desta faixa
+        // sao 20000+, e o ramo `idx >= kBaseDoShell` (2000) mais abaixo apanhava-os
+        // e dava-lhes o NOME de um metodo do IShell. Foi por um nome errado num
+        // ramo generico que o `SetTimer` ja se perdeu uma vez nesta arvore.
       } else if (idx == kBaseDoShell + 2) {
         // IShell::CreateInstance(po, ClsId, ppobj) -- IShell slot 2.
         //
@@ -221,6 +308,14 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         std::uint32_t devolver = 0;
         if (iid == kIidDisplay) devolver = zb2::brew::kObjDisplay;
         else if (iid == kIidFileMgr) devolver = zb2::brew::kObjFileMgr;
+        // A ENTRADA. O `AEECLSID_HID` deixou de ser um objecto GENERICO: existe um
+        // IHID a serio. E a fabrica de sinais tambem (0x01041207, pedida por 37
+        // dos 62 titulos -- medido), porque sem ela o jogo nao tem como pedir o
+        // par (funcao, contexto) que o `RegisterForPositionChange` recebe.
+        else if (entrada_pronta_ && iid == kIidHid) devolver = ihid_.EnderecoDoIhid();
+        else if (entrada_pronta_ && iid == kClsidSignalCBFactory) {
+          devolver = sinais_.EnderecoDaFabrica();
+        }
         // Os que tem objecto generico: o jogo fica com uma interface cujos
         // metodos recusam, e a bateria aprende quais sao.
         else {
@@ -536,15 +631,6 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         cpu.Set(kR0, kAeeSuccess);
       } else if (idx == kSlotIdGetUpTime) {
         cpu.Set(kR0, static_cast<std::uint32_t>(agora_ms_));
-      } else if (idx == kSlotIdGetConnectedDevices) {
-        // `int GetNumberOfButtons(IHIDDevice *po)` -- IHIDDevice slot 7.
-        //
-        // O valor e DECLARADO, e diz-se que e declarado. A contagem real foi
-        // medida na arvore antiga (docs/PAREAMENTO-DE-UIDS-MEDIDO.md) e o d-pad e
-        // um controlo UNICO com UID proprio; o numero de BOTOES e a contagem que
-        // o `hid_devices.cfg` do zeemu declara.
-        // Nao tem argumentos: os registos que a bateria imprime sao residuais.
-        cpu.Set(kR0, 14);
       } else if (idx == kSlotIdGetDest) {
         // `IBitmap *GetDestination(IDisplay *po)` -- IDisplay slot 16.
         // Devolve o bitmap que esta a receber o desenho. O jogo usa-o para saber
@@ -759,7 +845,8 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         const bool conhecida = (cls == kIidDisplay || cls == kIidFileMgr ||
                                 cls == kIidHeap || cls == kIidFile || cls == kIidSound ||
                                 cls == kIidGraphics || cls == kIidRootForm ||
-                                cls == kIidHid || cls == kIidSqlMgr);
+                                cls == kIidHid || cls == kIidSqlMgr ||
+                                (entrada_pronta_ && cls == kClsidSignalCBFactory));
         if (pai != 0) {
           // AEEAppInfo: cls(0), pszName(4), pszIcon(8), dwIconSize(12), ...
           mem_.Escrever32(pai + 0, cls);
@@ -831,20 +918,28 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
     // proprio callback re-arma o temporizador -- que e como um laco de quadro
     // se sustenta em BREW.
     ++agora_ms_;
+    // O RELOGIO VIRTUAL E UM SO, e a entrada le-o daqui.
+    //
+    // A `EntradaDoZeebo` tem o seu proprio contador (e e ele que decide que
+    // eventos do guiao ja valem), mas quem o avanca e o laco, com o MESMO relogio
+    // que faz vencer os temporizadores. Dois relogios dentro da mesma corrida
+    // seriam duas fontes de tempo -- e o P4 existe para haver uma.
+    if (entrada_pronta_) entrada_.Repor(static_cast<std::uint32_t>(agora_ms_));
     if (timer_.ativo && agora_ms_ >= timer_.vence_em_ms && timer_.callback != 0) {
-      const std::uint32_t fn = mem_.Ler32(timer_.callback);
-      const std::uint32_t ctx = mem_.Ler32(timer_.callback + 4);
-      timer_.ativo = false;
-      if (fn >= kBase && fn < kBase + 0x01000000u) {
+      // UMA SO IMPLEMENTACAO do disparo do callback: a mesma que quem dirige o
+      // titulo de fora usa. Duas copias disto divergiriam -- e a copia que aqui
+      // estava guardava um `pc_salvo`/`lr_salvo` que nunca serviu para nada.
+      if (PrepararCallbackDoTemporizador(cpu)) {
         ++resultado.passos;
-        const std::uint32_t pc_salvo = cpu.Get(kPC);
-        const std::uint32_t lr_salvo = cpu.Get(kLR);
-        cpu.Set(kLR, kSentinela);       // o retorno do callback volta para ca
-        cpu.Set(kPC, fn);
-        cpu.Set(kR0, ctx);
         continuar_no_laco = true;
-        (void)pc_salvo; (void)lr_salvo;
       }
+    }
+
+    // A ENTRADA, no mesmo lugar do temporizador e pela mesma razao: o laco de
+    // eventos e o unico sitio onde o tempo VIRTUAL avanca (P4).
+    if (entrada_pronta_ && ihid_.Bombear(cpu)) {
+      continuar_no_laco = true;
+      continue;
     }
 
     if (saidas > 200) { resultado.motivo = "parou_em_slot_nao_implementado"; return resultado; }
