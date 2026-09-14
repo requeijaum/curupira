@@ -540,8 +540,18 @@ void ArmInterpreter::ExecutarArm(std::uint32_t instr, std::uint32_t pc) {
 
   if (g == 0) {
     // Grupo das multiplicacoes e do misc, com formas especificas.
-    if ((instr & 0x0FFFFFF0u) == 0x012FFF10u) {  // BX
+    // BX e BLX (forma de registrador). Partilham quase tudo; o que os separa
+    // sao os bits 7-4: 0001 para BX, 0011 para BLX -- que alem de saltar guarda
+    // o retorno no LR.
+    //
+    // Faltava o BLX, e o sintoma foi silencioso e preciso: o `blx r1` do
+    // primeiro modulo caia no grupo de dados processados, nao saltava, e o
+    // modulo seguia como se a chamada ao sistema tivesse acontecido. Um teste
+    // com modulo sintetico apanhou-o.
+    if ((instr & 0x0FFFFF30u) == 0x012FFF10u || (instr & 0x0FFFFF30u) == 0x012FFF30u) {
+      const bool com_retorno = (instr & 0x30u) == 0x30u;
       const Reg alvo = Get(static_cast<int>(instr & 0xF));
+      if (com_retorno) Set(kLR, pc + 4);
       if ((alvo & 1) != 0) modo_atual_ |= Cpsr::kT; else modo_atual_ &= ~Cpsr::kT;
       Set(kPC, alvo & ~1u);
       return;
@@ -714,6 +724,9 @@ std::uint64_t ArmInterpreter::Passo() {
 std::uint64_t ArmInterpreter::Correr(std::uint64_t limite) {
   std::uint64_t n = 0;
   while (n < limite) {
+    // Parar ANTES de executar: o PC dentro da faixa de saida e uma chamada ao
+    // C++, nao codigo do guest. Quem chama `Correr` despacha e retoma.
+    if (saidas_.Contem(Get(kPC))) return n;
     // O limite existe para que um laco sem fim no guest NUNCA prenda o emulador
     // em silencio. Foi um defeito medido: o `chessbots` passou 22 segundos
     // dentro de uma unica chamada, e o diagnostico ficava mudo porque dependia
