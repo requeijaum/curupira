@@ -296,6 +296,15 @@ const Campo kCampos[] = {
     {"blits", kNumero, kMaiorMelhor,
      "MEDIDO: soma 0 nos 62 titulos da referencia (`sum(.[].blits) == 0`). "
      "Inerte hoje."},
+    {"passos_start", kNumero, kMaiorMelhor,
+     "PASSOS DA FASE DO `EVT_APP_START` -- o ciclo de vida do app a arrancar. "
+     "MEDIDO: 0 em 62 titulos ate ao commit b42043e, porque a bateria criava o "
+     "applet e PARAVA; **41 titulos tinha um applet nao nulo e nenhum arrancava o "
+     "app** -- a lista de demanda ficava quase vazia (4 itens) porque os jogos nunca "
+     "chegavam a pedir nada. Depois de a fase existir: 35 de 62 com `passos_start > "
+     "0`, e a demanda passou de 4 para 11 itens. Maior e melhor: um titulo que corre "
+     "mais passos aqui chegou mais longe. **Este campo e a diferenca entre medir o "
+     "`CreateInstance` e medir a aplicacao.**"},
     {"passos_carga", kNumero, kNeutro,
      "AMBIGUO, por medicao: na referencia ha 29 titulos no TETO de 4000000 "
      "passos e o motivo desses e `orcamento_esgotado` -- ou seja, um numero alto "
