@@ -905,7 +905,11 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
       if (++saidas > 20000) { resultado.motivo = "laco_de_saidas"; return resultado; }
       continue;
     }
-    if (pc < kBase || pc >= kBase + 0x01000000u) {
+    // O LIMITE E O TAMANHO DA IMAGEM, quando ele e conhecido. Sem ele, cai-se no
+    // `kBase + 16 MB` de antes -- que e um limite generoso de mais, mas melhor do
+    // que nenhum.
+    const std::uint32_t fim = (faixa_fim_ > faixa_base_) ? faixa_fim_ : (kBase + 0x01000000u);
+    if (pc < kBase || pc >= fim) {
       resultado.motivo = "saiu_do_modulo_para_0x" + std::to_string(pc);
       (void)pp_saida;
       return resultado;

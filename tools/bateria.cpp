@@ -84,8 +84,20 @@ constexpr int kQuadrosPorOmissao = 0;
 // HandleEvent=2). Sem isto a Z-Wheel faz 255 passos no `create`, arma ZERO
 // temporizadores e desenha 0 pixels.
 //
-// Por omissao DESLIGADO: sem a variavel, os numeros sao os de sempre.
-constexpr int kEventosPorOmissao = 0;
+// Por omissao LIGADO, e a decisao e deliberada.
+//
+// Houve aqui um interruptor a DESLIGAR isto por omissao, com o argumento certo de
+// que, sem ele, "os numeros sao os de sempre". Mas esse argumento tem um preco que
+// nao se ve: **um instrumento que decide se o emulador faz o seu trabalho esta a
+// medir-se a si proprio.**
+//
+// `EVT_APP_START` nao e uma opcao de instrumentacao -- e o que a plataforma faz. A
+// bateria que media "o applet foi criado" e nunca arrancava o app **nao estava a
+// medir a aplicacao**: media o `CreateInstance`.
+//
+// Mudar uma medicao faz-se RE-MEDINDO e regravando a referencia no mesmo commit, e
+// nao deixando o interruptor desligado. Foi o que se fez: ver o `tools/baseline/`.
+constexpr int kEventosPorOmissao = 1;
 
 // ORCAMENTO DE TEMPO POR FASE, em segundos.
 //
@@ -323,7 +335,7 @@ struct Estado {
   bool create = false;
   std::uint64_t passos_carga = 0;
   std::uint64_t passos_create = 0;
-  std::uint64_t passos_start = 0;
+  std::uint64_t passos_start = 0;  // a fase do `EVT_APP_START`
   std::uint64_t recusadas = 0;
   std::uint32_t pixels = 0;
   std::uint32_t cores = 0;
@@ -464,6 +476,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
     std::fprintf(stderr, "ENTRADA NAO INSTALADA -- ver as faltas\n");
   }
   g_despacho = &despacho;
+  despacho.DefinirFaixaDoModulo(kBase, static_cast<std::uint32_t>(imagem.size()));
   // A TELA E LIMPA AQUI, e nao no inicio do `Medir`: o `Despacho` vive no
   // ambito desta funcao, e um ponteiro guardado de um titulo para o outro
   // apontaria para memoria morta. A primeira versao fazia isso e o resultado era
@@ -669,49 +682,6 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   g_applet = mem.Ler32(kPPObj);  // para o `GetAppInstance`
   e.create = mem.Ler32(kPPObj) != 0;
 
-  // ==================== O `EVT_APP_START` -- A PAREDE ====================
-  //
-  // Ate aqui a bateria criava o applet e PARAVA. E um applet criado nao faz nada:
-  // **o jogo vive dentro do `HandleEvent`**, que e onde ele monta o ecra, carrega os
-  // recursos, arma o temporizador do laco de quadro e regista os callbacks.
-  //
-  // Sem esta chamada, 41 dos 62 titulos ficavam com um applet nao nulo e um estado
-  // que nao avanca -- e a lista de demanda ficava quase vazia, porque **os jogos
-  // nunca chegavam a pedir nada**.
-  //
-  // A ABI, lida de `platform/system/inc/AEEIApplet.h`:
-  //
-  //     #define INHERIT_IApplet(iname) \
-  //        INHERIT_IBase(iname); \
-  //        boolean (*HandleEvent)(iname *po, AEEEvent evt, uint16 wp, uint32 dwp)
-  //
-  // `INHERIT_IBase` ocupa DOIS slots (`AddRef`, `Release`), logo o `HandleEvent` esta
-  // no indice 2 -- o TERCEIRO. E `EVT_APP_START = 0`
-  // (`platform/system/inc/AEEEvent.h:23`), com `dwParam` a ser um `AEEAppStart*`.
-  //
-  // `wp` e `dwp` vao a ZERO: o cabecalho diz que o `dwParam` e um `AEEAppStart *`, e
-  // nao ha medicao nenhuma do que ele deva apontar. Passar zero e nao o inventar.
-  if (e.create) {
-    const std::uint32_t applet = mem.Ler32(kPPObj);
-    const std::uint32_t vapp = mem.Ler32(applet);
-    const std::uint32_t handle = mem.Ler32(vapp + 2 * 4);
-    if (handle >= kBase && handle < kBase + e.tamanho) {
-      cpu.Repor(handle, kPilha);
-      cpu.Set(kR0, applet);
-      cpu.Set(kR1, 0);  // EVT_APP_START
-      cpu.Set(kR2, 0);  // wp
-      cpu.Set(kR3, 0);  // dwp
-      cpu.Set(kLR, kSentinela);
-      const zb2::brew::ResultadoFase r = g_despacho->Correr(cpu, kLimite, kPPObj);
-      e.passos_start = r.passos;
-      e.motivo += " | start:" + r.motivo;
-    } else {
-      // O vtable do applet NAO esta dentro do modulo: registar e NAO chamar. Chamar
-      // um endereco desconhecido poria o PC em memoria que nao existe, e o defeito
-      // apareceria como `saiu_do_modulo` sem dizer por que.
-      e.motivo += " | start:handle_fora_do_modulo";
-    }
-  }
   e.motivo += " | create:" + motivo_create;
   if (!e.create) e.motivo += "_sem_applet";
   for (const auto& par : traco.ContagemFaltas()) e.faltas[par.first] = par.second;
@@ -721,22 +691,46 @@ Estado Medir(const Titulo& t, const std::string& dir) {
     const std::uint32_t vtable = mem.Ler32(g_applet);
     const std::uint32_t handle_event = mem.Ler32(vtable + 8);  // slot 2
     if (handle_event >= kBase && handle_event < kBase + e.tamanho) {
-      // `AEEAppStart` (AEEAppStart.h): error, clsApp, pDisplay, rc, pszArgs.
-      constexpr std::uint32_t kAppStart = 0x00090000u + 0x1000u;
+      // `AEEAppStart`, lida de `platform/system/inc/AEEAppStart.h`:
+      //
+      //     typedef struct {
+      //        int         error;      // +0
+      //        AEECLSID    clsApp;     // +4
+      //        IDisplay *  pDisplay;   // +8
+      //        AEERect     rc;         // +12  (x, y, dx, dy)
+      //        const char *pszArgs;    // +28
+      //     } AEEAppStart;
+      //
+      // **E VAI NO `dwp`, QUE E O `r3` -- nao no `wp`.** O cabecalho e explicito:
+      // "A pointer to this structure is passed to applications in the `dwParam`
+      // field, upon `EVT_APP_START`". A versao anterior punha-o no `r2` (`wp`, um
+      // `uint16`): um ponteiro num campo de 16 bits, e o `r3` a zero.
+      //
+      // O `wp` e a "Bitmask of start codes" (`AEE_START_OEM`/`RESTART`/`SSAVER`) e
+      // vai a ZERO: um arranque normal nao tem nenhum desses bits.
+      //
+      // Os valores do `AEEAppStart` sao os DECLARADOS em todo o lado: `pDisplay` e o
+      // objecto do `IDisplay` e `rc` e 320x240, o que o `IShell::GetDeviceInfo`
+      // publica. Onde nao ha medicao, esta dito.
+      constexpr std::uint32_t kAppStart = 0x000A0000u + 0x1000u;
       for (std::uint32_t k = 0; k < 32; ++k) mem.Escrever8(kAppStart + k, 0);
+      mem.Escrever32(kAppStart + 0, 0);  // error
       mem.Escrever32(kAppStart + 4,
                      static_cast<std::uint32_t>(std::strtoul(t.clsid.c_str(), nullptr, 0)));
       mem.Escrever32(kAppStart + 8, zb2::brew::kObjDisplay);
-      // 320x240: o tamanho que o despacho publica no `IShell::GetDeviceInfo`.
+      mem.Escrever32(kAppStart + 12, 0);
+      mem.Escrever32(kAppStart + 16, 0);
       mem.Escrever32(kAppStart + 20, 320);
       mem.Escrever32(kAppStart + 24, 240);
+      mem.Escrever32(kAppStart + 28, 0);  // pszArgs
       cpu.Set(kR0, g_applet);
-      cpu.Set(kR1, 0);  // EVT_APP_START
-      cpu.Set(kR2, kAppStart);
-      cpu.Set(kR3, 0);
+      cpu.Set(kR1, 0);          // EVT_APP_START
+      cpu.Set(kR2, 0);          // wp = 0 bits de start code
+      cpu.Set(kR3, kAppStart);  // dwp = AEEAppStart*
       cpu.Set(kLR, kSentinela);
       cpu.Set(kPC, handle_event);
       const zb2::brew::ResultadoFase re = g_despacho->Correr(cpu, kLimite, kPPObj);
+      e.passos_start = re.passos;  // a fase do arranque, contada
       e.motivo += " | start:" + re.motivo;
       ++eventos_dados;
     } else {

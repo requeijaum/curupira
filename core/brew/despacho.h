@@ -94,8 +94,17 @@ class Despacho {
 
   // A FAIXA DO MODULO DO TITULO (base e tamanho), para o modulo da entrada poder
   // recusar um callback que aponte para fora dela. A base e ZERO, e e medida.
+  // O FIM DA FAIXA tambem vai para o despacho, e nao so para os modulos.
+  //
+  // MEDIDO, apontado pelo sub-agente `hid-entrada`: o `saiu_do_modulo` do laco usava
+  // `pc >= kBase + 0x01000000`, 16 MB acima da base. Com a base a ZERO isso e
+  // `0x01000000` -- e a bateria mostrava 12 titulos a saltar para la e a serem dados
+  // como "fora do modulo", quando o limite real e o TAMANHO da imagem. **Um guest
+  // que se perca entre o fim da imagem e os 16 MB continua a andar em silencio.**
   void DefinirFaixaDoModulo(std::uint32_t base, std::uint32_t tamanho) {
     base_do_modulo_ = base;
+    faixa_base_ = base;
+    faixa_fim_ = base + tamanho;
     sinais_.DefinirFaixaDoModulo(base, tamanho);
   }
 
@@ -127,6 +136,8 @@ class Despacho {
   void DefinirVtableBitmap(std::uint32_t v) { vtable_bitmap_ = v; }
   void DefinirVtableFicheiro(std::uint32_t v) { vtable_ficheiro_ = v; }
   void DefinirApplet(std::uint32_t v) { applet_ = v; }
+
+  // O FIM DA FAIXA DO MODULO, e nao `kBase + 16 MB`.
 
  private:
   Memoria& mem_;
@@ -160,6 +171,8 @@ class Despacho {
 
   std::string dir_;
   std::string pasta_;
+  std::uint32_t faixa_base_ = 0;
+  std::uint32_t faixa_fim_ = 0;
   std::map<std::string, std::uint64_t> faltas_;
 };
 
