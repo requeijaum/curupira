@@ -43,7 +43,7 @@ SHA_B="348106f1bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbd8b"
 # `sed` por texto pode apanhar a ficha errada (as duas tem os mesmos campos).
 cat > "$TMP/ref.json" <<FIM
 {
-  "config": {"corpus_sha256": "$SHA_A", "titulos": 2, "build": "abc1234"},
+  "config": {"corpus_sha256": "$SHA_A", "titulos": 2, "build": "abc1234", "binario_sha256": "binA"},
   "titulos": [
   {"mod":"imicro3d","pasta":"12875","tamanho":90068,"carga":true,"modulo":true,"vtable":true,"applet":true,"passos_carga":60,"passos_create":340,"passos_start":0,"recusadas":0,"motivo":"retornou | create:retornou","pixels":0,"cores":1,"textos":0,"blits":0,"faltas":{}},
   {"mod":"pacmania","pasta":"276212","tamanho":148400,"carga":true,"modulo":true,"vtable":true,"applet":true,"passos_carga":3555,"passos_create":4414,"passos_start":0,"recusadas":0,"motivo":"retornou | create:retornou","pixels":0,"cores":1,"textos":0,"blits":0,"faltas":{"AEEHelperFuncs[0x040]":1,"AEEHelperFuncs[0x0a8]":1,"IShell::slot41":1}}

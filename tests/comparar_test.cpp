@@ -97,12 +97,13 @@ const char* kShaB =
 // desde cfb031e. `titulos_do_cabecalho` existe para o teste poder escrever um
 // cabecalho que CONTRADIGA a lista (o -1 significa "a contagem certa").
 std::string MontarCom(const std::vector<Ficha>& fichas, const std::string& sha = kShaA,
-                      const std::string& build = "buildA", long titulos_do_cabecalho = -1) {
+                      const std::string& build = "buildA", long titulos_do_cabecalho = -1,
+                      const std::string& binario = "binA") {
   const long n = (titulos_do_cabecalho >= 0) ? titulos_do_cabecalho
                                              : static_cast<long>(fichas.size());
   return "{\n  \"config\": {\"corpus_sha256\": \"" + sha + "\", \"titulos\": " +
-         std::to_string(n) + ", \"build\": \"" + build + "\"},\n  \"titulos\": " +
-         Corpo(fichas) + "\n}\n";
+         std::to_string(n) + ", \"build\": \"" + build + "\", \"binario_sha256\": \"" +
+         binario + "\"},\n  \"titulos\": " + Corpo(fichas) + "\n}\n";
 }
 
 std::string Tem(const std::string& texto, const std::string& agulha) {

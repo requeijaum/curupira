@@ -385,6 +385,14 @@ const Campo kCabecalho[] = {
      "DUAS VERSOES DO EMULADOR e o uso normal -- se o `build` fosse criterio, o "
      "comparador recusaria precisamente a comparacao para que existe. Sem a "
      "variavel o valor e `desconhecido`, que e uma resposta honesta."},
+    {"binario_sha256", kTexto, kNeutro,
+     "resumo SHA-256 do EXECUTAVEL que produziu os numeros. Existe porque o `build` "
+     "MENTE: MEDIDO pela auditoria do plano, a referencia dizia `build=eb62459` e os "
+     "dados so podiam vir do codigo de `0286921` -- a corrida foi feita com a arvore "
+     "SUJA e o campo guardou o commit do checkout. **Um campo que nao identifica o que "
+     "mediu nao serve como proveniencia.** O hash do binario identifica-o: um binario "
+     "diferente da outro hash, e o mesmo binario da sempre o mesmo. E NEUTRO pela mesma "
+     "razao que o `build`: comparar duas versoes do emulador e o uso normal."},
 };
 constexpr std::size_t kNCabecalho = sizeof(kCabecalho) / sizeof(kCabecalho[0]);
 

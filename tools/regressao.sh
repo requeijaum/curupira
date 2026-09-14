@@ -49,12 +49,6 @@ if [ -z "${ZB2_BUILD:-}" ]; then
 fi
 export ZB2_BUILD
 
-# O HASH DO BINARIO que vai medir. Ver o comentario em `tools/bateria.cpp`: o nome do
-# commit mente quando a corrida e feita com a arvore suja -- foi medido.
-if [ -x "$BATERIA" ]; then
-  ZB2_BINARIO="$(sha256sum "$BATERIA" | cut -c1-64)"
-  export ZB2_BINARIO
-fi
 BATERIA="${ZB2_BATERIA:-$BUILD/zb2_bateria}"
 COMPARAR="${ZB2_COMPARAR:-$BUILD/zb2_comparar}"
 # O CORPUS PROCURA-SE, e nao se assume um caminho relativo.
@@ -93,6 +87,14 @@ _procurar_corpus() {
 CORPUS="$(_procurar_corpus)"
 MODS="${ZB2_MODS:-/media/rafaelfrequiao/8C5F-19E51/zeebo/ROMs/debug_nand/mod}"
 BASE="${ZB2_BASELINE:-$RAIZ/tools/baseline/bateria.json}"
+# O HASH DO BINARIO que vai medir. Ver o comentario em `tools/bateria.cpp`: o nome do
+# commit mente quando a corrida e feita com a arvore suja -- foi medido. **E isto tem
+# de vir DEPOIS de o `$BATERIA` estar definido**: a primeira versao veio antes, e o
+# `set -u` apanhou-a com "BATERIA: variavel nao associada".
+if [ -x "$BATERIA" ]; then
+  ZB2_BINARIO="$(sha256sum "$BATERIA" | cut -c1-64)"
+  export ZB2_BINARIO
+fi
 RASCUNHO="${ZB2_SCRATCH:-/tmp}"
 NOVA="$RASCUNHO/zb2-bateria-nova.json"
 LOG="$RASCUNHO/zb2-bateria-nova.log"

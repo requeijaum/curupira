@@ -57,6 +57,35 @@ constexpr std::uint32_t kPilha = 0x80080000u;
 constexpr std::uint32_t kHeap = 0x80200000u;
 constexpr std::uint32_t kHeapTam = 0x00C00000u;
 constexpr std::uint32_t kTabela = 0x80010000u;
+// A AREA DE RASCUNHO CAI DENTRO DA IMAGEM DO MODULO EM 29 DOS 62 TITULOS.
+//
+// Com a base do modulo a ZERO, a imagem comeca em 0 e vai ate ao tamanho do ficheiro --
+// **29 dos 62 tem imagem maior que 0x90010** (o maior e o `quake2brew`, 0x84D790). O
+// carregador escreve o ponteiro do modulo EM CIMA DO CODIGO do proprio modulo, e
+// **nada acusa.**
+//
+// MEDIDO, e e a hipotese mais forte para a parede que resta: a auditoria do
+// descodificador fechou **95,7% das divergencias silenciosas** de descodificacao
+// (66.376 -> 2.838) e **NENHUM titulo mudou de estado**. A parede nao esta na
+// descodificacao: esta no ESTADO com que o titulo entra -- e "dados lidos do sitio
+// errado" e o que isto produz, sem precisar de mais nenhuma classe.
+//
+// **E NAO MEXI NESTES DOIS NUMEROS, depois de duas tentativas medidas.**
+//
+//   0x00090000  (o original)   -> modulo 62 | applet 37   (mas dentro da imagem em 29)
+//   0x81000000                 -> modulo 48 | applet 38
+//   heap do alocador           -> modulo 48 | applet 38
+//
+// **Qualquer endereco que nao seja o antigo perde 14 titulos**, e a causa nao esta
+// determinada. A leitura que os dados sustentam: **o endereco do rascunho nao e nosso
+// para escolher -- o carregador do GUEST decide alguma coisa com ele**, e o valor antigo
+// coincide com o que ele espera. Escolher outro sitio por tentativa trocaria um defeito
+// silencioso por uma regressao medida, e **nao se escolhe endereco pelo mapa**: foi o
+// que o `0x800C0000` ja ensinou, quando dois titulos mudaram de comportamento por
+// LEREM o endereco.
+//
+// O que falta medir, com precisao: **o que o GUEST escreve e le em 0x90000.** Esta
+// registado como pedido no relatorio, e e uma frente propria.
 constexpr std::uint32_t kPPMod = 0x00090000u;
 constexpr std::uint32_t kPPObj = 0x00090010u;
 constexpr std::uint32_t kSentinela = 0xFFFFFFF0u;
