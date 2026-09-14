@@ -26,8 +26,10 @@ namespace {
 constexpr std::uint32_t kBaseDasSaidas = 500;   // indice, nao endereco
 constexpr std::uint32_t kPilha = 0x00200000u;
 constexpr std::uint32_t kArg0 = 0x00201000u;    // argumentos de pilha / saidas
-constexpr std::uint32_t kRotina = 0x00100200u;  // "codigo do titulo"
-constexpr std::uint32_t kMarcador = 0x00100300u;
+// A BASE DO MODULO E ZERO (medida): o codigo do titulo comeca no inicio da
+// imagem. A rotina de teste vive em 0x200, dentro dos 1 MiB que a bancada declara.
+constexpr std::uint32_t kRotina = 0x00000200u;  // "codigo do titulo"
+constexpr std::uint32_t kMarcador = 0x00000300u;
 constexpr std::uint32_t kContexto = 0xDEADBEEFu;
 
 class Bancada {
@@ -45,6 +47,11 @@ class Bancada {
       guiao_ok_ = EntradaDoZeebo::Ler(guiao, &entrada_, &motivo);
       guiao_motivo_ = motivo;
     }
+    // A FAIXA DO MODULO DO TITULO: base ZERO (medida) e um tamanho declarado.
+    // A rotina de teste vive em 0x200, dentro da faixa. Sem isto o modulo da
+    // entrada recusa TODO o callback -- que e a resposta certa quando nao se sabe
+    // onde esta o codigo, e nao um salto para o desconhecido.
+    sinais_.DefinirFaixaDoModulo(0, 0x00100000u);
     sinais_ok_ = sinais_.Construir(saidas_, kBaseDasSaidas);
     ihid_ok_ = ihid_.Construir(saidas_, kBaseDasSaidas);
   }

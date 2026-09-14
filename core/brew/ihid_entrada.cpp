@@ -262,13 +262,14 @@ bool Sinais::PrepararProximoCallback(ICpu& cpu) {
   while (!pendentes_.empty()) {
     const auto par = pendentes_.front();
     pendentes_.pop_front();
-    if (par.first < kBaseDoModulo || par.first >= kFimDoModulo) {
-      // UM CALLBACK PARA FORA DO MODULO NAO SE CHAMA. Saltar para 0 levava o
+    if (par.first < base_do_modulo_ || par.first >= base_do_modulo_ + tamanho_do_modulo_) {
+      // UM CALLBACK PARA FORA DO MODULO NAO SE CHAMA. Saltar para fora levava o
       // emulador a "saiu_do_modulo" -- um sintoma que nao diz nada sobre a causa.
-      // Aqui a causa fica escrita.
+      // Aqui a causa fica escrita, com a faixa que se conhece.
       traco_.RegistarFalta(Area::Entrada, "callback_de_sinal",
                            "funcao 0x" + Hex(par.first) + " fora do modulo (0x" +
-                               Hex(kBaseDoModulo) + "..0x" + Hex(kFimDoModulo) + ")");
+                               Hex(base_do_modulo_) + "..0x" +
+                               Hex(base_do_modulo_ + tamanho_do_modulo_) + ")");
       continue;
     }
     cpu.Set(kLR, sentinela_);

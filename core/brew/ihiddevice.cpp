@@ -561,7 +561,19 @@ void Ihid::GetNextButtonEvent(ICpu& cpu) {
 bool Ihid::Bombear(ICpu& cpu) {
   // A INJECCAO. Tudo o que entra no controle passa por aqui, e nada mais entra:
   // nao ha leitura de teclado do hospedeiro em lado nenhum deste modulo (P4).
+  //
+  // O CAMINHO CURTO EXISTE POR CAUSA DO CUSTO: o despacho chama isto UMA VEZ POR
+  // INSTRUCAO DO GUEST, e percorrer o guiao inteiro a cada instrucao seria caro
+  // sem nada mudar. O instante do relogio injectado e o que decide: sem instante
+  // novo nao ha eventos novos a aplicar.
+  //
+  // O QUE NAO SE ENCURTA: os callbacks PENDENTES. Uma chamada com o instante
+  // parado ainda tem de entregar o que ficou por entregar -- senao um callback
+  // marcado ficaria preso para sempre.
   const std::uint32_t agora = entrada_.Agora();
+  if (ja_bombeou_ && agora == ultimo_instante_bombeado_) {
+    return sinais_.PrepararProximoCallback(cpu);
+  }
   bool eixo_mudou = false;
   bool botao_mudou = false;
 

@@ -341,6 +341,10 @@ class Ihid {
   std::uint32_t QuantosEixosMapeados() const { return kQuantosEixos; }
   std::uint32_t EnderecoDoDispositivo() const { return kObjIhidDevice; }
   std::uint32_t EnderecoDoIhid() const { return kObjIhid; }
+  // O primeiro indice da faixa que este modulo ocupa. Fica exposto porque quem
+  // cabla tem de o saber: a vtable aponta para `base + Ihid::kBaseDoDispositivo
+  // + slot`, e um erro de um indice aqui nao da erro nenhum -- da um slot errado.
+  std::uint32_t BaseDasSaidas() const { return base_; }
 
  private:
   bool AtenderIhid(ICpu& cpu, std::uint32_t slot);
