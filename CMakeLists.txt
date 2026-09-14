@@ -98,4 +98,6 @@ add_test(NAME regressao
   COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/regressao.sh)
 set_tests_properties(regressao PROPERTIES
   SKIP_RETURN_CODE 77
-  ENVIRONMENT "ZB2_BUILD=${CMAKE_CURRENT_BINARY_DIR};ZB2_CORPUS=${ZB2_CORPUS};ZB2_MODS=${ZB2_MODS};ZB2_BASELINE=${ZB2_BASELINE}")
+  # ZB2_DIR e a pasta de build. NAO se passa `ZB2_BUILD`: essa e o COMMIT que a
+  # bateria grava no cabecalho, e o script vai busca-lo ao git na hora de correr.
+  ENVIRONMENT "ZB2_DIR=${CMAKE_CURRENT_BINARY_DIR};ZB2_CORPUS=${ZB2_CORPUS};ZB2_MODS=${ZB2_MODS};ZB2_BASELINE=${ZB2_BASELINE}")

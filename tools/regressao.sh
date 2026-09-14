@@ -22,8 +22,15 @@
 #   tools/regressao.sh                 # corre a bateria e compara com a referencia
 #   tools/regressao.sh --atualizar     # aceita a corrida de agora como referencia
 # Caminhos (todos por variavel de ambiente, com valores por omissao):
-#   ZB2_BUILD (build/), ZB2_CORPUS, ZB2_MODS, ZB2_BASELINE,
+#   ZB2_DIR (build/), ZB2_CORPUS, ZB2_MODS, ZB2_BASELINE,
 #   ZB2_SCRATCH (/tmp, para a corrida nova e o log)
+#
+# `ZB2_BUILD` NAO e o directoria de build: e o COMMIT que a bateria escreve no
+# cabecalho de proveniencia (`tools/bateria.cpp`, `getenv("ZB2_BUILD")`). Houve
+# aqui uma colisao de nomes -- este script usava `ZB2_BUILD` para a pasta de
+# build, e o `ctest` passava-lhe o caminho do build, que a bateria gravava como
+# se fosse um commit. Um nome, um sentido: a pasta e `ZB2_DIR`, o commit e
+# `ZB2_BUILD`.
 # Codigo de saida: o do comparador (0 sem regressao | 1 regressao | 2 uso |
 # 3 configuracoes diferentes | 4 formato). 77 = nao correu por falta do corpus ou
 # da midia -- e `SKIP_RETURN_CODE 77` no ctest traduz isso em "saltado", e nao em
@@ -31,7 +38,16 @@
 set -u
 
 RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD="${ZB2_BUILD:-$RAIZ/build}"
+BUILD="${ZB2_DIR:-$RAIZ/build}"
+# O COMMIT que a bateria vai gravar (campo NEUTRO do cabecalho, nunca criterio).
+# Se o operador nao o der, este script pergunta-o ao git -- e o script PODE, porque
+# e a ferramenta do operador e nao o emulador: quem nao pode ler o sistema por sua
+# conta e o INSTRUMENTO (P4). Sem git, fica vazio e a bateria escreve
+# `desconhecido`, que e uma resposta honesta.
+if [ -z "${ZB2_BUILD:-}" ]; then
+  ZB2_BUILD="$(git -C "$RAIZ" rev-parse --short HEAD 2>/dev/null || true)"
+fi
+export ZB2_BUILD
 BATERIA="${ZB2_BATERIA:-$BUILD/zb2_bateria}"
 COMPARAR="${ZB2_COMPARAR:-$BUILD/zb2_comparar}"
 CORPUS="${ZB2_CORPUS:-$RAIZ/../../scripts/corpus62.json}"
@@ -83,6 +99,7 @@ if [ ! -s "$NOVA" ]; then
 fi
 grep -F "titulos |" "$LOG" | tail -1
 echo "   corrida nova: $NOVA   (log: $LOG)"
+echo "   commit gravado no cabecalho: ${ZB2_BUILD:-(vazio: a bateria escreve 'desconhecido')}"
 
 if [ "$ATUALIZAR" -eq 1 ]; then
   mkdir -p "$(dirname "$BASE")"
@@ -107,8 +124,10 @@ case "$CODIGO" in
   0) echo "== regressao: SEM REGRESSOES" ;;
   1) echo "== regressao: FALHA -- um titulo piorou. O numero esta acima."
      echo "   (se a mudanca de estado e deliberada, aceita-a com: $0 --atualizar)" ;;
-  3) echo "== regressao: RECUSADO -- a corrida de agora nao e a mesma configuracao da referencia."
-     echo "   (corpus diferente? nesse caso a referencia tem de ser refeita: $0 --atualizar)" ;;
+  3) echo "== regressao: RECUSADO -- a corrida de agora NAO correram a mesma especificacao."
+     echo "   Corpus, midia (.mod de outro tamanho) ou formato do cabecalho diferentes? Entao a"
+     echo "   referencia e que tem de ser refeita, depois de se confirmar que a mudanca e a esperada:"
+     echo "   $0 --atualizar" ;;
   4) echo "== regressao: RECUSADO -- o JSON saiu do formato declarado." ;;
   *) echo "== regressao: codigo inesperado $CODIGO" ;;
 esac

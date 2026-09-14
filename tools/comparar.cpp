@@ -256,13 +256,14 @@ const Campo kCampos[] = {
      "CHAVE do titulo, com o `mod`: e o par que diz que as duas fichas falam do "
      "MESMO titulo. Nao e metrica."},
     {"mod", kIdentidadeComoTexto, kIdentidade, "CHAVE do titulo (ver `pasta`)."},
-    {"tamanho", kNumero, kNeutro,
-     "MEDIDO: 0 nas 62 fichas da referencia (`max(.[].tamanho) == 0`), porque o "
-     "`bateria.cpp` declara `e.tamanho` e nunca o escreve. Com o valor a 0 o "
-     "campo nao discrimina nada, logo nao pode ser criterio; quando a bateria o "
-     "preencher com o tamanho do `.mod`, a direcao certa passa a ser kIdentidade "
-     "(o mesmo titulo tem de ter o mesmo tamanho -- um tamanho diferente e OUTRA "
-     "entrada, nao um emulador pior). Ver o relatorio da etapa 9."},
+    {"tamanho", kNumero, kIdentidade,
+     "IDENTIDADE DA ENTRADA, e nao metrica de progresso: um `.mod` de outro "
+     "tamanho e OUTRO ficheiro, e comparar pixels entre entradas diferentes e "
+     "exactamente o erro que esta ferramenta existe para impedir. MEDIDO no "
+     "baseline de 940ffef: 0 zeros, min 25776, max 8705936. O campo so passou a "
+     "ser utilizavel depois de o `bateria.cpp` voltar a escrever `e.tamanho` "
+     "(commit f2c4709; a atribuicao tinha-se perdido em d75281d sem nada acusar). "
+     "Antes disso isto era kNeutro, porque estar a zero nao discrimina nada."},
     {"carga", kBooleano, kMaiorMelhor,
      "P3: e o primeiro degrau medido, e `true` so acontece se o MOD foi lido e "
      "mapeado. Referencia: 62 de 62."},
@@ -270,9 +271,11 @@ const Campo kCampos[] = {
      "`AEEMod_Load` devolveu ponteiro de modulo nao nulo. Referencia: 48 de 62. "
      "Um titulo que perde isto PAROU mais cedo -- e regressao por definicao."},
     {"vtable", kBooleano, kMaiorMelhor,
-     "a vtable do modulo tem 4 slots dentro do modulo. Referencia: 0 de 62 -- "
-     "SEM VALOR hoje, porque o teste compara com `e.tamanho`, que e 0 (ver "
-     "`tamanho`). Declarado a mesma, para nao deixar o campo fora da tabela."},
+     "a vtable do modulo tem 4 slots dentro do modulo. MEDIDO: 48 de 62 no "
+     "baseline de 940ffef, a COINCIDIR com os 48 `modulo` -- a concordancia entre "
+     "os dois degraus e a verificacao que faltava. Antes de f2c4709 este campo "
+     "dava 0 de 62 porque comparava com `e.tamanho`, que estava a zero: um degrau "
+     "do arranque MORTO, que se lia como 'os modulos nao tem vtable'."},
     {"applet", kBooleano, kMaiorMelhor,
      "`IModule::CreateInstance` escreveu ponteiro nao nulo. Referencia: 22 de 62. "
      "E o marco de ARRANQUE, nao de jogabilidade (a nota de honestidade do "
@@ -324,6 +327,50 @@ const Campo kCampos[] = {
 
 constexpr std::size_t kNCampos = sizeof(kCampos) / sizeof(kCampos[0]);
 
+// ---------------------------------------------------------------------------
+// 3. O CABECALHO DE PROVENIENCIA.
+//
+// O `bateria.cpp` escreve, desde o commit cfb031e, um objecto de topo com duas
+// chaves -- e nao mais uma lista nua:
+//
+//   {"config": {"corpus_sha256": "<64 hex>", "titulos": 62, "build": "<git>"},
+//    "titulos": [ ...as fichas, sem uma mudanca... ]}
+//
+// PORQUE ISTO EXISTE: a guarda de configuracao abaixo deriva a identidade da
+// corrida da lista de `pasta/mod`, e **dois corpus diferentes com os mesmos 62
+// pasta/mod eram indistinguiveis** -- duas dumps da mesma ROM dao o mesmo corpus
+// e bytes diferentes. O resumo do corpus fecha esse buraco.
+//
+// As tres chaves sao DECLARADAS aqui, pela mesma razao das fichas: um campo novo
+// no cabecalho tem de ser declarado, e nao ignorado. A direcao e kIdentidade
+// (diferenca -> RECUSA, codigo 3) ou kNeutro (diferenca -> REPORTADA, nunca falha).
+const Campo kCabecalho[] = {
+    {"corpus_sha256", kTexto, kIdentidade,
+     "resumo SHA-256 dos BYTES do ficheiro do corpus. Duas corridas com o mesmo "
+     "resumo correram a MESMA especificacao; com resumos diferentes correram "
+     "coisas diferentes, e compara-las seria o erro que esta ferramenta impede. "
+     "O valor literal `desconhecido` (a bateria nao conseguiu ler o corpus) NAO e "
+     "proveniencia: e reportado como ausencia, e nunca como identidade."},
+    {"titulos", kNumero, kIdentidade,
+     "a contagem de titulos, no cabecalho DE PROPOSITO, redundante com a lista. "
+     "Um cabecalho que contradiga o corpo e uma mentira do instrumento, e recusa "
+     "como formato (codigo 4) -- nao se compara um ficheiro que se contradiz."},
+    {"build", kTexto, kNeutro,
+     "o commit que construiu o binario, vindo do ambiente (`ZB2_BUILD`). E NEUTRO "
+     "e so REPORTADO, e essa e a decisao que faz a ferramenta servir: comparar "
+     "DUAS VERSOES DO EMULADOR e o uso normal -- se o `build` fosse criterio, o "
+     "comparador recusaria precisamente a comparacao para que existe. Sem a "
+     "variavel o valor e `desconhecido`, que e uma resposta honesta."},
+};
+constexpr std::size_t kNCabecalho = sizeof(kCabecalho) / sizeof(kCabecalho[0]);
+
+const Campo* AcharCampoDoCabecalho(const std::string& nome) {
+  for (const Campo& c : kCabecalho) {
+    if (nome == c.nome) return &c;
+  }
+  return nullptr;
+}
+
 const Campo* AcharCampo(const std::string& nome) {
   for (const Campo& c : kCampos) {
     if (nome == c.nome) return &c;
@@ -343,6 +390,13 @@ struct Corrida {
   std::string nome;
   std::vector<Ficha> fichas;              // na ordem em que o ficheiro as traz
   std::map<std::string, std::size_t> por_chave;
+  // Proveniencia. `tem_cabecalho` distingue a forma nova da lista nua antiga: uma
+  // corrida com cabecalho e outra sem NAO sao comparaveis (recusa 3), porque de
+  // uma delas nao se sabe QUAL corpus correu.
+  bool tem_cabecalho = false;
+  std::string corpus_sha256;
+  std::string build;
+  std::int64_t titulos_declarados = -1;
 };
 
 std::string LerTexto(const Json& j, const char* campo) {
@@ -354,17 +408,97 @@ std::string LerTexto(const Json& j, const char* campo) {
 // O JSON so entra se estiver EXACTAMENTE no formato declarado: lista de fichas,
 // uma ficha por titulo, e o conjunto de campos igual ao da tabela. Falta e sobra
 // sao as duas recusas, com o nome do campo.
+std::string CodigoDoTipo(const Json& j);  // definido abaixo; usado na recusa
+
 bool LerCorrida(const Json& raiz, const std::string& nome, Corrida* saida, std::string* erro) {
   saida->nome = nome;
-  if (raiz.tipo != Json::kLista) {
-    *erro = nome + ": o JSON da bateria e uma LISTA de fichas por titulo";
+  // As DUAS formas aceites: o objecto com cabecalho (a forma escrita pelo
+  // `bateria.cpp` desde cfb031e) e a lista nua (a forma antiga, aceite para as
+  // corridas ja guardadas). Qualquer outra coisa recusa.
+  const Json* lista = &raiz;
+  if (raiz.tipo == Json::kObjeto) {
+    for (const auto& par : raiz.objeto) {
+      if (par.first != "config" && par.first != "titulos") {
+        *erro = nome + ": chave desconhecida '" + par.first +
+                "' no objecto de topo. A forma declarada tem `config` e `titulos`";
+        return false;
+      }
+    }
+    if (raiz.objeto.size() != 2) {
+      *erro = nome + ": nem a lista nua de fichas, nem o objecto com `config` e `titulos` (" +
+              std::to_string(raiz.objeto.size()) + " chaves no objecto de topo, e a forma declarada "
+              "tem 2)";
+      return false;
+    }
+    const Json* cfg = raiz.Campo("config");
+    const Json* lst = raiz.Campo("titulos");
+    if (cfg == nullptr || cfg->tipo != Json::kObjeto) {
+      *erro = nome + ": `config` em falta ou nao e um objecto";
+      return false;
+    }
+    if (lst == nullptr || lst->tipo != Json::kLista) {
+      *erro = nome + ": `titulos` em falta ou nao e uma lista de fichas";
+      return false;
+    }
+    for (const auto& par : cfg->objeto) {
+      if (AcharCampoDoCabecalho(par.first) == nullptr) {
+        *erro = nome + ": campo desconhecido no cabecalho '" + par.first +
+               "'. Um campo novo tem de ser DECLARADO na tabela `kCabecalho` de "
+               "tools/comparar.cpp, com a direcao e a medicao que a sustenta";
+        return false;
+      }
+    }
+    if (cfg->objeto.size() != kNCabecalho) {
+      std::string faltam;
+      for (const Campo& c : kCabecalho) {
+        if (cfg->Campo(c.nome) == nullptr) {
+          faltam += std::string(faltam.empty() ? "" : ", ") + c.nome;
+        }
+      }
+      *erro = nome + ": cabecalho com " + std::to_string(cfg->objeto.size()) +
+              " campos, e a tabela declara " + std::to_string(kNCabecalho) +
+              (faltam.empty() ? "" : ("; faltam: " + faltam));
+      return false;
+    }
+    for (const Campo& c : kCabecalho) {
+      const Json* v = cfg->Campo(c.nome);
+      const bool tipo_ok =
+          (c.classe == kNumero) ? (v->tipo == Json::kNumero) : (v->tipo == Json::kTexto);
+      if (!tipo_ok) {
+        *erro = nome + ": cabecalho '" + c.nome + "' e " + CodigoDoTipo(*v) +
+                " e a tabela declara-o como " + (c.classe == kNumero ? "numero" : "texto");
+        return false;
+      }
+    }
+    saida->tem_cabecalho = true;
+    saida->corpus_sha256 = cfg->Campo("corpus_sha256")->texto;
+    saida->build = cfg->Campo("build")->texto;
+    saida->titulos_declarados = cfg->Campo("titulos")->numero;
+    if (saida->titulos_declarados < 0) {
+      *erro = nome + ": `titulos` negativo no cabecalho";
+      return false;
+    }
+    lista = lst;
+  } else if (raiz.tipo != Json::kLista) {
+    *erro = nome +
+            ": o JSON da bateria e uma LISTA de fichas por titulo, ou um objecto com "
+            "`config` e `titulos`";
     return false;
   }
-  if (raiz.lista.empty()) {
+  if (lista->lista.empty()) {
     *erro = nome + ": lista de fichas vazia";
     return false;
   }
-  for (const Json& item : raiz.lista) {
+  // O cabecalho tem de bater com o corpo. Um ficheiro que se contradiz nao se
+  // compara: seria comparar duas coisas diferentes DENTRO da mesma corrida.
+  if (saida->tem_cabecalho &&
+      saida->titulos_declarados != static_cast<std::int64_t>(lista->lista.size())) {
+    *erro = nome + ": o cabecalho declara " + std::to_string(saida->titulos_declarados) +
+            " titulos e a lista tem " + std::to_string(lista->lista.size()) +
+            ". Corpo e cabecalho a discordar e uma mentira do instrumento";
+    return false;
+  }
+  for (const Json& item : lista->lista) {
     if (item.tipo != Json::kObjeto) {
       *erro = nome + ": cada ficha tem de ser um objecto";
       return false;
@@ -528,6 +662,95 @@ Resultado CompararTextos(const std::string& referencia, const std::string& corri
   out << "titulos: " << cref.fichas.size() << " na referencia, " << cnova.fichas.size()
       << " na corrida\n";
 
+  // Cada mudanca leva o NOME DO CAMPO alem da linha: e o que permite resumir a
+  // lista por campo ("applet 21") em vez de obrigar a contar a mao. Com a
+  // degradacao deliberada do `applet` a lista de neutros deu 63 linhas -- e um
+  // relatorio de 63 linhas em que 21 sao a mesma coisa deixa de ser lido.
+  std::vector<Mudanca> regressoes;
+  std::vector<Mudanca> melhorias;
+  std::vector<Mudanca> neutros;
+  // Titulos cuja ENTRADA mudou (hoje: o `tamanho` do `.mod`). Nao sao regressoes
+  // nem melhorias: sao a prova de que as duas corridas leram ficheiros diferentes,
+  // e nesse caso nenhum numero dos dois lados e comparavel.
+  std::vector<std::string> entradas_divergentes;
+  // A direcao declarada acompanha cada linha. Um relatorio que diz "piorou" sem
+  // dizer PORQUE aquele campo e um criterio obriga quem o le a ir ao codigo --
+  // e e essa ida ao codigo que esta ferramenta existe para evitar.
+  const auto marca = [](Direcao d) { return std::string("   [") + NomeDaDirecao(d) + "]"; };
+
+  // -------------------------------------------------------------------------
+  // A PROVENIENCIA, ANTES DE QUALQUER NUMERO.
+  //
+  // Duas corridas comparam-se se correram a MESMA especificacao. A lista de
+  // `pasta/mod` (mais abaixo) diz que os titulos sao os mesmos; o resumo do corpus
+  // diz que o FICHEIRO do corpus e o mesmo -- e era este o buraco que sobrava.
+  // -------------------------------------------------------------------------
+  if (cref.tem_cabecalho != cnova.tem_cabecalho) {
+    r.codigo = kConfigIncompativel;
+    out << "\nRECUSADO: uma corrida tem cabecalho de proveniencia e a outra nao.\n";
+    out << "  " << nome_referencia << ": " << (cref.tem_cabecalho ? "COM" : "SEM")
+        << " cabecalho\n";
+    out << "  " << nome_corrida << ": " << (cnova.tem_cabecalho ? "COM" : "SEM")
+        << " cabecalho\n";
+    out << "  De uma delas nao se sabe QUAL corpus correu. Regrava a referencia com "
+           "`tools/regressao.sh --atualizar`.\n";
+    out << "  Nenhum numero foi comparado.\n";
+    r.relatorio = out.str();
+    return r;
+  }
+  if (cref.tem_cabecalho) {
+    out << "proveniencia da referencia: corpus_sha256=" << cref.corpus_sha256
+        << " build=" << cref.build << "\n";
+    out << "proveniencia da corrida:    corpus_sha256=" << cnova.corpus_sha256
+        << " build=" << cnova.build << "\n";
+    // Os valores por nome, para a tabela continuar a ser a UNICA lista de campos:
+    // uma segunda lista de nomes divergiria da primeira sem nada acusar.
+    const auto valor_texto = [](const Corrida& c, const std::string& campo) -> std::string {
+      if (campo == "corpus_sha256") return c.corpus_sha256;
+      if (campo == "build") return c.build;
+      return std::string();
+    };
+    const auto valor_numero = [](const Corrida& c, const std::string& campo) -> std::int64_t {
+      if (campo == "titulos") return c.titulos_declarados;
+      return 0;
+    };
+    std::vector<std::string> divergencias;
+    for (const Campo& c : kCabecalho) {
+      if (c.classe == kNumero) {
+        const std::int64_t a = valor_numero(cref, c.nome);
+        const std::int64_t b = valor_numero(cnova, c.nome);
+        if (a == b) continue;
+        const std::string linha = std::string("cabecalho.") + c.nome + " " + std::to_string(a) +
+                                  " -> " + std::to_string(b);
+        if (c.direcao == kIdentidade) divergencias.push_back(linha);
+        else neutros.push_back({c.nome, linha + marca(c.direcao)});
+        continue;
+      }
+      const std::string a = valor_texto(cref, c.nome);
+      const std::string b = valor_texto(cnova, c.nome);
+      if (a == b) continue;
+      const std::string linha = std::string("cabecalho.") + c.nome + " " + a + " -> " + b;
+      // `desconhecido` NAO e proveniencia: e ausencia dela. Uma ausencia nunca
+      // pode RECUSAR (nao saber nao e "ser diferente"), mas tambem nao pode
+      // passar calada -- entra na lista de neutros com a palavra dita.
+      if (c.direcao == kIdentidade && (a == "desconhecido" || b == "desconhecido")) {
+        neutros.push_back({c.nome, linha + "   [SEM PROVENIENCIA: nao e criterio]"});
+      } else if (c.direcao == kIdentidade) {
+        divergencias.push_back(linha);
+      } else {
+        neutros.push_back({c.nome, linha + marca(c.direcao)});
+      }
+    }
+    if (!divergencias.empty()) {
+      r.codigo = kConfigIncompativel;
+      out << "\nRECUSADO: as duas corridas NAO correram a mesma especificacao.\n";
+      for (const std::string& l : divergencias) out << "  " << l << "\n";
+      out << "  Comparar isto seria comparar entradas diferentes. Nenhum numero foi comparado.\n";
+      r.relatorio = out.str();
+      return r;
+    }
+  }
+
   // -------------------------------------------------------------------------
   // A GUARDA DE CONFIGURACAO. Antes de comparar um numero, verificar que as duas
   // corridas falam da MESMA lista de titulos. Se nao falarem, RECUSA e nao
@@ -560,17 +783,6 @@ Resultado CompararTextos(const std::string& referencia, const std::string& corri
 
   // Campo a campo, titulo a titulo. Tudo o que muda entra em UMA das tres listas:
   // regressao (falha), melhoria, ou mudanca num campo neutro (so reporta).
-  // Cada mudanca leva o NOME DO CAMPO alem da linha: e o que permite resumir a
-  // lista por campo ("applet 21") em vez de obrigar a contar a mao. Com a
-  // degradacao deliberada do `applet` a lista de neutros deu 63 linhas -- e um
-  // relatorio de 63 linhas em que 21 sao a mesma coisa deixa de ser lido.
-  std::vector<Mudanca> regressoes;
-  std::vector<Mudanca> melhorias;
-  std::vector<Mudanca> neutros;
-  // A direcao declarada acompanha cada linha. Um relatorio que diz "piorou" sem
-  // dizer PORQUE aquele campo e um criterio obriga quem o le a ir ao codigo --
-  // e e essa ida ao codigo que esta ferramenta existe para evitar.
-  const auto marca = [](Direcao d) { return std::string("   [") + NomeDaDirecao(d) + "]"; };
   // Onde a comparacao parou por o formato nao bater (tipos diferentes).
   std::string problema_de_formato;
 
@@ -613,6 +825,14 @@ Resultado CompararTextos(const std::string& referencia, const std::string& corri
         if (a == b) continue;
         const std::string linha = onde + ": " + c.nome + " " + std::to_string(a) + " -> " +
                                   std::to_string(b);
+        // kIdentidade: nao e progresso, e ENTRADA. Um `.mod` de outro tamanho e
+        // outro ficheiro, e a corrida nao se compara -- recusa, e nao "melhor" nem
+        // "pior". Acumula e decide no fim, para o relatorio dizer TODOS os titulos
+        // cuja entrada mudou, e nao so o primeiro.
+        if (c.direcao == kIdentidade) {
+          entradas_divergentes.push_back(linha);
+          continue;
+        }
         if (c.direcao == kMaiorMelhor) {
           if (b < a) regressoes.push_back({c.nome, linha + marca(c.direcao)});
           else melhorias.push_back({c.nome, linha + marca(c.direcao)});
@@ -682,6 +902,18 @@ Resultado CompararTextos(const std::string& referencia, const std::string& corri
     out << "\nRECUSADO: " << problema_de_formato
         << "\n  Duas corridas com tipos diferentes no mesmo campo nao sao comparaveis.\n"
         << "  Nada foi concluido sobre regressao.\n";
+    r.relatorio = out.str();
+    return r;
+  }
+
+  if (!entradas_divergentes.empty()) {
+    r.codigo = kConfigIncompativel;
+    out << "\nRECUSADO: as duas corridas NAO leram a mesma entrada.\n";
+    for (const std::string& l : entradas_divergentes) out << "  " << l << "\n";
+    out << "  Um modulo de outro tamanho e OUTRO ficheiro: comparar os numeros dos dois lados\n"
+        << "  seria comparar entradas diferentes, que e o erro que esta ferramenta impede.\n"
+        << "  Nenhum numero foi comparado. Regrava a referencia com\n"
+        << "  `tools/regressao.sh --atualizar` se a midia mudou mesmo.\n";
     r.relatorio = out.str();
     return r;
   }

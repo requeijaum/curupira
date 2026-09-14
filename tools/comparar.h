@@ -17,6 +17,19 @@
 // uma regressao: e outra pergunta. O comparador RECUSA (codigo 3) em vez de
 // comparar -- compara-las e literalmente o erro que esta ferramenta impede.
 //
+// AS DUAS FORMAS DO JSON DA BATERIA:
+//   - a forma com cabecalho (a que o `bateria.cpp` escreve desde cfb031e):
+//       {"config": {"corpus_sha256": ..., "titulos": N, "build": ...},
+//        "titulos": [ ...fichas... ]}
+//   - a lista nua de fichas (a forma antiga), aceite para as corridas ja guardadas.
+// Uma corrida com cabecalho e outra sem NAO se comparam (codigo 3): de uma delas
+// nao se sabe QUAL corpus correu.
+//
+// O que a configuracao inclui, declarado na tabela `kCabecalho`/`kCampos` do
+// `.cpp`: o resumo do corpus (`corpus_sha256`), o tamanho de cada `.mod`
+// (`tamanho`) e a lista de titulos. O `build` (o commit) e NEUTRO e so REPORTADO:
+// comparar duas versoes do emulador e o uso normal da ferramenta.
+//
 // O QUE NAO ENTRA COMO CRITERIO, e por que (P1): ver a tabela `kCampos` abaixo.
 // Cada linha tem a direcao declarada E a medicao que a sustenta.
 //

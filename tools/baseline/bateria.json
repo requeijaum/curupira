@@ -1,4 +1,6 @@
-[
+{
+  "config": {"corpus_sha256": "348106f14ecfec547a04e634fd65931c73522f9c9f24304c387ee9eb757dad8b", "titulos": 62, "build": "cfb031e"},
+  "titulos": [
   {"mod":"imicro3d","pasta":"12875","tamanho":90068,"carga":true,"modulo":true,"vtable":true,"applet":true,"passos_carga":60,"passos_create":340,"recusadas":0,"motivo":"retornou | create:retornou","pixels":0,"cores":1,"textos":0,"blits":0,"faltas":{}},
   {"mod":"chessbots","pasta":"263019","tamanho":722924,"carga":true,"modulo":true,"vtable":true,"applet":false,"passos_carga":60,"passos_create":4000000,"recusadas":0,"motivo":"retornou | create:orcamento_esgotado_sem_applet","pixels":0,"cores":1,"textos":0,"blits":0,"faltas":{}},
   {"mod":"cnk2","pasta":"274214","tamanho":649452,"carga":true,"modulo":false,"vtable":false,"applet":false,"passos_carga":4000000,"passos_create":0,"recusadas":0,"motivo":"orcamento_esgotado | sem_ponteiro_de_modulo","pixels":0,"cores":0,"textos":0,"blits":0,"faltas":{}},
@@ -61,4 +63,5 @@
   {"mod":"rt2","pasta":"280602","tamanho":2461248,"carga":true,"modulo":true,"vtable":true,"applet":true,"passos_carga":766686,"passos_create":4000000,"recusadas":0,"motivo":"retornou | create:orcamento_esgotado","pixels":0,"cores":1,"textos":0,"blits":0,"faltas":{}},
   {"mod":"activitycenter","pasta":"280634","tamanho":805248,"carga":true,"modulo":true,"vtable":true,"applet":true,"passos_carga":46195,"passos_create":4000000,"recusadas":444389,"motivo":"retornou | create:orcamento_esgotado","pixels":0,"cores":1,"textos":0,"blits":0,"faltas":{}},
   {"mod":"funsoccer","pasta":"280647","tamanho":1173104,"carga":true,"modulo":true,"vtable":true,"applet":true,"passos_carga":78340,"passos_create":4000000,"recusadas":0,"motivo":"retornou | create:orcamento_esgotado","pixels":0,"cores":1,"textos":0,"blits":0,"faltas":{}}
-]
+  ]
+}
