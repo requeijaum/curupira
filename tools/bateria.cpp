@@ -51,6 +51,17 @@ constexpr std::uint32_t kBaseDoSlot = 1000;
 // Os slots da vtable do IShell comecam aqui, para o mesmo efeito: saber QUAL
 // metodo da interface cada titulo chama, e nao so que chamou algum.
 constexpr std::uint32_t kBaseDoShell = 2000;
+constexpr std::uint32_t kVtableDisplay = 6000;
+constexpr std::uint32_t kVtableFileMgr = 7000;
+
+// Vtables das interfaces que o shell entrega. Cada uma tem slots com endereco
+// proprio, para o pedido seguinte ficar nomeado.
+constexpr std::uint32_t kBaseDoDisplay = 3000;
+constexpr std::uint32_t kBaseDoFileMgr = 4000;
+constexpr std::uint32_t kObjDisplay = 0x80030000u;
+constexpr std::uint32_t kObjFileMgr = 0x80040000u;
+constexpr std::uint32_t kIidDisplay = 0x01001001u;
+constexpr std::uint32_t kIidFileMgr = 0x01001003u;
 constexpr std::uint32_t kSlotDbgPrintf = 0x09c;
 constexpr std::uint32_t kSlotGetAeeVersion = 0x08c;
 
@@ -124,14 +135,14 @@ std::vector<Titulo> LerCorpus(const std::string& caminho) {
 // para zero -- que era, literalmente, o `saiu_do_modulo_para_0x0` que 61 dos 62
 // titulos davam.
 void ConstruirShell(Memoria& mem, const Saidas& s, std::uint32_t objeto, std::uint32_t vtable,
-                    std::uint32_t quantos_slots) {
+                    std::uint32_t quantos_slots, std::uint32_t base_dos_slots = kBaseDoShell) {
   mem.Escrever32(objeto, vtable);           // *(pishell) = vtable
   mem.Escrever32(objeto + 4, 1);            // contagem de referencias
   for (std::uint32_t i = 0; i < quantos_slots; ++i) {
     // UM endereco por slot, para o registo dizer QUAL metodo do IShell foi
     // chamado. Com um stub so para todos, 27 titulos pediam "algo do shell" e o
     // numero nao tinha nome.
-    mem.Escrever32(vtable + i * 4, s.Endereco(kBaseDoShell + i));
+    mem.Escrever32(vtable + i * 4, s.Endereco(base_dos_slots + i));
   }
   mem.Escrever32(vtable + 0, s.Endereco(3));   // AddRef
   mem.Escrever32(vtable + 4, s.Endereco(4));   // Release
@@ -188,9 +199,34 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         const std::uint32_t n = mem_ref.Ler32(r0 + 4);
         if (n > 0) mem_ref.Escrever32(r0 + 4, n - 1);
         cpu.Set(kR0, n > 0 ? n - 1 : 0);
+      } else if (idx == kBaseDoShell + 2) {
+        // IShell::QueryInterface(po, iid, ppo). Os dois IIDs que o corpus pede
+        // sao conhecidos por medicao; o que nao for conhecido devolve
+        // ECLASSNOTSUPPORT com o ponteiro a zero -- recusar, nao mentir.
+        const std::uint32_t iid = cpu.Get(kR1);
+        const std::uint32_t ppo = cpu.Get(kR2);
+        std::uint32_t devolver = 0;
+        if (iid == kIidDisplay) devolver = kObjDisplay;
+        else if (iid == kIidFileMgr) devolver = kObjFileMgr;
+        if (ppo != 0) mem_ref.Escrever32(ppo, devolver);
+        cpu.Set(kR0, devolver != 0 ? kAeeSuccess : kAeeClassNotSupported);
+        if (devolver == 0) {
+          char det[96];
+          std::snprintf(det, sizeof(det), "iid=0x%08x ppo=0x%08x", iid, ppo);
+          traco.RegistarFalta(Area::Brew, "IShell::QueryInterface IID desconhecido", det);
+        }
       } else if (idx >= kBaseDoShell) {
+        // O NOME tem de dizer de QUE interface e o slot. Um so "IShell::slot"
+        // para tudo dava `IShell::slot4004` para um metodo do IDisplay -- numero
+        // sem nome outra vez, e ja foi esse o defeito que me fez perder uma
+        // ronda inteira a olhar para a lista errada.
         char nome[64], det[128];
-        std::snprintf(nome, sizeof(nome), "IShell::slot%u", idx - kBaseDoShell);
+        const char* iface = "IShell";
+        std::uint32_t slot = 0;
+        if (idx >= kVtableFileMgr) { iface = "IFileMgr"; slot = idx - kVtableFileMgr; }
+        else if (idx >= kVtableDisplay) { iface = "IDisplay"; slot = idx - kVtableDisplay; }
+        else { iface = "IShell"; slot = idx - kBaseDoShell; }
+        std::snprintf(nome, sizeof(nome), "%s::slot%u", iface, slot);
         // Os ARGUMENTOS no detalhe: para o QueryInterface (slot 2) o r1 e o IID
         // pedido, e sem ele nao se sabe o que responder. Foi assim que se
         // percebeu, na arvore antiga, quais das interfaces eram as mesmas por
@@ -297,8 +333,15 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   // As vtables das interfaces ficam ACIMA da tabela de ajudantes, dentro da
   // mesma faixa de saida. Enderecos distintos por interface.
   const std::uint32_t kShell = 0x80020000u;
-  const std::uint32_t kShellVtable = s.Endereco(1000);
-  ConstruirShell(mem, s, kShell, kShellVtable, 64);
+  ConstruirShell(mem, s, kShell, s.Endereco(1000), 64);
+
+  // As interfaces que o shell entrega por QueryInterface.
+  //
+  // MEDIDO, e e o que decidiu a ordem desta etapa: 22 titulos pedem
+  // `AEECLSID_DISPLAY` e 4 pedem `AEECLSID_FILEMGR`, ambos pelo slot 2 do IShell
+  // (QueryInterface) com o IID no r1 e o ponteiro de saida no r2.
+  ConstruirShell(mem, s, kObjDisplay, s.Endereco(kVtableDisplay), 64, kVtableDisplay);
+  ConstruirShell(mem, s, kObjFileMgr, s.Endereco(kVtableFileMgr), 64, kVtableFileMgr);
 
   const auto carga = CarregarMod(mem, imagem, kBase, kTabela, &traco);
   if (!carga.ok) { e.motivo = "carga_recusada:" + carga.motivo; return e; }
