@@ -48,6 +48,18 @@ constexpr std::uint32_t kPPMod = 0x00090000u;
 constexpr std::uint32_t kPPObj = 0x00090010u;
 constexpr std::uint32_t kSentinela = 0xFFFFFFF0u;
 constexpr std::uint64_t kLimite = 4000000ull;
+
+// ORCAMENTO DE TEMPO POR FASE, em segundos.
+//
+// MEDIDO: com os slots certos, o `pacmania` passou a correr mais de 900 s sozinho
+// -- contra 4 minutos da bateria INTEIRA dos 62 titulos antes. Quem paga nao e a
+// emulacao: e o INSTRUMENTO, que grava em texto cada escrita a memoria do guest.
+//
+// Um limite de PASSOS nao chega como orcamento, porque o custo por passo depende
+// do titulo. Sem isto, um titulo que acorda faz a bateria deixar de servir para
+// medir os outros 61 -- e um instrumento que deixa de se poder correr e um
+// instrumento morto.
+constexpr int kOrcamentoSegundos = 25;
 // Os slots da tabela comecam neste indice da faixa de saida. Abaixo dele ficam
 // os servicos tratados (malloc, free, AddRef, Release).
 constexpr std::uint32_t kBaseDoSlot = 1000;
@@ -207,6 +219,18 @@ struct Framebuffer {
   }
   void Retangulo(std::uint32_t x, std::uint32_t y, std::uint32_t w, std::uint32_t h,
                  bool preencher) {
+    // LIMITE ANTES DE PERCORRER, e nao so dentro do `Ponto`.
+    //
+    // O `Ponto` ja recusa o que sai do ecra, mas o LACO corria na mesma `w*h`
+    // vezes. Com uma rect grande vinda do guest isso sao milhares de milhoes de
+    // iteracoes: o `pacmania` passou a levar mais de 900 s e a bateria inteira
+    // deixou de acabar.
+    //
+    // **Um limite verificado so no destino nao limita o trabalho.** O trabalho
+    // tem de ser limitado ANTES de comecar.
+    if (x >= static_cast<std::uint32_t>(kLargura) || y >= static_cast<std::uint32_t>(kAltura)) return;
+    if (w > static_cast<std::uint32_t>(kLargura) - x) w = static_cast<std::uint32_t>(kLargura) - x;
+    if (h > static_cast<std::uint32_t>(kAltura) - y) h = static_cast<std::uint32_t>(kAltura) - y;
     if (preencher) {
       for (std::uint32_t j = 0; j < h; ++j) {
         for (std::uint32_t i = 0; i < w; ++i) Ponto(static_cast<int>(x + i), static_cast<int>(y + j));
@@ -402,7 +426,22 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
   *passos = 0;
   std::uint32_t saidas = 0;
   bool continuar_no_laco = false;
+  const auto inicio = std::chrono::steady_clock::now();
   while (*passos < limite) {
+    // O ORCAMENTO DE TEMPO, verificado a cada 65536 passos.
+    //
+    // A cada passo seria caro; a cada 65536 o erro maximo e de um bloco, e o
+    // custo e nulo. O motivo fica REGISTADO: um titulo que bate no orcamento nao
+    // e um titulo que falhou -- e um titulo que ainda estava a andar, e isso
+    // muda o que se conclui dele.
+    if ((*passos & 0xFFFFull) == 0) {
+      const auto agora = std::chrono::steady_clock::now();
+      const auto s = std::chrono::duration_cast<std::chrono::seconds>(agora - inicio).count();
+      if (s >= kOrcamentoSegundos) {
+        *motivo = "orcamento_de_tempo";
+        return;
+      }
+    }
     const std::uint32_t pc = cpu.Get(kPC);
     if (pc == kSentinela) {
       // A sentinela tem dois significados: o retorno da chamada de entrada, ou
@@ -1144,6 +1183,9 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   cpu.Set(kR2, static_cast<std::uint32_t>(std::strtoul(t.clsid.c_str(), nullptr, 0)));
   cpu.Set(kR3, kPPObj);
   cpu.Set(kLR, kSentinela);
+  // O orcamento de tempo comeca a contar AQUI, e cobre a fase de criacao, que e
+  // a que passou a ser cara.
+  const auto t0 = std::chrono::steady_clock::now();
   std::string motivo_create;
   CorrerFase(cpu, al, mem, traco, kLimite, &e.passos_create, &motivo_create, kPPObj);
   e.recusadas = cpu.InstruscoesRecusadas();
