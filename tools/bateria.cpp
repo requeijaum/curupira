@@ -153,21 +153,38 @@ constexpr std::uint32_t kSlotIdGetNumButtons = 1544;
 constexpr std::uint32_t kSlotIdGetDest = 1545;
 constexpr std::uint32_t kSlotIdSetDest = 1546;
 constexpr std::uint32_t kSlotIdRmDir = 1547;
+constexpr std::uint32_t kSlotIdGetFontMetricsAlias = 1548;
+
+// OS NUMEROS DE SLOT VEM DO CABECALHO, GERADOS.
+//
+// Estavam escritos a mao e estavam TODOS errados por um, porque `INHERIT_IBase`
+// tem DOIS membros (`AddRef`, `Release`) e eu contava TRES, a procura de um
+// `QueryInterface` que nao existe em `INHERIT_IBase`.
+//
+// O sintoma que obrigou a descobri-lo: o `pacmania` (`mod/276212/pacmania.mod`)
+// faz
+//     00109d5c  ldr r1, [r0]        ; a vtable
+//     00109d60  ldr ip, [r1, #8]    ; <<< INDICE 2
+//     00109d64  mov r1, r6          ; AEE_FONT_BOLD
+//     00109d68  blx ip              ; (po, fonte, &asc, &desc)
+// -- a assinatura EXATA do `GetFontMetrics`, e eu recusava-o porque tinha o 2
+// como `Release`. **O jogo estava certo e eu errado.**
+#include "brew_slots.inc"
+
 constexpr std::uint32_t kSlotIdCreateDIBitmap = 1538;
 constexpr std::uint32_t kObjDibBase = 0x80050000u;
 // Os slots do IDisplay, na ordem que `platform/ui/inc/AEEIDisplay.h` declara em
 // `INHERIT_IDisplay`. Lido campo a campo.
 enum : std::uint32_t {
-  kDisQueryInterface = 2,
-  kDisGetFontMetrics = 3,
-  kDisMeasureTextEx = 4,
-  kDisDrawText = 5,
-  kDisDrawRect = 6,
-  kDisBitBlt = 7,
-  kDisUpdate = 8,
-  kDisSetColor = 11,
-  kDisCreateDIBitmap = 14,
-  kDisSetClipRect = 19,
+  kDisGetFontMetrics = brew_slots::kDisplay_GetFontMetrics,
+  kDisMeasureTextEx = brew_slots::kDisplay_MeasureTextEx,
+  kDisDrawText = brew_slots::kDisplay_DrawText,
+  kDisDrawRect = brew_slots::kDisplay_DrawRect,
+  kDisBitBlt = brew_slots::kDisplay_BitBlt,
+  kDisUpdate = brew_slots::kDisplay_Update,
+  kDisSetColor = brew_slots::kDisplay_SetColor,
+  kDisCreateDIBitmap = brew_slots::kDisplay_CreateDIBitmap,
+  kDisSetClipRect = brew_slots::kDisplay_SetClipRect,
 };
 // FRAMEBUFFER DE SOFTWARE.
 //
@@ -218,13 +235,14 @@ std::uint32_t g_updates = 0;
 std::uint32_t g_dibs = 0;
 std::uint32_t g_backlights = 0;
 std::uint32_t g_applet = 0;
+bool g_alias_fontmetrics = false;
 std::uint32_t g_destino = 0;
 std::uint32_t g_vtable_bitmap = 0;
 // Os slots do IShell, na ordem que `platform/system/inc/AEEIShell.h` declara em
 // `INHERIT_IShell`. Lido campo a campo, e nao copiado.
 enum : std::uint32_t {
   kSheCreateInstance = 3,
-  kSheSetTimer = 12,     // <<< o pedido de demanda mais alto depois do QI
+  kSheSetTimer = brew_slots::kShell_SetTimer,     // <<< o pedido de demanda mais alto depois do QI
   kSheCancelTimer = 14,
   kSheSendEvent = 25,
   kSheForceExit = 41,
@@ -463,8 +481,14 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         // pedido, e sem ele nao se sabe o que responder. Foi assim que se
         // percebeu, na arvore antiga, quais das interfaces eram as mesmas por
         // dois nomes diferentes.
-        std::snprintf(det, sizeof(det), "r0=0x%08x r1=0x%08x r2=0x%08x", r0, cpu.Get(kR1),
-                      cpu.Get(kR2));
+        // O LR entra no detalhe porque sem ele nao se sabe QUEM chama.
+        //
+        // Foi a falta dele que me deixou a olhar para um `IDisplay::slot2` com uma
+        // FONTE (`AEE_FONT_NORMAL = 0x8000`) no r1 -- argumento que nenhum metodo
+        // daquele slot aceita -- sem forma de saber de onde vinha a chamada. Com o
+        // LR, vai-se ao sitio e le-se a instrucao.
+        std::snprintf(det, sizeof(det), "r0=0x%08x r1=0x%08x r2=0x%08x lr=0x%08x", r0, cpu.Get(kR1),
+                      cpu.Get(kR2), cpu.Get(kLR));
         traco.RegistarFalta(Area::Brew, nome, det);
         cpu.Set(kR0, kAeeUnsupported);
         if (++saidas > 200) { *motivo = "parou_em_slot_nao_implementado"; return; }
@@ -663,7 +687,7 @@ void CorrerFase(ArmInterpreter& cpu, Alocador& al, Memoria& mem_ref, Traco& trac
         mem_ref.Escrever32(obj + 20, prof);
         if (ppidib != 0) mem_ref.Escrever32(ppidib, obj);
         cpu.Set(kR0, 0);
-      } else if (idx == kSlotIdGetFontMetrics) {
+            } else if (idx == kSlotIdGetFontMetrics) {
         // `int GetFontMetrics(IDisplay *po, AEEFont nFont, int *pnAscent,
         //                     int *pnDescent)`.
         //
@@ -1003,10 +1027,10 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   // a cablagem e o unico sitio onde se declara o que existe.
   const struct { std::uint32_t vt; std::uint32_t slot; std::uint32_t saida; } kWire[] = {
       // IShell
-      {kVtableShell, kSheSetTimer, kSlotIdSetTimer},
-      {kVtableShell, 4, kSlotIdQueryClass},
+      {kVtableShell, brew_slots::kShell_SetTimer, kSlotIdSetTimer},
+      {kVtableShell, brew_slots::kShell_QueryClass, kSlotIdQueryClass},
       // IHIDDevice: slot 7 = GetNumberOfButtons
-      {VtGenerico(5), 7, kSlotIdGetNumButtons},
+      {VtGenerico(5), brew_slots::kHIDDevice_GetNumberOfButtons, kSlotIdGetNumButtons},
       // IDisplay
       {kVtableDisplay, kDisGetFontMetrics, kSlotIdGetFontMetrics},
       {kVtableDisplay, kDisMeasureTextEx, kSlotIdMeasureText},
@@ -1016,10 +1040,10 @@ Estado Medir(const Titulo& t, const std::string& dir) {
       {kVtableDisplay, kDisSetColor, kSlotIdSetColor},
       {kVtableDisplay, kDisSetClipRect, kSlotIdSetClipRect},
       {kVtableDisplay, kDisUpdate, kSlotIdUpdate},
-      {kVtableDisplay, 10, kSlotIdBacklight},
+      {kVtableDisplay, brew_slots::kDisplay_Backlight, kSlotIdBacklight},
       {kVtableDisplay, kDisCreateDIBitmap, kSlotIdCreateDIBitmap},
-      {kVtableDisplay, 15, kSlotIdSetDest},
-      {kVtableDisplay, 16, kSlotIdGetDest},
+      {kVtableDisplay, brew_slots::kDisplay_SetDestination, kSlotIdSetDest},
+      {kVtableDisplay, brew_slots::kDisplay_GetDestination, kSlotIdGetDest},
       // IFileMgr
       {kVtableFileMgr, kFmTest, kSlotIdFmTest},
       {kVtableFileMgr, kFmGetFreeSpace, kSlotIdFmFree},
@@ -1030,7 +1054,12 @@ Estado Medir(const Titulo& t, const std::string& dir) {
     // A GUARDA: um slot 0 num objecto ROPI e o `QueryInterface` da IBase, e a
     // cablagem por scan ja o poe la. Cablar slot 0 ou 1 por cima destruiria a
     // IBase de uma interface inteira sem nada a acusar.
-    if (w.slot < 3) {
+    // A IBase ocupa os slots 0 e 1 -- `AddRef` e `Release`, e SO esses dois.
+    //
+    // Aqui esteve `< 3`, e a premissa errada mandou-me recusar o slot 2 do
+    // IDisplay, que e o `GetFontMetrics`. **Uma guarda construida sobre um
+    // numero errado recusa o que esta certo** -- e o custo foi uma bateria.
+    if (w.slot < 2) {
       std::fprintf(stderr, "CABLAGEM RECUSADA: slot %u do objecto 0x%08x e da IBase\n",
                    w.slot, w.vt);
       std::abort();
@@ -1177,7 +1206,22 @@ int main(int argc, char** argv) {
             ",\"pixels\":" + std::to_string(e.pixels) +
             ",\"cores\":" + std::to_string(e.cores) +
             ",\"textos\":" + std::to_string(e.textos) +
-            ",\"blits\":" + std::to_string(e.blits) + "},\n";
+            ",\"blits\":" + std::to_string(e.blits) +
+            // AS FALTAS POR TITULO, e nao so o total agregado.
+            //
+            // Foi a falta disto que me obrigou a adivinhar quais dos 62 titulos
+            // fazia uma chamada -- e a adivinhacao custou uma ronda. A lista
+            // agregada diz O QUE falta; so a lista por titulo diz QUEM pede.
+            ",\"faltas\":{" + [&] {
+              std::string s;
+              bool primeiro = true;
+              for (const auto& par : e.faltas) {
+                s += (primeiro ? "" : ",");
+                s += "\"" + par.first + "\":" + std::to_string(par.second);
+                primeiro = false;
+              }
+              return s;
+            }() + "}},\n";
   }
   // O JSON tem de ser VALIDO: uma virgula a mais no fim torna-o ilegivel para
   // quem o for ler, e ele existe exactamente para ser comparado entre corridas.
