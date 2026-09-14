@@ -26,6 +26,7 @@ add_library(zb2_core STATIC
   core/brew/arquivo.cpp
   core/brew/interface.cpp
   core/brew/widget.cpp
+  core/brew/recursos.cpp
   core/brew/sha256.cpp
   core/brew/despacho.cpp
   core/brew/ihid_entrada.cpp
@@ -66,6 +67,7 @@ add_executable(zb2_tests
   tests/ajudantes_extra_test.cpp
   tests/media_test.cpp
   tests/widget_test.cpp
+  tests/recursos_test.cpp
   tests/audio_test.cpp
   tests/rasterizador_test.cpp
   tests/classes_test.cpp
