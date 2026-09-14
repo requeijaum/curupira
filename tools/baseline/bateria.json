@@ -1,5 +1,5 @@
 {
-  "config": {"corpus_sha256": "348106f14ecfec547a04e634fd65931c73522f9c9f24304c387ee9eb757dad8b", "titulos": 62, "build": "895beb1"},
+  "config": {"corpus_sha256": "348106f14ecfec547a04e634fd65931c73522f9c9f24304c387ee9eb757dad8b", "titulos": 62, "build": "946ecaa"},
   "titulos": [
   {"mod":"imicro3d","pasta":"12875","tamanho":90068,"carga":true,"modulo":true,"vtable":true,"applet":true,"passos_carga":60,"passos_create":340,"recusadas":0,"passos_start":10,"motivo":"retornou | create:retornou | start:retornou","pixels":0,"cores":1,"textos":0,"blits":0,"faltas":{}},
   {"mod":"chessbots","pasta":"263019","tamanho":722924,"carga":true,"modulo":true,"vtable":true,"applet":false,"passos_carga":60,"passos_create":4000000,"recusadas":0,"passos_start":0,"motivo":"retornou | create:orcamento_esgotado_sem_applet","pixels":0,"cores":1,"textos":0,"blits":0,"faltas":{}},
