@@ -1903,3 +1903,158 @@ continuava a acusar o CLSID desconhecido. **Regra**: antes de medir, `make -j4`
    perspectiva mudaram isso, porque nenhum titulo chega ao `glDraw*`. As duas
    mudancas sao correctas por teste unitario, e **nao** por medicao de titulo --
    fica escrito para nao serem lidas como "o desenho ja funciona".
+
+---
+
+## Sessao de 15/09, segunda parte -- cinco frentes em paralelo, e o dia em que PIXELS saiu do zero
+
+Retomada com cinco sub-agentes, um por frente, cada um no seu worktree. **Os
+agentes corrigiram-me quatro vezes**, e isso foi o mais valioso da ronda: tres
+premissas minhas estavam erradas e uma proposta minha desfazia uma decisao
+correcta tomada antes. Fica tudo escrito abaixo, porque o valor esta no erro.
+
+### O que mudou, medido
+
+| degrau | baseline (`tools/baseline/bateria.json`) | fim desta ronda |
+|---|---|---|
+| carga | 62/62 | 62/62 |
+| ponteiro de modulo | 62/62 | 62/62 |
+| vtable valida | 48/62 | **62/62** |
+| applet instanciado | 37/62 | **56/62** |
+| **pixels escritos** | **0/62** | **10/62** |
+
+Quatro commits, cada um medido em ISOLADO (a corrida anterior e a referencia da
+seguinte), todos com `0 regressoes`. 478 testes verdes.
+
+### 1. `e68a35f` -- o tecto de passos e o que o corpus declara
+
+O `max_steps` estava no `corpus62.json` DESDE SEMPRE e a ferramenta ignorava-o: o
+`cnk2` pedia 186 486 543 passos e recebia 4 000 000 (2,1%). O campo passou a ser
+lido (e um numero, nao uma cadeia -- precisa de leitor proprio, delimitado pela
+chaveta do objecto, senao um titulo sem campo apanha o do seguinte).
+
+`kLimite` 4M -> 8M pelo `quake2brew`, que precisa de 5 932 075 passos so para a
+CARGA. **A hipotese do memcpy corrompido estava ERRADA**: o laco em 0x144 e a
+zeragem legitima da ZI/BSS (campo +0x24 do cabecalho = 0x0076de90 bytes = 1 947 556
+iteracoes de tres instrucoes). Nenhum campo por inicializar. Era orcamento curto,
+e nao defeito de carregador. Confirmado por segunda ferramenta (`zb2_sonda_mod`)
+e pelas referencias (zeebulator 64M, zeemu 500M).
+
+**Ruling revertido a meio**: propus reactivar `kOrcamentoSegundos` como guarda de
+tempo. Fui ler o codigo e o projecto JA tinha removido o orcamento por relogio de
+proposito -- viola o P4, porque o emulador passaria a medir a carga da maquina e o
+`tools/comparar` acusaria regressoes de jogabilidade que eram regressoes de CPU do
+anfitriao. A constante morta foi APAGADA com o motivo escrito, para nao ser
+reinventada uma terceira vez. **Uma proposta minha desfazia uma decisao correcta;
+o codigo defendeu-se sozinho porque o porque estava escrito.**
+
+Efeito isolado: vtable 61 -> 62, applet 40 -> 41. **VTABLE 62/62, o primeiro degrau
+completo do projecto.**
+
+### 2. `d0f1146` -- dois defeitos silenciosos do interpretador ARM
+
+Os dez titulos com `create:retornou_sem_applet` **nao sao jogos**: sao UM emulador
+multi-arcade dentro do BREW (`emulator_neo` v0.95, de Miguel Angel Horna), com
+drivers NEOGEO + CPS1 + CPS2 + System16/18 + Data East no mesmo `.mod`. Medido nas
+strings: `c:/my_code/emulator_neo/framework/*.cpp`. O `toyraidzeebo` **nao e da
+familia** -- so partilhava o sintoma.
+
+A causa nao era BREW nem VFS. Eram dois defeitos nossos, ambos com `recusadas = 0`:
+
+1. **`LDR PC,[Rn,#imm]`**: o despacho escrevia `pc + 4` DEPOIS da transferencia e
+   anulava o salto. Esta familia chama o sistema SO assim (`mov lr,pc` +
+   `ldr pc,[tabela,#slot]`): **5240 ocorrencias** so no `karnovr.mod`. O `malloc`,
+   o `free` e o `CreateInstance(AEECLSID_DISPLAY)` nunca corriam. E como o PC nunca
+   entrava na faixa de saida, NAO HAVIA FALTA PARA REGISTAR.
+2. **C e V escritos sem o bit S** em SUB/RSB/ADD/ADC/SBC/RSC. O `add r0,r0,#16`
+   apagava o carry do `cmp` e o `bcc` ficava sempre tomado: laco infinito, vivo aos
+   60 milhoes de passos. As de logica nao o faziam, e foi por isso que atravessou a
+   etapa 1 inteira.
+
+Efeito isolado: **applet 41 -> 56**, 15 melhorias. Alem dos dez da familia: `nfs`,
+`prey3d`, `zeebotennis`, `Boiaz`, `allstarcards`.
+
+### 3. `f15d752` -- a vtable do IBitmap, e o dia em que PIXELS saiu do zero
+
+Achado a investigar OUTRA coisa. O `abd` e o `torkandkral` apanhavam
+`EGL_BAD_DISPLAY` com um `dpy` (0xF0027390) que o emulador nunca emitiu. **O EGL
+estava certo.** O 0xF0027390 era LIXO DE PILHA:
+
+    ldr r0,[sp]     r0 = 0x80050300   (o IBitmap do ecra)
+    ldr r1,[r0]     r1 = 0xF0007D00   (a vtable do bitmap)
+    ldr r1,[r1,#4]  -> 0              (o slot 1, `Release`, A ZERO)
+    blx r1          -> salta para 0
+
+`tools/bateria.cpp` era a UNICA cablagem da vtable do IBitmap e cablava so o slot
+2. Os slots 0 e 1 (IBase) nunca eram escritos. O guest saltava para 0, passava a
+executar o cabecalho do proprio `.mod` como codigo, e derramava a pilha.
+
+`DefinirVtableBitmap` passou a receber as `Saidas` e a fazer AS DUAS COISAS --
+guardar o endereco E construir a tabela. Enquanto foram duas chamadas, a
+ferramenta fazia a primeira e ninguem fazia a segunda.
+
+Efeito isolado: **0 -> 640 pixels em dez titulos**. A coluna `PIXELS` estava a
+`0/62` desde o inicio do projecto.
+
+**Duas premissas minhas caidas nesta frente**: a recusa era em `egl.cpp:368` e nao
+`:373`; e a hipotese de que os titulos precisavam da extensao
+`EGL_QUALCOMM_get_color_buffer` NAO se sustenta -- ha **zero** chamadas a
+`eglQueryString`/`eglGetProcAddress`/`glGetString` nos 62 titulos. Morrem antes.
+
+### 4. `95c9859` -- o IDisplay, e a licao do dia
+
+Ia corrigir SO a conversao RGB565 do `SetColor`. Ao abrir o
+`zeebx-emu/src/machine/display.rs:18-25` para comparar, vi que ele le o `r2` onde
+nos liamos o `r1`. O SDK confirma (`AEEIDisplay.h:232`):
+
+    RGBVAL IDisplay_SetColor(IDisplay *po, AEEClrItem clr, RGBVAL rgb)
+
+**Tres argumentos, e devolve a cor ANTERIOR.** O nosso codigo tinha tres defeitos
+sobrepostos: lia a cor do `r1` (que e o ITEM, 1..16 -- usava-se o numero do item
+como cor); truncava o RGBVAL com `& 0xFFFF` (e `RGB_WHITE` e `MAKE_RGB(255,0,0)`
+davam AMBOS 0xFF00); e devolvia 0, quando o idioma do proprio cabecalho
+(`:134-136`) e guardar o retorno e repo-lo -- com zero, o jogo repunha PRETO.
+
+**Sem ler a referencia, teria convertido correctamente o argumento errado** -- um
+defeito mais dificil de ver que o original.
+
+Tambem: `GetClipRect` escrevia DEZASSEIS bytes num `AEERect` de OITO. Os oito a
+mais caiam na pilha do guest, por cima das suas proprias locais. O `SetClipRect`,
+no mesmo ficheiro, JA lia int16. Era metade do par por corrigir.
+
+Efeito isolado: **0 regressoes, 0 melhorias, 0 campos neutros**. Nenhum dos 62
+exercita hoje estes caminhos de forma que mude a medicao. Fica escrito: estas duas
+estao provadas por TESTE e pelo SDK, **nao** por medicao de titulo.
+
+### A demanda mudou de forma, e isso e o mapa da proxima ronda
+
+Antes desta ronda: **8 nomes / 9 pedidos**. Agora: **37 nomes**, muito mais
+pedidos. Nao e uma regressao -- e o que acontece quando 56 titulos passam a criar
+applet e a andar. Os que mais aparecem:
+
+| pedidos | falta | leitura |
+|---|---|---|
+| 70x | `IFile::slot3` | de longe o maior. Uma so chamada de ficheiro a bloquear muita coisa |
+| 11x | `IBitmap::slot12` | agora que a vtable existe, os jogos usam-na a serio |
+| 11x | `IThread::Start` | |
+| 10x + 40x | `IGLES11::slot*` (14 slots distintos) | o GL de verdade a ser pedido pela primeira vez |
+| 10x | `AEEHelperFuncs[0x00c] strcat` | |
+| 9x | `AEEHelperFuncs[0x184] sleep` | |
+| 1x | `IShell::slot21` (`SendEvent`) | so o `tectoy`, e ja esta com agente |
+
+### Metodo: o que se confirmou nesta ronda
+
+1. **Ler a referencia ANTES de propor.** Apanhou tres defeitos que eu nao ia ver.
+   O `SetColor` e o caso exemplar: a minha correccao estava certa e aplicada ao
+   argumento errado.
+2. **Medir cada commit em isolado**, usando a corrida anterior como referencia da
+   seguinte. Sem isso, os 15 titulos do interpretador e o 1 do `max_steps` viriam
+   misturados e nao se saberia o que valeu o que.
+3. **Provar o teste VERMELHO antes do verde**, arrancando a correccao. O do
+   `GetClipRect` falhou nos quatro bytes-sentinela; o do IBitmap deu
+   "IBitmap::Release sem endereco: o guest faz blx 0".
+4. **Dizer quando a medicao nao mudou.** O `95c9859` nao move um numero da bateria.
+   Escrever isso e o que impede que seja lido como ganho.
+5. Um sub-agente que contradiz o enunciado que recebeu vale mais do que um que o
+   cumpre: quatro das correccoes desta ronda vieram de agentes que disseram
+   "a premissa que me deste esta errada, e aqui esta a medicao".
