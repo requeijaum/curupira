@@ -301,6 +301,42 @@ bool Despacho::AtenderEntrada(ICpu& cpu, std::uint32_t indice) {
   return sinais_.Atender(cpu, indice) || ihid_.Atender(cpu, indice);
 }
 
+void Despacho::EscreverCabecalhoDeIdib(std::uint32_t obj, std::uint32_t pbmp,
+                                       std::uint32_t largura, std::uint32_t altura) {
+  // `AEEIDIB.h:42-55`, campo a campo. O `nPitch` e int16 e conta BYTES de uma
+  // linha para a seguinte: com RGB565 sao dois por pixel.
+  using C = zb2::brew::CamposDoIdib;
+  // NASCE COM UMA REFERENCIA (a regra COM, e a que o `ConstruirObjeto` ja
+  // seguia); as chamadas seguintes ao mesmo objecto nao a reiniciam.
+  refs_do_dib_.emplace(obj, 1u);
+  mem_.Escrever32(obj + C::kPvt, vtable_bitmap_);
+  mem_.Escrever32(obj + C::kPPaletteMap, 0);  // ver `refs_do_dib_`: NAO e a contagem
+  mem_.Escrever32(obj + C::kPBmp, pbmp);
+  mem_.Escrever32(obj + C::kPRGB, 0);            // RGB565 e directo: nao ha paleta
+  mem_.Escrever32(obj + C::kNcTransparent, 0);
+  mem_.Escrever16(obj + C::kCx, static_cast<std::uint16_t>(largura));
+  mem_.Escrever16(obj + C::kCy, static_cast<std::uint16_t>(altura));
+  mem_.Escrever16(obj + C::kNPitch, static_cast<std::uint16_t>(largura * 2));
+  mem_.Escrever16(obj + C::kCntRGB, 0);
+  mem_.Escrever8(obj + C::kNDepth, 16);
+  mem_.Escrever8(obj + C::kNColorScheme, C::kEsquemaDeCor565);
+  // "initialize to 0 when constructing a DIB" (`AEEIDIB.h:53`).
+  for (std::uint32_t k = C::kReservado; k < C::kTamanho; ++k) mem_.Escrever8(obj + k, 0);
+}
+
+std::uint32_t Despacho::EscreverCabecalhoDoBitmapDoEcra() {
+  const std::uint32_t obj = zb2::brew::kObjDibBase + 0x300;
+  // O ECRA NAO TEM BUFFER VISIVEL AO GUEST: a `Tela` vive no hospedeiro
+  // (`core/brew/tela.h`), e nao ha pagina do guest que a espelhe. O `pBmp` fica
+  // a ZERO, e isso e uma FALTA COM NOME -- nao um sucesso silencioso. Um titulo
+  // que escreva nesse ponteiro estaria a escrever no endereco 0, que nesta
+  // arvore e a base do modulo dele proprio.
+  EscreverCabecalhoDeIdib(obj, 0, zb2::brew::Tela::kLargura, zb2::brew::Tela::kAltura);
+  traco_.RegistarFalta(Area::Brew, "IDIB::pBmp do bitmap do ecra",
+                       "a Tela vive no hospedeiro; nao ha buffer de ecra visivel ao guest");
+  return obj;
+}
+
 void Despacho::InstalarAjudantes(const Saidas& saidas, Endereco tabela) {
   // A FAIXA DE SAIDA DO IMEDIA, e a vtable dele: escrita UMA vez, aqui, antes
   // do primeiro `Criar`. O `Media` guarda uma COPIA da faixa, logo ela tem de
@@ -582,14 +618,28 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
       } else if (idx == 3) {
         // IShell::AddRef -- devolve a contagem de referencias, que e o que a
         // interface do SDK promete.
-        const std::uint32_t n = mem_.Ler32(r0 + 4) + 1;
-        mem_.Escrever32(r0 + 4, n);
-        cpu.Set(kR0, n);
+        //
+        // O `+4` DE UM IDIB NAO E A CONTAGEM: e o `pPaletteMap` (`AEEIDIB.h:44`),
+        // um ponteiro publico que o `IDIB_FlushPalette` desreferencia. Para os
+        // objectos da faixa dos bitmaps a contagem vive do lado de ca.
+        if (EUmObjectoDeBitmap(r0)) {
+          cpu.Set(kR0, ++refs_do_dib_[r0]);
+        } else {
+          const std::uint32_t n = mem_.Ler32(r0 + 4) + 1;
+          mem_.Escrever32(r0 + 4, n);
+          cpu.Set(kR0, n);
+        }
       } else if (idx == 4) {
         // IShell::Release
-        const std::uint32_t n = mem_.Ler32(r0 + 4);
-        if (n > 0) mem_.Escrever32(r0 + 4, n - 1);
-        cpu.Set(kR0, n > 0 ? n - 1 : 0);
+        if (EUmObjectoDeBitmap(r0)) {
+          std::uint32_t& n = refs_do_dib_[r0];
+          if (n > 0) --n;
+          cpu.Set(kR0, n);
+        } else {
+          const std::uint32_t n = mem_.Ler32(r0 + 4);
+          if (n > 0) mem_.Escrever32(r0 + 4, n - 1);
+          cpu.Set(kR0, n > 0 ? n - 1 : 0);
+        }
       } else if (AtenderEntrada(cpu, idx)) {
         // A ENTRADA (etapa 8): IHID, IHIDDevice e os sinais do BREW.
         //
@@ -1387,22 +1437,60 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // que se devolve no r0 e um codigo (0 = SUCCESS). A minha versao
         // devolvia o objecto no r0 e ignorava o `ppIDIB` -- o chamador ficava com
         // o ponteiro por preencher e o objecto perdido.
+        //
+        // DUAS MENTIRAS AQUI, e as duas em silencio:
+        //
+        // 1. Devolvia-se `AEE_SUCCESS` com o `pBmp` a ZERO. O jogo recebia um
+        //    IDIB valido cujo buffer de pixels e o endereco 0: escreve la, e o
+        //    que se estraga e a pagina zero -- que nesta arvore e a BASE DO
+        //    MODULO do titulo (`tests/mod_base_test.cpp`). Sucesso a apontar
+        //    para o codigo do proprio jogo.
+        // 2. O cabecalho era inventado (ver `CamposDoIdib`): a struct do IDIB e
+        //    PUBLICA e o jogo le `cx`/`cy`/`nPitch` directamente.
+        //
+        // Agora aloca-se mesmo, no heap do guest, e o `nPitch` diz a verdade. Se
+        // nao houver memoria, RECUSA COM NOME -- a regra da casa (P2), e a mesma
+        // que o zeebx aplica ao formato que nao sabe tratar
+        // (`src/machine/bitmap.rs:126-131`).
         const std::uint32_t ppidib = cpu.Get(kR1);
         const std::uint32_t prof = cpu.Get(kR2) & 0xFFu;
         const std::uint32_t w = cpu.Get(kR3) & 0xFFFFu;
         const std::uint32_t h = mem_.Ler32(cpu.Get(kSP) + 0) & 0xFFFFu;
-        const std::uint32_t obj = zb2::brew::kObjDibBase + dibs_ * 0x40;
-        ++dibs_;
-        // O IDIB tem cabecalho proprio: dimensoes, profundidade, e o PASSAPORTE
-        // de acesso aos pixels (`pData`), que o `IDIB_GetBuffer` devolve.
-        mem_.Escrever32(obj + 0, vtable_bitmap_);
-        mem_.Escrever32(obj + 4, 1);
-        mem_.Escrever32(obj + 8, 0);  // pData -- por atribuir
-        mem_.Escrever32(obj + 12, w);
-        mem_.Escrever32(obj + 16, h);
-        mem_.Escrever32(obj + 20, prof);
-        if (ppidib != 0) mem_.Escrever32(ppidib, obj);
-        cpu.Set(kR0, 0);
+        if (ppidib != 0) mem_.Escrever32(ppidib, 0);
+        if (prof != 16 || w == 0 || h == 0) {
+          // A PROFUNDIDADE QUE NAO SEJA 16 NAO TEM CAMINHO: o `BitBlt` deste
+          // despacho le a origem com `Ler16` (RGB565) sem olhar ao `colorDepth`
+          // (ver o ramo do `kSlotIdBitBlt`). Fingir que se criou um DIB de 8
+          // bits daria um blit de lixo mais tarde e noutro sitio.
+          char det[96];
+          std::snprintf(det, sizeof(det), "colorDepth=%u %ux%u -- so ha caminho para RGB565",
+                        static_cast<unsigned>(prof), static_cast<unsigned>(w),
+                        static_cast<unsigned>(h));
+          traco_.RegistarFalta(Area::Brew, "IDisplay::CreateDIBitmap", det);
+          cpu.Set(kR0, kAeeUnsupported);
+        } else {
+          const std::uint32_t passo = w * 2;
+          const std::uint32_t bytes = passo * h;
+          const std::uint32_t pixels = al_.Malloc(bytes);
+          if (pixels == 0) {
+            char det[96];
+            std::snprintf(det, sizeof(det), "sem heap para %ux%u (%u bytes)",
+                          static_cast<unsigned>(w), static_cast<unsigned>(h),
+                          static_cast<unsigned>(bytes));
+            traco_.RegistarFalta(Area::Brew, "IDisplay::CreateDIBitmap", det);
+            cpu.Set(kR0, kAeeNoMemory);
+          } else {
+            // Buffer a ZEROS: um DIB novo com lixo dentro faria duas corridas
+            // iguais desenharem coisas diferentes (P4, determinismo).
+            const std::vector<std::uint8_t> zeros(bytes, 0);
+            mem_.EscreverBloco(pixels, zeros.data(), bytes);
+            const std::uint32_t obj = zb2::brew::kObjDibBase + dibs_ * 0x40;
+            ++dibs_;
+            EscreverCabecalhoDeIdib(obj, pixels, w, h);
+            if (ppidib != 0) mem_.Escrever32(ppidib, obj);
+            cpu.Set(kR0, 0);
+          }
+        }
             } else if (idx == kSlotIdGetFontMetrics) {
         // `int GetFontMetrics(IDisplay *po, AEEFont nFont, int *pnAscent,
         //                     int *pnDescent)`.
@@ -1471,13 +1559,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // `IBitmap *GetDestination(IDisplay *po)` -- IDisplay slot 16.
         // Devolve o bitmap que esta a receber o desenho. O jogo usa-o para saber
         // o TAMANHO da tela (via IBitmap::GetInfo) antes de calcular posicoes.
-        const std::uint32_t obj = zb2::brew::kObjDibBase + 0x300;
-        mem_.Escrever32(obj + 0, vtable_bitmap_);
-        mem_.Escrever32(obj + 4, 1);
-        mem_.Escrever32(obj + 8, 0);
-        mem_.Escrever32(obj + 12, zb2::brew::Tela::kLargura);
-        mem_.Escrever32(obj + 16, zb2::brew::Tela::kAltura);
-        mem_.Escrever32(obj + 20, 16);
+        const std::uint32_t obj = EscreverCabecalhoDoBitmapDoEcra();
         destino_ = obj;
         cpu.Set(kR0, obj);
       } else if (idx == kSlotIdSetDest) {
@@ -1530,7 +1612,10 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         if (ppo == 0) {
           cpu.Set(kR0, kAeeBadParm);
         } else if (iid == kIidDib) {
-          mem_.Escrever32(ppo, zb2::brew::kObjDibBase + 0x300);
+          // O IDIB e a MESMA struct (`AEEIDIB.h:57-60`, `IDIB_to_IBitmap` e um
+          // cast): quem pede IID_DIB vai LER os campos publicos, logo o
+          // cabecalho tem de estar escrito antes de o ponteiro sair daqui.
+          mem_.Escrever32(ppo, EscreverCabecalhoDoBitmapDoEcra());
           cpu.Set(kR0, kAeeSuccess);
           traco_.Emitir(Area::Brew, Nivel::Depuracao, "IBITMAP_QUERYINTERFACE",
                         "IID_DIB -> proprio objeto");
@@ -1549,14 +1634,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         if (pp != 0) {
           // O header do objeto, igual ao GetDestination: sem ele o QI do motor
           // lia vtable de lixo (cluster WERV: [[0x80050300]+8] = "BREW").
-          const std::uint32_t obj = zb2::brew::kObjDibBase + 0x300;
-          mem_.Escrever32(obj + 0, vtable_bitmap_);
-          mem_.Escrever32(obj + 4, 1);
-          mem_.Escrever32(obj + 8, 0);
-          mem_.Escrever32(obj + 12, zb2::brew::Tela::kLargura);
-          mem_.Escrever32(obj + 16, zb2::brew::Tela::kAltura);
-          mem_.Escrever32(obj + 20, 16);
-          mem_.Escrever32(pp, obj);
+          mem_.Escrever32(pp, EscreverCabecalhoDoBitmapDoEcra());
           cpu.Set(kR0, 0);  // SUCCESS
         } else {
           cpu.Set(kR0, kAeeUnsupported);

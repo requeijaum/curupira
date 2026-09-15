@@ -295,6 +295,36 @@ class Despacho {
   std::uint32_t anel_instr_[16] = {0};
   std::uint32_t ultimas_ = 0;
 
+  // O CABECALHO PUBLICO DO IDIB (`AEEIDIB.h:42-55`), num so sitio.
+  //
+  // Havia tres copias a escrever offsets a mao (`CreateDIBitmap`,
+  // `GetDestination`, `GetDeviceBitmap`) e as tres estavam erradas do mesmo
+  // modo. Tres copias de um layout medido sao tres chances de ele divergir.
+  void EscreverCabecalhoDeIdib(std::uint32_t obj, std::uint32_t pbmp, std::uint32_t largura,
+                               std::uint32_t altura);
+  // Para os testes poderem ver a contagem que saiu do `+4` do objecto.
+ public:
+  std::uint32_t ReferenciasDoBitmap(std::uint32_t obj) const {
+    const auto it = refs_do_dib_.find(obj);
+    return it == refs_do_dib_.end() ? 0 : it->second;
+  }
+
+ private:
+  // O IDIB do ECRA. Devolve o endereco do objecto.
+  std::uint32_t EscreverCabecalhoDoBitmapDoEcra();
+  // A faixa dos objectos de bitmap (a mesma que o `SetDestination` ja aceita).
+  static bool EUmObjectoDeBitmap(std::uint32_t p) {
+    return p >= zb2::brew::kObjDibBase && p < zb2::brew::kObjDibBase + 0x1000;
+  }
+  // A contagem de referencias dos IDIB vive AQUI, e nao no `+4` do objecto.
+  //
+  // O `+4` de um IDIB e o `pPaletteMap` (`AEEIDIB.h:44`), um PONTEIRO publico, e
+  // a IBase generica desta arvore guarda a contagem nesse offset
+  // (`core/brew/interface.cpp:18`, e os ramos `idx == 3/4` do `Atender`). Um
+  // `AddRef` no bitmap do ecra punha `1` -- e depois `2`, `3` -- num campo que o
+  // `IDIB_FlushPalette` (`AEEIDIB.h:83-86`) desreferencia.
+  std::map<std::uint32_t, std::uint32_t> refs_do_dib_;
+
   Memoria& mem_;
   Traco& traco_;
   Alocador& al_;

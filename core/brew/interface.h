@@ -74,6 +74,39 @@ constexpr std::uint32_t VtGenerico(std::uint32_t k) {
 // `EmptyEnum` e `unsigned` (AEEIShell.h linha 83). No ARM AAPCS o `uint32` alinha
 // a 4 e as bitfields `unsigned : 1` empacotam no mesmo `unsigned`, que e o mesmo
 // que o x86-64 faz aqui.
+// `IDIB`, TRANSCRITA de `platform/ui/inc/AEEIDIB.h:42-55`.
+//
+// O IDIB do BREW **e uma struct com membros publicos** -- o cabecalho diz-o em
+// `:24-25` ("This is a struct with public members. It is also an interface...").
+// O jogo le `po->pBmp`, `po->cx`, `po->nPitch` DIRECTAMENTE, sem passar por
+// nenhum slot da vtable. Logo os offsets sao contrato, tal como os slots.
+//
+// O que ca estava era um objecto INVENTADO: `[0]` vtable, `[4]` contagem de
+// referencias, `[8]` pData, `[12]` largura em u32, `[16]` altura em u32, `[20]`
+// profundidade em u32. Coincidia num campo (o `pBmp`, em +8) e divergia em
+// todos os outros: a largura de um DIB de 320 px lia-se em `cx` (+20) como o que
+// la estivesse, e o `+4` -- que no SDK e o `pPaletteMap`, um PONTEIRO --
+// levava o numero 1. `IDIB_FlushPalette` (`AEEIDIB.h:83-86`) faz
+// `IQI_RELEASEIF(po->pPaletteMap)`: com 1 la dentro, isso e uma chamada
+// indirecta pelo endereco 1.
+struct CamposDoIdib {
+  static constexpr std::uint32_t kPvt = 0;
+  static constexpr std::uint32_t kPPaletteMap = 4;   // IQI* -- tem de ficar NULO
+  static constexpr std::uint32_t kPBmp = 8;          // byte* para a primeira linha
+  static constexpr std::uint32_t kPRGB = 12;         // uint32* da paleta
+  static constexpr std::uint32_t kNcTransparent = 16;  // NativeColor (uint32, AEEIBitmap.h:32)
+  static constexpr std::uint32_t kCx = 20;           // uint16
+  static constexpr std::uint32_t kCy = 22;           // uint16
+  static constexpr std::uint32_t kNPitch = 24;       // int16, bytes de uma linha para a seguinte
+  static constexpr std::uint32_t kCntRGB = 26;       // uint16
+  static constexpr std::uint32_t kNDepth = 28;       // uint8, BITS por pixel
+  static constexpr std::uint32_t kNColorScheme = 29; // uint8, IDIB_COLORSCHEME_565 = 16
+  static constexpr std::uint32_t kReservado = 30;    // 6 bytes, "initialize to 0"
+  static constexpr std::uint32_t kTamanho = 36;
+  // `IDIB_COLORSCHEME_565` (`AEEIDIB.h:32`): 5 bits R, 6 G, 5 B -- o pixel da Tela.
+  static constexpr std::uint8_t kEsquemaDeCor565 = 16;
+};
+
 struct AeeDeviceInfo {
   std::uint16_t cx_screen, cy_screen, cx_alt_screen, cy_alt_screen, cx_scroll_bar;
   std::uint16_t w_encoding, w_menu_text_scroll, n_color_depth;
@@ -103,7 +136,6 @@ static_assert(kOffsetDeWStructSize == 44, "o corte da AEEDeviceInfo e o +44 do w
 static_assert(sizeof(AeeDeviceInfo) == 64, "a AEEDeviceInfo completa sao 64 bytes");
 static_assert(offsetof(AeeDeviceInfo, dw_lang) == 40,
               "o dwLang e o ultimo campo antes do corte (AEEIShell.h:115)");
-
 
 // --- construcao -------------------------------------------------------------
 

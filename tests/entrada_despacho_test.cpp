@@ -327,7 +327,11 @@ TEST(VtableDoBitmap, OGuestReleaseOBitmapSemSaltarParaZero) {
   b.ChamaSaida(1550, kObjDisplay, saida);
   const std::uint32_t bmp = b.Mem().Ler32(saida);
   ASSERT_NE(bmp, 0u);
-  EXPECT_EQ(b.Mem().Ler32(bmp + 4), 1u) << "a contagem de referencias nasce a 1";
+  // A CONTAGEM NAO ESTA NO `+4` DO OBJECTO quando o objecto e um IDIB: esse
+  // campo e o `pPaletteMap` (`AEEIDIB.h:44`), um ponteiro publico que o
+  // `IDIB_FlushPalette` (`:83-86`) desreferencia. Tem de ficar NULO.
+  EXPECT_EQ(b.Mem().Ler32(bmp + 4), 0u) << "pPaletteMap tem de ser um ponteiro nulo";
+  EXPECT_EQ(b.D().ReferenciasDoBitmap(bmp), 1u) << "a contagem de referencias nasce a 1";
   // A MESMA sequencia de `abd` 0x14694: ldr r1,[r0]; ldr r1,[r1,#4]; blx r1
   const std::uint32_t kCodigo = 0x00000400u;
   b.Mem().Escrever32(kCodigo + 0, 0xE5901000u);  // ldr r1, [r0]
@@ -338,8 +342,9 @@ TEST(VtableDoBitmap, OGuestReleaseOBitmapSemSaltarParaZero) {
   b.Cpu().Set(kLR, 0xFFFFFFF0u);
   b.Cpu().Set(kPC, kCodigo);
   b.D().Correr(b.Cpu(), 200, 0x80090000u);
-  EXPECT_EQ(b.Mem().Ler32(bmp + 4), 0u)
+  EXPECT_EQ(b.D().ReferenciasDoBitmap(bmp), 0u)
       << "o Release da IBase tinha de baixar a contagem de 1 para 0";
+  EXPECT_EQ(b.Mem().Ler32(bmp + 4), 0u) << "e o pPaletteMap continua nulo";
 }
 
 
@@ -802,6 +807,80 @@ TEST(GetDeviceInfo, OValorDECLARADOFicaContado) {
   ASSERT_NE(p.find("IShell::GetDeviceInfo"), p.end())
       << "um valor declarado que nao se conta e um valor invisivel";
   EXPECT_EQ(p.at("IShell::GetDeviceInfo"), 1u);
+}
+
+// ===========================================================================
+// `CreateDIBitmap`: o IDIB e uma STRUCT PUBLICA, e um sucesso com `pBmp = 0` e
+// um sucesso a apontar para a base do modulo do proprio titulo.
+// ===========================================================================
+TEST(CreateDIBitmap, OBufferDePixelsExisteMesmoEOCabecalhoEODoSDK) {
+  Bancada b;
+  constexpr std::uint32_t kSaidaCreateDIBitmap = 1538;  // `despacho.cpp:69`
+  constexpr std::uint32_t kPpIdib = 0x00093000u;
+  b.Mem().Escrever32(kPpIdib, 0xDEADBEEFu);
+  // `CreateDIBitmap(po, ppIDIB, colorDepth, cx, cy)` -- a altura vai na pilha.
+  ASSERT_EQ(b.ChamaSaida(kSaidaCreateDIBitmap, kObjDisplay, kPpIdib, 16, 32, 8), 0u);
+  const std::uint32_t dib = b.Mem().Ler32(kPpIdib);
+  ASSERT_NE(dib, 0u);
+  ASSERT_NE(dib, 0xDEADBEEFu);
+
+  // `AEEIDIB.h:42-55`, campo a campo.
+  EXPECT_EQ(b.Mem().Ler32(dib + 4), 0u) << "pPaletteMap: ponteiro publico, tem de ser nulo";
+  const std::uint32_t pbmp = b.Mem().Ler32(dib + 8);
+  EXPECT_NE(pbmp, 0u) << "pBmp a zero e o endereco 0, que aqui e a base do modulo";
+  EXPECT_EQ(b.Mem().Ler16(dib + 20), 32u) << "cx (uint16, +20)";
+  EXPECT_EQ(b.Mem().Ler16(dib + 22), 8u) << "cy (uint16, +22)";
+  EXPECT_EQ(b.Mem().Ler16(dib + 24), 64u) << "nPitch (+24): 32 px x 2 bytes";
+  EXPECT_EQ(b.Mem().Ler8(dib + 28), 16u) << "nDepth em BITS (+28)";
+  EXPECT_EQ(b.Mem().Ler8(dib + 29), 16u) << "nColorScheme = IDIB_COLORSCHEME_565";
+
+  // O buffer e MESMO do guest: escreve-se e le-se, e esta a zeros ao nascer.
+  for (std::uint32_t k = 0; k < 64 * 8; ++k) {
+    ASSERT_EQ(b.Mem().Ler8(pbmp + k), 0u) << "byte " << k << " do buffer novo";
+  }
+  b.Mem().Escrever16(pbmp + 2, 0xF800u);
+  EXPECT_EQ(b.Mem().Ler16(pbmp + 2), 0xF800u);
+}
+
+TEST(CreateDIBitmap, UmaProfundidadeSemCaminhoRecusaComNome) {
+  // O `BitBlt` deste despacho le a origem com `Ler16` seja qual for o
+  // `colorDepth` pedido. Devolver SUCESSO para 8 bits daria um blit de lixo mais
+  // tarde e noutro sitio -- a forma exacta da mentira silenciosa. O zeebx faz o
+  // mesmo: recusa o formato que nao sabe tratar (`src/machine/bitmap.rs:126-131`).
+  Bancada b;
+  constexpr std::uint32_t kSaidaCreateDIBitmap = 1538;
+  constexpr std::uint32_t kPpIdib = 0x00093100u;
+  b.Mem().Escrever32(kPpIdib, 0xDEADBEEFu);
+  EXPECT_EQ(b.ChamaSaida(kSaidaCreateDIBitmap, kObjDisplay, kPpIdib, 8, 32, 8), kAeeUnsupported);
+  EXPECT_EQ(b.Mem().Ler32(kPpIdib), 0u) << "uma recusa nao pode deixar ponteiro nenhum de pe";
+  EXPECT_EQ(b.Faltas("IDisplay::CreateDIBitmap"), 1u);
+}
+
+TEST(CreateDIBitmap, DoisBitmapsNaoPartilhamOMesmoBuffer) {
+  Bancada b;
+  constexpr std::uint32_t kSaidaCreateDIBitmap = 1538;
+  constexpr std::uint32_t kA = 0x00093200u, kB = 0x00093300u;
+  ASSERT_EQ(b.ChamaSaida(kSaidaCreateDIBitmap, kObjDisplay, kA, 16, 16, 16), 0u);
+  ASSERT_EQ(b.ChamaSaida(kSaidaCreateDIBitmap, kObjDisplay, kB, 16, 16, 16), 0u);
+  const std::uint32_t da = b.Mem().Ler32(kA), db = b.Mem().Ler32(kB);
+  EXPECT_NE(da, db);
+  EXPECT_NE(b.Mem().Ler32(da + 8), b.Mem().Ler32(db + 8));
+}
+
+TEST(BitmapDoEcra, OPBmpAZeroEUmaFALTAComNomeENaoUmSucessoCalado) {
+  // O ecra vive no hospedeiro (`core/brew/tela.h`): nao ha buffer do guest que o
+  // espelhe. O objecto continua a servir (o titulo le dele o TAMANHO do ecra),
+  // mas a capacidade que falta fica dita com nome, e nao por omissao.
+  Bancada b;
+  const std::uint32_t saida = 0x80090100u;
+  b.ChamaSaida(1550, kObjDisplay, saida);
+  const std::uint32_t bmp = b.Mem().Ler32(saida);
+  ASSERT_EQ(bmp, kObjDibBase + 0x300);
+  EXPECT_EQ(b.Mem().Ler32(bmp + 8), 0u) << "pBmp do ecra";
+  EXPECT_EQ(b.Faltas("IDIB::pBmp do bitmap do ecra"), 1u);
+  EXPECT_EQ(b.Mem().Ler16(bmp + 20), Tela::kLargura);
+  EXPECT_EQ(b.Mem().Ler16(bmp + 22), Tela::kAltura);
+  EXPECT_EQ(b.Mem().Ler8(bmp + 28), 16u);
 }
 
 }  // namespace zb2::brew

@@ -51,6 +51,7 @@ namespace zb2 {
 enum : std::int32_t {
   kAeeSuccess = 0,             // AEEStdErr.h:16
   kAeeFailed = 1,              // AEEStdErr.h:17
+  kAeeNoMemory = 2,            // AEEStdErr.h:18 ("insufficient RAM")
   kAeeClassNotSupported = 3,   // AEEStdErr.h:19
   kAeeBadParm = 14,            // AEEStdErr.h:30
   kAeeUnsupported = 20,        // AEEStdErr.h:36

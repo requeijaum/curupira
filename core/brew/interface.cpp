@@ -29,6 +29,12 @@ void ConstruirObjeto(Memoria& mem, const Saidas& saidas, std::uint32_t objeto,
 void ConstruirVtableDoBitmap(Memoria& mem, const Saidas& saidas) {
   ConstruirObjeto(mem, saidas, kObjDibBase + 0x300, saidas.Endereco(kVtableBitmap),
                   kSlotsPorVtable, kVtableBitmap);
+  // O `+4` DESTE OBJECTO NAO E UMA CONTAGEM: um IDIB e uma struct PUBLICA e o
+  // `+4` dela e o `pPaletteMap` (`AEEIDIB.h:44`), que o `IDIB_FlushPalette`
+  // (`:83-86`) desreferencia. O `ConstruirObjeto` acabou de la pôr o `1` da
+  // convencao da casa; aqui repoe-se o ponteiro NULO, e a contagem passa a viver
+  // no `Despacho` (`refs_do_dib_`).
+  mem.Escrever32(kObjDibBase + 0x300 + CamposDoIdib::kPPaletteMap, 0);
 }
 
 ResultadoCablagem Cablar(Memoria& mem, const Saidas& saidas, const Ligacao* ligacoes,
