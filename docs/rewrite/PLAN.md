@@ -396,6 +396,56 @@ mudou de facto no corpus:
 
 ---
 
+## A ronda continua -- o que fechou e o que ficou nomeado (fim de 15/09)
+
+**Cinco frentes integradas depois da primeira metade:**
+
+| frente | commit | efeito |
+|---|---|---|
+| `inst` | `2fdd07d` | a leitura nao mapeada ganha DONO: **112 recusas reatribuidas** ao PC certo (alice 21 -> 1). A evidencia de recusas deixa de mentir |
+| `ishell2` | `abb3ddd` | **`slot43` = `DetectType`** (`AEE_ENEEDMORE` = 35) e **`slot19` = `LoadResObject`**: o `toyraidzeebo` 307 K -> **75,9 M px, 44 cores**, e deixa de sair do modulo |
+| `entrada` | `7f9cdd1` | o guiao de teclas ligado (`ZB2_GUIAO`); neutro sem guiao |
+| `rast2` | `18fa217` | mistura + alpha test + mascara de cor + ILUMINACAO no rasterizador (com os valores provados a mao) |
+| `fmt` | `33182e6` | o `%f` deslocava argumentos; o `vsnprintf` lia a lista do r2 e faltava uma indirecao (`AEEOldVaList`). **A mensagem de ASSERT passa a ler-se** |
+
+**Os numeros (HEAD `33182e6`, 695 testes):**
+
+    carga 62/62 | modulo 62/62 | vtable 62/62 | applet 62/62
+    ciclo completo 28/62 | pixels>0 18/62 | cores>10 2/62 (tekken2 31, toyraidzeebo 44)
+    total 1 718 098 509 px | 0 regressoes em cada medicao isolada
+
+### As contradicoes que corrigiram o PLANO (nao so o codigo)
+
+1. **A receita do zeebulator para o `slot43` estava errada** (o alternador 35/0
+   deixava 17 dos 35 objectos do abd por inicializar). A referencia mede-se; nao se
+   copia.
+2. **Os 90 M px do `gof` NAO sao desenho**: sao 294 `glClear`. `glDrawArrays`/
+   `glDrawElements` = ZERO -- o muro e a VFS (`.aei`, `.w3t`), e o rasterizador nao
+   era o gargalo que o plano dizia.
+3. **O guiao de entrada NAO destrava os 30 silenciosos**: 1 de 30 muda e **0 de 30
+   ganha um pixel**. O que prende o `allstarcards`: 107 recusas de CPU e 22
+   `SetupNativeImage`, a ~4 M passos por quadro.
+4. **O `%f` do formato deslocava TODOS os argumentos seguintes** -- e o `vsnprintf`
+   lia a lista do registador errado. Dois defeitos que juntos escondiam as mensagens
+   de ASSERT de 7 titulos.
+
+### O PROXIMO, por evidencia (substitui a lista anterior)
+
+1. **`.aez`** -- **formato DECIFRADO** (medido): registos `[u8 len][caminho][u32][u32
+   tam][gzip]` colados, com `tam` = tamanho COMPRIMIDO. O `res.aez` do gof tem 2 660 646
+   bytes; os 4 primeiros registos descomprimem limpo (12 883 / 43 172 / 52 750 / 12 128
+   bytes). E o muro do `gof` e do `rmp` -- dois titulos que desenham e nunca submetem
+   geometria.
+2. **`IShell::slot32` (`GetHandler`)** -- 95 pedidos em 5 titulos (o passo seguinte do
+   fluxo do `DetectType`).
+3. **`IGLES11::AlphaFunc`** -- 299 recusas no `rmp`; o pedido nem chega ao motor (o
+   alpha test que a `rast2` implementou fica inerte).
+4. **`SetupNativeImage`** (22x no allstarcards) e a recusa de CPU `0xea00001a` em
+   pc=0xf3f4 (107x no mesmo titulo).
+5. A leitura nao mapeada `0x200a180e` no pc `0x23430` do `gof` (294x, 1 por quadro).
+
+---
+
 ## O laco de trabalho
 
 1. **Um titulo de cada vez**, do mais simples ao mais complexo.
