@@ -893,6 +893,15 @@ std::uint32_t SlotIglesNoIgl(std::uint32_t slot) {
     case igles_slots::kIgles_Lightfv: return kIgl_Lightfv;  // 14
     case igles_slots::kIgles_Materialfv: return kIgl_Materialfv;  // 18
     case igles_slots::kIgles_Orthof: return kIgl_Orthof;  // 22
+    // O `AlphaFunc` (3) e DO MESMO CASO e tem a mesma razao: o `AEEGL.h` so
+    // declara o `glAlphaFuncx`, e o IGLES11 tem as duas variantes -- a `x` (32)
+    // esta servida pelo slot 4 do IGL, e a `float` (3) nao tinha caminho nenhum.
+    // MEDIDO no `rmp` (`ZB2_QUADROS=300 ZB2_EVT_START=1`): 299 recusas
+    // `IGLES11::AlphaFunc`, uma por quadro, a UNICA falta daquele titulo nos
+    // quadros; era tambem a unica pergunta que prendia o alpha test que a frente
+    // rast2 implementou no rasterizador. O id devolvido e interno (`igl.h`),
+    // porque nao ha slot nenhum com este nome na vtable do IGL.
+    case igles_slots::kIgles_AlphaFunc: return kIgl_AlphaFunc;  // 3
     default: return kSemSlotNoIgl;
   }
 }

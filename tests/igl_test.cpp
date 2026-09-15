@@ -1310,5 +1310,167 @@ TEST(FrenteIgl2, OMapaNovoServeOsSlotsQueFaltavamEOLerDaPilhaContinuaCerto) {
   EXPECT_EQ(EstadoDoIgles11()->MisturaDestino(), GL_ONE_MINUS_SRC_ALPHA);
 }
 
+// ---------------------------------------------------------------------------
+// 7. A FRENTE alphafunc: o `IGLES11::AlphaFunc`, a variante `float`
+// ---------------------------------------------------------------------------
+//
+// MEDIDO na corrida de referencia (`/tmp/corrida_fmt.json`, `ZB2_QUADROS=300
+// ZB2_EVT_START=1`, 62 titulos): no `rmp` o `IGLES11::AlphaFunc` (slot 3 de
+// `tools/igles_slots.inc`) e pedido **299 vezes**, uma por quadro, e e a UNICA
+// falta daquele titulo nos quadros (`recusadas_quadros = 299` de 304 recusas).
+// Os dois argumentos reais, medidos no traco do proprio `rmp`
+// (`/tmp/pesquisa/inst_bateria.out:77`):
+//
+//     r1 = 0x00000204   GL_GREATER (`gles_1_0/gl.h:99`, "AlphaFunction")
+//     r2 = 0x3f000000   o BIT PATTERN do `float` 0.5 -- e nao 0x00010000, que e
+//                       o 1.0 em GLfixed 16.16
+//
+// O `AEEGL.h` (a vtable de 80 slots do IGL) so tem o `glAlphaFuncx`
+// (`AEEGL.h:63`, `GLclampx`); o `AEEGLES10.h:27` e o `AEEGLES11.h:84` tem as
+// DUAS variantes. O id do motor e portanto INTERNO (como os tres `f`/`fv` de
+// cima) e a leitura da referencia e `Real`, nunca `Fixo`: ler 0x3f000000 com o
+// `Fixo` daria 0.0000076294, e um `GL_ALPHA_TEST` com essa referencia descarta
+// tudo (ou nada) sem nenhum sintoma.
+//
+// COMO ESTES TESTES ENTRAM: pela TABELA. O endereco de saida do slot 3 e lido da
+// VTABLE ESCRITA NA MEMORIA DO GUEST -- a mesma que o wrapper do SDK le pelo
+// ponteiro do objecto -- e o indice de despacho sai desse endereco. Um teste que
+// chamasse o id interno do motor provava o motor e nao a cablagem (armadilha 3).
+
+TEST(FrenteAlphafunc, OAlphaFuncDoIglesServePelaTabelaEOMotorGuardaOEstado) {
+  BancoClasses b;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+
+  // A LEITURA DA TABELA, e nao um indice escrito a mao.
+  const std::uint32_t entrada =
+      b.saidas.Endereco(kVtableIgles) + 4u * igles_slots::kIgles_AlphaFunc;
+  const std::uint32_t alvo = b.mem.Ler32(entrada);
+  std::uint32_t indice = 0;
+  ASSERT_TRUE(b.saidas.Contem(alvo, &indice)) << "entrada 0x" << std::hex << entrada;
+  EXPECT_EQ(indice, kVtableIgles + igles_slots::kIgles_AlphaFunc);
+
+  // O PEDIDO MEDIDO NO `rmp`: (GL_GREATER, 0.5f), 299x.
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, GL_GREATER);
+  b.cpu.Set(kR2, Real(0.5f));
+  b.cpu.Set(kR3, 0u);
+  ASSERT_TRUE(AtenderClasse(b.cpu, indice, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess) << b.Detalhe("IGLES11::AlphaFunc");
+  EXPECT_EQ(b.Faltas("IGLES11::AlphaFunc"), 0u) << b.Detalhe("IGLES11::AlphaFunc");
+  EXPECT_EQ(EstadoDoIgles11()->FuncaoDeAlfa(), GL_GREATER);
+  // A ESCALA E A METADE QUE APANHA O ERRO: se o `AlphaFunc` fosse servido pelo
+  // mesmo ramo do `AlphaFuncx` (o `Fixo`), este valor seria 7.6294e-06.
+  EXPECT_FLOAT_EQ(EstadoDoIgles11()->AlfaDeReferencia(), 0.5f);
+
+  // A OUTRA DIRECCAO: a mesma referencia na variante `x` (GLfixed 16.16) tem de
+  // deixar o MESMO `float` no motor. As duas entradas, um so estado.
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, GL_GREATER);
+  b.cpu.Set(kR2, Fixo(0.5f));
+  ASSERT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_AlphaFuncx, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  EXPECT_FLOAT_EQ(EstadoDoIgles11()->AlfaDeReferencia(), 0.5f);
+}
+
+TEST(FrenteAlphafunc, OFragmentoEDescartadoPelaReferenciaEmFloatDoAlphaFunc) {
+  // O ESTADO OBSERVAVEL NAO CHEGA: o que o `GL_ALPHA_TEST` faz e NAO ESCREVER, e
+  // o contador de descartes e a unica forma de distinguir "descartou" de "nao
+  // havia geometria" (`rasterizador.h:352`).
+  BancoClasses b;
+  Tela tela;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+  // A TELA E LIGADA AO MOTOR DO IGLES11 pelo mesmo acto do despacho
+  // (`Despacho::InstalarGl` chama `Igl::DefinirTela` sobre ele).
+  const_cast<Igl*>(EstadoDoIgles11())->DefinirTela(&tela);
+  Igl* motor = const_cast<Igl*>(EstadoDoIgles11());
+
+  constexpr std::uint32_t kV = 0x0002F100u;  // os vertices (2 floats, passo 8)
+  constexpr std::uint32_t kI = 0x0002F200u;  // os indices (GL_UNSIGNED_SHORT)
+
+  // Viewport(0, 0, 8, 8): o quarto argumento real (a altura) vem da PILHA.
+  b.mem.Escrever32(kPilhaDoTeste, 8u);
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, 0u);
+  b.cpu.Set(kR2, 0u);
+  b.cpu.Set(kR3, 8u);
+  b.cpu.Set(kSP, kPilhaDoTeste);
+  ASSERT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Viewport, b.traco));
+  ASSERT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+
+  // O MESMO triangulo do teste da cablagem do rasterizador: tres vertices em NDC.
+  const float v[3][2] = {{-1.0f, 0.75f}, {-1.0f, 0.0f}, {0.0f, 0.0f}};
+  for (std::uint32_t k = 0; k < 3u; ++k) {
+    b.mem.Escrever32(kV + 8u * k, Real(v[k][0]));
+    b.mem.Escrever32(kV + 8u * k + 4u, Real(v[k][1]));
+    b.mem.Escrever16(kI + 2u * k, static_cast<std::uint16_t>(k));
+  }
+
+  // VertexPointer(2, GL_FLOAT, 8, kV): o quarto argumento real e o ponteiro.
+  b.mem.Escrever32(kPilhaDoTeste, kV);
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, 2u);
+  b.cpu.Set(kR2, GL_FLOAT);
+  b.cpu.Set(kR3, 8u);
+  b.cpu.Set(kSP, kPilhaDoTeste);
+  ASSERT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_VertexPointer, b.traco));
+  ASSERT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, GL_VERTEX_ARRAY);
+  ASSERT_TRUE(
+      AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_EnableClientState, b.traco));
+  ASSERT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+
+  // A COR DA ORIGEM COM ALFA 0.25 -- 64/255 = 0.2509804, abaixo da referencia.
+  const auto cor = [&](float alfa) {
+    b.mem.Escrever32(kPilhaDoTeste, Fixo(alfa));
+    b.cpu.Set(kR0, kObjetoIgles);
+    b.cpu.Set(kR1, Fixo(1.0f));
+    b.cpu.Set(kR2, Fixo(0.0f));
+    b.cpu.Set(kR3, Fixo(0.0f));
+    b.cpu.Set(kSP, kPilhaDoTeste);
+    return AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Color4x, b.traco);
+  };
+  const auto desenhar = [&]() {
+    b.mem.Escrever32(kPilhaDoTeste, kI);
+    b.cpu.Set(kR0, kObjetoIgles);
+    b.cpu.Set(kR1, GL_TRIANGLES);
+    b.cpu.Set(kR2, 3u);
+    b.cpu.Set(kR3, GL_UNSIGNED_SHORT);
+    b.cpu.Set(kSP, kPilhaDoTeste);
+    return AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_DrawElements, b.traco);
+  };
+
+  ASSERT_TRUE(cor(0.25f));
+
+  // O ALPHA TEST LIGADO E A REFERENCIA EM `float`, pelos DOIS slots do IGLES11.
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, GL_ALPHA_TEST);
+  ASSERT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Enable, b.traco));
+  ASSERT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  ASSERT_EQ(b.Faltas("IGLES11::Enable"), 0u);
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, GL_GREATER);
+  b.cpu.Set(kR2, Real(0.5f));
+  ASSERT_TRUE(
+      AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_AlphaFunc, b.traco));
+  ASSERT_EQ(b.cpu.Get(kR0), kAeeSuccess) << b.Detalhe("IGLES11::AlphaFunc");
+
+  ASSERT_TRUE(desenhar());
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess) << b.Detalhe("IGLES11::DrawElements");
+  EXPECT_EQ(tela.Escritos(), 0u) << "o fragmento reprovado nao escreve cor nem profundidade";
+  EXPECT_EQ(motor->RasterizadorRef().FragmentosDescartados(), 6u)
+      << "os seis fragmentos do triangulo foram reprovados pelo alpha test";
+
+  // A OUTRA DIRECCAO, com a MESMA referencia: o alfa a 1 passa e escreve os seis.
+  // Sem esta metade, "nao escreveu nada" seria tambem o que se le de um desenho
+  // que nunca chegou a tela.
+  ASSERT_TRUE(cor(1.0f));
+  ASSERT_TRUE(desenhar());
+  EXPECT_EQ(tela.Escritos(), 6u);
+  EXPECT_EQ(motor->RasterizadorRef().FragmentosDescartados(), 6u)
+      << "o segundo desenho nao descarta nenhum";
+}
+
 }  // namespace
 }  // namespace zb2::brew

@@ -290,16 +290,17 @@ std::uint64_t ChaveDeParametro(std::uint32_t slot, std::uint32_t pname) {
   return (static_cast<std::uint64_t>(slot) << 32) | pname;
 }
 
-// O NOME DE CADA SLOT DO MOTOR. Os 80 do `AEEGL.h` vem da tabela gerada; os tres
-// internos do IGLES11 (`kIgl_Lightfv`, `kIgl_Materialfv`, `kIgl_Orthof`) NAO
-// estao la -- e sem este mapa o traco escrevia `slot_fora_da_tabela`, que e uma
-// recusa que nao se pode ler. O nome e o do metodo do GL, porque e esse o metodo
-// que foi chamado.
+// O NOME DE CADA SLOT DO MOTOR. Os 80 do `AEEGL.h` vem da tabela gerada; os QUATRO
+// internos do IGLES11 (`kIgl_Lightfv`, `kIgl_Materialfv`, `kIgl_Orthof` e o
+// `kIgl_AlphaFunc`) NAO estao la -- e sem este mapa o traco escrevia
+// `slot_fora_da_tabela`, que e uma recusa que nao se pode ler. O nome e o do
+// metodo do GL, porque e esse o metodo que foi chamado.
 const char* NomeDoSlotDoMotor(std::uint32_t slot) {
   switch (slot) {
     case kIgl_Lightfv: return "glLightfv";
     case kIgl_Materialfv: return "glMaterialfv";
     case kIgl_Orthof: return "glOrthof";
+    case kIgl_AlphaFunc: return "glAlphaFunc";
     default: return NomeIgl(slot);
   }
 }
@@ -1190,6 +1191,25 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
       // o teste do alpha test passava verde com a guarda arrancada.
       funcao_de_alfa_ = a.reg[0];
       alfa_de_referencia_ = Apertar(Fixo(1, a), 0.0f, 1.0f);
+      return feito(2);
+    }
+    case kIgl_AlphaFunc: {
+      // O MESMO METODO NA OUTRA ESCALA: o `glAlphaFunc` do IGLES11
+      // (`AEEGLES10.h:27`) leva `AEEGLclampf`, um `float` de 32 bits, e o IGL de
+      // `AEEGL.h` NAO o tem -- so o `glAlphaFuncx` (`:63`). O id e INTERNO ao
+      // motor (ver `igl.h`) e a leitura e o `Real`.
+      //
+      // MEDIDO no `rmp`: 299 chamadas com r2=0x3f000000 = 0.5f. O `Fixo` sobre
+      // esses mesmos bits daria 7.6294e-06: o fragmento reprovava em TODAS as
+      // comparacoes com o `>` e o desenho desaparecia (ou o alpha test nunca
+      // descartava), sem nenhum aviso em nenhum dos dois casos.
+      //
+      // O ESTADO E O MESMO dos dois lados -- `funcao_de_alfa_` e
+      // `alfa_de_referencia_` --, e e ele que o `MontarEstado` leva ao
+      // rasterizador no desenho (`e.teste_de_alfa`, `e.funcao_de_alfa`,
+      // `e.alfa_de_referencia`, o que a frente rast2 deixou pronto).
+      funcao_de_alfa_ = a.reg[0];
+      alfa_de_referencia_ = Apertar(Real(1, a), 0.0f, 1.0f);
       return feito(2);
     }
     case kIgl_DepthRangex:

@@ -135,6 +135,20 @@ constexpr std::uint32_t kIgl_Lightfv = gl_slots::kIglSlots + 0u;     // = 80
 constexpr std::uint32_t kIgl_Materialfv = gl_slots::kIglSlots + 1u;  // = 81
 constexpr std::uint32_t kIgl_Orthof = gl_slots::kIglSlots + 2u;      // = 82
 
+// E O QUARTO DESTA FAMILIA, com a mesma razao e agora com a MEDIDA do rmp: o
+// `glAlphaFunc(func, ref)` do IGLES11 (`AEEGLES10.h:27`, `AEEGLES11.h:84`), cuja
+// referencia e `AEEGLclampf` -- um `float` de 32 bits. O `AEEGL.h` so declara o
+// `glAlphaFuncx` (`:63`, `GLclampx`), logo `kIgl_AlphaFuncx` (o slot 4 da vtable)
+// NAO serve este pedido: os dois tem a mesma grandeza em escalas DIFERENTES.
+//
+// MEDIDO no `rmp` (`ZB2_QUADROS=300 ZB2_EVT_START=1`): 299 chamadas, uma por
+// quadro, com r1=0x00000204 (GL_GREATER) e r2=0x3f000000 -- e 0x3f000000 e o BIT
+// PATTERN do `float` 0.5, nao o 1.0 em 16.16 (0x00010000). Por isso o `igl.cpp`
+// le esta referencia com o `Real` e nunca com o `Fixo`: o `Fixo` sobre os mesmos
+// bits daria 7.6294e-06, um alpha test que descarta tudo (ou nada) e nenhum
+// sintoma.
+constexpr std::uint32_t kIgl_AlphaFunc = gl_slots::kIglSlots + 3u;  // = 83
+
 // O resultado de UM slot, com os tres valores que o desenho exige:
 //   Feito           -- entendido, e o efeito de ESTADO aconteceu;
 //   Recusado        -- o metodo existe, e o pedido nao pode ser servido (o
