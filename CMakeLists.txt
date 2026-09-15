@@ -18,6 +18,8 @@ add_library(zb2_core STATIC
   core/cpu/arm_interpreter.cpp
   core/carga/mod.cpp
   core/carga/bar.cpp
+  core/carga/inflate.cpp
+  core/carga/pack.cpp
   core/brew/ajudantes.cpp
   core/brew/ajudantes_extra.cpp
   core/brew/formato.cpp
@@ -71,6 +73,7 @@ add_executable(zb2_tests
   tests/audio_test.cpp
   tests/rasterizador_test.cpp
   tests/classes_test.cpp
+  tests/pack_test.cpp
 )
 # A RAIZ DO REPOSITORIO, para os testes que abrem ficheiros reais (o
 # `pacmania.bar` e o SDK) poderem dizer ONDE procuraram -- e SALTAR em vez de
@@ -171,6 +174,12 @@ target_link_libraries(zb2_comparar PRIVATE zb2_comparar_lib)
 # so pela API): o que o `ctest` tem de provar e o que o CI vai ver -- um codigo de
 # saida distinto por cada tipo de falha.
 add_test(NAME comparar_guardas COMMAND zb2_tests --gtest_filter=Comparar.*)
+
+# O PACK E O INFLATE (a familia Neo Geo). Os testes que abrem os `.pkg` de
+# VERDADE (o `boot.pkg` do corpus e o caminho `karnovr/boot.rom`) SALTAM quando a
+# midia nao esta nesta maquina -- e o `GTEST_SKIP` e o unico jeito honesto de
+# dizer "nao correu", como nos `RecursosDeVerdade`.
+add_test(NAME pack COMMAND zb2_tests --gtest_filter=Pack.*)
 add_test(NAME comparar_shell
   COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/comparar_guarda.sh $<TARGET_FILE:zb2_comparar>)
 

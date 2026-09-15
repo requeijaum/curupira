@@ -1161,8 +1161,20 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         const std::string nome = LerTextoDe(mem_, cpu.Get(kR1), 512);
         const std::uint32_t id = arquivos_.Abrir(nome, cpu.Get(kR2), dir_ + "/" + pasta_);
         if (id == 0) {
+          // A RECUSA FICA DITA. Este ramo nao escrevia nada no traco, e o
+          // efeito medido foi um instrumento cego: 10 titulos andaram 742 mil
+          // passos no arranque sem que se pudesse ver QUE ficheiro pediam, nem
+          // que o pedido tinha sido recusado. Com o nome e o motivo, a pergunta
+          // "o que e que falta a este jogo?" passa a ter resposta no log.
+          traco_.Emitir(Area::Brew, Nivel::Depuracao, "OPENFILE_RECUSADO",
+                        "\"" + nome + "\" modo=" + Hex(cpu.Get(kR2)) + " | " +
+                            arquivos_.UltimoMotivo());
           cpu.Set(kR0, 0);  // NULL -- nao ha IFile
         } else {
+          traco_.Emitir(Area::Brew, Nivel::Depuracao, "OPENFILE",
+                        "\"" + nome + "\" -> " + arquivos_.UltimoCaminho() +
+                            (arquivos_.UltimoVeioDePacote() ? " (entrada de .pkg)"
+                                                            : " (ficheiro solto)"));
           const std::uint32_t obj = kObjFileBase + id * 0x40;
           mem_.Escrever32(obj + 0, vtable_ficheiro_);
           mem_.Escrever32(obj + 4, 1);

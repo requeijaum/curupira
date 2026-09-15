@@ -213,6 +213,15 @@ class Despacho {
     pasta_ = pasta;
     clsid_titulo_ = clsid;
     tem_clsid_ = (clsid != 0);
+    // A REGRA QUE LIGOU OS PACOTES `.pkg` AO SISTEMA DE FICHEIROS FICA DITA.
+    //
+    // A `Vfs` foi registada antes deste objecto existir (a ferramenta chama
+    // `Registar` antes de construir o `Despacho`), pelo que a declaracao e
+    // emitida agora, uma so vez por titulo, e nao no momento do registo: sem
+    // isto, `karnovr/boot.rom` resolver para uma entrada de `boot.pkg` seria uma
+    // ligacao que ninguem ve -- e uma ligacao que ninguem ve perde-se em
+    // silencio, que e o defeito que ja custou a cablagem do `SetTimer`.
+    vfs_.DeclararNoTraco(&traco_);
   }
   std::uint32_t ClsidDoTitulo() const { return clsid_titulo_; }
   bool TemClsidDoTitulo() const { return tem_clsid_; }

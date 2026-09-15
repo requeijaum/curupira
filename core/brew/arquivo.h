@@ -41,6 +41,17 @@ class Arquivos {
 
   std::size_t Abertos() const { return abertos_.size(); }
 
+  // O que aconteceu na ultima chamada a `Abrir`, para o despacho poder DIZER
+  // porque e que o `OpenFile` recusou -- em vez de zero e nada.
+  //
+  // Existe porque os pedidos de ficheiro do guest eram INVISIVEIS: o `OpenFile`
+  // nao emite nada, e um titulo que pede um ficheiro que a VFS nao serve ficava a
+  // pedir em silencio. `UltimoCaminho` e o nome canonico (o caminho por que a
+  // entrada do pacote foi encontrada, quando foi).
+  const std::string& UltimoMotivo() const { return ultimo_motivo_; }
+  const std::string& UltimoCaminho() const { return ultimo_caminho_; }
+  bool UltimoVeioDePacote() const { return ultimo_de_pacote_; }
+
  private:
   struct Aberto {
     std::uint32_t id = 0;
@@ -53,6 +64,9 @@ class Arquivos {
   const Vfs* vfs_;
   std::vector<Aberto> abertos_;
   std::uint32_t proximo_id_ = 1;
+  std::string ultimo_motivo_;
+  std::string ultimo_caminho_;
+  bool ultimo_de_pacote_ = false;
 };
 
 }  // namespace zb2::brew

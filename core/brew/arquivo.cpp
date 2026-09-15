@@ -1,7 +1,9 @@
 #include "core/brew/arquivo.h"
 
-#include <fstream>
 #include <iterator>
+#include <utility>
+
+#include "core/traco/traco.h"  // Hex()
 
 namespace zb2::brew {
 
@@ -16,20 +18,47 @@ bool Arquivos::ModoMudaOFicheiro(std::uint32_t modo) const {
 
 std::uint32_t Arquivos::Abrir(const std::string& nome, std::uint32_t modo,
                               const std::string& pasta_do_titulo) {
-  if (vfs_ == nullptr) return 0;
-  if (ModoMudaOFicheiro(modo)) return 0;
-  if ((modo & kOfmLeitura) == 0) return 0;
-  const std::string caminho = vfs_->Normalizar(nome);
-  if (caminho.empty()) return 0;
+  // A PASTA DEIXOU DE SER LIDA AQUI, e o argumento fica na assinatura por uma
+  // razao so: quem a sabe e a VFS, que foi registada com ela (`Vfs::Registar`).
+  // Duas fontes para "onde esta o ficheiro" e a forma de ler duas pastas
+  // diferentes conforme quem pergunta -- e o argumento continua a ser passado
+  // pelas chamadas que ja existiam (`tests/brew_test.cpp`).
+  (void)pasta_do_titulo;
+  ultimo_motivo_.clear();
+  ultimo_caminho_.clear();
+  ultimo_de_pacote_ = false;
+  if (vfs_ == nullptr) {
+    ultimo_motivo_ = "sem VFS";
+    return 0;
+  }
+  if (ModoMudaOFicheiro(modo)) {
+    ultimo_motivo_ = "o modo 0x" + Hex(modo) + " escreve: a VFS e SO DE LEITURA, por decisao";
+    return 0;
+  }
+  if ((modo & kOfmLeitura) == 0) {
+    ultimo_motivo_ = "o modo 0x" + Hex(modo) + " nao pede leitura";
+    return 0;
+  }
 
-  std::ifstream f(pasta_do_titulo + "/" + caminho, std::ios::binary);
-  if (!f) return 0;
+  // A LEITURA PASSA TODA PELA VFS -- ficheiro solto na pasta do titulo, ou
+  // entrada de um `.pkg` descomprimida. E o mesmo caminho para os dois casos, e
+  // e por isso que o `Test` do `IFileMgr` e o `OpenFile` nao podem divergir
+  // sobre o que existe.
   Aberto a;
-  a.dados.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
-  if (a.dados.empty()) return 0;
+  std::string porque;
+  if (!vfs_->Ler(nome, &a.dados, &porque)) {
+    ultimo_motivo_ = porque;
+    return 0;
+  }
+  if (a.dados.empty()) {
+    ultimo_motivo_ = "ficheiro vazio: " + vfs_->Normalizar(nome);
+    return 0;
+  }
+  ultimo_caminho_ = vfs_->Normalizar(nome);
+  ultimo_de_pacote_ = ultimo_caminho_.find('/') != std::string::npos;
   a.id = proximo_id_++;
-  abertos_.push_back(a);
-  return a.id;
+  abertos_.push_back(std::move(a));
+  return abertos_.back().id;
 }
 
 Arquivos::Aberto* Arquivos::Procurar(std::uint32_t id) {
