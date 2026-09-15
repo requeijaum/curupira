@@ -241,6 +241,8 @@ class Despacho {
     // ligacao que ninguem ve -- e uma ligacao que ninguem ve perde-se em
     // silencio, que e o defeito que ja custou a cablagem do `SetTimer`.
     vfs_.DeclararNoTraco(&traco_);
+    // O PARK DA ESPERA (frente park): o estado nao passa de titulo para titulo.
+    estacionada_ = false;
   }
   std::uint32_t ClsidDoTitulo() const { return clsid_titulo_; }
   bool TemClsidDoTitulo() const { return tem_clsid_; }
@@ -306,6 +308,41 @@ class Despacho {
                               std::uint32_t* devolveu, std::uint64_t* passos_gastos);
 
   // O FIM DA FAIXA DO MODULO, e nao `kBase + 16 MB`.
+
+ private:
+  // --- O PARK DA ESPERA (frente park) --------------------------------------
+  //
+  // O zeebx mediu-o (ramo fix-fp-threading, commit 4038f15): uma thread que so
+  // espera -- ler o relogio, perguntar ao controle com a fila vazia -- prende o
+  // laco de quadros, porque a thread cooperativa nunca cede a vez. O atalho
+  // tem duas metades:
+  //
+  //  1. `NotarEspera`: no inicio de cada saida. Leitura de relogio CRESCE a
+  //     contagem; ceder (Suspend/GetResumeCBK/Resume) e perguntar sem mudar
+  //     nada (controle com a fila vazia, memset pequeno) nao desfazem a
+  //     contagem; QUALQUER outra chamada e trabalho, e zera.
+  //  2. Na fronteira entre duas chamadas de API, com a contagem no limiar, a
+  //     thread actual e ESTACIONADA como se tivesse chamado Suspend: o
+  //     contexto fica em `estacionada_contexto_`, o do hospedeiro volta, e o
+  //     laco de eventos (temporizadores, entrada, midia) ganha a vez. A
+  //     passada seguinte devolve a thread no mesmo ponto.
+  //
+  // PORQUE O CONTADOR E DE TODO O MODULO E NAO SO DA THREAD: o hospedeiro que
+  // trabalha entre retomadas zera tudo, e a thread so acumula quando e ela a
+  // unica a correr -- que e exactamente o caso que prende o laco.
+  void NotarEspera(ICpu& cpu, std::uint32_t indice);
+  bool EhCedencia(std::uint32_t indice) const;
+  bool EhPerguntaInocua(ICpu& cpu, std::uint32_t indice);
+  std::uint32_t espera_polls_ = 0;
+  std::uint32_t espera_ms_ = 0;
+  bool estacionada_ = false;
+  std::uint32_t estacionada_contexto_[16] = {};
+  // O LIMIAR, do zeebx com o tempo em ms: `VSYNC_PERIOD_US` (16,7 ms) la;
+  // aqui o relogio e em ms e cada leitura conta 1 ms -- 16 leituras.
+  static constexpr std::uint32_t kParkMs = 16;
+  // O `memset` pequeno (o Rolimaz limpa um AEEHIDButtonInfo de 16 bytes antes
+  // de cada GetNextButtonEvent) e parte da pergunta, nao trabalho.
+  static constexpr std::uint32_t kMemsetDaEspera = 16;
 
  private:
   // O ANEL DAS ULTIMAS INSTRUCOES (ver `Correr`): guarda o PC e a palavra de cada uma

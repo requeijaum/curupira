@@ -1362,5 +1362,106 @@ TEST(EntradaNoDespacho, UmaThreadAgendadaVoltaACorrerOPfnNasFronteirasDeApi) {
   EXPECT_EQ(b.Faltas("IShell::Resume"), 0u);
 }
 
+// ===========================================================================
+// O PARK DA ESPERA (frente park): uma thread que SO ESPERA prende o laco de
+// eventos, e a fronteira entre chamadas de API e o ponto onde a estacionar
+// (como se tivesse chamado Suspend) e devolver a vez ao temporizador.
+//
+// VERMELHO HOJE (sem o park): a thread roda e nunca cede; o `agora_ms_` fica
+// CONGELADO durante a volta dela (o temporizador nao dispara), e o marcador
+// fica com o valor de partida.
+// ===========================================================================
+TEST(EntradaNoDespacho, UmaThreadQueSoEsperaEParkadaENaoPrendeOLacoDeEventos) {
+  Bancada b;
+  // Os ids de saida do despacho (despacho.cpp): `kSlotIdSetTimer` = 1520.
+  // O relogio vai pela CABLAGEM (armadilha 3): a tabela AEEHelperFuncs em
+  // `kTabela`, no offset 0x0b0 = aee_GetUpTimeMS.
+  const std::uint32_t kSetTimer = 1520;
+  const std::uint32_t kPpObj = 0x80091000u;
+  const std::uint32_t kMarcadorDoTemporizador = 0x00000310u;
+  const std::uint32_t kRotinaDaThread = 0x00000600u;
+  const std::uint32_t kCallbackDoTemporizador = 0x00000500u;
+
+  // 1. O objecto do IThread (CreateInstance) -- e a PILHA da thread, para o
+  //    pfn poder estar dentro da faixa do modulo (0x600) no Start.
+  ASSERT_EQ(b.ChamaSaida(kBaseDoShell + 2, kObjShell, 0x01001017u, kPpObj), kAeeSuccess);
+  const std::uint32_t obj = b.Mem().Ler32(kPpObj);
+  ASSERT_NE(obj, 0u);
+
+  // 2. O CALLBACK DO TEMPORIZADOR em kCallbackDoTemporizador: escreve o
+  //    marcador e volta. E a prova de que o laco de eventos CORREU enquanto a
+  //    thread esperava.
+  //      500 e3a02c03  mov r2, #0x310      (kMarcadorDoTemporizador)
+  //      504 e59f3008  ldr r3, [pc, #8]    ; @0x514 = 0x33333333
+  //      508 e5823000  str r3, [r2]        ; marcador = 0x33333333
+  //      50c e12fff1e  bx lr
+  const std::uint32_t cbk[] = {0xe3a02e31u, 0xe59f3008u, 0xe5823000u, 0xe12fff1eu,
+                               0xe1a00000u, 0x33333333u};
+  for (std::size_t k = 0; k < sizeof(cbk) / sizeof(cbk[0]); ++k) {
+    b.Mem().Escrever32(kCallbackDoTemporizador + static_cast<std::uint32_t>(k * 4), cbk[k]);
+  }
+
+  // 3. A THREAD QUE SO ESPERA em kRotinaDaThread: laco que so le o relogio
+  //    virtual (aee_GetUpTimeMS pela TABELA -- o valor em kTabela+0x0b0), sem
+  //    mudar nada e sem nunca ceder.
+  //      600 e59f300c  ldr r3, [pc, #12]   ; @0x614 = kTabela+0x0b0
+  //      604 e5930000  ldr r0, [r3]        ; r0 = tabela[0x0b0] = saida do relogio
+  //      608 e1a0e00f  mov lr, pc
+  //      60c e12fff10  bx r0               ; aee_GetUpTimeMS()
+  //      610 e1a00000  (pad)
+  //      614 <kTabela+0x0b0>
+  //      618 eafffff8  b 0x600
+  const std::uint32_t pfn[] = {0xe59f300cu, 0xe5930000u, 0xe1a0e00fu, 0xe12fff10u,
+                               0xe1a00000u, kTabela + 0x0b0u, 0xeafffff8u};
+  for (std::size_t k = 0; k < sizeof(pfn) / sizeof(pfn[0]); ++k) {
+    b.Mem().Escrever32(kRotinaDaThread + static_cast<std::uint32_t>(k * 4), pfn[k]);
+  }
+
+  // 4. O GUEST, ARM, em kRotina (0x200): arma o temporizador, inicia a thread
+  //    e fica num laco (o tempo virtual avanca fora da thread).
+  //      200 e5900038  ldr r0, [pc, #0x38] ; @0x240 = saida do SetTimer
+  //      204 e3a0100a  mov r1, #10         ; 10 ms
+  //      208 e5902034  ldr r2, [pc, #0x34] ; @0x244 = 0x500 (callback)
+  //      20c e3a03099  mov r3, #0x99
+  //      210 e1a0e00f  mov lr, pc
+  //      214 e12fff10  bx r0               ; SetTimer(po, 10, 0x500, 0x99)
+  //      218 e5904028  ldr r4, [pc, #0x28] ; @0x248 = obj
+  //      21c e1a00004  mov r0, r4          ; this
+  //      220 e3a01a04  mov r1, #0x4000     ; 16 KiB
+  //      224 e5902020  ldr r2, [pc, #0x20] ; @0x24c = 0x600 (pfn da thread)
+  //      228 e3a03007  mov r3, #0x7        ; pvStart
+  //      22c e5944000  ldr r4, [r4]        ; vtable
+  //      230 e594c01c  ldr ip, [r4, #0x1c] ; slot 7 = Start
+  //      234 e1a0e00f  mov lr, pc
+  //      238 e12fff1c  bx ip               ; Start(obj, 0x4000, 0x600, 7)
+  //      23c eafffffe  b 0x23c             ; o hospedeiro fica no laco
+  const std::uint32_t saida_set_timer = b.S().Endereco(kSetTimer);
+  const std::uint32_t principal[] = {
+      0xe59f0038u, 0xe3a0100au, 0xe59f2034u, 0xe3a03099u, 0xe1a0e00fu, 0xe12fff10u,
+      0xe59f4028u, 0xe1a00004u, 0xe3a01901u, 0xe59f2020u, 0xe3a03007u, 0xe5944000u,
+      0xe594c01cu, 0xe1a0e00fu, 0xe12fff1cu, 0xeafffffeu,
+      saida_set_timer,  // 0x240
+      kCallbackDoTemporizador,  // 0x244
+      obj,             // 0x248
+      kRotinaDaThread, // 0x24c
+  };
+  for (std::size_t k = 0; k < sizeof(principal) / sizeof(principal[0]); ++k) {
+    b.Mem().Escrever32(kRotina + static_cast<std::uint32_t>(k * 4), principal[k]);
+  }
+
+  // 5. O CICLO por DENTRO de `Despacho::Correr`, de uma so vez.
+  b.Mem().Escrever32(kMarcadorDoTemporizador, 0xDEADBEEFu);
+  // Os registadores de entrada nao importam: o guest carrega tudo de literais.
+  b.Cpu().Set(kLR, kSentinela);
+  b.Cpu().Set(kPC, kRotina);
+  const ResultadoFase r = b.D().Correr(b.Cpu(), 100000, kArg0);
+  // O PARK TEM DE TER DEVOLVIDO A VEZ AO LACO DE EVENTOS: o temporizador de 10
+  // ms disparou e o marcador mudou. Hoje (sem o park) a thread nunca cede, o
+  // relogio virtual fica congelado durante a volta dela e o marcador fica com
+  // o valor de partida -- VERMELHO.
+  EXPECT_EQ(b.Mem().Ler32(kMarcadorDoTemporizador), 0x33333333u)
+      << "o laco de eventos tem de CORRER durante a espera da thread";
+  (void)r;
+}
 
 }  // namespace zb2::brew

@@ -474,11 +474,11 @@ TEST(AjudantesExtra, OffsetForaDaTabelaNaoERecusadoAqui) {
   EXPECT_TRUE(b.traco.ContagemFaltas().empty());
 }
 
-TEST(AjudantesExtra, ImplementadosSaoTrezeEATodosNoCatalogo) {
+TEST(AjudantesExtra, ImplementadosSaoCatorzeEATodosNoCatalogo) {
   // 7 da etapa anterior + os 6 da frente io2 (wstrlen, wstrncopyn, strtoul,
-  // snprintf, strlcpy, strlcat).
-  EXPECT_EQ(AjudantesExtra::Implementados(), 13u);
-  for (std::uint32_t off : {0x0D8u, 0x044u, 0x050u, 0x0E8u, 0x138u, 0x0F4u, 0x0CCu}) {
+  // snprintf, strlcpy, strlcat) + o stricmp (0x0d0) da frente park.
+  EXPECT_EQ(AjudantesExtra::Implementados(), 14u);
+  for (std::uint32_t off : {0x0D8u, 0x044u, 0x050u, 0x0E8u, 0x138u, 0x0F4u, 0x0CCu, 0x0D0u}) {
     EXPECT_NE(DeclaracaoDoOffset(off), nullptr) << "0x" << std::hex << off;
   }
 }
@@ -571,6 +571,68 @@ TEST(AjudantesExtra, StrncmpNulaRecusaERegista) {
   EXPECT_EQ(b.Atender(0x0CC), Atendimento::Implementado);
   EXPECT_EQ(b.cpu.Get(kR0), 0u);
   EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x0cc] strncmp"), 1u);
+}
+
+// 0x0D0 -- stricmp, CASO-INSENSITIVO (o teste que o distingue do strcmp).
+//
+// O QUE O SDK DIZ: `int (*stricmp)(const char *a, const char *b)`
+// (AEEStdLib.h linha 150, via `tools/ajudantes_slots.inc`). A ordem de
+// comparacao e a do strcmp, com o alfabeto ASCII dobrado para minusculas
+// (`A`..`Z` -> `a`..`z`) antes de comparar o byte. Devolve 0 quando as
+// cadeias igualam sem caixa; <0 quando `a` vem antes; >0 quando vem depois.
+TEST(AjudantesExtra, StricmpComparaSemCaixaEDevolveSinal) {
+  Bancada b;
+  b.EscreverCadeia(kTexto, "AbC");
+  b.EscreverCadeia(kTexto2, "aBc");
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, kTexto2);
+  EXPECT_EQ(b.Atender(0x0D0), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u) << "AbC == aBc sem caixa";
+  // A caixa e o QUE DISTINGUE o stricmp do strcmp: o strcmp daria != 0 aqui.
+  b.EscreverCadeia(kTexto, "abc");
+  b.EscreverCadeia(kTexto2, "abd");
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, kTexto2);
+  b.Atender(0x0D0);
+  EXPECT_LT(static_cast<std::int32_t>(b.cpu.Get(kR0)), 0) << "c < d";
+  b.EscreverCadeia(kTexto, "abd");
+  b.EscreverCadeia(kTexto2, "abc");
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, kTexto2);
+  b.Atender(0x0D0);
+  EXPECT_GT(static_cast<std::int32_t>(b.cpu.Get(kR0)), 0) << "d > c";
+  // O NUL trava como no strcmp: "ab" nunca iguala "abc".
+  b.EscreverCadeia(kTexto, "ab");
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, kTexto2);
+  b.Atender(0x0D0);
+  EXPECT_NE(b.cpu.Get(kR0), 0u) << "ab vs abc: NUL != c";
+  // Igualdade exacta com terminador no mesmo byte.
+  b.EscreverCadeia(kTexto2, "ab");
+  b.cpu.Set(kR0, kTexto);  // o r0 anterior ficou com o -99 do caso acima
+  b.Atender(0x0D0);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u) << "ab == ab";
+}
+
+TEST(AjudantesExtra, StricmpDistinguidoDoStrcmpPelaCaixa) {
+  // O strcmp (0x010, servido no despacho) e CASE-SENSITIVE; o stricmp nao.
+  // O caso em que os dois DISCORDAM e o teste do stricmp.
+  Bancada b;
+  b.EscreverCadeia(kTexto, "Level");
+  b.EscreverCadeia(kTexto2, "level");
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, kTexto2);
+  EXPECT_EQ(b.Atender(0x0D0), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u) << "stricmp iguala Level com level";
+}
+
+TEST(AjudantesExtra, StricmpNulaRecusaERegista) {
+  Bancada b;
+  b.cpu.Set(kR0, 0);
+  b.cpu.Set(kR1, kTexto);
+  EXPECT_EQ(b.Atender(0x0D0), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u);
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x0d0] stricmp"), 1u);
 }
 
 TEST(AjudantesExtra, OContratoDoGanchoEDeUmaLinha) {

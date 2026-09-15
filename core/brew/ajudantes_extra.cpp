@@ -499,6 +499,54 @@ void FazerStrncmp(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
 
 
 // ---------------------------------------------------------------------------
+// 0x0D0 -- `int (*stricmp)(const char *a, const char *b)` (AEEStdLib.h)
+// ---------------------------------------------------------------------------
+//
+// ASSINATURA, de `AEEStdLib.h` linha 150 (a linha vem do `.inc` gerado):
+//   r0 = a, r1 = b; devolve negativo/zero/positivo como o strcmp, com a caixa
+//   do alfabeto ASCII dobrada. O AEEStdLib do BREW e ASCII: o dobramento e o
+//   do `tolower` classico (`A`..`Z` -> `a`..`z`), aplicado AOS DOIS lados
+//   antes de comparar o byte. O NUL termina como no strcmp.
+//
+// DEMANDA MEDIDA (corrida_thrd.json): 10 titulos (baddudes, cninja, darkseal,
+// hbarrel, magdrop3, ...) pedem este slot; sem ele a thread recebe
+// AEE_EUNSUPPORTED em cada pergunta de nome e decide ao contrario.
+void FazerStricmp(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
+  const std::uint32_t a = cpu.Get(kR0);
+  const std::uint32_t b = cpu.Get(kR1);
+  if (a == 0 || b == 0) {
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_stricmp, "ponteiro nulo",
+                   DetalheDosRegistos(cpu));
+    cpu.Set(kR0, 0);
+    return;
+  }
+  std::int32_t r = 0;
+  std::uint32_t i = 0;
+  for (;;) {
+    std::uint32_t ca = mem.Ler8(a + i);
+    std::uint32_t cb = mem.Ler8(b + i);
+
+    if (ca >= 'A' && ca <= 'Z') ca += 'a' - 'A';
+    if (cb >= 'A' && cb <= 'Z') cb += 'a' - 'A';
+    if (ca != cb) {
+      r = static_cast<std::int32_t>(ca) - static_cast<std::int32_t>(cb);
+      break;
+    }
+    if (ca == 0) break;  // iguais ate ao NUL dos dois
+    if (++i >= kLimiteDeCadeia) {
+      RegistarRecusa(traco, brew_ajudantes::kAjudante_stricmp,
+                     "cadeia sem fim (limite de caracteres)", "");
+      cpu.Set(kR0, 0);
+      return;
+    }
+  }
+  cpu.Set(kR0, static_cast<std::uint32_t>(r));
+  char det[96];
+  std::snprintf(det, sizeof(det), "-> %d", r);
+  EmitirChamada(traco, brew_ajudantes::kAjudante_stricmp, det);
+}
+
+// ---------------------------------------------------------------------------
 // A FRENTE io2 (etapa 12): os seis ajudantes que a corrida fmg mediu como os
 // mais pedidos depois da ronda anterior. Assinaturas em `AEEStdLib.h` e nomes
 // em `tools/ajudantes_slots.inc` (gerado, ancoras conferidas no fim).
@@ -785,6 +833,7 @@ constexpr Implementacao kImplementados[] = {
     {brew_ajudantes::kAjudante_GetRAMFree, "GetRAMFree", FazerGetRamFree},
     {brew_ajudantes::kAjudante_strdup, "strdup", FazerStrdup},
     {brew_ajudantes::kAjudante_strncmp, "strncmp", FazerStrncmp},
+    {brew_ajudantes::kAjudante_stricmp, "stricmp", FazerStricmp},
 };
 
 // AS ANCORAS DA LISTA, verificadas em tempo de COMPILACAO. Cada uma e um offset
@@ -804,6 +853,7 @@ static_assert(brew_ajudantes::kAjudante_utf8towstr == 0x050, "0x050 e utf8towstr
 static_assert(brew_ajudantes::kAjudante_GetRAMFree == 0x138, "0x138 e GetRAMFree");
 static_assert(brew_ajudantes::kAjudante_strdup == 0x0F4, "0x0f4 e strdup");
 static_assert(brew_ajudantes::kAjudante_strncmp == 0x0CC, "0x0cc e strncmp");
+static_assert(brew_ajudantes::kAjudante_stricmp == 0x0D0, "0x0d0 e stricmp");
 static_assert(brew_ajudantes::kAjudante_wstrlen == 0x030, "0x030 e wstrlen");
 static_assert(brew_ajudantes::kAjudante_wstrncopyn == 0x080, "0x080 e wstrncopyn, nao strncpy");
 static_assert(brew_ajudantes::kAjudante_strtoul == 0x0C4, "0x0c4 e strtoul");
@@ -812,7 +862,7 @@ static_assert(brew_ajudantes::kAjudante_strlcpy == 0x14C, "0x14c e strlcpy");
 static_assert(brew_ajudantes::kAjudante_strlcat == 0x150, "0x150 e strlcat");
 static_assert(
     sizeof(kImplementados) / sizeof(kImplementados[0]) ==
-        13,
+        14,
     "a lista das implementacoes mudou: actualiza o numero e o teste");
 
 }  // namespace

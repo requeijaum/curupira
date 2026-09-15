@@ -1128,6 +1128,11 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
                   brew_slots::kThread_Start) {
         pfn_do_ultimo_start = cpu.Get(kR2);
       }
+      // O PARK DA ESPERA (frente park): classifica a saida ANTES de a servir --
+      // ler o relogio cresce a contagem, trabalho zera. Ver o zeebx
+      // `note_spin` (ramo fix-fp-threading): e aqui, e nao no fim, que a
+      // contagem se decide; o fim so usa o numero.
+      NotarEspera(cpu, idx);
       if (idx == 0) {
         cpu.Set(kR0, al_.Malloc(r0));
       } else if (idx == 1) {
@@ -2909,6 +2914,39 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
       // instrucoes do proprio laco, e o detector morreria em silencio.
       if (!recusou_agora) recusas_seguidas = 0;
       if (++saidas > 20000) { resultado.motivo = "laco_de_saidas"; return resultado; }
+      // O PARK DA ESPERA (frente park), na MESMA fronteira da thread. Os dois
+      // usam o mesmo facto: aqui o guest esta num ponto onde o estado vivo cabe
+      // nos registadores, e trocar de contexto nao interrompe nada pela metade.
+      //
+      // ESTACIONAR: uma thread que so espera (contagem no limiar, ver
+      // `NotarEspera`) e tirada da CPU como se tivesse chamado Suspend, e o
+      // hospedeiro volta. O laco de eventos (temporizadores, entrada, midia)
+      // fica parado durante a volta da thread -- foi isso que mediu o zeebx:
+      // sem estacionar, uma thread que nunca cede trava o quadro. `lr_real_`
+      // exclui o `Suspend` de DENTRO da thread (o lr ja e a sentinela: ela
+      // cedeu por iniciativa propria, e a classes vai fecha-la).
+      const bool lr_real_ = cpu.Get(kLR) != kSentinela;
+      if (thread_a_correr && profundidade_de_evento_ == 0 && lr_real_ &&
+          espera_ms_ >= kParkMs) {
+        for (std::uint32_t k = 0; k <= kPC; ++k) estacionada_contexto_[k] = cpu.Get(k);
+        estacionada_ = true;
+        for (std::uint32_t k = 0; k <= kPC; ++k) cpu.Set(k, hospedeiro[k]);
+        thread_a_correr = false;
+        espera_polls_ = 0;
+        espera_ms_ = 0;
+        continue;
+      }
+      // RETOMAR: a estacionada volta na proxima fronteira, ANTES da thread
+      // pendente por outras vias (ela nao esta em `g_pendentes` da classes).
+      // O laco de eventos correu pelo menos uma vez entre o estacionar e aqui.
+      if (estacionada_ && !thread_a_correr && profundidade_de_evento_ == 0 &&
+          lr_real_) {
+        for (std::uint32_t k = 0; k <= kPC; ++k) hospedeiro[k] = cpu.Get(k);
+        for (std::uint32_t k = 0; k <= kPC; ++k) cpu.Set(k, estacionada_contexto_[k]);
+        thread_a_correr = true;
+        estacionada_ = false;
+        continue;
+      }
       // A FRONTEIRA ENTRE CHAMADAS DE API, e a THREAD COOPERATIVA (frente
       // thrd). E aqui -- com o guest num ponto onde o estado vivo cabe nos
       // registadores mais o pc de retorno -- que a thread pendente volta a
@@ -3057,6 +3095,72 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
   // no segundo titulo, com a pilha a apontar para o `append` de uma cadeia
   // VIZINHA. O `append` era a vitima; o culpado era este `return` em falta.
   return resultado;
+}
+
+// ---------------------------------------------------------------------------
+// O PARK DA ESPERA (frente park). Detalhes em `despacho.h`; aqui so a conta.
+// ---------------------------------------------------------------------------
+
+// Classifica a saida que esta a ser servida. Leitura de relogio CRESCE a
+// contagem; ceder e perguntar sem mudar nada nao a desfazem; QUALQUER outra
+// chamada e trabalho, e zera (regra medida do zeebx, `note_spin` em
+// `fix-fp-threading`).
+void Despacho::NotarEspera(ICpu& cpu, std::uint32_t indice) {
+  const bool le_relogio = indice == kSlotIdGetUpTime ||
+                          (indice >= kBaseDoSlot &&
+                           (((indice - kBaseDoSlot) * 4) == 0x0AC ||
+                            ((indice - kBaseDoSlot) * 4) == 0x0B0 ||
+                            ((indice - kBaseDoSlot) * 4) == 0x0B4));
+  if (le_relogio) {
+    // Cada leitura vale 1 ms de espera: o relogio virtual desta arvore avanca
+    // 1 ms por instrucao, e cada volta do laco de espera do Rolimaz lê o
+    // relogio uma vez. O valor nao e uma medida -- e a escala do contador.
+    ++espera_polls_;
+    espera_ms_ += 1;
+    return;
+  }
+  if (EhCedencia(indice)) return;
+  if (EhPerguntaInocua(cpu, indice)) return;
+  espera_polls_ = 0;
+  espera_ms_ = 0;
+}
+
+bool Despacho::EhCedencia(std::uint32_t indice) const {
+  const std::uint32_t th = VtClasse(static_cast<std::uint32_t>(Classe::kThread));
+  // Ceder a vez nao e trabalho nem espera: nao conta, mas tambem nao desfaz a
+  // contagem (zeebx: "é como o laço dá a volta").
+  return indice == th + brew_slots::kThread_Suspend ||
+         indice == th + brew_slots::kThread_GetResumeCBK ||
+         indice == kBaseDoShell + brew_slots::kShell_Resume;
+}
+
+bool Despacho::EhPerguntaInocua(ICpu& cpu, std::uint32_t indice) {
+  // O CONTROLE COM A FILA VAZIA: a resposta e SEMPRE a mesma, volta apos volta
+  // -- nada progride, so o tempo. Com um guiao de entrada, a resposta MUDA e
+  // e trabalho (zeebx: "com evento na fila a resposta muda o jogo").
+  const bool sem_guiao = entrada_.Quantos() == 0;
+  const std::uint32_t b = base_da_entrada_ + Sinais::kSlotsNecessarios;
+  if (sem_guiao && entrada_pronta_) {
+    const std::uint32_t off = indice - b;
+    const bool e_ihid = indice >= b && indice < b + Ihid::kSlotsNecessarios;
+    if (e_ihid &&
+        (off == brew_slots::kIHID_GetNextConnectEvent ||
+         off == Ihid::kBaseDoDispositivo + brew_slots::kHIDDevice_GetDeviceInfo ||
+         off == Ihid::kBaseDoDispositivo + brew_slots::kHIDDevice_GetDeviceStatus ||
+         off == Ihid::kBaseDoDispositivo + brew_slots::kHIDDevice_GetButtonInfo ||
+         off == Ihid::kBaseDoDispositivo + brew_slots::kHIDDevice_GetNumberOfButtons ||
+         off == Ihid::kBaseDoDispositivo + brew_slots::kHIDDevice_GetNextButtonEvent ||
+         off == Ihid::kBaseDoDispositivo + brew_slots::kHIDDevice_GetPositionState ||
+         off == Ihid::kBaseDoDispositivo + brew_slots::kHIDDevice_GetMinPositionInfo ||
+         off == Ihid::kBaseDoDispositivo + brew_slots::kHIDDevice_GetMaxPositionInfo ||
+         off == Ihid::kBaseDoDispositivo + brew_slots::kHIDDevice_GetAxesInfo)) {
+      return true;
+    }
+  }
+  // O `memset` pequeno (<= 16 bytes, o AEEHIDButtonInfo do Rolimaz) e a
+  // limpeza antes da pergunta, nao trabalho.
+  if (indice == kSlotIdMemset && cpu.Get(kR2) <= kMemsetDaEspera) return true;
+  return false;
 }
 
 }  // namespace zb2::brew
