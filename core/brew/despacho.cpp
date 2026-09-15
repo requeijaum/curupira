@@ -795,8 +795,16 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         if (prc == 0) {
           tela_.ClipLimpo();
         } else {
-          tela_.Clip(mem_.Ler32(prc), mem_.Ler32(prc + 4), mem_.Ler32(prc + 8),
-                      mem_.Ler32(prc + 12));
+          // AEERect sao 4x int16 (x,y,dx,dy), nao 4x u32: ler u32 punha lixo
+          // nas coords e o clip calava o desenho sem sintoma.
+          const int x = static_cast<std::int16_t>(mem_.Ler16(prc));
+          const int y = static_cast<std::int16_t>(mem_.Ler16(prc + 2));
+          const int w = static_cast<std::int16_t>(mem_.Ler16(prc + 4));
+          const int h = static_cast<std::int16_t>(mem_.Ler16(prc + 6));
+          tela_.Clip(x < 0 ? 0 : static_cast<std::uint32_t>(x),
+                      y < 0 ? 0 : static_cast<std::uint32_t>(y),
+                      w < 0 ? 0 : static_cast<std::uint32_t>(w),
+                      h < 0 ? 0 : static_cast<std::uint32_t>(h));
         }
         cpu.Set(kR0, 0);
       } else if (idx == kSlotIdDrawRect) {
@@ -809,15 +817,20 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // dwFlags e que diz se e contorno ou cheio.
         const std::uint32_t prc = cpu.Get(kR1);
         if (prc != 0) {
-          const std::uint32_t x = mem_.Ler32(prc), y = mem_.Ler32(prc + 4);
-          const std::uint32_t w = mem_.Ler32(prc + 8), h = mem_.Ler32(prc + 12);
+          const int x = static_cast<std::int16_t>(mem_.Ler16(prc));
+          const int y = static_cast<std::int16_t>(mem_.Ler16(prc + 2));
+          const int w = static_cast<std::int16_t>(mem_.Ler16(prc + 4));
+          const int h = static_cast<std::int16_t>(mem_.Ler16(prc + 6));
           const std::uint32_t clrframe = cpu.Get(kR2), clrfill = cpu.Get(kR3);
           const std::uint32_t flags = mem_.Ler32(cpu.Get(kSP) + 0);
           // Os bits do `AEERectFlags`: DRAW = contorno, FILL = cheio.
           const bool contorno = (flags & 0x01u) != 0, cheio = (flags & 0x02u) != 0;
           if (cheio || contorno) {
             tela_.CorAtual(cheio ? clrfill : clrframe);
-            tela_.Retangulo(x, y, w, h, cheio);
+            tela_.Retangulo(x < 0 ? 0 : static_cast<std::uint32_t>(x),
+                             y < 0 ? 0 : static_cast<std::uint32_t>(y),
+                             w < 0 ? 0 : static_cast<std::uint32_t>(w),
+                             h < 0 ? 0 : static_cast<std::uint32_t>(h), cheio);
           }
         }
         cpu.Set(kR0, 0);
@@ -840,8 +853,15 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         const std::uint32_t prcfundo = mem_.Ler32(cpu.Get(kSP) + 8);
         if (prcfundo != 0) {
           // O fundo e pedido explicitamente: pinta-se com a cor actual antes.
-          tela_.Retangulo(mem_.Ler32(prcfundo), mem_.Ler32(prcfundo + 4),
-                           mem_.Ler32(prcfundo + 8), mem_.Ler32(prcfundo + 12), true);
+          // AEERect = 4x int16 (ver SetClipRect/DrawRect).
+          const int fx = static_cast<std::int16_t>(mem_.Ler16(prcfundo));
+          const int fy = static_cast<std::int16_t>(mem_.Ler16(prcfundo + 2));
+          const int fw = static_cast<std::int16_t>(mem_.Ler16(prcfundo + 4));
+          const int fh = static_cast<std::int16_t>(mem_.Ler16(prcfundo + 6));
+          tela_.Retangulo(fx < 0 ? 0 : static_cast<std::uint32_t>(fx),
+                           fy < 0 ? 0 : static_cast<std::uint32_t>(fy),
+                           fw < 0 ? 0 : static_cast<std::uint32_t>(fw),
+                           fh < 0 ? 0 : static_cast<std::uint32_t>(fh), true);
         }
         const std::uint32_t larg = (nchars > 0 ? nchars : 1) * 8;
         for (std::uint32_t i = 0; i < larg; ++i) tela_.Ponto(static_cast<int>(x + i), static_cast<int>(y));

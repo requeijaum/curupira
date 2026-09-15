@@ -582,6 +582,21 @@ TEST(Widget, OGetClassEscreveOClsidDoTitulo) {
   EXPECT_EQ(b.Mem().Ler32(0x80100000u), 0x010292c3u);
 }
 
+TEST(Widget, ODrawRectLeAEERectComoQuatroInt16) {
+  // GUARDA: AEERect sao 4x int16 (x,y,dx,dy). Lido como 4x u32, x=0x0014000A
+  // cai fora do ecra e nada e desenhado -- pixels zero sem sintoma.
+  Bancada b;
+  constexpr std::uint32_t kRect = 0x80100000u;
+  b.Mem().Escrever16(kRect, 10);
+  b.Mem().Escrever16(kRect + 2, 20);
+  b.Mem().Escrever16(kRect + 4, 30);
+  b.Mem().Escrever16(kRect + 6, 40);
+  b.Mem().Escrever32(kArg0, 0x02u);  // DW FILL
+  const std::uint32_t antes = b.D().TelaRef().Escritos();
+  b.ChamaSaida(1533, 0x80030000u, kRect, 0x00FF0000u, 0x0000FF00u);
+  EXPECT_GT(b.D().TelaRef().Escritos(), antes);
+}
+
 TEST(Widget, OSetPropertyDeFidVisibleDeixaRastoComONome) {
   Bancada b;
   const std::uint32_t r =
