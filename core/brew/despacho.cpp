@@ -2972,15 +2972,27 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
       // de um `SendEvent` o guest esta no meio de um tratador, e retomar a
       // thread ai era reentrancia -- o problema que este laco evita noutros
       // sitios (o relogio virtual parado durante a entrega).
+      //
+      // A EXCECAO MEDIDA (frente thrq): quando o Start vem com lr == sentinela,
+      // ele e um TAIL CALL do guest -- o Start e a ULTIMA chamada do turno, e
+      // depois dele nao ha mais nenhuma fronteira com lr real (medido na
+      // bateria: 10 titulos criam e iniciam a thread no fim do turno e ela fica
+      // pendente para sempre, retomadas = 0). Nesse caso o proprio Start e a
+      // fronteira -- DESDE QUE o guest tenha CORRIDO ate la (`resultado.passos
+      // > 0` nesta invocacao). E a guarda que mantem os testes do CONTRATO de
+      // classes_test.cpp verdes: eles chamam o Start por `ChamaSaida` A FRIO
+      // (pc no proprio endereco de saida, passos == 0) e exigem que com
+      // lr == sentinela a thread fique PENDENTE.
       const bool criou_agora = (pfn_do_ultimo_start != 0);
       const bool lr_real = cpu.Get(kLR) != kSentinela;
+      const bool guest_correu_ate_ao_start = resultado.passos > 0;
       bool pode_retomar = false;
       if (!thread_a_correr && profundidade_de_evento_ == 0 && TemThreadPendente()) {
         if (criou_agora) {
           const std::uint32_t fim = (faixa_fim_ > faixa_base_) ? faixa_fim_
                                                                : (kBase + 0x01000000u);
           pode_retomar = pfn_do_ultimo_start >= kBase && pfn_do_ultimo_start < fim &&
-                         lr_real;
+                         (lr_real || guest_correu_ate_ao_start);
         } else {
           pode_retomar = tinha_pendente && lr_real;
         }
