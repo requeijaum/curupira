@@ -968,4 +968,26 @@ TEST(CheckPrivLevel, UmaClasseQueSabemosCriarPassaEUmaQueNaoNao) {
   EXPECT_EQ(b.Faltas("IShell::CheckPrivLevel"), 1u);
 }
 
+TEST(QueryClass, O0x01001014EUnzipStreamENaoIFileEPorIssoRecusa) {
+  // `0x01001014` = `AEECLSID_UNZIPSTREAM` (`AEEClassIDs.h:82` do SDK 4.0.2 da
+  // consola: `AEECLSID_CORE + 20`, com `AEECLSID_CORE = QVERSION + 0x1000`).
+  //
+  // Estava na nossa lista com o nome `kIidFile`, e o `QueryClass` respondia
+  // SIM -- a uma classe que o `CreateInstance` nao serve. Dizer "suporto" e
+  // depois nao criar e PIOR do que recusar: o titulo segue o ramo que assume
+  // ter descompressao.
+  //
+  // A constante esta em NOVE dos 62 .mod, logo nao e hipotetico.
+  Bancada b;
+  constexpr std::uint32_t kQueryClass = 1541;  // kSlotIdQueryClass
+  EXPECT_EQ(b.ChamaSaida(kQueryClass, kObjShell, 0x01001014u), 0u)
+      << "AEECLSID_UNZIPSTREAM nao e servido: o QueryClass tem de dizer FALSE";
+
+  // E as que SAO servidas continuam a dizer TRUE -- para o teste provar que a
+  // lista nao ficou simplesmente vazia.
+  EXPECT_NE(b.ChamaSaida(kQueryClass, kObjShell, 0x01001003u), 0u) << "AEECLSID_FILEMGR";
+  EXPECT_NE(b.ChamaSaida(kQueryClass, kObjShell, 0x01001001u), 0u) << "AEECLSID_DISPLAY";
+  EXPECT_NE(b.ChamaSaida(kQueryClass, kObjShell, 0x01001002u), 0u) << "AEECLSID_HEAP";
+}
+
 }  // namespace zb2::brew

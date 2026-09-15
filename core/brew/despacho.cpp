@@ -30,7 +30,21 @@ constexpr std::uint32_t kIidDisplay = 0x01001001u;
 constexpr std::uint32_t kIidDib = 0x01001045u;  // AEEIID_IDIB (AEEIDIB.h:37)
 constexpr std::uint32_t kIidFileMgr = 0x01001003u;
 constexpr std::uint32_t kIidHeap = 0x01001002u;
-constexpr std::uint32_t kIidFile = 0x01001014u;
+// 0x01001014 NAO E O IFile: e o `AEECLSID_UNZIPSTREAM` (`AEEClassIDs.h:82`,
+// `AEECLSID_CORE + 20`, com `AEECLSID_CORE = QVERSION + 0x1000 = 0x01001000`).
+//
+// O IFile nao tem CLSID nenhum -- nao se cria por `CreateInstance`, nasce do
+// `IFileMgr::OpenFile`. A constante foi posta aqui com o nome errado e entrou na
+// lista do `QueryClass`, que passou a responder SIM a uma classe que o
+// `CreateInstance` nao serve. **Dizer "suporto" e depois nao criar e pior do que
+// recusar**: o titulo segue um caminho que assume ter descompressao.
+//
+// A constante aparece em NOVE dos 62 .mod (ddragonz, alpineracerex 6x,
+// ridgeracer, tekken2, gof, rmp, zeeboids, allstarcards, pbc), logo nao e
+// hipotetico. O `IUnzipAStream` (`AEEUnzipStream.h`) e a via do SDK para
+// descomprimir, e nenhum de nos o serve ainda -- fica como frente propria, com
+// nome certo.
+constexpr std::uint32_t kClsidUnzipStream = 0x01001014u;
 constexpr std::uint32_t kIidSound = 0x01001056u;
 constexpr std::uint32_t kIidGraphics = 0x01002001u;
 // `kIidRootForm` deixou de estar aqui: este ficheiro tinha uma copia local do
@@ -308,7 +322,7 @@ bool Despacho::ClasseConhecida(std::uint32_t cls) const {
   const bool e_o_titulo = (tem_clsid_ && cls == clsid_titulo_);
   const bool e_classe_servida = (IndiceDaClasse(cls) < kQuantasClasses);
   return cls == kIidDisplay || cls == 0x010127d4u || cls == kIidFileMgr || cls == kIidHeap ||
-         cls == kIidFile || cls == kIidSound || cls == kIidGraphics || cls == kIidRootForm ||
+         cls == kIidSound || cls == kIidGraphics || cls == kIidRootForm ||
          cls == kIidHid || cls == kIidSqlMgr ||
          (entrada_pronta_ && cls == kClsidSignalCBFactory) || e_o_titulo || e_classe_servida;
 }
