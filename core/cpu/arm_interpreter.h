@@ -50,7 +50,9 @@ class ArmInterpreter : public ICpu {
   const char* FamiliaDaUltima() const { return familia_; }
   // O motivo pelo qual o executor RECUSOU a ultima instrucao, ou `nullptr` quando
   // nao recusou. `FamiliaDaUltima()` diz O QUE era; isto diz o que faltou.
-  const char* MotivoDaRecusa() const { return motivo_recusa_; }
+  const char* MotivoDaRecusa() const {
+    return motivo_recusa_.empty() ? nullptr : motivo_recusa_.c_str();
+  }
 
   // Modo actual. Recusa-se a devolver um modo invalido: se o CPSR tiver lixo,
   // isto denuncia.
@@ -78,7 +80,9 @@ class ArmInterpreter : public ICpu {
   // --- execucao ---------------------------------------------------------
   std::uint32_t Buscar32(std::uint32_t end);
   std::uint32_t Buscar16(std::uint32_t end);
-  void Recusar(std::uint32_t instr, std::uint32_t pc, const char* porque);
+  // Recebe `std::string`, e nao um literal, porque ha motivos construidos com o
+  // endereco da vítima: a leitura nao mapeada nomeia 0x... na recusa.
+  void Recusar(std::uint32_t instr, std::uint32_t pc, const std::string& porque);
 
   bool CondicaoVerdadeira(std::uint32_t cond) const;
 
@@ -127,7 +131,7 @@ class ArmInterpreter : public ICpu {
   // Sonda do descodificador. Apontam para literais estaticos: nao ha alocacao, e
   // o custo por instrucao e uma escrita de ponteiro.
   const char* familia_ = "-";
-  const char* motivo_recusa_ = nullptr;
+  std::string motivo_recusa_;
 };
 
 }  // namespace zb2

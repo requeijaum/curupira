@@ -1784,3 +1784,62 @@ TEST(Cpu, MovPcLrRetornaEAddPcFazTabelaDeSaltos) {
     EXPECT_EQ(b.R(15), 0x00100008u) << "condicao falsa: avanca para a seguinte";
   }
 }
+
+// ===========================================================================
+// FRENTE mem (etapa 10): PROPAGACAO DE ERRO do CPU/memoria
+// ===========================================================================
+//
+// Dois defeitos em que o ERRO NAO se propaga: uma leitura de dados num
+// endereco nao mapeado devolvia 0 em silencio (o `cnk2` leu 0xea000097 e fez
+// `bx 0` -- frente 16), e a instrucao indefinida 0xE7F000F0 corria como uma
+// transferencia de byte sem recusar. Nos dois, a conta de recusas ficava
+// curta -- e uma conta curta era lida como "o titulo nao pediu nada".
+
+TEST(Cpu, InstrucaoIndefinidaE7F000F0ERecusadaENaoCorreComoTransferencia) {
+  // 0xE7F000F0 e a instrucao indefinida classica do ARM (o `udf` do GCC, o
+  // `__builtin_trap`): bits 27-24 = 0111, 23-20 = 1111 e 7-4 = 1111. O
+  // interpretador descodificava a palavra como transferencia de byte e a conta
+  // de recusas ficava curta. Conferido no binutils: `udf #0`.
+  Bancada b;
+  b.Instrucao(0xE7F000F0u);
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.Cpu().InstruscoesRecusadas(), 1u);
+  EXPECT_EQ(b.Cpu().UltimaRecusada(), 0xE7F000F0u);
+  // E NAO pode ter escrito memoria: a transferencia executada escrevia no
+  // endereco calculado e criava uma pagina onde nao havia nada.
+  EXPECT_FALSE(b.Mem().Existe(0xF0u));
+}
+
+TEST(Cpu, LeituraDeDadosEmEnderecoNaoMapeadoERecusadaComOEndereco) {
+  // MEDIDO no `cnk2` (frente 16): `ldr ip, [r1, #0x94]` com r1 = 0xea000003 le
+  // 0xea000097, que nao existe -- e a leitura devolvia 0 em silencio, o
+  // `bx ip` saltava para 0 e a parede ficava sem nome. A leitura tem de RECUSAR
+  // com o ENDERECO no motivo, e nao continuar em silencio.
+  Bancada b;
+  b.R(1, 0xea000003u);
+  b.Instrucao(LdrImediato(0, 1, 0x94));  // ldr r0, [r1, #0x94]
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.Cpu().InstruscoesRecusadas(), 1u);
+  const char* motivo = b.Cpu().MotivoDaRecusa();
+  ASSERT_NE(motivo, nullptr);
+  EXPECT_NE(std::string(motivo).find("0xea000097"), std::string::npos)
+      << "o motivo tem de nomear o ENDERECO lido, e nao so dizer 'nao mapeado'";
+  EXPECT_EQ(b.R(0), 0u) << "o valor continua a ser zero -- mas agora a leitura e recusada";
+}
+
+TEST(Cpu, BuscarInstrucaoEmPaginaInexistenteERecusadaComOEndereco) {
+  // A outra metade: o PC numa pagina que nunca foi escrita. O antigo
+  // comportamento buscava 0 e executava o 0 como `andeq` (NOP) em silencio --
+  // o titulo andava em circulos sem uma conta que o dissesse.
+  Bancada b;
+  b.R(15, 0x0FEED000u);  // uma folha que nunca existiu
+  const std::uint64_t antes = b.Cpu().InstruscoesRecusadas();
+  b.Correr(1);
+  EXPECT_EQ(b.Cpu().InstruscoesRecusadas(), antes + 1);
+  const char* motivo = b.Cpu().MotivoDaRecusa();
+  ASSERT_NE(motivo, nullptr);
+  EXPECT_NE(std::string(motivo).find("0x0feed000"), std::string::npos);
+  EXPECT_EQ(b.R(15), 0x0FEED004u) << "a recusa avanca o PC como as outras";
+}

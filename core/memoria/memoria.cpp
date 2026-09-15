@@ -34,7 +34,16 @@ bool Memoria::Existe(Endereco a) const {
 std::uint8_t Memoria::Ler8(Endereco a) const {
   const std::uint32_t n = a >> kPaginaBits;
   auto it = paginas_.find(n);
-  if (it == paginas_.end()) return 0;  // ler nao aloca
+  if (it == paginas_.end()) {
+    // Ler nao aloca -- mas NAO fica em silencio: a leitura fica contada e
+    // pendente, e o CPU recusa a instrucao com o endereco (ver o Passo).
+    ++leituras_nao_mapeadas_;
+    if (!leitura_nao_mapeada_pendente_) {
+      leitura_nao_mapeada_pendente_ = true;
+      endereco_da_leitura_nao_mapeada_pendente_ = a;
+    }
+    return 0;
+  }
   return it->second[a & kMascaraPagina];
 }
 

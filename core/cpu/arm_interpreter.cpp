@@ -140,7 +140,7 @@ Modo ArmInterpreter::ModoAtual() const {
   return static_cast<Modo>(modo_atual_ & Cpsr::kModo);
 }
 
-void ArmInterpreter::Recusar(std::uint32_t instr, std::uint32_t pc, const char* porque) {
+void ArmInterpreter::Recusar(std::uint32_t instr, std::uint32_t pc, const std::string& porque) {
   // A sonda do descodificador le daqui: `FamiliaDaUltima()` diz O QUE era a
   // instrucao, e este campo diz O QUE FALTOU. Quem le a recusa na bateria ve um
   // numero; quem le isto ve a forma que falta.
@@ -150,7 +150,7 @@ void ArmInterpreter::Recusar(std::uint32_t instr, std::uint32_t pc, const char* 
   pc_da_recusada_ = pc;
   if (traco_ != nullptr) {
     char buf[128];
-    std::snprintf(buf, sizeof(buf), "instr=0x%08x pc=0x%08x -- %s", instr, pc, porque);
+    std::snprintf(buf, sizeof(buf), "instr=0x%08x pc=0x%08x -- %s", instr, pc, porque.c_str());
     traco_->Emitir(Area::Cpu, Nivel::Erro, "INSTRUCAO_RECUSADA", buf);
   }
 }
@@ -165,7 +165,7 @@ void ArmInterpreter::Repor(Reg pc, Reg sp) {
   ultima_recusada_ = 0;
   pc_da_recusada_ = 0;
   familia_ = "-";
-  motivo_recusa_ = nullptr;
+  motivo_recusa_.clear();
 }
 
 std::uint32_t ArmInterpreter::Buscar32(std::uint32_t end) { return mem_.Ler32(end); }
@@ -1231,7 +1231,7 @@ void ArmInterpreter::ExecutarArm(std::uint32_t instr, std::uint32_t pc) {
   // A sonda do descodificador comeca em "nada correu": cada ramo abaixo escreve o
   // NOME do que correu (ou da forma em falta), e `Recusar` acrescenta o motivo.
   familia_ = "nenhuma";
-  motivo_recusa_ = nullptr;
+  motivo_recusa_.clear();
   const std::uint32_t cond = instr >> 28;
   if (cond == 0xF) {
     // TRES FORMAS TEM CONDICAO 1111 POR CONSTRUCAO, e recusa-las e recusar
@@ -1389,6 +1389,17 @@ void ArmInterpreter::ExecutarArm(std::uint32_t instr, std::uint32_t pc) {
     return;
   }
   if (g == 2 || g == 3) {
+    // O ESPACO INDEFINIDO, ANTES da transferencia simples: bits 27-24 = 0111
+    // com bits 23-20 = 1111 e bits 7-4 = 1111 sao a instrucao indefinida
+    // classica -- o `udf` do GCC (`__builtin_trap`), 0xE7F000F0. Conferido no
+    // binutils. Sem este ramo a palavra corria como uma transferencia de byte
+    // (um `ldrb`/`strb` pelos bits B=1/I=1) e a conta de recusas ficava curta.
+    if ((instr & 0x0FF000F0u) == 0x07F000F0u) {
+      familia_ = "udf_indefinida";
+      Recusar(instr, pc, "instrucao indefinida (udf, espaco undefined do ARM)");
+      Set(kPC, pc + 4);
+      return;
+    }
     // ANTES da transferencia simples: o grupo "media" do ARMv6 (SXTB/UXTH/REV)
     // partilha estes bits 27-25 = 011. O bit 4 e o que separa -- ver
     // `EhMediaArmv6`. Medido no corpus: 17 295 `uxth` executados como `ldrb`.
@@ -1464,7 +1475,7 @@ void ArmInterpreter::ExecutarThumb(std::uint16_t instr, std::uint32_t pc) {
   // primeiro nivel, e as que FALTAM RECUSAM com nome (`forma Thumb NAO
   // implementada`); o auditor compara este nome com o do objdump.
   familia_ = "nenhuma";
-  motivo_recusa_ = nullptr;
+  motivo_recusa_.clear();
   if ((instr & 0xF800u) == 0x1800u) {  // ADD/SUB, registrador ou imediato de 3 bits
     familia_ = (((instr >> 9) & 3) == 1 || ((instr >> 9) & 3) == 3) ? "sub" : "add";
     const uint32_t op = (instr >> 9) & 3;
@@ -1662,12 +1673,36 @@ std::uint64_t ArmInterpreter::Passo() {
   // registava `pc=0x00000000`. Um instrumento que nao sabe quem mexeu na
   // memoria e meio instrumento (P7).
   mem_.PcAtual(pc);
-  if ((Cpsr() & Cpsr::kT) != 0) {
-    const std::uint16_t instr = static_cast<std::uint16_t>(Buscar16(pc));
-    ExecutarThumb(instr, pc);
+  const bool thumb = (Cpsr() & Cpsr::kT) != 0;
+  // BUSCAR UMA INSTRUCAO NUM ENDERECO NAO MAPEADO e o defeito mais silencioso
+  // deste CPU: o `Ler32` devolvia 0, o 0 era executado como `andeq` (NOP) e a
+  // conta de recusas ficava curta. A busca recusa-se COM O ENDERECO, e o PC
+  // avanca como em qualquer outra recusa.
+  if (!mem_.Existe(pc)) {
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), "busca de instrucao em endereco nao mapeado 0x%08x", pc);
+    Recusar(0, pc, buf);
+    Set(kPC, pc + (thumb ? 2u : 4u));
+    return 1;
+  }
+  std::uint32_t instr = 0;
+  if (thumb) {
+    instr = static_cast<std::uint32_t>(static_cast<std::uint16_t>(Buscar16(pc)));
+    ExecutarThumb(static_cast<std::uint16_t>(instr), pc);
   } else {
-    const std::uint32_t instr = Buscar32(pc);
+    instr = Buscar32(pc);
     ExecutarArm(instr, pc);
+  }
+  // UMA LEITURA DE DADOS NAO MAPEADA dentro da instrucao acabada de executar:
+  // o valor devolvido foi 0 (o modelo esparso nao aloca), mas o erro NAO fica
+  // em silencio -- recusa-se com o ENDERECO. MEDIDO no `cnk2`: `ldr ip,[r1,#0x94]`
+  // (pc 0x000371f4) leu 0xea000097, recebeu 0 e o `bx ip` seguinte saltou para
+  // 0. Com a recusa, a parede passa a ter nome e a conta nao fica curta.
+  Endereco primeiro = 0;
+  if (mem_.ConsumirLeituraNaoMapeadaPendente(&primeiro)) {
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), "leitura de dados em endereco nao mapeado 0x%08x", primeiro);
+    Recusar(instr, pc, buf);
   }
   return 1;
 }

@@ -129,6 +129,22 @@ class Memoria {
     return leituras_sondadas_;
   }
 
+  // --- leitura nao mapeada ---------------------------------------------
+  // A leitura de uma pagina que nunca foi escrita CONTINUA a devolver zero e a
+  // nao alocar (o contrato de cima nao muda) -- MAS fica contada e PENDENTE, e
+  // o CPU consome a pendencia no fim da instrucao e RECUSA com o endereco.
+  // Sem isto, um `ldr` de um ponteiro nulo devolvia 0 em silencio e o erro nao
+  // se propagava: medido no `cnk2`, `[0xea000097]` devolveu 0 e o `bx` seguinte
+  // saltou para 0 (frente 16). A pendencia e unica (o primeiro endereco): uma
+  // instrucao com varias leituras nao mapeadas recusa-se UMA vez.
+  std::uint64_t LeiturasNaoMapeadas() const { return leituras_nao_mapeadas_; }
+  bool ConsumirLeituraNaoMapeadaPendente(Endereco* primeira) const {
+    if (!leitura_nao_mapeada_pendente_) return false;
+    *primeira = endereco_da_leitura_nao_mapeada_pendente_;
+    leitura_nao_mapeada_pendente_ = false;
+    return true;
+  }
+
   // --- utilitarios ------------------------------------------------------
   std::uint32_t PaginasAlocadas() const { return static_cast<std::uint32_t>(paginas_.size()); }
   bool Existe(Endereco a) const;
@@ -153,6 +169,11 @@ class Memoria {
   Endereco sujo_min_ = 0;
   Endereco sujo_max_ = 0;
   mutable std::vector<std::pair<Endereco, Endereco>> leituras_sondadas_;
+  // Leituras de paginas inexistentes (o contador serve aos testes e ao
+  // diagnostico; a pendencia serve ao CPU para recusar com o endereco).
+  mutable std::uint64_t leituras_nao_mapeadas_ = 0;
+  mutable bool leitura_nao_mapeada_pendente_ = false;
+  mutable Endereco endereco_da_leitura_nao_mapeada_pendente_ = 0;
 };
 
 }  // namespace zb2
