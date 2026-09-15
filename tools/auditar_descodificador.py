@@ -78,7 +78,7 @@ from collections import Counter, defaultdict
 #     erro de EFEITO (leitura contra escrita) e tem de aparecer; um `push` contra
 #     `stmdb` e o mesmo efeito com dois nomes.
 CLASSE_DE_MNEMONICO = {}
-for m in ("and eor sub rsb add adc sbc rsc tst teq cmp cmn orr mov bic mvn").split():
+for m in ("and eor sub rsb add adc sbc rsc tst teq cmp cmn orr mov bic mvn neg lsl lsr asr ror").split():
     CLASSE_DE_MNEMONICO[m] = "dados"
 for m in ("mul mla umull umlal smull smlal").split():
     CLASSE_DE_MNEMONICO[m] = "multiplicacao"
@@ -334,7 +334,16 @@ def correr_objdump(objdump, ficheiro, limite, thumb):
     for linha in p.stdout:
         m = RE_LINHA_OBJDUMP.match(linha)
         if m:
-            saida.append((int(m.group(1), 16), m.group(2).lower(), m.group(3)))
+            texto = m.group(3)
+            if thumb:
+                # UMA INSTRUCAO DE 32 BITS VEM NUMA LINHA SO: o objdump imprime
+                # `f000 f001 bl 0x...` -- as DUAS metades antes do mnemonico. Sem
+                # isto, o auditor lia `f001` como se fosse o mnemonico e acusava
+                # divergencia em TODO `bl` de 32 bits (medido no espaco inteiro).
+                par = re.match(r"^([0-9a-f]{4})\s+(\S.*)$", texto)
+                if par:
+                    texto = par.group(2)
+            saida.append((int(m.group(1), 16), m.group(2).lower(), texto))
             if limite and len(saida) >= limite:
                 break
     p.stdout.close()

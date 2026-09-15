@@ -1383,19 +1383,24 @@ TEST(Cpu, ThumbFormato5FazAsSeteFormasDeMemoriaComRegistrador) {
   EXPECT_EQ(b.R(3), 0xFFFF8080u) << "0x8080 com sinal";
 }
 
-TEST(Cpu, ThumbFormato5ContinuaARecusarOQueNaoConhece) {
+TEST(Cpu, ThumbFormato11ContinuaARecusarOQueNaoConhece) {
   // O espaco Thumb tem formas que NAO estao implementadas. Elas RECUSAM com o
-  // nome da forma (formato 1 = deslocamento imediato), e nao executam outra
-  // coisa: medido, 22 692 das 65 536 meias-palavras do espaco.
+  // nome da forma, e nao executam outra coisa. As que esta frente implementou
+  // (formato 1 do deslocamento, formato 4 da ALU, push/pop e stmia/ldmia)
+  // SAIRAM deste conjunto; ainda recusa o formato 11 (0xB000: `add sp, #imm`)
+  // e o formato 5 de registadores altos (0x4400-0x46FF) -- os proximos a medir.
   Bancada b;
   b.R(7, 0x00100005u);
   b.Instrucao(0xE12FFF17u);  // bx r7 -> Thumb
-  b.Thumb(0x0000u);          // lsls r0, r0, #0 -- formato 1
+  // `0xF800` e o SUFIXO do `bl` de 32 bits SEM a primeira metade: orfao, e o
+  // unico sitio onde ele aparece e por engano. O `bl` completo (0xF000-0xF7FF +
+  // 0xF800-0xFFFF) passou a existir nesta frente.
+  b.Thumb(0xF800u);          // sufixo de blx orfao -- ainda nao implementado
   b.Terminar();
   const std::uint64_t antes = b.Cpu().InstruscoesRecusadas();
   b.Correr(2);
   EXPECT_EQ(b.Cpu().InstruscoesRecusadas(), antes + 1);
-  EXPECT_EQ(b.Cpu().FamiliaDaUltima(), std::string("thumb:formato1_deslocamento_imediato"));
+  EXPECT_EQ(b.Cpu().FamiliaDaUltima(), std::string("thumb:formato19_bl_blx"));
 }
 
 // ===========================================================================
@@ -1842,4 +1847,117 @@ TEST(Cpu, BuscarInstrucaoEmPaginaInexistenteERecusadaComOEndereco) {
   ASSERT_NE(motivo, nullptr);
   EXPECT_NE(std::string(motivo).find("0x0feed000"), std::string::npos);
   EXPECT_EQ(b.R(15), 0x0FEED004u) << "a recusa avanca o PC como as outras";
+}
+
+// --- AS FORMAS DO THUMB QUE FALTAVAM (achadas nos 3 titulos sem applet) -----
+//
+// MEDIDO nos traços `30-*-a3i.txt` do agente app3: o create de brainchallenge,
+// reksio e rocketweb e codigo THUMB e usa LSL/LSR (0x0000-0x0FFF), ASR (0x1000),
+// operacoes da ALU (0x4000), PUSH (0xB5xx), POP (0xBCxx) e STMIA/LDMIA (0xC000)
+// -- e NENHUMA destas formas existia: caíam todas na recusa "forma Thumb NAO
+// implementada", o `sp` nunca mexia, o `pop` devolvia lixo do heap e o create
+// saltava para 0x80200010 (a base do nosso heap). O applet nunca nascia nos 3.
+TEST(Cpu, ThumbPushEPopMexemNoSpEDevolvemOPc) {
+  Bancada b;
+  b.R(7, 0x00100005u);
+  b.R(4, 0x11111111u);
+  b.R(5, 0x22222222u);
+  b.R(6, 0x33333333u);
+  b.R(13, 0x80080000u);
+  b.R(14, 0xFFFFFFF0u);      // o lr e o QUE O TESTE PUSER, e nao um valor do fixture
+  b.Instrucao(0xE12FFF17u);  // bx r7 -> Thumb
+  b.Thumb(0xB570u);          // push {r4, r5, r6, lr}
+  b.Terminar();
+  b.Correr(2);
+  EXPECT_EQ(b.R(13), 0x8007FFF0u) << "quatro palavras empilhadas";
+  EXPECT_EQ(b.Mem().Ler32(0x8007FFF0u), 0x11111111u) << "r4 na mais baixa";
+  EXPECT_EQ(b.Mem().Ler32(0x8007FFF4u), 0x22222222u);
+  EXPECT_EQ(b.Mem().Ler32(0x8007FFF8u), 0x33333333u);
+  EXPECT_EQ(b.Mem().Ler32(0x8007FFFCu), 0xFFFFFFF0u) << "o lr no topo";
+
+  Bancada c;
+  c.R(7, 0x00100005u);
+  c.R(13, 0x8007FFF0u);      // o sp APONTA PARA O TOPO do que foi empilhado
+  c.Mem().Escrever32(0x8007FFF0u, 0xAAAA0000u);
+  c.Mem().Escrever32(0x8007FFF4u, 0x00000000u);
+  c.Mem().Escrever32(0x8007FFF8u, 0x00100000u);
+  c.Mem().Escrever32(0x8007FFFCu, 0x00100005u);  // pc com o bit 0: Thumb
+  c.Instrucao(0xE12FFF17u);
+  c.Thumb(0xBCF0u);  // pop {r4, r5, r6, pc}
+  c.Terminar();
+  c.Correr(2);
+  EXPECT_EQ(c.R(13), 0x80080000u) << "o sp volta ao ponto de partida";
+  EXPECT_EQ(c.R(4), 0xAAAA0000u);
+  EXPECT_EQ(c.R(6), 0x00100000u) << "r6 tambem vem da pilha";
+}
+
+TEST(Cpu, ThumbDeslocamentosEAlu) {
+  Bancada b;
+  b.R(7, 0x00100005u);
+  b.R(1, 0x80000001u);
+  b.Instrucao(0xE12FFF17u);
+  b.Thumb(0x0048u);  // lsl r0, r1, #1
+  b.Terminar();
+  b.Correr(2);
+  EXPECT_EQ(b.R(0), 0x00000002u) << "lsl #1";
+  EXPECT_FALSE(N(b)) << "o resultado perdeu o bit 31, logo e positivo";
+  EXPECT_TRUE(C(b)) << "e o bit que saiu ficou no carry";
+
+  Bancada d;
+  d.R(7, 0x00100005u);
+  d.R(1, 0x80000001u);
+  d.Instrucao(0xE12FFF17u);
+  d.Thumb(0x1048u);  // asr r0, r1, #1  (0x1000 = ASR imediato)
+  d.Terminar();
+  d.Correr(2);
+  EXPECT_EQ(d.R(0), 0xC0000000u) << "asr preserva o sinal";
+  EXPECT_TRUE(N(d));
+  EXPECT_TRUE(C(d)) << "o bit que saiu (o 1 de baixo) fica no carry";
+
+  Bancada e;
+  e.R(7, 0x00100005u);
+  e.R(0, 0x0000000Fu);
+  e.R(1, 0x00000003u);
+  e.Instrucao(0xE12FFF17u);
+  e.Thumb(0x4008u);  // and r0, r1  (formato 4, op=0)
+  e.Terminar();
+  e.Correr(2);
+  EXPECT_EQ(e.R(0), 0x00000003u) << "and";
+
+  Bancada f;
+  f.R(7, 0x00100005u);
+  f.R(0, 0x00000003u);
+  f.R(1, 0x00000004u);
+  f.Instrucao(0xE12FFF17u);
+  f.Thumb(0x4348u);  // mul r0, r1  (formato 4, op=13)
+  f.Terminar();
+  f.Correr(2);
+  EXPECT_EQ(f.R(0), 0x0000000Cu) << "3 * 4";
+}
+
+TEST(Cpu, ThumbStmiaELdmia) {
+  Bancada b;
+  b.R(7, 0x00100005u);
+  b.R(0, 0x00110000u);
+  b.R(1, 0xDEADBEEFu);
+  b.R(2, 0xCAFEF00Du);
+  b.Instrucao(0xE12FFF17u);
+  b.Thumb(0xC006u);  // stmia r0!, {r1, r2}
+  b.Terminar();
+  b.Correr(2);
+  EXPECT_EQ(b.Mem().Ler32(0x00110000u), 0xDEADBEEFu);
+  EXPECT_EQ(b.Mem().Ler32(0x00110004u), 0xCAFEF00Du);
+  EXPECT_EQ(b.R(0), 0x00110008u) << "o r0 avancou duas palavras";
+
+  Bancada c;
+  c.R(7, 0x00100005u);
+  c.R(0, 0x00110000u);
+  c.Mem().Escrever32(0x00110000u, 0x12345678u);
+  c.Mem().Escrever32(0x00110004u, 0x9ABCDEF0u);
+  c.Instrucao(0xE12FFF17u);
+  c.Thumb(0xC806u);  // ldmia r0!, {r1, r2}
+  c.Terminar();
+  c.Correr(2);
+  EXPECT_EQ(c.R(1), 0x12345678u);
+  EXPECT_EQ(c.R(2), 0x9ABCDEF0u);
 }

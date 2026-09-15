@@ -1653,6 +1653,296 @@ void ArmInterpreter::ExecutarThumb(std::uint16_t instr, std::uint32_t pc) {
     }
     return;
   }
+  // FORMATO 1 DO THUMB (0x0000-0x17FF): LSL/LSR/ASR com quantidade imediata.
+  //
+  // MEDIDO: os tres titulos que nao criavam applet (brainchallenge, reksio,
+  // rocketweb) correm codigo Thumb no `create` e usam estas formas -- e NENHUMA
+  // existia: caiam todas na recusa final, e o `create` seguia com os
+  // registadores errados. Os traços estao em /tmp/pesquisa/30-*-a3i.txt.
+  if ((instr & 0xE000u) == 0x0000u) {
+    const std::uint32_t op = (instr >> 11) & 3u;  // 0 LSL, 1 LSR, 2 ASR, 3 reservado
+    const std::uint32_t imm5 = (instr >> 6) & 0x1Fu;
+    const std::uint32_t rm = (instr >> 3) & 7u;
+    const std::uint32_t rd = instr & 7u;
+    if (op == 3u) {
+      familia_ = "thumb:formato1_reservado";
+      Recusar(instr, pc, "forma Thumb NAO implementada");
+      Set(kPC, pc + 2);
+      return;
+    }
+    // OBJDUMP mostra `movs` para o LSL #0 (a forma 0x0000 e um mov no
+    // binutils), `lsrs`/`asrs` para o LSR/ASR #32 (imm5 = 0 = 32). O auditor
+    // compara o NOME com o objdump; a semantica de mover e a do ARM ARM.
+    static const char* const kNomes[3] = {"lsl", "lsr", "asr"};
+    if (op == 0 && imm5 == 0) familia_ = "mov";
+    else familia_ = kNomes[op];
+    const Reg v = Get(static_cast<int>(rm));
+    // `imm5` zero VALE 32 nestas tres formas (o Thumb nao tem "deslocar por 0").
+    const std::uint32_t n = (imm5 == 0) ? 32u : imm5;
+    Reg r = 0;
+    if (op == 0) {
+      r = (n >= 32u) ? 0u : static_cast<Reg>(v << n);
+      c_ = ((v >> (32u - n)) & 1u) != 0;
+    } else if (op == 1) {
+      r = (n >= 32u) ? 0u : (v >> n);
+      c_ = ((v >> (n - 1u)) & 1u) != 0;
+    } else {
+      const std::int32_t s = static_cast<std::int32_t>(v);
+      r = (n >= 32u) ? static_cast<Reg>(s >> 31) : static_cast<Reg>(s >> n);
+      c_ = ((v >> (n - 1u)) & 1u) != 0;
+    }
+    n_ = (r >> 31) != 0;
+    z_ = r == 0;
+    Set(static_cast<int>(rd), r);
+    Set(kPC, pc + 2);
+    return;
+  }
+  // FORMATO 4 DO THUMB (0x4000-0x43FF): as dezasseis operacoes da ALU. Todas
+  // escrevem as bandeiras (o `MUL` so o N e o Z, como no ARM).
+  if ((instr & 0xFC00u) == 0x4000u) {
+    const std::uint32_t op = (instr >> 6) & 0xFu;
+    const std::uint32_t rm = (instr >> 3) & 7u;
+    const std::uint32_t rn = instr & 7u;
+    static const char* const kNomes[16] = {"and", "eor", "lsl", "lsr", "asr", "adc", "sbc", "ror",
+                                           "tst", "neg", "cmp", "cmn", "orr", "mul", "bic", "mvn"};
+    familia_ = kNomes[op];
+    const Reg a = Get(static_cast<int>(rn));
+    const Reg bv = Get(static_cast<int>(rm));
+    const auto bandeiras = [this](Reg r) {
+      n_ = (r >> 31) != 0;
+      z_ = r == 0;
+    };
+    switch (op) {
+      case 0: { const Reg r = a & bv; bandeiras(r); Set(static_cast<int>(rn), r); break; }
+      case 1: { const Reg r = a ^ bv; bandeiras(r); Set(static_cast<int>(rn), r); break; }
+      case 2: case 3: case 4: case 7: {
+        const std::uint32_t q = bv & 0xFFu;
+        Reg r = a;
+        if (q != 0) {
+          if (op == 2) {
+            r = (q >= 32u) ? 0u : static_cast<Reg>(a << q);
+            c_ = (q > 32u) ? false : (((a >> (32u - q)) & 1u) != 0);
+          } else if (op == 3) {
+            r = (q >= 32u) ? 0u : (a >> q);
+            c_ = (q > 32u) ? false : (((a >> (q - 1u)) & 1u) != 0);
+          } else if (op == 4) {
+            const std::int32_t s = static_cast<std::int32_t>(a);
+            r = (q >= 32u) ? static_cast<Reg>(s >> 31) : static_cast<Reg>(s >> q);
+            c_ = (q > 32u) ? (((a >> 31) & 1u) != 0) : (((a >> (q - 1u)) & 1u) != 0);
+          } else {
+            const std::uint32_t qq = q & 31u;
+            if (qq != 0) {
+              r = (a >> qq) | (a << (32u - qq));
+              c_ = ((r >> 31) & 1u) != 0;
+            }
+          }
+        }
+        bandeiras(r);
+        Set(static_cast<int>(rn), r);
+        break;
+      }
+      case 5: {
+        const Reg r = a + bv + (c_ ? 1u : 0u);
+        auto f = FlagsDaSoma(a, bv, c_ ? 1u : 0u, r);
+        c_ = f.c; v_ = f.v; bandeiras(r); Set(static_cast<int>(rn), r); break;
+      }
+      case 6: {
+        const Reg r = a - bv - (c_ ? 0u : 1u);
+        auto f = FlagsDaSubtracao(a, bv, c_ ? 0u : 1u, r);
+        c_ = f.c; v_ = f.v; bandeiras(r); Set(static_cast<int>(rn), r); break;
+      }
+      case 8: { const Reg r = a & bv; bandeiras(r); break; }
+      case 9: {
+        const Reg r = 0u - a;
+        auto f = FlagsDaSub(0u, a, r);
+        c_ = f.c; v_ = f.v; bandeiras(r); Set(static_cast<int>(rn), r); break;
+      }
+      case 10: { const Reg r = a - bv; auto f = FlagsDaSub(a, bv, r); c_ = f.c; v_ = f.v; bandeiras(r); break; }
+      case 11: { const Reg r = a + bv; auto f = FlagsDaSoma(a, bv, 0u, r); c_ = f.c; v_ = f.v; bandeiras(r); break; }
+      case 12: { const Reg r = a | bv; bandeiras(r); Set(static_cast<int>(rn), r); break; }
+      case 13: { const Reg r = a * bv; bandeiras(r); Set(static_cast<int>(rn), r); break; }
+      case 14: { const Reg r = a & ~bv; bandeiras(r); Set(static_cast<int>(rn), r); break; }
+      default: { const Reg r = ~bv; bandeiras(r); Set(static_cast<int>(rn), r); break; }
+    }
+    Set(kPC, pc + 2);
+    return;
+  }
+  // PUSH E POP DO THUMB (0xB400-0xB5FF e 0xBC00-0xBDFF). O bit 10 separa-os, o
+  // bit 8 poe o LR (no push) ou o PC (no pop), e os bits 0-7 sao a lista r0-r7.
+  //
+  // ORDEM DA MEMORIA: o ARM empilha do registador MAIS BAIXO para o mais alto, o
+  // mais baixo no endereco menor -- e o pop le na mesma ordem. O `pop` com o PC
+  // na lista e um RETORNO, e o bit 0 do valor lido escolhe o modo (como um `bx`).
+  if ((instr & 0xFE00u) == 0xB400u || (instr & 0xFE00u) == 0xBC00u) {
+    // O QUE SEPARA O PUSH DO POP E O BIT 10 -- e a comparacao e com a MASCARA
+    // INTEIRA (0xB4xx/0xB5xx contra 0xBCxx/0xBDxx), porque 0xB570 (`push
+    // {r4,r5,r6,lr}`) TEM o bit 10 ligado (0x5 nos bits 11-8) e um teste so do
+    // bit 10 o classificava como POP -- medido no proprio teste desta frente.
+    const bool pop = (instr & 0xFE00u) == 0xBC00u;
+    const bool extra = (instr & 0x0100u) != 0;
+    std::uint32_t quantos = 0;
+    for (std::uint32_t b = 0; b < 8; ++b) {
+      if ((instr & (1u << b)) != 0) ++quantos;
+    }
+    if (extra) ++quantos;
+    // NOME CANONICO do auditor: `push`/`pop` sao ALIASES no binutils, que os
+    // normaliza para `stmdb`/`ldmia` -- o mesmo nome que o ARM usa. COM UM SO
+    // REGISTADOR o objdump imprime `push {r0}`, e o auditor reduz-o a `str`
+    // (o mesmo efeito com um registador so) -- e esses nomes tem de bater.
+    if (quantos == 1) familia_ = pop ? "ldr" : "str";
+    else familia_ = pop ? "ldmia" : "stmdb";
+    const Reg sp = Get(kSP);
+    if (!pop) {
+      const Reg destino = sp - 4u * quantos;
+      std::uint32_t j = 0;
+      for (std::uint32_t b = 0; b < 8; ++b) {
+        if ((instr & (1u << b)) == 0) continue;
+        mem_.Escrever32(destino + 4u * j, Get(static_cast<int>(b)));
+        ++j;
+      }
+      if (extra) mem_.Escrever32(destino + 4u * j, Get(kLR));
+      Set(kSP, sp - 4u * quantos);
+      Set(kPC, pc + 2);
+      return;
+    }
+    Reg lidos[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    std::uint32_t j = 0;
+    for (std::uint32_t b = 0; b < 8; ++b) {
+      if ((instr & (1u << b)) == 0) continue;
+      lidos[j] = mem_.Ler32(sp + 4u * j);
+      ++j;
+    }
+    const Reg do_extra = extra ? mem_.Ler32(sp + 4u * j) : 0u;
+    Set(kSP, sp + 4u * quantos);
+    j = 0;
+    for (std::uint32_t b = 0; b < 8; ++b) {
+      if ((instr & (1u << b)) == 0) continue;
+      Set(static_cast<int>(b), lidos[j]);
+      ++j;
+    }
+    if (extra) {
+      if ((do_extra & 1u) != 0) modo_atual_ |= Cpsr::kT;
+      else modo_atual_ &= ~Cpsr::kT;
+      Set(kPC, do_extra & ~1u);
+    } else {
+      Set(kPC, pc + 2);
+    }
+    return;
+  }
+  // FORMATO 12 DO THUMB (0xC000-0xCFFF): STMIA/LDMIA com lista de r0-r7 e
+  // escrita de volta na base. O bit 11 separa a carga do depósito.
+  if ((instr & 0xF000u) == 0xC000u) {
+    const bool carrega = (instr & 0x0800u) != 0;
+    const std::uint32_t rn = (instr >> 8) & 7u;
+    familia_ = carrega ? "ldmia" : "stmia";
+    const Reg base = Get(static_cast<int>(rn));
+    std::uint32_t quantos = 0;
+    for (std::uint32_t b = 0; b < 8; ++b) {
+      if ((instr & (1u << b)) != 0) ++quantos;
+    }
+    // O BINUTILS MARCA `<und>` (neste layout) a STMIA/LDMIA com lista vazia,
+    // com a BASE NA LISTA, ou com UM registador so (0xC000-0xC003 e
+    // 0xC800-0xC803, medido no proprio espaco). O ARM ARM so considera
+    // unpredictable a base-na-lista; as outras duas o binutils trata por si.
+    // RECUSA-SE com o nome do binutils (P2): uma forma que o oraculo nao sabe
+    // descrever nao pode fingir que executa.
+    if (quantos <= 1 || ((instr & (1u << rn)) != 0)) {
+      familia_ = carrega ? "ldmia<und>" : "stmia<und>";
+      Recusar(instr, pc, "forma Thumb NAO implementada");
+      Set(kPC, pc + 2);
+      return;
+    }
+    if (!carrega) {
+      std::uint32_t j = 0;
+      for (std::uint32_t b = 0; b < 8; ++b) {
+        if ((instr & (1u << b)) == 0) continue;
+        mem_.Escrever32(base + 4u * j, Get(static_cast<int>(b)));
+        ++j;
+      }
+      Set(static_cast<int>(rn), base + 4u * quantos);
+      Set(kPC, pc + 2);
+      return;
+    }
+    Reg lidos[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    std::uint32_t j = 0;
+    for (std::uint32_t b = 0; b < 8; ++b) {
+      if ((instr & (1u << b)) == 0) continue;
+      lidos[j] = mem_.Ler32(base + 4u * j);
+      ++j;
+    }
+    Set(static_cast<int>(rn), base + 4u * quantos);
+    j = 0;
+    for (std::uint32_t b = 0; b < 8; ++b) {
+      if ((instr & (1u << b)) == 0) continue;
+      Set(static_cast<int>(b), lidos[j]);
+      ++j;
+    }
+    Set(kPC, pc + 2);
+    return;
+  }
+
+  // ADICIONAR/COMPARAR/MOVER COM REGISTADORES ALTOS (0x4400-0x46FF).
+  //
+  // `0100 01 op H1 H2 Rm Rd8` -- o operando alto vem dos bits H1/H2. So o ADD
+  // escreve e mexe nas bandeiras quando os DOIS operando sao baixos; o CMP e o
+  // MOV nunca mexem nas bandeiras. MEDIDO: os tres titulos sem applet usam o
+  // 0x447A (mov) e o 0x466F (mov) no create.
+  if ((instr & 0xFC00u) == 0x4400u && (instr & 0x0300u) != 0x0300u) {
+    const std::uint32_t op = (instr >> 8) & 3u;  // bits 9-8: 0 add, 1 cmp, 2 mov
+    const bool h1 = (instr & 0x0080u) != 0;
+    const bool h2 = (instr & 0x0040u) != 0;
+    const std::uint32_t rm = ((h2 ? 1u : 0u) << 3) | ((instr >> 3) & 7u);
+    const std::uint32_t rd = ((h1 ? 1u : 0u) << 3) | (instr & 7u);
+    static const char* const kNomes[4] = {"add", "cmp", "mov", "bx"};
+    familia_ = kNomes[op];
+    if (op == 0) {
+      const Reg r = Get(static_cast<int>(rd)) + Get(static_cast<int>(rm));
+      if (h1 || h2) { Set(static_cast<int>(rd), r); }
+      else { n_ = (r >> 31) != 0; z_ = r == 0; Set(static_cast<int>(rd), r); }
+    } else if (op == 1) {
+      const Reg a = Get(static_cast<int>(rd));
+      const Reg r = a - Get(static_cast<int>(rm));
+      auto f = FlagsDaSub(a, Get(static_cast<int>(rm)), r);
+      c_ = f.c; v_ = f.v; n_ = (r >> 31) != 0; z_ = r == 0;
+    } else {
+      Set(static_cast<int>(rd), Get(static_cast<int>(rm)));
+    }
+    Set(kPC, pc + 2);
+    return;
+  }
+  // ADD/SUB SP COM IMEDIATO (0xB000-0xB0FF): `1011 0000 0 imm7` (add) e
+  // `1011 0000 1 imm7` (sub), sempre multiplos de 4.
+  if ((instr & 0xFF00u) == 0xB000u) {
+    const bool subtrai = (instr & 0x0080u) != 0;
+    familia_ = subtrai ? "sub" : "add";
+    const Reg quanto = static_cast<Reg>(static_cast<std::uint32_t>(instr & 0x7Fu) << 2);
+    const Reg sp = Get(kSP);
+    Set(kSP, subtrai ? (sp - quanto) : (sp + quanto));
+    Set(kPC, pc + 2);
+    return;
+  }
+  // O BL DE 32 BITS DO THUMB (0xF000-0xF7FF seguido de 0xF800-0xFFFF): e a
+  // unica instrucao de 32 bits do Thumb-1 (o ARM1136 nao tem Thumb-2), e o
+  // exacto `bl` que os prologos dos tres titulos sem applet usam (0xF7FF +
+  // 0xFC8A, 0xF035 + ...). O PC avanca QUATRO bytes num passo.
+  if ((instr & 0xF800u) == 0xF000u) {
+    const std::uint32_t alta = instr;
+    const std::uint32_t baixa = static_cast<std::uint32_t>(Buscar16(pc + 2u));
+    const bool com_retorno = (baixa & 0x1000u) != 0;
+    familia_ = com_retorno ? "bl" : "blx";
+    const std::uint32_t s = (alta >> 10) & 1u;
+    const std::uint32_t j1 = (baixa >> 13) & 1u;
+    const std::uint32_t j2 = (baixa >> 11) & 1u;
+    const std::uint32_t i1 = ~(j1 ^ s) & 1u;
+    const std::uint32_t i2 = ~(j2 ^ s) & 1u;
+    std::uint32_t off = (((s << 23) | ((alta & 0x3FFu) << 13) | (i1 << 12) | (i2 << 11) |
+                          (baixa & 0x7FFu)) << 1);
+    if ((off & 0x01000000u) != 0) off |= 0xFE000000u;  // sinal de 25 bits
+    const std::int32_t deslocamento = static_cast<std::int32_t>(off);
+    if (com_retorno) Set(kLR, (pc + 4u) | 1u);
+    Set(kPC, static_cast<Reg>(static_cast<std::int32_t>(pc) + 4 + deslocamento) & ~1u);
+    return;
+  }
   familia_ = NomeDoFormatoThumb(instr);
   Recusar(instr, pc, "forma Thumb NAO implementada");
   Set(kPC, pc + 2);
