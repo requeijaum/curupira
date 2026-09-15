@@ -459,9 +459,12 @@ TEST(Classes, OQEGLTemTresSlotsDeclaradosERecusaComNome) {
   b.Cpu().Set(kR1, 0x12345678u);
   b.Cpu().Set(kR2, 0x80100000u);
   EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(q) + 2, b.T()));
-  EXPECT_EQ(b.Cpu().Get(kR0), kAeeUnsupported);
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeClassNotSupported);
   EXPECT_EQ(b.M().Ler32(0x80100000u), 0u);
-  EXPECT_EQ(b.Faltas("QEGL::QueryInterface"), 1u);
+  // O IID SEM OBJECTO RECUSA COM O NOME (P2): a chave passa a dizer o IID, em
+  // vez do "QEGL::QueryInterface" anonimo da medicao de 15/09.
+  EXPECT_EQ(b.Faltas("QEGL::QueryInterface"), 0u);
+  EXPECT_EQ(b.Faltas("QEGL::QueryInterface iid_fora_da_tabela"), 1u);
   // GLES10/11: IGLES11 + SUCCESS, sem falta.
   for (std::uint32_t iid : {0x0103d8ddu, 0x0103d8eau}) {
     b.Cpu().Set(kR0, ObjetoDaClasse(q));
@@ -471,7 +474,10 @@ TEST(Classes, OQEGLTemTresSlotsDeclaradosERecusaComNome) {
     EXPECT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
     EXPECT_EQ(b.M().Ler32(0x80100000u), kObjetoIgles);
   }
-  EXPECT_EQ(b.Faltas("QEGL::QueryInterface"), 1u);
+  // Nem o GLES10 nem o GLES11 registam falta nenhuma: a unica desta bancada e
+  // a do IID de fora da tabela, e continua com o nome no fim.
+  EXPECT_EQ(b.Faltas("QEGL::QueryInterface"), 0u);
+  EXPECT_EQ(b.Faltas("QEGL::QueryInterface iid_fora_da_tabela"), 1u);
   // ppo nulo: EBADPARM sem escrever.
   b.Cpu().Set(kR1, 0x0103d8eau);
   b.Cpu().Set(kR2, 0);

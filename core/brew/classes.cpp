@@ -11,6 +11,7 @@
 
 #include "core/brew/clsids.h"
 #include "core/brew/ecra.h"
+#include "core/brew/egl.h"   // NomeDoIidDaFamiliaGl + kIidEgl10/11
 #include "core/brew/igl.h"
 #include "tools/brew_slots.inc"
 // A CONTAGEM DO QEGL prende-se ao IEGL gerado: o QEGL e o IEGL sem o
@@ -1215,8 +1216,27 @@ bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
                    "iid=0x0103d8eb -> IGLES11Ext");
       return true;
     }
+    // O EGL10/EGL11 (AEEEGL10.h:22 / AEEEGL11.h:20): 'this', o PROPRIO
+    // objecto QEGL -- o zeebx responde o mesmo para os dois
+    // (`src/machine.rs` 9815-9860, `egl_query_interface`).
+    if (iid == kIidEgl10 || iid == kIidEgl11) {
+      cpu.Mem().Escrever32(ppo, ObjetoDaClasse(k));
+      cpu.Set(kR0, kAeeSuccess);
+      traco.Emitir(Area::Brew, Nivel::Depuracao, "QEGL_QUERYINTERFACE",
+                   "iid=EGL10/EGL11 -> o proprio objecto QEGL");
+      return true;
+    }
     cpu.Mem().Escrever32(ppo, 0);
-    // IID desconhecido: cai na recusa nomeada abaixo.
+    // IID DE EXTENSAO SEM OBJECT O NESTA ARVORE: a recusa leva o NOME do IID
+    // (P2) em vez de um "IID nao servido" anonimo -- e e esse nome que faz a
+    // lista de demanda dizer o que falta.
+    char det[120];
+    std::snprintf(det, sizeof(det), "iid=0x%08x (%s): sem objecto desta interface nesta arvore",
+                  iid, NomeDoIidDaFamiliaGl(iid));
+    traco.RegistarFalta(Area::Brew, std::string("QEGL::QueryInterface ") + NomeDoIidDaFamiliaGl(iid),
+                        det);
+    cpu.Set(kR0, kAeeClassNotSupported);
+    return true;
   }
   const std::uint32_t k_cm = static_cast<std::uint32_t>(Classe::kCM);
   if (k == k_cm && slot == 28) {
