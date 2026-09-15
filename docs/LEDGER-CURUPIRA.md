@@ -1718,3 +1718,76 @@ nao e. Ler os registos do ledger com esta doenca e ler numeros que nao existem.
 Correccao (nao aplicada: sao 4 ficheiros de 4 frentes diferentes): um `%08x`
 unico, como ja existe em `bar.cpp:26`, `imedia.cpp:100`, `ihiddevice.cpp:11` e
 `ihid_entrada.cpp:12` (quatro ficheiros que ja tem o helper certo).
+
+
+---
+
+## Sessao 2026-09-15 -- os medidores, medidos (branch `dev`)
+
+Esta sessao comecou com uma pergunta ("esta a 70% de que?") e a resposta honesta
+so existe com os medidores a frente. Ficam aqui, com a corrida que os produziu:
+`tools/baseline/bateria.json` (referencia) contra a corrida de `dev`.
+
+| medidor | valor | % | nota |
+|---|---|---|---|
+| carga do `.mod` | 62/62 | 100% | todos devolvem ponteiro de modulo |
+| ponteiro de modulo | 62/62 | 100% | |
+| vtable valida | 61/62 | 98% | falta o `quake2brew` (carga estoura 4M) |
+| applet instanciado | 40/62 | 65% | era 37 |
+| ciclo completo (create+start) | 4/62 | 6% | `imicro3d`, `tectoy`, `zeebo_app`, `peggle` |
+| pixels escritos | 0/62 | 0% | ninguem chega ao desenho |
+| demanda por atender | 8 nomes / 9 pedidos | -- | era 20+ no inicio da sessao |
+
+`ctest` 9/9 (o teste 9 salta sem `ZB2_MODS` na cache, ja era assim), 451 casos de
+teste. Regressoes na ultima corrida: **0**, com **16 melhorias**.
+
+### O que subiu de degrau, e porque
+
+| mudanca | commit | medicao |
+|---|---|---|
+| `STM`/`LDM` com PC na lista nao avancava o PC | `a8d2749` | `push {fp,ip,lr,pc}` reexecutava sempre; **vtable 48->61, applet 37->40** |
+| `AEERect` era lido como 4x u32 (e 4x int16) | `e9d8653` | coords lixo -> clip calava o desenho |
+| header do bitmap no `GetDeviceBitmap` + QI no `IBitmap` | `e03e25b` | 4 titulos saiam para o ASCII `WERV` |
+| `QEGL` delega no `IEGL` (27 slots) + pixmap servida | `77219df` | **16 melhorias**, 0 regressoes |
+| `strdup`, `strncmp`, `GetClass`, `Back`, `MkDir`, `Remove`, `GetClass`, `ITextCtl`, PNG, QEGL | `6e5fa74`..`08734b6` | demanda 20+ -> 9 pedidos |
+
+### A licao que voltou a aparecer
+
+O erro de ORDEM no despacho (do mais especifico para o mais generico) apareceu
+**pela nona vez**: o ramo do `QEGL` foi escrito *depois* do `AtenderClasse`, que
+apanhou os indices 40000+ e transformou 15 pedidos de EGL em `QEGL::?` sem
+comportamento. O sintoma foi uma lista de faltas que dizia "slot desconhecido"
+para slots que existiam. **Nao e descuido: e uma armadilha estrutural de uma
+cadeia longa de `else if`** -- a cura seria uma tabela, e nao ramos.
+
+### Factos novos, medidos fora do codigo (e que servem para a proxima)
+
+1. **`boot.pkg` e um contentor `PACK`** (formato: `"PACK"`, contagem u32, offset
+   u32 da tabela de nomes, 256 bytes de padding, depois `count` registos de 20
+   bytes: {const 0x00020000, hash, comprimido, descomprimido, offset}), com os
+   nomes num ultimo stream zlib (256 bytes por nome, NUL no fim). O `boot.pkg` do
+   `karnovr` tem UMA entrada: `boot.rom`, 8192 bytes -- o mesmo tamanho que o
+   zeebulator mediu como "portao" da familia Neo Geo.
+2. **`karnovr.pkg` tem 22 entradas** (as ROMs: `066-c1..c6`, `066-p1/m1/s1/v1`,
+   `000-lo.lo`, `sfix.sfx`, `sp-*.sp1`, `vs-bios.rom`, ...). O guest procura
+   `.<jogo>\boot.rom`, `roms\<jogo>\boot.rom` e `roms\neogeo\<jogo>\boot.rom`.
+3. **`0x0103d8ec` nao e uma classe do SDK** (so aparece em comentarios de teste
+   OpenVG) e **`0x01011810` nao aparece em lado nenhum** do SDK extraido. O
+   segundo e o unico CLSID que resta por identificar.
+4. **`STM`+PC**: o prologo GCC `push {fp,ip,lr,pc}` (0xE92DD800) e a instrucao que
+   faltava; ela so aparece em titulos >576KB, e por isso 13 deles pareciam
+   "sem vtable" (a vtable era consequencia, e nao causa).
+
+### Em aberto (frentes com agente ou medidas a faltar)
+
+1. `quake2brew`: unica vtable que falta -- carga a vaguear (memcpy com contagem
+   vinda de campo nao inicializado) e salto para o ASCII do proprio cabecalho.
+2. `0x01011810` (1 pedido, `tectoy`): sem cabecalho no SDK. Stub nomeado e o
+   proximo passo honesto.
+3. `abd`/`torkandkral`: pedem `eglInitialize` com um `dpy` (0xf0027390) que o
+   emulador nunca deu -- o valor e o endereco da saida do proprio `GetDisplay`.
+   Fica registado com o endereco na recusa.
+4. Contadores de desenho da bateria (`textos`, `blits`, `updates`) sao **colunas
+   mortas**: o motor conta-os por dentro e a ferramenta nunca os le.
+5. `max_steps` do corpus e ignorado: o `cnk2` pede 186M passos na carga e recebe
+   o teto fixo de 4M.
