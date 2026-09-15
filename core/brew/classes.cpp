@@ -1,7 +1,11 @@
 #include "core/brew/classes.h"
 
+#include <algorithm>
 #include <cstdio>
+#include <cstring>
+#include <map>
 #include <string>
+#include <vector>
 
 #include "core/brew/clsids.h"
 #include "tools/brew_slots.inc"
@@ -180,6 +184,315 @@ void ReporEstadoTextCtl() {
   g_texto_modo = 0;
 }
 
+// ---------------------------------------------------------------------------
+// O IThread cooperativo (frente `ithread`).
+//
+// O QUE ISTO E, MEDIDO NA BATERIA (62 titulos, ZB2_QUADROS=300 ZB2_EVT_START=1,
+// HEAD 68f5238): 22 titulos pedem `IThread::Start` UMA vez. As pilhas pedidas:
+// dez titulos pedem 0x4000 (16 KiB), oito pedem 0x80000 (512 KiB), um pede
+// 0x100000 (1 MiB), um pede 0x40000, um pede 0x10000 e um pede 0x4000 com pfn
+// proprio. O `zeeboids` arma a fila num callback de temporizador
+// (SetTimer(10 ms) -> callback -> CreateInstance -> Start; detalhes no
+// relatorio 18-ithread.md). Nenhum titulo pede outro metodo do IThread.
+//
+// O DESENHO, COOPERATIVO e o do zeebx (`src/machine/thread.rs`, e o `IThread`
+// novo em `/tmp/zx-new/src/machine.rs:10633-10760`): o `Start` aloca a pilha,
+// guarda o `resume_pc`, poe `r0=this`, `r1=arg`, `sp=topo` e AGENDA a thread;
+// o `Exit` termina e devolve o controlo; o `Suspend` e o ponto onde a thread
+// devolve o controlo; o `GetResumeCBK` e o endereco pelo qual o
+// `ISHELL_Resume` reconhece a thread. A ASSINATURA de cada metodo esta no
+// cabecalho do SDK (`AEEThread.h`, `INHERIT_IThread`).
+//
+// O QUE ESTA FORA DESTE FICHEIRO, DE PROPOSITO: a CORRIDA da thread. O zeebx
+// retoma as threads pendentes uma volta por quadro, no laço de eventos -- que
+// neste motor e o `Despacho::Correr`, um ficheiro proibido para esta frente. O
+// CONTRATO dessa ligacao esta em `classes.h` (`TemThreadPendente`,
+// `PrepararRetomadaDeThread`, `ConcluirRetomadaDeThread`,
+// `EnfileirarThreadPeloCallbackDeRetomada`) e e provado por testes; o
+// `despacho.cpp` (outra frente) chama-o. Sem a ligacao, uma thread aceite pelo
+// `Start` fica pendente e NAO corre: e o comportamento medido desta frente.
+// ---------------------------------------------------------------------------
+namespace {
+
+// O estado de UMA thread, por endereco de objecto. So os cinco metodos da
+// propria thread tem estado (`Start`, `Exit`, `Join`, `Suspend`,
+// `GetResumeCBK`); os quatro do pool herdado (`Malloc`, `Free`, `HoldRsc`,
+// `ReleaseRsc`) continuam a recusar com o nome.
+struct EstadoDeThread {
+  bool iniciada = false;
+  bool terminada = false;
+  bool suspensa = false;
+  // `true` = e esta a thread que o hospedeiro retomou e que esta a correr neste
+  // momento (`PrepararRetomadaDeThread` a marcou). E o que distingue um
+  // `Suspend`/`Exit` de DENTRO da thread (cede o controlo) de um de FORA
+  // ("has no effect" / "may be called from inside or outside", AEEThread.h).
+  bool correndo = false;
+  std::uint32_t pilha = 0;
+  std::uint32_t retomar_pc = 0;  // o pfn no arranque; o lr no Suspend
+  std::uint32_t rv = 0;
+  std::uint32_t retomada_cbk = 0;
+  // r0..r12 e sp, como o `THREAD_REGS` do zeebx. O PC guarda-se em
+  // `retomar_pc`; o lr e sempre a sentinela quando a thread corre.
+  std::uint32_t contexto[14] = {};
+  struct Juntador {
+    std::uint32_t pcb;
+    std::uint32_t pn_rv;
+  };
+  std::vector<Juntador> juntadores;
+};
+
+std::map<std::uint32_t, EstadoDeThread> g_threads;
+std::vector<std::uint32_t> g_pendentes;
+std::uint32_t g_thread_corrente = 0;
+// O `bump` do pool de pilhas. Avanca para tras nunca: o pool repõe-se por
+// corrida em `ReporEstadoThreads` (via `ConstruirClasses`). Um pedido que nao
+// caiba devolve 0, e o `Start` responde ENOMEMORY -- o codigo que o cabecalho
+// promete ("ENOMEMORY: if the stack size requested could not be allocated").
+std::uint32_t g_proxima_pilha = kPilhasDeThreadInicio;
+// O `AEECallback` do BREW tem 28 bytes (zeebx `CALLBACK_SIZE`). O conteudo nao
+// e usado: para o `ISHELL_Resume` do despacho, o ENDERECO do callback identifica
+// a thread (zeebx `resume_callbacks`).
+constexpr std::uint32_t kTamanhoDoCallbackDeRetomada = 28;
+// O PISO DE UMA PILHA. Um pedido de zero bytes nao e uma thread (e um bug do
+// jogo), e um bloco vazio poria o `sp` inicial igual a base -- a primeira
+// escrita da thread cairia fora do bloco. O piso resolve os dois casos; nao e
+// uma medida, e por isso fica dito.
+constexpr std::uint32_t kMinimoDePilha = 0x1000;
+
+std::uint32_t AlocarNoPoolDePilhas(std::uint32_t pedido) {
+  const std::uint32_t bloco = (pedido + 7u) & ~static_cast<std::uint32_t>(7u);
+  const std::uint32_t fim = g_proxima_pilha + bloco;
+  if (bloco == 0 || fim > kPilhasDeThreadInicio + kPilhasDeThreadTamanho) return 0;
+  const std::uint32_t p = g_proxima_pilha;
+  g_proxima_pilha = fim;
+  return p;
+}
+
+void ReporEstadoThreads() {
+  g_threads.clear();
+  g_pendentes.clear();
+  g_thread_corrente = 0;
+  g_proxima_pilha = kPilhasDeThreadInicio;
+}
+
+// Encerra uma thread: marca a terminação, escreve o rv nos ponteiros de saida
+// dos juntadores e limpa a agenda. O callback de um juntador NAO e entregue:
+// nao ha fila de callbacks de guest alcancavel deste ficheiro (o despacho nao
+// tem `pending_calls`), e isso fica dito num pressuposto, nao escondido. A
+// pilha fica ocupada ate ao `ReporEstadoThreads` da proxima corrida -- o bump
+// nao devolve blocos, e por isso nao se finge que devolve.
+void TerminarThread(ICpu& cpu, Traco& traco, std::uint32_t this_,
+                    std::uint32_t rv) {
+  const auto it = g_threads.find(this_);
+  if (it == g_threads.end()) return;
+  EstadoDeThread& t = it->second;
+  t.terminada = true;
+  t.suspensa = false;
+  t.rv = rv;
+  t.pilha = 0;
+  g_pendentes.erase(std::remove(g_pendentes.begin(), g_pendentes.end(), this_),
+                    g_pendentes.end());
+  for (const auto& j : t.juntadores) {
+    if (j.pn_rv != 0) cpu.Mem().Escrever32(j.pn_rv, rv);
+    if (j.pcb != 0) {
+      traco.RegistarPressuposto(Area::Brew, "IThread::Join",
+                                "o callback do juntador nao e entregue (nao ha fila "
+                                "de callbacks alcancavel deste ficheiro)");
+    }
+  }
+  t.juntadores.clear();
+}
+
+// Os cinco metodos da propria thread. `false` = slot fora destes cinco (cai no
+// ramo generico, que recusa COM O NOME -- e o que os testes esperam para o
+// `Malloc` etc.).
+bool AtenderThread(ICpu& cpu, Traco& traco, std::uint32_t slot) {
+  const std::uint32_t this_ = cpu.Get(kR0);
+  switch (slot) {
+    case brew_slots::kThread_Start: {
+      // int Start(IThread*, int nStackSz, PFNTHREAD pfStart, void* pvStart)
+      const std::uint32_t pedido = cpu.Get(kR1);
+      const std::uint32_t pfn = cpu.Get(kR2);
+      const std::uint32_t arg = cpu.Get(kR3);
+      EstadoDeThread& t = g_threads[this_];
+      if (t.iniciada) {
+        // "IThreads are not re-useable: An _Start() may only be called once"
+        // (AEEThread.h) -- EALREADY.
+        cpu.Set(kR0, kAeeAlready);
+        return true;
+      }
+      // GUARDA, e nao medida: uma thread começa por uma funcao, e um pfn nulo
+      // nao e uma thread. Nenhum dos 22 titulos pede pfn nulo.
+      if (pfn == 0) {
+        cpu.Set(kR0, kAeeBadParm);
+        return true;
+      }
+      const std::uint32_t bloco = std::max(pedido, kMinimoDePilha);
+      const std::uint32_t pilha = AlocarNoPoolDePilhas(bloco);
+      if (pilha == 0) {
+        // "ENOMEMORY: if the stack size requested could not be allocated"
+        // (AEEThread.h). Nada fica iniciado: um Start falhado pode repetir-se.
+        cpu.Set(kR0, kAeeNoMemory);
+        return true;
+      }
+      // A pilha do ARM cresce para baixo: o topo do bloco e o sp inicial, e a
+      // AAPCS pede alinhamento a 8 (zeebx: `& !7`).
+      const std::uint32_t topo = (pilha + bloco) & ~static_cast<std::uint32_t>(7u);
+      t.iniciada = true;
+      t.terminada = false;
+      t.suspensa = false;
+      t.pilha = pilha;
+      t.retomar_pc = pfn;
+      std::memset(t.contexto, 0, sizeof(t.contexto));
+      t.contexto[kR0] = this_;   // r0 = this (a assinatura da PFNTHREAD)
+      t.contexto[kR1] = arg;     // r1 = pvStart
+      t.contexto[kSP] = topo;    // sp = topo
+      g_pendentes.push_back(this_);
+      char det[128];
+      std::snprintf(det, sizeof(det), "pilha=0x%08x..0x%08x pfn=0x%08x arg=0x%08x",
+                    pilha, topo, pfn, arg);
+      traco.Emitir(Area::Brew, Nivel::Informacao, "ITHREAD_INICIADA", det);
+      cpu.Set(kR0, kAeeSuccess);
+      return true;
+    }
+    case brew_slots::kThread_Exit: {
+      // int Exit(IThread*, int nRv) -- "may be called from inside or outside
+      // the thread". De DENTRO nao volta: a thread devolve o controlo.
+      const auto it = g_threads.find(this_);
+      if (it == g_threads.end() || !it->second.iniciada) {
+        // "EFAILED: if the IThread's never been _Start()ed" (AEEThread.h).
+        cpu.Set(kR0, kAeeFailed);
+        return true;
+      }
+      if (it->second.terminada) {
+        // "EALREADY: if the IThread is already stopped" (AEEThread.h).
+        cpu.Set(kR0, kAeeAlready);
+        return true;
+      }
+      const bool de_dentro = it->second.correndo;
+      TerminarThread(cpu, traco, this_, cpu.Get(kR1));
+      cpu.Set(kR0, kAeeSuccess);
+      if (de_dentro) cpu.Set(kLR, kSentinelaDoHospedeiro);
+      return true;
+    }
+    case brew_slots::kThread_Join: {
+      // void Join(IThread*, AEECallback* pcb, int* pnRv)
+      const std::uint32_t pcb = cpu.Get(kR1);
+      const std::uint32_t pn_rv = cpu.Get(kR2);
+      EstadoDeThread& t = g_threads[this_];
+      if (t.terminada) {
+        if (pn_rv != 0) cpu.Mem().Escrever32(pn_rv, t.rv);
+        if (pcb != 0) {
+          traco.RegistarPressuposto(Area::Brew, "IThread::Join",
+                                    "a thread ja terminou e o callback do juntador "
+                                    "nao e entregue (nao ha fila de callbacks)");
+        }
+      } else {
+        t.juntadores.push_back({pcb, pn_rv});
+      }
+      return true;  // void: como o cabecalho, nao escreve r0
+    }
+    case brew_slots::kThread_Suspend: {
+      // void Suspend(IThread*) -- "must only be called from within the
+      // IThread. Calling from outside the IThread has no effect"
+      // (AEEThread.h). E O PONTO onde a thread devolve o controlo.
+      const auto it = g_threads.find(this_);
+      if (it == g_threads.end() || !it->second.iniciada) return true;
+      EstadoDeThread& t = it->second;
+      if (!t.correndo || t.terminada) return true;
+      // O retorno DENTRO da thread e o lr de agora (a instrucao a seguir a
+      // chamada do Suspend); os registos guardam-se como estao (zeebx
+      // `Suspend`). A sentinela no lr e o "devolve o controlo ao hospedeiro"
+      // desta arvore: o laco do despacho ve o pc na sentinela e sai.
+      t.retomar_pc = cpu.Get(kLR);
+      for (std::uint32_t k = kR0; k <= kSP; ++k) t.contexto[k] = cpu.Get(kR0 + k);
+      t.suspensa = true;
+      cpu.Set(kLR, kSentinelaDoHospedeiro);
+      return true;  // void
+    }
+    case brew_slots::kThread_GetResumeCBK: {
+      // AEECallback* GetResumeCBK(IThread*) -- "the same callback to each
+      // call, because it is by it that we recognize an ISHELL_Resume directed
+      // at the thread" (zeebx). O despacho usa
+      // `EnfileirarThreadPeloCallbackDeRetomada` com o endereco.
+      EstadoDeThread& t = g_threads[this_];
+      if (t.retomada_cbk == 0) {
+        t.retomada_cbk = AlocarNoPoolDePilhas(kTamanhoDoCallbackDeRetomada);
+      }
+      cpu.Set(kR0, t.retomada_cbk);
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+}  // namespace
+
+bool TemThreadPendente() {
+  for (const std::uint32_t th : g_pendentes) {
+    const auto it = g_threads.find(th);
+    if (it != g_threads.end() && it->second.iniciada && !it->second.terminada) return true;
+  }
+  return false;
+}
+
+bool PrepararRetomadaDeThread(ICpu& cpu, Traco& traco) {
+  while (!g_pendentes.empty()) {
+    const std::uint32_t th = g_pendentes.front();
+    g_pendentes.erase(g_pendentes.begin());
+    const auto it = g_threads.find(th);
+    if (it == g_threads.end() || !it->second.iniciada || it->second.terminada) continue;
+    EstadoDeThread& t = it->second;
+    // O CONTEXTO da thread, todo: r0..r12 e sp. O lr e a sentinela -- a thread
+    // corre "para o sistema" e e o laco do despacho que a faz andar ate ao
+    // proximo Suspend/Exit. O `Bx` respeita o bit 0 (ARM/Thumb), como o
+    // `PrepararCallbackDoTemporizador` do despacho.
+    for (std::uint32_t k = kR0; k <= kSP; ++k) cpu.Set(kR0 + k, t.contexto[k]);
+    cpu.Set(kLR, kSentinelaDoHospedeiro);
+    cpu.Bx(t.retomar_pc);
+    t.suspensa = false;
+    t.correndo = true;
+    g_thread_corrente = th;
+    char det[96];
+    std::snprintf(det, sizeof(det), "objeto=0x%08x pc=0x%08x sp=0x%08x", th,
+                  t.retomar_pc, t.contexto[kSP]);
+    traco.Emitir(Area::Brew, Nivel::Depuracao, "ITHREAD_RETOMADA", det);
+    return true;
+  }
+  return false;
+}
+
+void ConcluirRetomadaDeThread(ICpu& cpu, Traco& traco) {
+  if (g_thread_corrente == 0) return;
+  const std::uint32_t th = g_thread_corrente;
+  g_thread_corrente = 0;
+  const auto it = g_threads.find(th);
+  if (it == g_threads.end()) return;
+  EstadoDeThread& t = it->second;
+  t.correndo = false;
+  if (t.suspensa || t.terminada) return;  // cedeu, ou acabou de dentro
+  // A funcao de entrada VOLTOU sem passar por Suspend/Exit: a thread acabou,
+  // e o rv e o r0 do retorno (zeebx `resume_thread`: "Voltar sem ter passado
+  // por Suspend significa que a funcao de entrada retornou").
+  TerminarThread(cpu, traco, th, cpu.Get(kR0));
+}
+
+bool EnfileirarThreadPeloCallbackDeRetomada(std::uint32_t pcb) {
+  for (auto& par : g_threads) {
+    if (par.second.retomada_cbk != pcb) continue;
+    if (!par.second.iniciada || par.second.terminada) return true;
+    if (std::find(g_pendentes.begin(), g_pendentes.end(), par.first) ==
+        g_pendentes.end()) {
+      g_pendentes.push_back(par.first);
+    }
+    return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+
 bool SlotDaClasseImplementado(std::uint32_t k, std::uint32_t slot) {
   // Os METODOS IMPLEMENTADOS, e a razao e uma medicao:
   // o `tectoy` chama `IAppHistory::Top` (slot 5) no `EVT_APP_START`, e o
@@ -197,6 +510,15 @@ bool SlotDaClasseImplementado(std::uint32_t k, std::uint32_t slot) {
   if (k == kClasseDoAppHistory) {
     return slot == brew_slots::kAppHistory_Top || slot == brew_slots::kAppHistory_Back;
   }
+  if (k == static_cast<std::uint32_t>(Classe::kThread)) {
+    // Os CINCO metodos da propria thread tem estado e acao (ver o bloco do
+    // IThread mais abaixo); os quatro do pool herdado (`Malloc`, `Free`,
+    // `HoldRsc`, `ReleaseRsc`) continuam a recusar -- sem heap de thread
+    // alcancavel deste ficheiro, servidos como recusa com nome.
+    return slot == brew_slots::kThread_Start || slot == brew_slots::kThread_Exit ||
+           slot == brew_slots::kThread_Join || slot == brew_slots::kThread_Suspend ||
+           slot == brew_slots::kThread_GetResumeCBK;
+  }
   if (k == static_cast<std::uint32_t>(Classe::kTextCtl)) {
     // O pacote de estado do `zenonia` (6 pedidos na bateria): guarda estado,
     // sem desenho. HandleEvent devolve FALSE (nao tratado); as void nao tocam r0.
@@ -210,6 +532,10 @@ bool SlotDaClasseImplementado(std::uint32_t k, std::uint32_t slot) {
 
 void ConstruirClasses(Memoria& mem, const Saidas& saidas, Traco& traco) {
   ReporEstadoTextCtl();
+  // O ESTADO DAS THREADS TAMBEM E POR CORRIDA. Sem isto, a segunda Bancada de
+  // um teste (ou o segundo titulo da bateria) via a thread da primeira: o
+  // `Start` respondia EALREADY a quem nao tinha iniciado nada.
+  ReporEstadoThreads();
   ConstruirIgles(mem, saidas, traco);
   for (std::uint32_t k = 0; k < kQuantasClasses; ++k) {
     const std::uint32_t quantos = kSlotsDaInterface[k];
@@ -508,6 +834,13 @@ bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
                               "radio online (+0x00=2), servico pleno (+0x0C=5), sinal "
                               "0x0048 = 4 barras (faixa 0x45..0x4d, tectoy 0x69830); "
                               "interface AUSENTE do SDK, offsets so por engenharia reversa");
+    return true;
+  }
+  // O IThread, cooperativo: Start, Exit, Join, Suspend e GetResumeCBK (o
+  // bloco no topo deste ficheiro). `false` para os slots do pool (Malloc etc.),
+  // que caem no ramo generico e recusam COM O NOME.
+  if (k == static_cast<std::uint32_t>(Classe::kThread) &&
+      AtenderThread(cpu, traco, slot)) {
     return true;
   }
   if (k == kClasseDoAppHistory && slot == brew_slots::kAppHistory_Back) {

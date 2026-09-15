@@ -203,6 +203,57 @@ const char* NomeDoSlotIglesExt(std::uint32_t slot);
 // testes na mesma Bancada veriam o estado um do outro -- statics partilhados.
 void ReporEstadoTextCtl();
 
+// --- O IThread cooperativo ---------------------------------------------------
+//
+// A thread do BREW e cooperativa e apoia-se em callbacks: corre ate chamar
+// `ITHREAD_Suspend` e volta quando o `AEECallback` de `ITHREAD_GetResumeCBK` e
+// disparado -- tipicamente pelo jogo, via `ISHELL_Resume` (`AEEThread.h`, o
+// guia `ZeeboDeveloperGuide0.97.md:758-764`). A referencia de comportamento e
+// o zeebx (`src/machine/thread.rs`, e o `IThread` novo em `/tmp/zx-new`):
+// o `Start` aloca a pilha, guarda o `resume_pc`, poe `r0=this`, `r1=arg`,
+// `sp=topo` e AGENDA a thread; o `Exit` termina e devolve o controlo; o
+// `Suspend` e o ponto onde a thread devolve o controlo. MEDIDO na bateria
+// (62 titulos, ZB2_QUADROS=300 ZB2_EVT_START=1): 22 titulos pedem `Start` uma
+// vez, e nenhum pede mais nenhum metodo do IThread.
+//
+// O LADO DA CORRIDA E DO DESPACHO, e nao deste ficheiro: o `despacho.cpp` tem
+// o laco de eventos, e e la que a thread pendente e retomada na fronteira do
+// laco (o `run_pending_threads` do zeebx, uma volta por quadro). Este ficheiro
+// declara o CONTRATO dessa ligacao e prova-o por testes:
+//   - `TemThreadPendente`: ha uma thread iniciada e ainda nao retomada;
+//   - `PrepararRetomadaDeThread`: restaura o contexto (r0..r12, sp), poe o
+//     lr na sentinela e entrega o controlo ao guest na `retomar_pc` -- o laco
+//     do despacho corre a partir daqui ate ao proximo `Suspend`/`Exit`;
+//   - `ConcluirRetomadaDeThread`: a fechar a corrida, termina a thread quando
+//     a funcao de entrada voltou sem passar por `Suspend`/`Exit` (zeebx
+//     `resume_thread`), com o rv = r0 do guest;
+//   - `EnfileirarThreadPeloCallbackDeRetomada`: para o `ISHELL_Resume` do
+//     despacho -- quando `pcb` e o `GetResumeCBK` de uma thread, enfileira-a.
+//
+// A SENTINELA e 0xFFFFFFF0, o MESMO `kSentinela` do `despacho.cpp` (o "retorno
+// para o sistema" desta arvore). Uma segunda copia do numero, e fica AQUI com
+// este aviso: unificar as duas exige tirar o `kSentinela` do anonimo do
+// despacho, um ficheiro que esta fora do alcance desta frente.
+constexpr std::uint32_t kSentinelaDoHospedeiro = 0xFFFFFFF0u;
+// `AEE_EALREADY = 26` (`AEEStdErr.h:26`). Ausente do enum de `ajudantes.h`
+// (que so tem os codigos que o despacho usa); o `Start` e o `Exit` do IThread
+// devolvem-no (`AEEThread.h`: "An _Start() may only be called once" e
+// "EALREADY: if the IThread is already stopped").
+constexpr std::int32_t kAeeAlready = 26;
+// O POOL DAS PILHAS das threads. 0x8F030000, logo a seguir ao IGLES11Ext
+// (0x8F020000) e DENTRO da faixa 0x8F000000 que a bateria provou que o corpus
+// nao toca (o comentario no topo deste ficheiro: 0x800C0000 NAO estava livre,
+// e isso foi MEDIDO). 2 MiB cobrem a maior pilha medida na bateria (0x100000 =
+// 1 MiB, um titulo) com folga para mais um bloco. O pool e um `bump` simples,
+// reposto por corrida em `ConstruirClasses`.
+constexpr std::uint32_t kPilhasDeThreadInicio = 0x8F030000u;
+constexpr std::uint32_t kPilhasDeThreadTamanho = 0x00200000u;
+
+bool TemThreadPendente();
+bool PrepararRetomadaDeThread(ICpu& cpu, Traco& traco);
+void ConcluirRetomadaDeThread(ICpu& cpu, Traco& traco);
+bool EnfileirarThreadPeloCallbackDeRetomada(std::uint32_t pcb);
+
 // Atende um pedido desta faixa. `false` = o indice nao e destas classes (e o
 // chamador segue a cadeia de ramos). `true` = foi atendido, com sucesso OU com
 // recusa REGISTADA.

@@ -3,10 +3,14 @@
 #include <cstdint>
 #include <string>
 
+#include <cstdlib>
+
 #include "core/brew/ajudantes.h"
 #include "core/brew/classes.h"
 #include "core/brew/clsids.h"
+#include "core/brew/despacho.h"
 #include "core/brew/interface.h"
+#include "core/brew/vfs.h"
 #include "core/cpu/arm_interpreter.h"
 #include "core/memoria/memoria.h"
 #include "core/traco/traco.h"
@@ -250,21 +254,32 @@ TEST(Classes, OThreadTemDozeSlotsNaOrdemDoCabecalho) {
   EXPECT_STREQ(NomeDoSlotDaClasse(th, 7), "Start");
   EXPECT_STREQ(NomeDoSlotDaClasse(th, 8), "Exit");
   EXPECT_STREQ(NomeDoSlotDaClasse(th, 11), "GetResumeCBK");
-  for (std::uint32_t s = 2; s < 12; ++s) {
-    EXPECT_FALSE(SlotDaClasseImplementado(th, s)) << "slot " << s;
-  }
+  // O QUE ESTA IMPLEMENTADO, e o que NAO esta. Os cinco metodos da propria
+  // thread (Start, Exit, Join, Suspend, GetResumeCBK) tem estado e acao; os
+  // quatro do pool de recursos herdado (`Malloc`, `Free`, `HoldRsc`,
+  // `ReleaseRsc`) nao -- nao ha heap de thread alcancavel deste ficheiro, e o
+  // corpus nao chama nenhum deles (medido na bateria: 0 pedidos).
+  EXPECT_TRUE(SlotDaClasseImplementado(th, brew_slots::kThread_Start));
+  EXPECT_TRUE(SlotDaClasseImplementado(th, brew_slots::kThread_Exit));
+  EXPECT_TRUE(SlotDaClasseImplementado(th, brew_slots::kThread_Join));
+  EXPECT_TRUE(SlotDaClasseImplementado(th, brew_slots::kThread_Suspend));
+  EXPECT_TRUE(SlotDaClasseImplementado(th, brew_slots::kThread_GetResumeCBK));
+  EXPECT_FALSE(SlotDaClasseImplementado(th, brew_slots::kThread_Malloc));
+  EXPECT_FALSE(SlotDaClasseImplementado(th, brew_slots::kThread_Free));
+  EXPECT_FALSE(SlotDaClasseImplementado(th, brew_slots::kThread_HoldRsc));
+  EXPECT_FALSE(SlotDaClasseImplementado(th, brew_slots::kThread_ReleaseRsc));
 }
 
-TEST(Classes, OThreadStartRecusaComNome) {
+TEST(Classes, OThreadMallocRecusaComNomeEPorIssoNaoMente) {
+  // O pool de recursos do IThread NAO esta implementado (sem heap de thread
+  // alcancavel deste ficheiro; o corpus nao pede nenhum destes quatro slots).
+  // A recusa tem de ter o NOME do metodo, como no resto da arvore.
   Bancada b;
   const std::uint32_t th = static_cast<std::uint32_t>(Classe::kThread);
   b.Cpu().Set(kR0, ObjetoDaClasse(th));
-  // O slot vem do `.inc` GERADO (`AEEThread.h` + `AEEIRscPool.h` + `AEEIQI.h`), e
-  // nao de um 7 escrito aqui: o `EXPECT_EQ(..., 7u)` do teste 9 prende-o ao
-  // numero do cabecalho, e este prende o DESPACHO a ele.
-  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(th) + brew_slots::kThread_Start, b.T()));
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(th) + brew_slots::kThread_Malloc, b.T()));
   EXPECT_EQ(b.Cpu().Get(kR0), kAeeUnsupported);
-  EXPECT_EQ(b.Faltas("IThread::Start"), 1u);
+  EXPECT_EQ(b.Faltas("IThread::Malloc"), 1u);
 }
 
 // ---------------------------------------------------------------------------
@@ -366,8 +381,10 @@ TEST(Classes, AContagemDeSlotsDoThreadEDoPNGDecidemONomeDaRecusa) {
   const std::uint32_t png = static_cast<std::uint32_t>(Classe::kPNGDecoderBREW);
   Bancada b;
   b.Cpu().Set(kR0, ObjetoDaClasse(th));
-  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(th) + 11, b.T()));
-  EXPECT_EQ(b.Faltas("IThread::GetResumeCBK"), 1u);
+  // DENTRO da tabela ainda ha quem recuse COM NOME: o `Malloc` do pool herdado
+  // (slot 3), que esta frente nao implementa.
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(th) + brew_slots::kThread_Malloc, b.T()));
+  EXPECT_EQ(b.Faltas("IThread::Malloc"), 1u);
   EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(th) + 12, b.T()));
   EXPECT_EQ(b.Faltas("IThread::slot12"), 1u);
   b.Cpu().Set(kR0, ObjetoDaClasse(png));
@@ -603,6 +620,230 @@ TEST(Classes, OCMRespondeGetSSInfoComRadioNoArEServicoPleno) {
   EXPECT_EQ(b.Cpu().Get(kR0), kAeeUnsupported);
   EXPECT_EQ(b.Faltas("ICM::?"), 1u);
 }
+
+// ---------------------------------------------------------------------------
+// 10. O IThread: a fila completa -- CreateInstance pelo slot 2 do IShell, leitura
+//     do slot 7 NA VTABLE do guest, e chamada do Start por codigo ARM real.
+//
+// MEDIDO (bateria, 62 titulos, ZB2_QUADROS=300 ZB2_EVT_START=1, HEAD 68f5238):
+// 22 dos 62 titulos pedem `IThread::Start` UMA vez a cada um. As pilhas pedidas
+// (r1), por titulo: dez titulos pedem 0x4000 (16 KiB, familia `ttd`), oito pedem
+// 0x80000 (512 KiB, dos callbacks de temporizador), um pede 0x100000 (1 MiB),
+// um pede 0x40000, um pede 0x10000 e um pede 0x4000 com pfn proprio. O
+// `zeeboids` faz a fila por um callback: SetTimer(10 ms) -> callback ->
+// CreateInstance(AEECLSID_THREAD) -> Start, e depois ITHREAD_Stop/Resume noutros
+// eventos (0x19440/0x195b8).
+//
+// O TESTE reproduz o caminho inteiro e NAO chama o slot interno: chama o
+// `CreateInstance` do IShell (slot 2, como o titulo), confere a vtable do
+// objecto na memoria do guest (a "cablagem" -- um teste que chamasse
+// `VtClasse(k)+7` nao provaria que a vtable aponta para la), e chama o Start por
+// codigo ARM que le `[r0]` e depois `[r1,#0x1c]` -- as MESMAS duas leituras que
+// o modulo do titulo faz. Sem a cablagem, o teste cai na recusa; com ela, o
+// Start responde SUCCESS e o resultado e visivel na memoria do guest.
+// ---------------------------------------------------------------------------
+constexpr std::uint32_t kPilhaDoTeste = 0x80080000u;
+constexpr std::uint32_t kTabelaDoTeste = 0x80010000u;
+constexpr std::uint32_t kTamanhoDoModuloDeTeste = 0x00100000u;
+constexpr std::uint32_t kSentinelaDoTeste = 0xFFFFFFF0u;
+constexpr std::uint32_t kPpObjDoTeste = 0x80091000u;
+constexpr std::uint32_t kCelulaDoTeste = 0x80092000u;
+constexpr std::uint32_t kCelulaDoTeste2 = 0x80093000u;
+constexpr std::uint32_t kRotinaDeInicio = 0x00000600u;  // codigo de teste do guest
+constexpr std::uint32_t kRotinaDaThread = 0x00000640u;
+
+class BancadaDoDespacho {
+ public:
+  BancadaDoDespacho() {
+    unsetenv("ZB2_ENTRADA");
+    saidas_.base = 0xF0000000u;
+    saidas_.passo = 4;
+    saidas_.quantos = 100000;  // o mesmo numero da bateria
+    saidas_.ativa = true;
+    cpu_.ConfigurarSaidas(saidas_);
+    al_ = new Alocador(mem_, kHeap, kHeapTam, nullptr);
+    despacho_ = new Despacho(mem_, traco_, *al_, vfs_);
+    despacho_->DefinirVtableBitmap(saidas_);
+    despacho_->DefinirVtableFicheiro(saidas_.Endereco(kVtableFileObj));
+    despacho_->InstalarAjudantes(saidas_, kTabelaDoTeste);
+    despacho_->DefinirFaixaDoModulo(0, kTamanhoDoModuloDeTeste);
+    cpu_.Repor(0, kPilhaDoTeste);
+  }
+  ~BancadaDoDespacho() {
+    delete despacho_;
+    delete al_;
+  }
+  // Uma chamada do guest a um endereco de saida: poe os registos e corre o laco
+  // do despacho ate a sentinela.
+  ResultadoFase ChamaSaida(std::uint32_t indice, std::uint32_t r0, std::uint32_t r1 = 0,
+                           std::uint32_t r2 = 0, std::uint32_t r3 = 0,
+                           std::uint64_t limite = 1000) {
+    cpu_.Set(kR0, r0);
+    cpu_.Set(kR1, r1);
+    cpu_.Set(kR2, r2);
+    cpu_.Set(kR3, r3);
+    cpu_.Set(kLR, kSentinelaDoTeste);
+    cpu_.Set(kPC, saidas_.Endereco(indice));
+    return despacho_->Correr(cpu_, limite, kPpObjDoTeste);
+  }
+  std::size_t Faltas(const std::string& nome) const {
+    const auto& f = traco_.ContagemFaltas();
+    const auto it = f.find(nome);
+    return it == f.end() ? 0 : static_cast<std::size_t>(it->second);
+  }
+  Memoria& M() { return mem_; }
+  Despacho& D() { return *despacho_; }
+  ArmInterpreter& Cpu() { return cpu_; }
+  const Saidas& S() const { return saidas_; }
+  Traco& T() { return traco_; }
+
+  // O codigo do teste, em ARM, no espaco do module.
+  void EscreveCodigo(std::uint32_t base, const std::uint32_t* palavras, std::size_t quantas) {
+    for (std::size_t k = 0; k < quantas; ++k) mem_.Escrever32(base + static_cast<std::uint32_t>(k * 4),
+                                                             palavras[k]);
+  }
+
+ private:
+  Memoria mem_;
+  Traco traco_{"teste_classes_despacho", nullptr};
+  Vfs vfs_;
+  Alocador* al_ = nullptr;
+  Despacho* despacho_ = nullptr;
+  Saidas saidas_;
+  ArmInterpreter cpu_{mem_, &traco_};
+};
+
+TEST(Classes, OIThreadCriaSePorCreateInstanceEStartAtendePeloSlotDaVtable) {
+  BancadaDoDespacho b;
+  // 1. CreateInstance(po, AEECLSID_THREAD, &ppo) -- o slot 2 do IShell.
+  const ResultadoFase r = b.ChamaSaida(kBaseDoShell + 2, kObjShell, 0x01001017u, kPpObjDoTeste);
+  (void)r;
+  const std::uint32_t obj = b.M().Ler32(kPpObjDoTeste);
+  ASSERT_EQ(obj, ObjetoDaClasse(static_cast<std::uint32_t>(Classe::kThread)))
+      << "CreateInstance tem de devolver o objecto do IThread";
+  ASSERT_EQ(b.M().Ler32(obj), b.S().Endereco(VtClasse(static_cast<std::uint32_t>(Classe::kThread))))
+      << "o objecto tem de apontar para a vtable";
+  // 2. A CABLAGEM, LIDA DA TABELA: o slot 7 do objecto aponta para o ramo do
+  //    Start do despacho, e nao para o stub de recusa que servia tudo.
+  const std::uint32_t vt = b.M().Ler32(obj);
+  EXPECT_EQ(b.M().Ler32(vt + brew_slots::kThread_Start * 4),
+            b.S().Endereco(VtClasse(static_cast<std::uint32_t>(Classe::kThread)) +
+                           brew_slots::kThread_Start));
+  // 3. A chamada REAL pelo guest: as mesmas leituras que o modulo faz
+  //    (`ldr r1,[r0]`; `ldr ip,[r1,#0x1c]`), com o resultado guardado em [r2].
+  //      600 e5901000  ldr r1, [r0]
+  //      604 e591c01c  ldr ip, [r1, #0x1c]   ; slot 7
+  //      608 e1a0e00f  mov lr, pc            ; lr = 0x610
+  //      60c e12fff1c  bx ip
+  //      610 e5820000  str r0, [r2]          ; o retorno do Start em [r2]
+  //      614 e3a00000  mov r0, #0
+  //      618 e59fe004  ldr lr, [pc, #4]      ; lr = [0x624] = sentinela
+  //      61c e12fff1e  bx lr
+  //      620 e1a00000  nop
+  //      624 fffffff0                       ; literal da sentinela
+  const std::uint32_t words[] = {0xe5901000u, 0xe591c01cu, 0xe1a0e00fu, 0xe12fff1cu,
+                                 0xe5820000u, 0xe3a00000u, 0xe59fe004u, 0xe12fff1eu,
+                                 0xe1a00000u, kSentinelaDoTeste};
+  b.EscreveCodigo(kRotinaDeInicio, words, sizeof(words) / sizeof(words[0]));
+  b.M().Escrever32(kCelulaDoTeste, 0xDEADBEEFu);
+  b.Cpu().Set(kR0, obj);
+  b.Cpu().Set(kR1, 0x4000);        // 16 KiB, o pedido MEDIDO de dez titulos
+  b.Cpu().Set(kR2, kCelulaDoTeste);
+  b.Cpu().Set(kR3, 0x80200048u);   // pvStart, o valor MEDIDO no zeeboids
+  b.Cpu().Set(kLR, kSentinelaDoTeste);
+  b.Cpu().Set(kPC, kRotinaDeInicio);
+  const ResultadoFase t = b.D().Correr(b.Cpu(), 1000, kPpObjDoTeste);
+  EXPECT_EQ(t.motivo, "retornou");
+  // O REGISTO DO SUCCESS no guest, e nao o registo R0 (a rotina ja o mudou).
+  EXPECT_EQ(b.M().Ler32(kCelulaDoTeste), kAeeSuccess)
+      << "o Start tem de responder SUCCESS pelo slot 7 da vtable";
+  // A thread ficou INICIADA e PENDENTE -- e a agenda para quem a retomar.
+  EXPECT_TRUE(TemThreadPendente());
+  EXPECT_EQ(b.Faltas("IThread::Start"), 0u);
+}
+
+TEST(Classes, OIThreadCooperaSuspendDevolveOControloEExitEncerra) {
+  BancadaDoDespacho b;
+  const std::uint32_t th = static_cast<std::uint32_t>(Classe::kThread);
+  const std::uint32_t obj = ObjetoDaClasse(th);
+  // O Start directo pela tabela (a cablagem ja esta provada no teste acima).
+  b.ChamaSaida(VtClasse(th) + brew_slots::kThread_Start, obj, 0x4000, kRotinaDaThread,
+               0x80200048u);
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
+  EXPECT_TRUE(TemThreadPendente());
+
+  // A FUNCAO DA THREAD, ARM, em kRotinaDaThread:
+  //      640 e5901000  ldr r1, [r0]         ; r0 = this
+  //      644 e591c028  ldr ip, [r1, #0x28]  ; slot 10 = Suspend
+  //      648 e1a0e00f  mov lr, pc           ; lr = 0x650
+  //      64c e12fff1c  bx ip                ; Suspend(this)
+  //      650 e3a0002a  mov r0, #42          ; o rv da thread
+  //      654 e12fff1e  bx lr                ; lr = sentinela (posto na retomada)
+  const std::uint32_t f[] = {0xe5901000u, 0xe591c028u, 0xe1a0e00fu, 0xe12fff1cu,
+                             0xe3a0002au, 0xe12fff1eu};
+  b.EscreveCodigo(kRotinaDaThread, f, sizeof(f) / sizeof(f[0]));
+
+  // O callback de retomada: o mesmo endereco nas duas chamadas, e e por ELE que
+  // o `ISHELL_Resume` do despacho reconhece a thread. CUIDADO: o handler
+  // escreve o resultado no r0, e o r0 E o `this` da chamada -- e preciso repor
+  // o objecto antes da segunda chamada (o titulo tambem o faz).
+  b.Cpu().Set(kR0, obj);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(th) + brew_slots::kThread_GetResumeCBK, b.T()));
+  const std::uint32_t cbk = b.Cpu().Get(kR0);
+  EXPECT_NE(cbk, 0u);
+  b.Cpu().Set(kR0, obj);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(th) + brew_slots::kThread_GetResumeCBK, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), cbk);
+  EXPECT_TRUE(EnfileirarThreadPeloCallbackDeRetomada(cbk));
+  EXPECT_FALSE(EnfileirarThreadPeloCallbackDeRetomada(cbk + 4));
+
+  // 1. A retomada: o despacho (aqui, o teste) corre a thread ate ela ceder.
+  EXPECT_TRUE(PrepararRetomadaDeThread(b.Cpu(), b.T()));
+  EXPECT_EQ(b.Cpu().Get(kPC), kRotinaDaThread);
+  EXPECT_EQ(b.Cpu().Get(kLR), kSentinelaDoTeste);
+  const ResultadoFase p1 = b.D().Correr(b.Cpu(), 1000, kPpObjDoTeste);
+  EXPECT_EQ(p1.motivo, "retornou") << "o Suspend devolve o controlo ao hospedeiro";
+  ConcluirRetomadaDeThread(b.Cpu(), b.T());
+  // A thread ficou no SUSPEND: ainda nao terminou. O `Join` DECLARA o juntador
+  // (void, nao escreve r0 -- como o cabecalho manda); a prova de que o juntador
+  // trabalhou e o rv escrito no pnRv quando a thread terminar, la em baixo.
+  b.Cpu().Set(kR0, obj);
+  b.Cpu().Set(kR1, 0);              // pcb = 0: sem callback a entregar
+  b.Cpu().Set(kR2, kCelulaDoTeste2);  // pnRv
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(th) + brew_slots::kThread_Join, b.T()));
+
+  // 2. A segunda retomada (o jogo pediu-a pelo Resume do callback): continua NA
+  //    INSTRUCAO A SEGUIR ao Suspend.
+  EXPECT_TRUE(EnfileirarThreadPeloCallbackDeRetomada(cbk));
+  EXPECT_TRUE(PrepararRetomadaDeThread(b.Cpu(), b.T()));
+  EXPECT_EQ(b.Cpu().Get(kPC), kRotinaDaThread + 0x10);
+  const ResultadoFase p2 = b.D().Correr(b.Cpu(), 1000, kPpObjDoTeste);
+  EXPECT_EQ(p2.motivo, "retornou");
+  ConcluirRetomadaDeThread(b.Cpu(), b.T());
+  EXPECT_FALSE(TemThreadPendente());
+  // O retorno da funcao de entrada TERMINA a thread (zeebx resume_thread): o
+  // juntador recebe o rv no pnRv.
+  EXPECT_EQ(b.M().Ler32(kCelulaDoTeste2), 42u);
+}
+
+TEST(Classes, OIThreadStartSegundaVezDaAlreadyEExitNaoIniciadaDaFailed) {
+  BancadaDoDespacho b;
+  const std::uint32_t th = static_cast<std::uint32_t>(Classe::kThread);
+  const std::uint32_t obj = ObjetoDaClasse(th);
+  // Primeiro Start: SUCCESS.
+  b.ChamaSaida(VtClasse(th) + brew_slots::kThread_Start, obj, 0x4000, kRotinaDaThread, 0);
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
+  // Segundo Start no mesmo objecto: EALREADY (AEE_EALREADY = 26, AEEStdErr.h:26
+  // -- "IThreads are not re-useable", AEEThread.h:113).
+  b.ChamaSaida(VtClasse(th) + brew_slots::kThread_Start, obj, 0x4000, kRotinaDaThread, 0);
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeAlready);
+  // Exit sem nunca ter iniciado: EFAILED (AEEThread.h: "EFAILED: if the IThread's
+  // never been _Start()ed").
+  BancadaDoDespacho c;
+  c.ChamaSaida(VtClasse(th) + brew_slots::kThread_Exit, ObjetoDaClasse(th), 3);
+  EXPECT_EQ(c.Cpu().Get(kR0), kAeeFailed);
+}
+
 
 }  // namespace
 }  // namespace zb2::brew
