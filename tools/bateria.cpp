@@ -373,10 +373,6 @@ enum : std::uint32_t {
 // `Despacho`, mandar correr, e escrever o que se mediu.
 zb2::brew::Despacho* g_despacho = nullptr;
 
-std::uint32_t g_textos = 0;
-std::uint32_t g_blits = 0;
-std::uint32_t g_updates = 0;
-std::uint32_t g_dibs = 0;
 // O CAMINHO DO TITULO ACTUAL e a vtable dos ficheiros: o despacho vive em
 // `CorrerFase`, que nao recebe `dir` nem o titulo. Globais explicitas, postas no
 // inicio de cada `Medir` -- e nao um estado que passa de um titulo para o outro.
@@ -569,7 +565,6 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   // tornaria a medida incomparavel -- que e o defeito de metodo mais repetido
   // desta sessao.
   g_despacho = nullptr;  // o ponteiro so vale dentro de `Medir`
-  g_textos = g_blits = g_updates = g_dibs = 0;
 
   Tempo tempo;
   Traco traco("bateria", &tempo);
@@ -981,8 +976,10 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   for (const auto& par : traco.ContagemPressupostos()) e.pressupostos[par.first] = par.second;
   e.pixels = g_despacho->TelaRef().Escritos();
   e.cores = g_despacho->TelaRef().CoresDistintas();
-  e.textos = g_textos;
-  e.blits = g_blits;
+  // DO MOTOR, e nao de globais. As `g_*` nunca eram incrementadas: estas duas
+  // colunas escreveram ZERO em todas as corridas desde que existem.
+  e.textos = despacho.Textos();
+  e.blits = despacho.Blits();
   dm_eventos = dm.eventos;
   return e;
 }

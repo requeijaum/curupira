@@ -129,6 +129,25 @@ class Despacho {
   // faz o instrumento mentir sem avisar.
   std::uint32_t Textos() const { return textos_; }
 
+  // E VOLTARAM, porque a quarta vez foi a mesma classe de defeito AO CONTRARIO:
+  // o motor contava (`++blits_` em `despacho.cpp`, `++updates_`, `++dibs_`) e a
+  // FERRAMENTA lia variaveis globais (`g_blits`, `g_updates`, `g_dibs` em
+  // `tools/bateria.cpp`) que **nunca eram incrementadas em lado nenhum**. As
+  // colunas `textos` e `blits` do JSON escreviam ZERO em todas as corridas desde
+  // que existem, e ninguem reparou porque zero e um numero plausivel para um
+  // emulador que ainda nao desenha.
+  //
+  // Tirar os acessores nao resolveu: mudou o defeito de "ninguem le" para
+  // "le-se a coisa errada". Agora ha UMA fonte, e e esta.
+  std::uint32_t Blits() const { return blits_; }
+
+  // O RELOGIO VIRTUAL, para quem precisa de afirmar que ele NAO andou.
+  // (`tests/sendevent_test.cpp`: a entrega de um evento tem de ser instantanea
+  // para o guest.)
+  std::uint32_t AgoraMs() const { return static_cast<std::uint32_t>(agora_ms_); }
+  std::uint32_t Updates() const { return updates_; }
+  std::uint32_t Dibs() const { return dibs_; }
+
 
 
   // --- A ENTRADA (etapa 8) -------------------------------------------------

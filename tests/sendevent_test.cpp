@@ -350,4 +350,36 @@ TEST(SendEvent, SemAppletDevolveFalseENunca20) {
   EXPECT_NE(r, kAeeUnsupported);
 }
 
+
+// 9. O RELOGIO E OS TEMPORIZADORES PARAM DURANTE A ENTREGA.
+//
+// A GUARDA QUE FALTAVA PROVAR. O commit que a escreveu dizia, em voz alta, que
+// ela NAO tinha sido provada por violacao. Isto e essa prova.
+//
+// O `SendEvent` corre o `HandleEvent` do applet por DENTRO do laco de quadro,
+// com um `Correr` aninhado. Se o relogio virtual continuasse a andar la dentro,
+// um temporizador de quadro podia disparar NO MEIO do tratador -- reentrancia
+// que o BREW nunca faz, e que poria dois callbacks do titulo a partilhar os
+// mesmos registadores.
+//
+// A entrega e instantanea para o guest: ele le a resposta na instrucao SEGUINTE
+// ao retorno (`tectoy.mod:0x6a3a0`, `ldrne r0,[sp,#8]`).
+TEST(SendEvent, ORelogioNaoAndaEnquantoOEventoEEntregue) {
+  Bancada b;
+  b.D().SituarTitulo("/nao/existe", "274755", kClsidDoTitulo);
+  b.MontarApplet(kHandleEvent);
+  b.MontarHandlerQueResponde();
+  b.D().DefinirApplet(kApplet);
+  b.Mem().Escrever32(kSaida, 0);
+
+  const std::uint32_t antes = b.D().AgoraMs();
+  const std::uint32_t r = b.ChamaSendEvent(0, kClsidDoTitulo, kEvtPrefsDb, 4, kSaida);
+  ASSERT_EQ(r, 1u) << "a entrega tem de correr para este teste medir o que ela faz";
+  EXPECT_EQ(b.Mem().Ler32(kSaida), kResposta) << "correu mesmo codigo do titulo";
+
+  EXPECT_EQ(b.D().AgoraMs(), antes)
+      << "o relogio virtual andou durante a entrega: um temporizador podia ter "
+         "disparado no meio do HandleEvent";
+}
+
 }  // namespace zb2::brew

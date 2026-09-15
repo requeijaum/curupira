@@ -2040,15 +2040,33 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           AeeDeviceInfo di{};
           di.cx_screen = static_cast<std::uint16_t>(zb2::brew::kLarguraDoEcra);
           di.cy_screen = static_cast<std::uint16_t>(zb2::brew::kAlturaDoEcra);
-          di.cx_alt_screen = static_cast<std::uint16_t>(zb2::brew::kLarguraDoEcra);
-          di.cy_alt_screen = static_cast<std::uint16_t>(zb2::brew::kAlturaDoEcra);
+          // `cxAltScreen`/`cyAltScreen` a ZERO: o Zeebo NAO TEM segunda tela.
+          //
+          // Estavam iguais ao ecra principal, o que declara um segundo ecra com o
+          // mesmo tamanho -- e um titulo que teste `bAltDisplay`/`cxAltScreen`
+          // para decidir se ha tampa (o caso dos telemoveis de concha, para que
+          // este campo existe) recebia um sim. O `bAltDisplay` ja dizia 0 aqui
+          // ao lado: os dois discordavam um do outro.
+          // O zeebx poe zero pela mesma razao (`machine/shell.rs:437-438`).
+          di.cx_alt_screen = 0;
+          di.cy_alt_screen = 0;
           di.cx_scroll_bar = 10;
           di.w_encoding = 0;          // AEE_ENC_UNICODE
           di.w_menu_text_scroll = 30;
           di.n_color_depth = 16;
           di.unused2 = 0;
           di.w_menu_image_delay = 100;
-          di.dw_ram = 0;              // deprecated no cabecalho
+          // `dwRAM` -- o cabecalho chama-lhe deprecated, mas ha FONTE para o
+          // valor e um titulo que o leia merece o numero certo em vez de zero:
+          // o guia do fabricante diz "Heap size is limited to 32MB"
+          // (`ZeeboDeveloperGuide0.97.md:796`), e o aparelho tem "128 MBytes DDR
+          // SDRAM + 32Mbyte stacked" (:236). O que interessa ao titulo e o HEAP.
+          // O zeebx devolve o mesmo (`machine/shell.rs:451`, o `HEAP_SIZE` dele).
+          //
+          // Zero nao e "nao sei": zero e "nao ha RAM", e um titulo que divida
+          // por ele ou que decida a qualidade das texturas por ele apanha o pior
+          // caminho possivel.
+          di.dw_ram = 32u * 1024u * 1024u;
           di.b_alt_display = 0; di.b_flip = 0; di.b_vibrator = 0; di.b_ext_speaker = 0;
           di.b_vr = 0; di.b_pos_loc = 0; di.b_midi = 1; di.b_cmx = 0; di.b_pen = 1;
           di.dw_prompt_props = 0;
