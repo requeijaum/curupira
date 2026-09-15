@@ -41,6 +41,10 @@ std::uint8_t Memoria::Ler8(Endereco a) const {
     if (!leitura_nao_mapeada_pendente_) {
       leitura_nao_mapeada_pendente_ = true;
       endereco_da_leitura_nao_mapeada_pendente_ = a;
+      // QUEM LEU, no proprio acto da leitura: o PC que o `Passo` declarou. Uma
+      // leitura feita entre passos (o hospedeiro) fica com o PC da ultima
+      // instrucao do guest a correr -- que e quem a provocou, no caso medido.
+      pc_da_leitura_nao_mapeada_pendente_ = pc_;
     }
     return 0;
   }

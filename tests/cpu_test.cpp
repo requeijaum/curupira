@@ -1978,3 +1978,111 @@ TEST(Cpu, ThumbLslZerosEMovNaoZera) {
   b.Correr(2);
   EXPECT_EQ(b.R(0), 0xABCDEF01u) << "lsl #0 nao desloca: deve copiar r1";
 }
+
+// ===========================================================================
+// FRENTE inst: A ATRIBUICAO DA LEITURA NAO MAPEADA
+// ===========================================================================
+//
+// O `Memoria` deixa UMA leitura nao mapeada PENDENTE e o `Passo` consome-a no
+// fim da instrucao. Assim a leitura feita pela PROPRIA instrucao fica bem
+// atribuida -- e a leitura feita pelo HOSPEDEIRO (o nosso C++ a ler a memoria do
+// guest: um ajudante a ler o argumento de um `ASSERT`, o anel do laco a ler a
+// palavra do PC) fica MAL atribuida: a pendencia sobrevive ao passo, e a
+// instrucao que correr a seguir fica acusada de uma leitura que nao fez.
+//
+// MEDIDO no `alice` (frente ropi2, seccao 3): em 30 visitas ao PC 0x3f050 o `r4`
+// foi SEMPRE 0x200 e `[0x1fc]` estava mapeado (0x80010000); 21 das 22 recusas
+// atribuidas a esse PC eram o NOSSO `Formatar` a ler o argumento `%s` do
+// `ASSERT` -- o ASCII "  %s", que lido como palavra e 0x73252020. A evidencia
+// "0x3f050 le 0x73252020" era FALSA.
+
+TEST(Cpu, LeituraNaoMapeadaDoHospedeiroNaoAcusaAInstrucaoSeguinte) {
+  Bancada b;
+  b.Instrucao(MovImediato(0, 0x11));  // o guest corre uma instrucao qualquer
+  b.Instrucao(MovImediato(0, 0x22));  // e a SEGUINTE nao le memoria nenhuma
+  b.Terminar();
+  b.Correr(1);  // o PC declarado a memoria passa a ser o da primeira
+
+  // O HOSPEDEIRO le a memoria do guest num endereco por mapear. NAO ha
+  // instrucao nenhuma a correr -- e o caso que o `Formatar` faz com o `%s`.
+  EXPECT_EQ(b.Mem().Ler32(0x73252020u), 0u);
+
+  const std::uint64_t antes = b.Cpu().InstruscoesRecusadas();
+  b.Correr(1);  // a instrucao SEGUINTE: um `mov`, que nao le memoria nenhuma
+  EXPECT_EQ(b.Cpu().InstruscoesRecusadas(), antes)
+      << "a instrucao seguinte nao leu nada: culpa-la e o defeito de instrumento";
+  const char* motivo = b.Cpu().MotivoDaRecusa();
+  if (motivo != nullptr) {
+    EXPECT_EQ(std::string(motivo).find("0x73252020"), std::string::npos)
+        << "a leitura foi do hospedeiro, e nao desta instrucao";
+  }
+
+  // E A LEITURA NAO FICA MUDA (P2): fica CONTADA, com o endereco e com o PC de
+  // quem a fez -- o PC declarado a memoria no instante da leitura.
+  EXPECT_EQ(b.Mem().LeiturasNaoMapeadasForaDeInstrucao(), 1u)
+      << "a leitura fora de instrucao tem de ficar contada, e nao desaparecer";
+  const zb2::Memoria::LeituraNaoMapeada fora = b.Mem().UltimaLeituraForaDeInstrucao();
+  EXPECT_EQ(fora.endereco, 0x73252020u);
+  EXPECT_EQ(fora.pc, 0x00100000u)
+      << "o PC e o de QUEM LEU (a ultima instrucao do guest a correr), e nao o da seguinte";
+  EXPECT_EQ(b.Tr().ContagemFaltas().count("Memoria::Ler fora de instrucao"), 1u)
+      << "e a falta fica nomeada no traco, que e o que a corrida le";
+}
+
+TEST(Cpu, LeituraNaoMapeadaDaPropriaInstrucaoAcusaOPcDaLeitura) {
+  // O OUTRO LADO DA MESMA MOEDA: uma leitura FEITA pela instrucao continua a
+  // RECUSAR, e com o PC DELA -- e nao com o da instrucao seguinte. Sem este
+  // lado, "tirar a recusa" passaria por correccao.
+  Bancada b;
+  b.R(1, 0x73252020u);
+  b.Instrucao(LdrImediato(0, 1, 0));  // pc 0x00100000: `ldr r0,[r1]`, e nao existe
+  b.Instrucao(MovImediato(0, 0x22));  // pc 0x00100004: nao le memoria nenhuma
+  b.Terminar();
+  b.Correr(1);  // a instrucao que LE
+  EXPECT_EQ(b.Cpu().InstruscoesRecusadas(), 1u) << "uma so: a que leu";
+  EXPECT_EQ(b.Cpu().PcDaUltimaRecusada(), 0x00100000u)
+      << "o PC acusado e o DA LEITURA";
+  const char* motivo = b.Cpu().MotivoDaRecusa();
+  ASSERT_NE(motivo, nullptr);
+  EXPECT_NE(std::string(motivo).find("0x73252020"), std::string::npos)
+      << "e o motivo continua a nomear o ENDERECO lido";
+  EXPECT_EQ(b.Mem().LeiturasNaoMapeadasForaDeInstrucao(), 0u)
+      << "esta leitura era da instrucao, e nao do hospedeiro";
+  // A INSTRUCAO SEGUINTE NAO HERDA A CULPA.
+  b.Correr(1);
+  EXPECT_EQ(b.Cpu().InstruscoesRecusadas(), 1u);
+  EXPECT_EQ(b.Cpu().PcDaUltimaRecusada(), 0x00100000u)
+      << "o PC acusado continua a ser o da leitura, e nao o da instrucao seguinte";
+}
+
+TEST(Memoria, ALeituraNaoMapeadaNasceComOPcDeQuemLeu) {
+  // A ATRIBUICAO NO SITIO MAIS BAIXO, sem CPU nenhum pelo meio: a leitura fica
+  // pendente COM o PC que estava declarado, e quem a recolhe fica com o par
+  // (endereco, PC). A segunda recolha nao inventa nada.
+  Memoria m;
+  m.PcAtual(0x00123456u);
+  EXPECT_EQ(m.Ler32(0x73252020u), 0u);
+  Memoria::LeituraNaoMapeada lida;
+  EXPECT_TRUE(m.RecolherLeituraNaoMapeadaForaDeInstrucao(&lida));
+  EXPECT_EQ(lida.endereco, 0x73252020u);
+  EXPECT_EQ(lida.pc, 0x00123456u) << "o PC e o que estava declarado no instante da leitura";
+  EXPECT_FALSE(m.RecolherLeituraNaoMapeadaForaDeInstrucao(&lida))
+      << "recolhida uma vez, nao ha segunda";
+  EXPECT_EQ(m.LeiturasNaoMapeadasForaDeInstrucao(), 1u);
+  // O TOTAL conta ACESSOS DE BYTE: o `Ler32` de cima sao quatro `Ler8` num
+  // endereco que nao existe. O evento (a leitura que ficou por atribuir) e um,
+  // e o total e a conta crua -- dois numeros com significados diferentes, ditos
+  // como sao.
+  EXPECT_EQ(m.LeiturasNaoMapeadas(), 4u) << "a leitura continua contada, acesso a acesso";
+
+  // E a pendencia de OUTRA instrucao nao e consumida por esta.
+  m.PcAtual(0x00100000u);
+  EXPECT_EQ(m.Ler32(0x73252020u), 0u);
+  zb2::Endereco primeiro = 0;
+  EXPECT_FALSE(m.ConsumirLeituraNaoMapeadaPendenteDaInstrucao(0x00100004u, &primeiro))
+      << "a leitura e da instrucao 0x00100000, e nao desta";
+  EXPECT_TRUE(m.ConsumirLeituraNaoMapeadaPendenteDaInstrucao(0x00100000u, &primeiro));
+  EXPECT_EQ(primeiro, 0x73252020u);
+  EXPECT_EQ(m.LeiturasNaoMapeadasForaDeInstrucao(), 1u)
+      << "consumida pela instrucao certa, nao conta como leitura do hospedeiro";
+}

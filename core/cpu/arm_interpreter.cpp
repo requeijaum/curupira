@@ -1969,10 +1969,48 @@ std::uint64_t ArmInterpreter::Passo() {
   // `pc + 4` no fim e o PC voltava a instrucao de origem. O sintoma era o
   // programa preso no primeiro endereco, com os registradores a meio.
   const std::uint32_t pc = Get(kPC);
+  // A CONTA DA INSTRUCAO ANTERIOR FECHA-SE AQUI, ANTES de executar -- e esta e a
+  // correccao de ATRIBUICAO da frente inst.
+  //
+  // O `Memoria::Ler8` deixa a leitura PENDENTE e o consumidor legitimo e o fim
+  // do `Passo` que a fez (abaixo). Uma pendencia que CHEGOU A ESTE PONTO nao foi
+  // consumida por instrucao nenhuma: quem leu foi o HOSPEDEIRO -- o nosso C++ a
+  // ler a memoria do guest. Consumi-la no fim da instrucao SEGUINTE (que era o
+  // que acontecia, por a pendencia sobreviver ao passo) e acusar de leitura uma
+  // instrucao que nao leu nada.
+  //
+  // MEDIDO no `alice` (frente ropi2, seccao 3): em 30 visitas ao PC 0x3f050 o
+  // `r4` foi SEMPRE 0x200 e `[0x1fc]` estava mapeado (0x80010000); 21 das 22
+  // recusas atribuidas a esse PC eram o NOSSO `Formatar` a ler o argumento `%s`
+  // do `ASSERT` (o ASCII "  %s" = 0x73252020), e a instrucao acusada era a que
+  // estava no `lr` do ajudante. A evidencia era FALSA.
+  //
+  // A leitura NAO fica muda (P2): fica contada em
+  // `Memoria::LeiturasNaoMapeadasForaDeInstrucao` e REGISTADA como falta, com o
+  // endereco e com o PC de quem a fez -- que, no caso do ajudante, e a instrucao
+  // do guest que o chamou.
+  //
+  // O `endereco == pc` fica de fora: o anel de diagnostico do laco le a palavra
+  // do PC antes de cada passo, e quando essa pagina nao existe a BUSCA recusa-se
+  // logo a seguir com o MESMO endereco e o MESMO PC. Uma coisa, um registo.
+  {
+    Memoria::LeituraNaoMapeada fora;
+    if (mem_.RecolherLeituraNaoMapeadaForaDeInstrucao(&fora) && fora.endereco != pc) {
+      if (traco_ != nullptr) {
+        char buf[160];
+        std::snprintf(buf, sizeof(buf),
+                      "endereco=0x%08x pc_de_quem_leu=0x%08x -- leitura fora de instrucao "
+                      "(hospedeiro); o PC e o da ultima instrucao do guest a correr",
+                      fora.endereco, fora.pc);
+        traco_->RegistarFalta(Area::Memoria, "Memoria::Ler fora de instrucao", buf);
+      }
+    }
+  }
   // O PC DECLARADO A MEMORIA. A vigia de escrita e a sonda de leitura guardam
   // `pc_`, e ate aqui NADA o punha fora dos testes: toda a corrida real
   // registava `pc=0x00000000`. Um instrumento que nao sabe quem mexeu na
-  // memoria e meio instrumento (P7).
+  // memoria e meio instrumento (P7). **E agora tambem e o PC que fica gravado
+  // na leitura nao mapeada: e ele que diz DE QUEM e a leitura.**
   mem_.PcAtual(pc);
   const bool thumb = (Cpsr() & Cpsr::kT) != 0;
   // BUSCAR UMA INSTRUCAO NUM ENDERECO NAO MAPEADO e o defeito mais silencioso
@@ -1999,8 +2037,13 @@ std::uint64_t ArmInterpreter::Passo() {
   // em silencio -- recusa-se com o ENDERECO. MEDIDO no `cnk2`: `ldr ip,[r1,#0x94]`
   // (pc 0x000371f4) leu 0xea000097, recebeu 0 e o `bx ip` seguinte saltou para
   // 0. Com a recusa, a parede passa a ter nome e a conta nao fica curta.
+  //
+  // E SO DESTA INSTRUCAO: a pendencia traz o PC de quem leu, e o que nao for
+  // dela fica por consumir para o `RecolherLeituraNaoMapeadaForaDeInstrucao` do
+  // passo seguinte. Sem essa condicao, uma leitura do hospedeiro era acusada no
+  // PC da instrucao seguinte (o defeito de instrumento da frente ropi2).
   Endereco primeiro = 0;
-  if (mem_.ConsumirLeituraNaoMapeadaPendente(&primeiro)) {
+  if (mem_.ConsumirLeituraNaoMapeadaPendenteDaInstrucao(pc, &primeiro)) {
     char buf[96];
     std::snprintf(buf, sizeof(buf), "leitura de dados em endereco nao mapeado 0x%08x", primeiro);
     Recusar(instr, pc, buf);

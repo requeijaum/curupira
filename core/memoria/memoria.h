@@ -138,11 +138,62 @@ class Memoria {
   // saltou para 0 (frente 16). A pendencia e unica (o primeiro endereco): uma
   // instrucao com varias leituras nao mapeadas recusa-se UMA vez.
   std::uint64_t LeiturasNaoMapeadas() const { return leituras_nao_mapeadas_; }
-  bool ConsumirLeituraNaoMapeadaPendente(Endereco* primeira) const {
+
+  // --- ATRIBUICAO DA LEITURA (frente inst) ------------------------------
+  // A pendencia de cima diz QUE endereco, e nao diz DE QUEM. Quem consumia era
+  // o fim da instrucao do passo -- e a pendencia sobrevivia ao passo, logo uma
+  // leitura feita pelo HOSPEDEIRO (o nosso C++ a ler a memoria do guest) era
+  // acusada no PC da instrucao que corresse A SEGUIR.
+  //
+  // MEDIDO no `alice` (frente ropi2, seccao 3): em 30 visitas ao PC 0x3f050 o
+  // `r4` foi SEMPRE 0x200 e `[0x1fc]` estava mapeado; 21 das 22 recusas
+  // atribuidas a esse PC eram o NOSSO `Formatar` a ler o argumento `%s` do
+  // `ASSERT` (o ASCII "  %s" = 0x73252020), e a instrucao acusada era a que
+  // estava no `lr` do ajudante. A evidencia "0x3f050 le 0x73252020" era FALSA.
+  //
+  // QUEM LEU SABE-SE PELO PC DECLARADO A MEMORIA (`PcAtual`, que o `Passo` poe
+  // no inicio de cada instrucao): a leitura nasce com o PC de quem a fez.
+  struct LeituraNaoMapeada {
+    Endereco endereco = 0;  // o endereco que nao existe
+    Endereco pc = 0;        // o PC declarado a memoria no instante da leitura
+  };
+
+  // Consome a pendencia, mas SO se ela for da instrucao `pc` (o mesmo PC que o
+  // `Passo` acabou de declarar). Uma pendencia de outro dono fica por consumir:
+  // quem a recolhe e o `RecolherLeituraNaoMapeadaForaDeInstrucao`, no passo
+  // seguinte. A atribuicao fica garantida por construcao, e nao por convencao.
+  bool ConsumirLeituraNaoMapeadaPendenteDaInstrucao(Endereco pc, Endereco* primeira) const {
     if (!leitura_nao_mapeada_pendente_) return false;
+    if (pc_da_leitura_nao_mapeada_pendente_ != pc) return false;
     *primeira = endereco_da_leitura_nao_mapeada_pendente_;
     leitura_nao_mapeada_pendente_ = false;
     return true;
+  }
+
+  // FECHA A CONTA DA INSTRUCAO ANTERIOR. Uma leitura nao mapeada que chegou ate
+  // aqui NAO foi consumida por instrucao nenhuma: quem leu foi o HOSPEDEIRO.
+  // Devolve-a (com o PC de quem a fez) e limpa-a -- o que fica por contar e
+  // contado, e nao atribuido a uma instrucao inocente.
+  //
+  // CONTA EVENTOS, e nao leituras: a pendencia e unica, logo varias leituras do
+  // hospedeiro seguidas contam uma vez. O total de leituras (de todos os
+  // autores) esta em `LeiturasNaoMapeadas()`.
+  bool RecolherLeituraNaoMapeadaForaDeInstrucao(LeituraNaoMapeada* lida) const {
+    if (!leitura_nao_mapeada_pendente_) return false;
+    lida->endereco = endereco_da_leitura_nao_mapeada_pendente_;
+    lida->pc = pc_da_leitura_nao_mapeada_pendente_;
+    leitura_nao_mapeada_pendente_ = false;
+    ++leituras_nao_mapeadas_fora_de_instrucao_;
+    ultima_leitura_fora_de_instrucao_ = *lida;
+    return true;
+  }
+  std::uint64_t LeiturasNaoMapeadasForaDeInstrucao() const {
+    return leituras_nao_mapeadas_fora_de_instrucao_;
+  }
+  // A ultima leitura recolhida fora de instrucao. Existe para o teste poder
+  // afirmar o PC de QUEM LEU sem depender do texto do traco.
+  const LeituraNaoMapeada& UltimaLeituraForaDeInstrucao() const {
+    return ultima_leitura_fora_de_instrucao_;
   }
 
   // --- utilitarios ------------------------------------------------------
@@ -174,6 +225,11 @@ class Memoria {
   mutable std::uint64_t leituras_nao_mapeadas_ = 0;
   mutable bool leitura_nao_mapeada_pendente_ = false;
   mutable Endereco endereco_da_leitura_nao_mapeada_pendente_ = 0;
+  // O PC declarado a memoria no instante da leitura pendente: e o que diz DE
+  // QUEM e a leitura (frente inst).
+  mutable Endereco pc_da_leitura_nao_mapeada_pendente_ = 0;
+  mutable std::uint64_t leituras_nao_mapeadas_fora_de_instrucao_ = 0;
+  mutable LeituraNaoMapeada ultima_leitura_fora_de_instrucao_;
 };
 
 }  // namespace zb2
