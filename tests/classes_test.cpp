@@ -229,7 +229,9 @@ TEST(Classes, ObjetoDoClsidSoRespondeAsTresClasses) {
   EXPECT_EQ(ObjetoDoClsid(0x01003109u), ObjetoDaClasse(2));
   EXPECT_EQ(ObjetoDoClsid(0x01001017u), ObjetoDaClasse(3));
   EXPECT_EQ(ObjetoDoClsid(0x01030766u), ObjetoDaClasse(4));
-  EXPECT_EQ(ObjetoDoClsid(0x01011810u), 0u);
+  EXPECT_EQ(ObjetoDoClsid(0x0103d8ecu), ObjetoDaClasse(5));
+  EXPECT_EQ(ObjetoDoClsid(0x01011810u), ObjetoDaClasse(static_cast<std::uint32_t>(Classe::kCM)));
+  EXPECT_EQ(ObjetoDoClsid(0xDEADBEEFu), 0u);
   EXPECT_EQ(IndiceDaClasse(0x01003109u), static_cast<std::uint32_t>(Classe::kTextCtl));
   EXPECT_EQ(IndiceDaClasse(0x01001017u), static_cast<std::uint32_t>(Classe::kThread));
   EXPECT_EQ(IndiceDaClasse(0x12345678u), kQuantasClasses);
@@ -477,6 +479,55 @@ TEST(Classes, OValueModelNaoTemMetodoImplementadoEPorIssoRecusaComNome) {
   EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(vm) + brew_slots::kValueModel_GetValue, b.T()));
   EXPECT_EQ(b.Cpu().Get(kR0), kAeeUnsupported);
   EXPECT_EQ(b.Faltas("IValueModel::GetValue"), 1u);
+}
+
+TEST(Classes, OCMRespondeGetSSInfoComRadioNoArEServicoPleno) {
+  // AEECLSID_CM (0x01011810) -- o gerenciador de chamadas/rede Qualcomm (ICM).
+  // tectoymain.c:1037 aborta se CreateInstance falhar; 0x87c40 chama slot 28
+  // (GetSSInfo) com buffer de 0x340 bytes e espera +0xc == 5 (ONLINE),
+  // 0x696a0 espera +0x00 == 2 (servico pleno) e sinal em +0x28 (4 barras).
+  const std::uint32_t cm = static_cast<std::uint32_t>(Classe::kCM);
+  EXPECT_STREQ(NomeDaInterface(cm), "ICM");
+  EXPECT_STREQ(NomeDaClasse(cm), "AEECLSID_CM");
+  EXPECT_STREQ(NomeDoSlotDaClasse(cm, 0), "AddRef");
+  EXPECT_STREQ(NomeDoSlotDaClasse(cm, 1), "Release");
+  EXPECT_STREQ(NomeDoSlotDaClasse(cm, 2), "QueryInterface");
+  EXPECT_STREQ(NomeDoSlotDaClasse(cm, 28), "GetSSInfo");
+
+  Bancada b;
+  constexpr std::uint32_t kBuffer = 0x80200000u;
+  // Preenche a area com lixo para testar que o buffer e zerado
+  for (std::uint32_t off = 0; off < 0x340; off += 4) {
+    b.M().Escrever32(kBuffer + off, 0xAAAAAAAAu);
+  }
+
+  // 1. Chamada valida
+  b.Cpu().Set(kR0, ObjetoDaClasse(cm));
+  b.Cpu().Set(kR1, kBuffer);
+  b.Cpu().Set(kR2, 0x340u);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(cm) + 28, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
+  EXPECT_EQ(b.M().Ler32(kBuffer + 0x00), 2u);        // AEECM_SRV_STATUS_SRV
+  EXPECT_EQ(b.M().Ler32(kBuffer + 0x04), 0u);        // resto zerado
+  EXPECT_EQ(b.M().Ler32(kBuffer + 0x08), 0u);
+  EXPECT_EQ(b.M().Ler32(kBuffer + 0x0C), 5u);        // SYS_OPRT_MODE_ONLINE
+  EXPECT_EQ(b.M().Ler16(kBuffer + 0x28), 0x0048u);    // 4 barras de sinal
+  EXPECT_EQ(b.M().Ler32(kBuffer + 0x30), 0u);        // fim zerado
+
+  // 2. Parametros invalidos (buffer nulo ou tamanho insuficiente)
+  b.Cpu().Set(kR1, 0);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(cm) + 28, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeBadParm);
+
+  b.Cpu().Set(kR1, kBuffer);
+  b.Cpu().Set(kR2, 10u);  // menor que o offset minimo
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(cm) + 28, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeBadParm);
+
+  // 3. Slot nao implementado recusa com nome
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(cm) + 15, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("ICM::?"), 1u);
 }
 
 }  // namespace

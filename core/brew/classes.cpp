@@ -48,6 +48,16 @@ const char* NomeDoSlotQEGL(unsigned slot) {
   }
 }
 
+const char* NomeDoSlotCM(unsigned slot) {
+  switch (slot) {
+    case 0: return "AddRef";
+    case 1: return "Release";
+    case 2: return "QueryInterface";
+    case 28: return "GetSSInfo";
+    default: return "?";
+  }
+}
+
 const char* (*const kNomeDoSlot[])(unsigned) = {
     &brew_slots::NomeDeAppHistory,
     &brew_slots::NomeDeValueModel,
@@ -55,6 +65,7 @@ const char* (*const kNomeDoSlot[])(unsigned) = {
     &brew_slots::NomeDeThread,
     &brew_slots::NomeDeImageDecoder,
     &NomeDoSlotQEGL,
+    &NomeDoSlotCM,
 };
 
 // Quantos slots cada interface TEM, do mesmo cabecalho. As cinco primeiras vem
@@ -66,6 +77,7 @@ const std::uint32_t kSlotsDaInterface[] = {
     brew_slots::kThreadSlots,
     brew_slots::kImageDecoderSlots,
     kQeglSlots,
+    29,
 };
 
 // E OS NUMEROS QUE ESTAVAM A MAO, CONFERIDOS. Nao e decoracao: era aqui que o
@@ -97,6 +109,7 @@ constexpr Ficha kFichas[kQuantasClasses] = {
     {brew_clsids::kClsid_THREAD, "AEECLSID_THREAD", "IThread"},
     {brew_clsids::kClsid_PNGDECODER_BREW, "AEECLSID_PNGDECODER_BREW", "IImageDecoder"},
     {0x0103d8ecu, "AEECLSID_QEGL", "QEGL"},
+    {0x01011810u, "AEECLSID_CM", "ICM"},
 };
 
 // OS TRES CLSIDs, lidos do `.inc` gerado. Se um deles divergir do cabecalho, a
@@ -303,6 +316,28 @@ bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
     }
     cpu.Mem().Escrever32(ppo, 0);
     // IID desconhecido: cai na recusa nomeada abaixo.
+  }
+  const std::uint32_t k_cm = static_cast<std::uint32_t>(Classe::kCM);
+  if (k == k_cm && slot == 28) {
+    // `int GetSSInfo(ICM* po, AEECMSSInfo* pInfo, uint32 nSize)` -- slot 28.
+    // tectoymain.c:1037 / 0x87c40: zera buffer 0x340, confere +0xc == 5 (ONLINE),
+    // 0x696a0: confere +0x00 == 2 (servico pleno) e +0x28 (intensidade do sinal).
+    const std::uint32_t pinfo = cpu.Get(kR1);
+    const std::uint32_t tamanho = cpu.Get(kR2);
+    if (pinfo == 0 || tamanho < 0x2Au) {
+      cpu.Set(kR0, kAeeBadParm);
+      return true;
+    }
+    for (std::uint32_t off = 0; off < tamanho; ++off) {
+      cpu.Mem().Escrever8(pinfo + off, 0);
+    }
+    cpu.Mem().Escrever32(pinfo + 0x00, 2);       // AEECM_SRV_STATUS_SRV
+    cpu.Mem().Escrever32(pinfo + 0x0C, 5);       // SYS_OPRT_MODE_ONLINE
+    cpu.Mem().Escrever16(pinfo + 0x28, 0x0048);   // 4 barras de sinal
+    cpu.Set(kR0, kAeeSuccess);
+    traco.Emitir(Area::Brew, Nivel::Informacao, "ICM_GETSSINFO",
+                 "radio online, servico pleno, sinal 4 barras");
+    return true;
   }
   if (k == kClasseDoAppHistory && slot == brew_slots::kAppHistory_Back) {
     // `int Back(po)` -- sem anterior na lista de 1: ENOSUCH, o fim-de-lista

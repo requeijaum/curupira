@@ -108,7 +108,8 @@ enum class Classe : std::uint32_t {
   kThread = 3,
   kPNGDecoderBREW = 4,
   kQEGL = 5,
-  kQuantas = 6,
+  kCM = 6,
+  kQuantas = 7,
 };
 
 constexpr std::uint32_t kQuantasClasses = static_cast<std::uint32_t>(Classe::kQuantas);
@@ -129,7 +130,7 @@ constexpr std::uint32_t kQeglSlots = 27;
 constexpr std::uint32_t QeglParaIegl(std::uint32_t q) { return q >= 8 ? q + 1 : q; }
 constexpr std::uint32_t kVtableIgles = 40300;
 constexpr std::uint32_t kIglesSlots = 148;
-constexpr std::uint32_t kObjetoIgles = 0x8F006000u;
+constexpr std::uint32_t kObjetoIgles = 0x8F010000u;
 // IIDs de interface (AEEGLES10/11.h via 3 refs; sem .h no SDK extract).
 constexpr std::uint32_t kIidGles10 = 0x0103d8ddu;
 constexpr std::uint32_t kIidGles11 = 0x0103d8eau;
