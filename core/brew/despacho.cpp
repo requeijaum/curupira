@@ -583,13 +583,20 @@ bool Despacho::PrepararCallbackDoTemporizador(ICpu& cpu) {
   // codigo do titulo".
   // O TAMANHO vem do `Sinais`, que e quem o guarda (`DefinirFaixaDoModulo`): dois
   // sitios a guardar a mesma faixa seriam dois sitios a divergir.
-  if (fn < sinais_.BaseDoModulo() || fn >= sinais_.BaseDoModulo() + sinais_.TamanhoDoModulo()) {
+  if ((fn & ~1u) < sinais_.BaseDoModulo() ||
+      (fn & ~1u) >= sinais_.BaseDoModulo() + sinais_.TamanhoDoModulo()) {
     traco_.RegistarFalta(Area::Guarda, "callback_de_temporizador",
                          "funcao " + Hex(fn) + " fora do modulo");
     return false;
   }
-  cpu.Set(kLR, kSentinela);       // o retorno do callback volta para ca
-  cpu.Set(kPC, fn);
+  cpu.Set(kLR, kSentinela);  // o retorno do callback volta para ca
+  // O CALLBACK E CHAMADO COMO UM `bx`, e nao com `Set(kPC, fn)`: o modo tem de
+  // vir do bit 0 da FUNCAO, e nao do que o titulo deixou no CPSR. O mesmo defeito
+  // custou 186 486 543 passos na entrega do `EVT_APP_START` (`tools/bateria.cpp`):
+  // com `Set`, o modo da fase anterior mandava, e um callback Thumb corria como
+  // ARM (ou o contrario). Aqui, o caminho equivalente -- um `bx r3` do proprio
+  // modulo -- ja respeitava o bit 0.
+  cpu.Bx(fn);
   cpu.Set(kR0, ctx);
   return true;
 }

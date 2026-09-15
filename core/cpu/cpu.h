@@ -108,6 +108,29 @@ class ICpu {
 
   virtual void Repor(Reg pc, Reg sp) = 0;
 
+  // ENTREGA O CONTROLO A `alvo` COMO UM `bx` -- o bit 0 escolhe entre ARM e
+  // Thumb, e nao faz parte do PC.
+  //
+  // Existe porque HA SALTOS QUE NAO SAO UMA INSTRUCAO DO GUEST: a entrega do
+  // `EVT_APP_START` ao `HandleEvent` do applet e o callback do temporizador sao
+  // o HOSPEDEIRO a chamar codigo do modulo, pela convencao do ARM. Com
+  // `Set(kPC, alvo)` o MODO ficava a ser o que a fase anterior deixou -- e o
+  // custo esta MEDIDO: com a fase do `CreateInstance` a sair por um `bx` com o
+  // bit 0 ligado, a fase do `EVT_APP_START` do `cnk2` correu codigo ARM no modo
+  // Thumb, 14 345 145 instrucoes foram RECUSADAS e a fase gastou o tecto inteiro
+  // (186 486 543 passos) sem sair. Com o bit 0 respeitado, a mesma fase gasta
+  // 155 342 passos. Ver `tools/bateria.cpp` e `Despacho::PrepararCallbackDoTemporizador`.
+  void Bx(Reg alvo) {
+    std::uint32_t cpsr = Cpsr();
+    if ((alvo & 1u) != 0) {
+      cpsr |= Cpsr::kT;
+    } else {
+      cpsr &= ~Cpsr::kT;
+    }
+    SetCpsr(cpsr);
+    Set(kPC, alvo & ~static_cast<Reg>(1u));
+  }
+
   // Quantas instrucoes o nucleo nao soube executar. Fica na INTERFACE, e nao no
   // interpretador, porque o despacho de HLE tem de poder ser conduzido pelos dois
   // nucleos -- e um contador de recusas que so um deles tem obriga o despacho a

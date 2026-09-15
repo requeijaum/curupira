@@ -1615,6 +1615,52 @@ TEST(Cpu, LdrParaOPcHonraOBitZeroEEntraEmThumb) {
   EXPECT_EQ(b.Cpu().Cpsr() & Cpsr::kT, Cpsr::kT);
 }
 
+TEST(Cpu, BxDoHospedeiroHonraOBitZeroENaoHerdaOModoDaFaseAnterior) {
+  // O SALTO DO HOSPEDEIRO. Ha dois sitios em que NAO e o guest que salta, e sim
+  // o despacho a chamar codigo do modulo: a entrega do `EVT_APP_START` ao
+  // `HandleEvent` do applet (`tools/bateria.cpp`) e o callback do temporizador
+  // (`Despacho::PrepararCallbackDoTemporizador`). Nos dois, a chamada tem a
+  // convencao de um `bx`: o BIT 0 do endereco escolhe ARM ou Thumb e nao faz
+  // parte do PC.
+  //
+  // Com `Set(kPC, alvo)` -- o que estava escrito -- o PC era o endereco COM o bit
+  // 0 e o MODO era o que a fase anterior deixou. E foi o que se mediu no `cnk2`,
+  // na arvore de 15/09: a fase do `CreateInstance` terminou num `bx r3` com o bit
+  // 0 ligado (0x808e0899), o nucleo ficou em Thumb, e a fase do `EVT_APP_START`
+  // correu 186 486 543 passos (o tecto declarado no corpus) a ler codigo ARM como
+  // Thumb, com 14 345 145 recusas da MESMA instrucao. Com o bit 0 respeitado, a
+  // mesma fase gasta 155 342 passos.
+  for (bool impar : {false, true}) {
+    Bancada b;
+    // A fase anterior deixa o CPSR no estado CONTRARIO ao que o alvo pede: e este
+    // o caso que o defeito nao apanhava.
+    std::uint32_t cpsr = b.Cpu().Cpsr();
+    if (impar) {
+      cpsr &= ~Cpsr::kT;
+    } else {
+      cpsr |= Cpsr::kT;
+    }
+    b.Cpu().SetCpsr(cpsr);
+    const std::uint32_t alvo = 0x00123456u | (impar ? 1u : 0u);
+    b.Cpu().Bx(alvo);
+    EXPECT_EQ(b.R(15), 0x00123456u) << "o bit 0 nao faz parte do PC";
+    EXPECT_EQ((b.Cpu().Cpsr() & Cpsr::kT) != 0, impar)
+        << "quem manda no modo e o bit 0 do alvo, e nao o CPSR que la estava";
+  }
+  {
+    // E o que acontece a seguir, que e o que interessa: duas palavras Thumb
+    // escritas no alvo tem de ser lidas como DUAS instrucoes Thumb.
+    Bancada b;
+    b.Cpu().Bx(0x00100001u);  // o alvo e a propria base, com o bit 0 ligado
+    b.Thumb(0x2001u);         // movs r0, #1
+    b.Thumb(0x2102u);         // movs r1, #2
+    b.Correr(2);
+    EXPECT_EQ(b.Cpu().Cpsr() & Cpsr::kT, Cpsr::kT);
+    EXPECT_EQ(b.R(0), 1u) << "a primeira palavra Thumb executou";
+    EXPECT_EQ(b.R(1), 2u) << "e o PC avancou de DOIS em dois, nao de quatro em quatro";
+  }
+}
+
 TEST(Cpu, LdmComABaseNaListaNaoApagaOValorCarregado) {
   // `ldmia r4!, {r4, r5}` == 0xE8B40030. Com o registador base DENTRO da lista,
   // quem manda e o valor carregado -- a escrita na base vinha depois do laco e

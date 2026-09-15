@@ -885,7 +885,16 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   if (g_eventos != 0 && g_applet != 0) {
     const std::uint32_t vtable = mem.Ler32(g_applet);
     const std::uint32_t handle_event = mem.Ler32(vtable + 8);  // slot 2
-    if (handle_event >= kBase && handle_event < kBase + e.tamanho) {
+    // O PC VAI SEM O BIT 0, e o bit 0 e que diz o MODO (`cpu.Bx`, em `cpu.h`).
+    //
+    // ESCRITO PORQUE CUSTOU 186 486 543 PASSOS, e o numero chegou ao corpus como
+    // se fosse uma medida do titulo: uma fase anterior que termina num `bx` com o
+    // bit 0 ligado deixa o nucleo em Thumb, e a fase seguinte -- que faz
+    // `Set(kPC, handle_event)`, e o `Set` NAO mexe no modo -- lia codigo ARM como
+    // Thumb. MEDIDO no `cnk2` da arvore de 15/09: 14 345 145 recusas da MESMA
+    // instrucao (0x0010 em pc=0x3314) e a fase inteira gasta em `orcamento_esgotado`;
+    // com o bit 0 respeitado, a mesma fase gasta 155 342 passos e sai do modulo.
+    if ((handle_event & ~1u) >= kBase && (handle_event & ~1u) < kBase + e.tamanho) {
       // `AEEAppStart`, lida de `platform/system/inc/AEEAppStart.h`:
       //
       //     typedef struct {
@@ -922,7 +931,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
       cpu.Set(kR2, 0);          // wp = 0 bits de start code
       cpu.Set(kR3, kAppStart);  // dwp = AEEAppStart*
       cpu.Set(kLR, kSentinela);
-      cpu.Set(kPC, handle_event);
+      cpu.Bx(handle_event);  // o modo vem do bit 0, como num `bx` do ARM
       const zb2::brew::ResultadoFase re = g_despacho->Correr(cpu, limite, kPPObj);
       e.passos_start = re.passos;  // a fase do arranque, contada
       e.recusadas_start = Colher();  // **e esta parcela que NAO chegava ao JSON**
