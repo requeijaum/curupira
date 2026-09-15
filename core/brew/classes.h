@@ -119,7 +119,16 @@ constexpr std::uint32_t kSlotsDaClasse = 32;
 // A FAIXA DE SAIDAS destas classes. 40000 nao colide com 1000 (ajudantes), 2000
 // (IShell), 6000/7000/8000/9500 (IDisplay/IFileMgr/DIB/ficheiro), 9000 (genericos),
 // 1500-1564 (metodos), 20000 (entrada) nem 30000/31000 (IGL/IEGL).
+//
+// O IGLES11 vive em faixa propria (40300+, 148 slots): nao cabe nos 32 por
+// classe, e alargar o passo partia a aritmetica de todas as outras.
 constexpr std::uint32_t kVtableClasseBase = 40000;
+constexpr std::uint32_t kVtableIgles = 40300;
+constexpr std::uint32_t kIglesSlots = 148;
+constexpr std::uint32_t kObjetoIgles = 0x8F006000u;
+// IIDs de interface (AEEGLES10/11.h via 3 refs; sem .h no SDK extract).
+constexpr std::uint32_t kIidGles10 = 0x0103d8ddu;
+constexpr std::uint32_t kIidGles11 = 0x0103d8eau;
 constexpr std::uint32_t VtClasse(std::uint32_t k) {
   return kVtableClasseBase + k * kSlotsDaClasse;
 }
@@ -148,6 +157,11 @@ bool SlotDaClasseImplementado(std::uint32_t k, std::uint32_t slot);
 // ficou por cablar -- uma cablagem perdida numa edicao ja custou uma corrida
 // inteira neste trabalho.
 void ConstruirClasses(Memoria& mem, const Saidas& saidas, Traco& traco);
+
+// O objeto IGLES11 (faixa propria): constroi vtable+objeto uma vez.
+void ConstruirIgles(Memoria& mem, const Saidas& saidas, Traco& traco);
+// Nome do slot IGLES11 (só IQI nomeado; resto e slotN, sem inventar).
+const char* NomeDoSlotIgles(std::uint32_t slot);
 
 // Repoem o estado do ITextCtl (ativo/props/modo) no arranque. Sem isto, dois
 // testes na mesma Bancada veriam o estado um do outro -- statics partilhados.

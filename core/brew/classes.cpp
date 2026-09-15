@@ -192,6 +192,7 @@ bool SlotDaClasseImplementado(std::uint32_t k, std::uint32_t slot) {
 
 void ConstruirClasses(Memoria& mem, const Saidas& saidas, Traco& traco) {
   ReporEstadoTextCtl();
+  ConstruirIgles(mem, saidas, traco);
   for (std::uint32_t k = 0; k < kQuantasClasses; ++k) {
     const std::uint32_t quantos = kSlotsDaInterface[k];
     if (quantos == 0 || quantos > kSlotsDaClasse) {
@@ -235,11 +236,74 @@ void ConstruirClasses(Memoria& mem, const Saidas& saidas, Traco& traco) {
   }
 }
 
+const char* NomeDoSlotIgles(std::uint32_t slot) {
+  switch (slot) {
+    case 0: return "AddRef";
+    case 1: return "Release";
+    case 2: return "QueryInterface";
+    default: return "?";
+  }
+}
+
+void ConstruirIgles(Memoria& mem, const Saidas& saidas, Traco& traco) {
+  ConstruirObjeto(mem, saidas, kObjetoIgles, saidas.Endereco(kVtableIgles),
+                  kIglesSlots, kVtableIgles);
+  if (mem.Ler32(kObjetoIgles) != saidas.Endereco(kVtableIgles)) {
+    traco.RegistarFalta(Area::Brew, "igles_cablagem_perdida",
+                        "o objecto nao aponta para a vtable");
+    return;
+  }
+  for (std::uint32_t s = 2; s < kIglesSlots; ++s) {
+    if (mem.Ler32(saidas.Endereco(kVtableIgles) + s * 4) != saidas.Endereco(kVtableIgles + s)) {
+      char det[96];
+      std::snprintf(det, sizeof(det), "IGLES11 slot %u", s);
+      traco.RegistarFalta(Area::Brew, "igles_cablagem_perdida", det);
+    }
+  }
+}
+
 bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
+  // O IGLES11, faixa propria. Nenhum metodo desenhado: recusa com nome.
+  if (indice >= kVtableIgles && indice < kVtableIgles + kIglesSlots) {
+    const std::uint32_t slot = indice - kVtableIgles;
+    char nome[64], det[160];
+    if (slot < 3) {
+      std::snprintf(nome, sizeof(nome), "IGLES11::%s", NomeDoSlotIgles(slot));
+    } else {
+      std::snprintf(nome, sizeof(nome), "IGLES11::slot%u", slot);
+    }
+    std::snprintf(det, sizeof(det),
+                  "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x lr=0x%08x", cpu.Get(kR0),
+                  cpu.Get(kR1), cpu.Get(kR2), cpu.Get(kR3), cpu.Get(kLR));
+    traco.RegistarFalta(Area::Brew, nome, det);
+    cpu.Set(kR0, kAeeUnsupported);
+    return true;
+  }
   if (indice < kVtableClasseBase || indice >= VtClasse(kQuantasClasses)) return false;
   const std::uint32_t k = (indice - kVtableClasseBase) / kSlotsDaClasse;
   const std::uint32_t slot = (indice - kVtableClasseBase) % kSlotsDaClasse;
 
+  const std::uint32_t k_qegl = static_cast<std::uint32_t>(Classe::kQEGL);
+  if (k == k_qegl && slot == 2) {
+    // `int QueryInterface(po, AEEIID, void**)` no QEGL: GLES10/11 -> IGLES11.
+    // Mesma resposta pros dois (tabela 11 estende a 10; precedente unanime).
+    const std::uint32_t iid = cpu.Get(kR1);
+    const std::uint32_t ppo = cpu.Get(kR2);
+    if (ppo == 0) {
+      cpu.Set(kR0, kAeeBadParm);
+      return true;
+    }
+    if (iid == kIidGles10 || iid == kIidGles11) {
+      cpu.Mem().Escrever32(ppo, kObjetoIgles);
+      cpu.Set(kR0, kAeeSuccess);
+      char det[96];
+      std::snprintf(det, sizeof(det), "iid=0x%08x -> IGLES11", iid);
+      traco.Emitir(Area::Brew, Nivel::Depuracao, "QEGL_QUERYINTERFACE", det);
+      return true;
+    }
+    cpu.Mem().Escrever32(ppo, 0);
+    // IID desconhecido: cai na recusa nomeada abaixo.
+  }
   if (k == kClasseDoAppHistory && slot == brew_slots::kAppHistory_Back) {
     // `int Back(po)` -- sem anterior na lista de 1: ENOSUCH, o fim-de-lista
     // que o `IAppHistory_Bottom` do cabecalho espera (ver SlotDaClasseImplementado).

@@ -345,10 +345,38 @@ TEST(Classes, OQEGLTemTresSlotsDeclaradosERecusaComNome) {
   EXPECT_STREQ(NomeDoSlotDaClasse(q, 2), "QueryInterface");
   EXPECT_EQ(ObjetoDoClsid(0x0103d8ecu), ObjetoDaClasse(q));
   Bancada b;
+  // IID desconhecido: escreve 0 + recusa nomeada.
   b.Cpu().Set(kR0, ObjetoDaClasse(q));
+  b.Cpu().Set(kR1, 0x12345678u);
+  b.Cpu().Set(kR2, 0x80100000u);
   EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(q) + 2, b.T()));
   EXPECT_EQ(b.Cpu().Get(kR0), kAeeUnsupported);
+  EXPECT_EQ(b.M().Ler32(0x80100000u), 0u);
   EXPECT_EQ(b.Faltas("QEGL::QueryInterface"), 1u);
+  // GLES10/11: IGLES11 + SUCCESS, sem falta.
+  for (std::uint32_t iid : {0x0103d8ddu, 0x0103d8eau}) {
+    b.Cpu().Set(kR0, ObjetoDaClasse(q));
+    b.Cpu().Set(kR1, iid);
+    b.Cpu().Set(kR2, 0x80100000u);
+    EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(q) + 2, b.T()));
+    EXPECT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
+    EXPECT_EQ(b.M().Ler32(0x80100000u), kObjetoIgles);
+  }
+  EXPECT_EQ(b.Faltas("QEGL::QueryInterface"), 1u);
+  // ppo nulo: EBADPARM sem escrever.
+  b.Cpu().Set(kR1, 0x0103d8eau);
+  b.Cpu().Set(kR2, 0);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(q) + 2, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeBadParm);
+}
+
+TEST(Classes, OIglesRecusaComNomeESemMetodoFingido) {
+  Bancada b;
+  EXPECT_EQ(b.M().Ler32(kObjetoIgles), b.S().Endereco(kVtableIgles));
+  b.Cpu().Set(kR0, kObjetoIgles);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), kVtableIgles + 79, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("IGLES11::slot79"), 1u);
 }
 
 TEST(Classes, OValueModelNaoTemMetodoImplementadoEPorIssoRecusaComNome) {
