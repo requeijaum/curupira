@@ -467,6 +467,34 @@ struct Implementacao {
   void (*funcao)(Memoria&, Alocador&, ICpu&, Traco&);
 };
 
+// 0x0CC -- `int (*strncmp)(const char *a, const char *b, size_t length)`
+// (AEEStdLib.h). r0=a, r1=b, r2=n. Compara ate n ou ao primeiro NUL.
+void FazerStrncmp(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
+  const std::uint32_t a = cpu.Get(kR0);
+  const std::uint32_t b = cpu.Get(kR1);
+  const std::uint32_t n = cpu.Get(kR2);
+  std::int32_t r = 0;
+  if (a == 0 || b == 0) {
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_strncmp, "ponteiro nulo",
+                   DetalheDosRegistos(cpu));
+    cpu.Set(kR0, 0);
+    return;
+  }
+  for (std::uint32_t i = 0; i < n; ++i) {
+    const std::uint8_t ca = mem.Ler8(a + i);
+    const std::uint8_t cb = mem.Ler8(b + i);
+    if (ca != cb) {
+      r = static_cast<std::int32_t>(ca) - static_cast<std::int32_t>(cb);
+      break;
+    }
+    if (ca == 0) break;
+  }
+  cpu.Set(kR0, static_cast<std::uint32_t>(r));
+  char det[96];
+  std::snprintf(det, sizeof(det), "n=%u -> %d", n, r);
+  EmitirChamada(traco, brew_ajudantes::kAjudante_strncmp, det);
+}
+
 constexpr Implementacao kImplementados[] = {
     {brew_ajudantes::kAjudante_strstr, "strstr", FazerStrstr},
     {brew_ajudantes::kAjudante_wstrtostr, "wstrtostr", FazerWstrToStr},
@@ -474,6 +502,7 @@ constexpr Implementacao kImplementados[] = {
     {brew_ajudantes::kAjudante_stristr, "stristr", FazerStristr},
     {brew_ajudantes::kAjudante_GetRAMFree, "GetRAMFree", FazerGetRamFree},
     {brew_ajudantes::kAjudante_strdup, "strdup", FazerStrdup},
+    {brew_ajudantes::kAjudante_strncmp, "strncmp", FazerStrncmp},
 };
 
 // AS ANCORAS DA LISTA, verificadas em tempo de COMPILACAO. Cada uma e um offset
@@ -492,9 +521,10 @@ static_assert(brew_ajudantes::kAjudante_wstrtostr == 0x044, "0x044 e wstrtostr")
 static_assert(brew_ajudantes::kAjudante_utf8towstr == 0x050, "0x050 e utf8towstr");
 static_assert(brew_ajudantes::kAjudante_GetRAMFree == 0x138, "0x138 e GetRAMFree");
 static_assert(brew_ajudantes::kAjudante_strdup == 0x0F4, "0x0f4 e strdup");
+static_assert(brew_ajudantes::kAjudante_strncmp == 0x0CC, "0x0cc e strncmp");
 static_assert(
     sizeof(kImplementados) / sizeof(kImplementados[0]) ==
-        6,
+        7,
     "a lista das implementacoes mudou: actualiza o numero e o teste");
 
 }  // namespace

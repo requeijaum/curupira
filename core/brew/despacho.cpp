@@ -487,7 +487,11 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           cpu.Set(kPC, lr);
           continue;
         }
-        if (iid == kIidDisplay) devolver = zb2::brew::kObjDisplay;
+        // DISPLAY1 (0x010127d4, "display 1") e o segundo display; num aparelho
+        // de um so ecra e o mesmo objeto do DISPLAY (precedente: zeebulator
+        // brew_platform.cpp:54; SDK AEEDisp.h:49). 3x no corpus.
+        constexpr std::uint32_t kIidDisplay1 = 0x010127d4u;
+        if (iid == kIidDisplay || iid == kIidDisplay1) devolver = zb2::brew::kObjDisplay;
         else if (iid == kIidFileMgr) devolver = zb2::brew::kObjFileMgr;
         // O GL E O EGL (AEEGL.h). O `ddragonz` cria um objecto com o AEECLSID_GL
         // (0x01014bc3) e passa o resultado como `gpIGL` (0x11d61c-0x11d634).
@@ -1191,7 +1195,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // devolvia FALSE para o proprio app, incoerente com o CreateInstance.
         const bool e_o_titulo = (tem_clsid_ && cls == clsid_titulo_);
         const bool e_classe_servida = (IndiceDaClasse(cls) < kQuantasClasses);
-        const bool conhecida = (cls == kIidDisplay || cls == kIidFileMgr ||
+        const bool conhecida = (cls == kIidDisplay || cls == 0x010127d4u || cls == kIidFileMgr ||
                                 cls == kIidHeap || cls == kIidFile || cls == kIidSound ||
                                 cls == kIidGraphics || cls == kIidRootForm ||
                                 cls == kIidHid || cls == kIidSqlMgr ||

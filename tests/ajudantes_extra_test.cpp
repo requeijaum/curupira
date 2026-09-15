@@ -463,8 +463,8 @@ TEST(AjudantesExtra, OffsetForaDaTabelaNaoERecusadoAqui) {
 }
 
 TEST(AjudantesExtra, ImplementadosSaoCincoEATodosNoCatalogo) {
-  EXPECT_EQ(AjudantesExtra::Implementados(), 6u);
-  for (std::uint32_t off : {0x0D8u, 0x044u, 0x050u, 0x0E8u, 0x138u, 0x0F4u}) {
+  EXPECT_EQ(AjudantesExtra::Implementados(), 7u);
+  for (std::uint32_t off : {0x0D8u, 0x044u, 0x050u, 0x0E8u, 0x138u, 0x0F4u, 0x0CCu}) {
     EXPECT_NE(DeclaracaoDoOffset(off), nullptr) << "0x" << std::hex << off;
   }
 }
@@ -519,6 +519,44 @@ TEST(AjudantesExtra, StrdupSemMemoriaRecusaERegista) {
   EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x0f4] strdup"), 1u);
   EXPECT_NE(b.DetalheDaFalta("AEEHelperFuncs[0x0f4] strdup").find("sem memoria"),
             std::string::npos);
+}
+
+TEST(AjudantesExtra, StrncmpComparaAteNComNul) {
+  Bancada b;
+  b.EscreverCadeia(kTexto, "abc");
+  b.EscreverCadeia(kTexto2, "abd");
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, kTexto2);
+  b.cpu.Set(kR2, 2);
+  EXPECT_EQ(b.Atender(0x0CC), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u) << "2 primeiros iguais";
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, kTexto2);
+  b.cpu.Set(kR2, 3);
+  b.Atender(0x0CC);
+  EXPECT_NE(b.cpu.Get(kR0), 0u) << "c != d no terceiro";
+  EXPECT_LT(static_cast<std::int32_t>(b.cpu.Get(kR0)), 0) << "c < d";
+  // n=0: iguais.
+  b.cpu.Set(kR2, 0);
+  b.Atender(0x0CC);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u);
+  // NUL trava: "ab" vs "ab\0x01..." com n grande.
+  b.EscreverCadeia(kTexto2, "ab");
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, kTexto2);
+  b.cpu.Set(kR2, 16);
+  b.Atender(0x0CC);
+  EXPECT_NE(b.cpu.Get(kR0), 0u) << "abc vs ab: NUL != c";
+}
+
+TEST(AjudantesExtra, StrncmpNulaRecusaERegista) {
+  Bancada b;
+  b.cpu.Set(kR0, 0);
+  b.cpu.Set(kR1, kTexto);
+  b.cpu.Set(kR2, 4);
+  EXPECT_EQ(b.Atender(0x0CC), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u);
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x0cc] strncmp"), 1u);
 }
 
 TEST(AjudantesExtra, OContratoDoGanchoEDeUmaLinha) {
