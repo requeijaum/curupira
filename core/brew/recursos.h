@@ -239,6 +239,7 @@ LeitorDeRecursos LeitorDaPasta(const std::string& pasta_do_titulo, const Vfs* vf
 // r3 = destino, `[sp+0]` = nSize.
 struct PedidoDeTexto {
   std::string ficheiro;
+  bool base_nula = false;  // r1 == 0: o SDK passa NULL para ler do proprio modulo (MIF)
   std::uint16_t id = 0;
   std::uint32_t destino = 0;  // AECHAR *pBuff: UTF-16
   std::uint32_t n_bytes = 0;  // `int nSize` -- o cabecalho diz "tamanho em bytes"
@@ -265,10 +266,13 @@ class Recursos {
 
   // O `LoadResString` (IShell slot 17). Le o recurso de tipo 1 e escreve-o no
   // destino como AECHAR (UTF-16). O QUE NAO ESTA MEDIDO, e fica DECLARADO: a
-  // terminacao NUL no fim. Nenhum titulo do corpus pediu o slot 17 (a lista de
-  // demanda medida nao o tem), logo nao ha sonda para ela; escreve-se quando
-  // cabe, porque um jogo que trate o buffer como cadeia C fica correcto e um que
-  // conte os caracteres devolvidos nao e afectado.
+  // terminacao NUL no fim. Escreve-se quando cabe, porque um jogo que trate o
+  // buffer como cadeia C fica correcto e um que conte os caracteres devolvidos
+  // nao e afectado.
+  // A BASE VAZIA (NULL ou "") NAO E UM FICHEIRO: no SDK ela seleciona a cadeia
+  // do proprio modulo (MIF -- `AEEShell.h:300-302`, `AEEMIF.h:33-35`). Sem modelo
+  // de MIF, recusa-se com o id no motivo. Demanda medida: o `alpineracerex` pede
+  // o slot 17 1x com base vazia (bateria de 2026-09-15, 62 titulos).
   ResultadoDoTexto ServirTexto(const PedidoDeTexto& pedido);
 
   // `FreeResData(IShell*, void*)` -- IShell slot 20. So liberta o que o

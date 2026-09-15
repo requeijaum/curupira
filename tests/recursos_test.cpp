@@ -516,6 +516,37 @@ TEST(Recursos, TextoComIdInexistenteRecusa) {
   }
 }
 
+// --- V13: a base vazia e o proprio modulo (MIF), e recusa-se com o id ----
+TEST(Recursos, TextoComBaseVaziaRecusaComoTextoDoModulo) {
+  Banco b;
+  {
+    Recursos r = b.Servico();
+    // O caso da bateria: o `alpineracerex` pede o slot 17 1x com a base vazia.
+    // No SDK a base NULA e legal e seleciona a cadeia do proprio modulo (MIF):
+    // `ISHELL_GetAppAuthor(ps,buf,tam) = LoadResString(ps,NULL,IDS_MIF_COMPANY=6,...)`
+    // (`AEEShell.h:300-302`, `AEEMIF.h:33-35`). Sem modelo de MIF, servir seria
+    // fingir: a recusa diz o id, para a demanda dizer QUAL cadeia se pediu.
+    PedidoDeTexto p;
+    p.ficheiro = "";
+    p.base_nula = true;
+    p.id = 6;  // IDS_MIF_COMPANY
+    p.destino = kEnderecoDoTexto;
+    p.n_bytes = 32;
+    const ResultadoDoTexto t = r.ServirTexto(p);
+    // V13: recusar com "pszBaseFile vazio" sem o id -- a demanda voltava a dizer
+    // so "vazio" e ninguem sabia que cadeia do modulo o titulo queria.
+    EXPECT_FALSE(t.ok);
+    EXPECT_NE(t.motivo.find("MIF"), std::string::npos) << t.motivo;
+    EXPECT_NE(t.motivo.find("0x00000006"), std::string::npos) << t.motivo;
+    for (std::uint32_t k = 0; k < 0x20; ++k) {
+      EXPECT_EQ(b.Ler8(kEnderecoDoTexto + k), 0xAA) << "byte " << k;
+    }
+    EXPECT_NE(b.traco.ContagemFaltas().count("IShell::LoadResString"), 0u);
+    EXPECT_EQ(r.Contagem().textos, 1u);
+    EXPECT_EQ(r.Contagem().recusados, 1u);
+  }
+}
+
 // --- com os ficheiros de verdade ------------------------------------------
 
 std::string CaminhoDoPacmania() {

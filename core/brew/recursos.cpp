@@ -248,7 +248,17 @@ ResultadoDoTexto Recursos::ServirTexto(const PedidoDeTexto& pedido) {
   ResultadoDoTexto r;
   ++medicao_.textos;
   if (pedido.ficheiro.empty()) {
-    r.motivo = "pszBaseFile vazio";
+    // A BASE VAZIA SELECIONA O PROPRIO MODULO, e nao um ficheiro: o SDK le
+    // autor/direitos/versao com `LoadResString(ps,NULL,IDS_MIF_*,...)`
+    // (`AEEShell.h:300-302`, ids 6/7/8 em `AEEMIF.h:33-35`). Sem modelo de MIF,
+    // servir seria fingir: recusa-se com o id, para a demanda dizer QUAL cadeia
+    // do modulo o titulo pediu (o `alpineracerex` pediu 1x com base vazia).
+    char detalhe[256];
+    std::snprintf(detalhe, sizeof(detalhe),
+                  "pszBaseFile %s com id=%s: cadeia do proprio modulo (MIF, IDS_MIF_*), sem modelo de MIF",
+                  pedido.base_nula ? "nulo (r1=0)" : "vazio ("")",
+                  Hex(pedido.id).c_str());
+    r.motivo = detalhe;
     ++medicao_.recusados;
     ++recusas_[r.motivo];
     if (traco_ != nullptr) traco_->RegistarFalta(Area::Brew, "IShell::LoadResString", r.motivo);

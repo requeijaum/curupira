@@ -592,6 +592,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         const std::uint32_t sp = cpu.Get(kSP);
         PedidoDeTexto pedido;
         pedido.ficheiro = LerTextoDe(mem_, cpu.Get(kR1), 512);
+        pedido.base_nula = (cpu.Get(kR1) == 0);
         pedido.id = static_cast<std::uint16_t>(cpu.Get(kR2));
         pedido.destino = cpu.Get(kR3);
         pedido.n_bytes = mem_.Ler32(sp);
