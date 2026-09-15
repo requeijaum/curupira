@@ -29,7 +29,7 @@ namespace zb2::brew {
 // O tecto sobe para 200 000: cabe a descodificacao medida com folga, e um ciclo
 // preso continua a ser travado (e o tecto de PASSOS, 8 M, e o limite que
 // sobrevive a tudo).
-constexpr std::uint64_t kSaidasPorFase = 20000;
+constexpr std::uint64_t kSaidasPorFase = 2000000;
 
 namespace {
 
