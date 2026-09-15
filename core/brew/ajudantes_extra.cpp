@@ -819,6 +819,466 @@ void FazerStrlcat(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
   EmitirChamada(traco, brew_ajudantes::kAjudante_strlcat, det);
 }
 
+
+// ---------------------------------------------------------------------------
+// 0x090 -- `int (*atoi)(const char *psz)`
+// ---------------------------------------------------------------------------
+//
+// ASSINATURA, de `AEEStdLib.h:118`:
+//   r0 = psz : char* -- a cadeia, terminada em zero
+//   devolve: o valor, em `int`
+//
+// SEMANTICA, do proprio cabecalho (`AEEStdLib.h:2389-2392`): "This function is
+// a wrapper around the atoi() function provided by the standard C library. Its
+// behavior is identical to that of atoi()." Logo as regras sao as da libc:
+// espacos iniciais (`isspace`), um sinal opcional, digitos ate ao primeiro que
+// nao seja digito -- e ZERO quando nada se converteu (`atoi("xyz")` e 0, nao um
+// erro; um `endptr` nao existe nesta funcao).
+//
+// O QUE O CABECALHO NAO DEFINE e o TRANSBORDO -- na libc e comportamento
+// indefinido. Aqui satura-se em INT32_MAX/INT32_MIN e regista-se o pressuposto,
+// porque um valor saturado e um valor DECLARADO; a alternativa era um numero
+// inventado em silencio, que e pior. Nao e uma falta: nao falta nada, o caso e
+// que nao tem definicao no SDK.
+void FazerAtoi(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
+  const std::uint32_t p_in = cpu.Get(kR0);
+  if (p_in == 0) {
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_atoi, "ponteiro nulo",
+                   DetalheDosRegistos(cpu));
+    cpu.Set(kR0, 0);
+    return;
+  }
+  const auto byte = [&](std::uint32_t k) -> std::uint8_t { return mem.Ler8(p_in + k); };
+
+  // Espacos iniciais: `isspace` em C e o espaco, o \t, o \n, o \v, o \f e o \r.
+  std::uint32_t i = 0;
+  while (i < kLimiteDeCadeia && (byte(i) == ' ' || (byte(i) >= 0x09 && byte(i) <= 0x0D))) ++i;
+  bool negativo = false;
+  if (byte(i) == '-' || byte(i) == '+') {
+    negativo = (byte(i) == '-');
+    ++i;
+  }
+
+  // O TECTO depende do sinal: `atoi("-2147483648")` e representavel, e com um
+  // tecto unico de INT32_MAX ele sairia saturado por um valor que cabe.
+  const std::int64_t tecto = negativo ? 0x80000000ll : 0x7FFFFFFFll;
+  std::int64_t valor = 0;
+  bool algum_digito = false;
+  bool saturado = false;
+  while (i < kLimiteDeCadeia) {
+    const std::uint8_t c = byte(i);
+    if (c < '0' || c > '9') break;
+    algum_digito = true;
+    valor = valor * 10 + static_cast<std::int64_t>(c - '0');
+    if (valor >= tecto) {
+      valor = tecto;
+      saturado = true;
+    }
+    ++i;
+  }
+  if (i >= kLimiteDeCadeia) {
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_atoi,
+                   "cadeia sem fim (limite de caracteres)", DetalheDosRegistos(cpu));
+    cpu.Set(kR0, 0);
+    return;
+  }
+  std::int32_t r = 0;
+  if (algum_digito) r = static_cast<std::int32_t>(negativo ? -valor : valor);
+  cpu.Set(kR0, static_cast<std::uint32_t>(r));
+  if (saturado) {
+    traco.RegistarPressuposto(Area::Brew, "atoi_saturado",
+                              "o transbordo do atoi nao tem definicao no SDK (AEEStdLib.h:2389); "
+                              "saturou-se em INT32");
+  }
+  char det[96];
+  std::snprintf(det, sizeof(det), "valor=%d bytes=%u", r, i);
+  EmitirChamada(traco, brew_ajudantes::kAjudante_atoi, det);
+}
+
+// ---------------------------------------------------------------------------
+// 0x0FC -- `boolean (*strends)(const char *cpszSuffic, const char *psz)`
+// ---------------------------------------------------------------------------
+//
+// ASSINATURA, de `AEEStdLib.h:160` -- e o pedaco vem PRIMEIRO:
+//   r0 = cpszSuffic : char* -- o sufixo procurado
+//   r1 = psz        : char* -- a cadeia a testar
+//   devolve: TRUE se `psz` ACABA em `cpszSuffic`, FALSE caso contrario
+//
+// SEMANTICA, do proprio cabecalho (`AEEStdLib.h:2793-2806`): "Tell if a string
+// ends with a suffix" / "TRUE if psz ends with pszSuffix".
+//
+// A INVERSao DOS ARGUMENTOS E O DEFEITO FACIL AQUI, e por isso esta escrita por
+// extenso: quem le `strends(a, b)` pensa `b` acaba em `a`. O cabecalho diz
+// exactamente isso, e o zeebx le-o da mesma maneira (`helper.rs:553-560`: "o
+// pedaço procurado vem **primeiro**").
+//
+// SENSIVEL A MAIUSCULAS. O cabecalho tem uma variante insensivel para o
+// `strbegins` (`STRIBEGINS` = `aee_stribegins`, `AEEStdLib.h:333`) e NAO a tem
+// para o `strends`: nao se inventa uma.
+void FazerStrends(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
+  constexpr std::uint32_t kVerdadeiro = 1;  // AEEStdDef.h:140
+  constexpr std::uint32_t kFalso = 0;       // AEEStdDef.h:143
+  const std::uint32_t p_sufixo = cpu.Get(kR0);
+  const std::uint32_t p_texto = cpu.Get(kR1);
+  if (p_sufixo == 0 || p_texto == 0) {
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_strends, "ponteiro nulo",
+                   DetalheDosRegistos(cpu));
+    cpu.Set(kR0, kFalso);
+    return;
+  }
+  // O comprimento de cada cadeia, com o limite registado: `Ler8` num ponteiro
+  // errado percorre o espaco todo antes de parar.
+  const auto comprimento = [&](std::uint32_t p, const char* qual) -> std::int64_t {
+    for (std::uint32_t k = 0; k < kLimiteDeCadeia; ++k) {
+      if (mem.Ler8(p + k) == 0) return static_cast<std::int64_t>(k);
+    }
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_strends,
+                   "cadeia sem fim (limite de caracteres)",
+                   std::string("qual=") + qual + " | " + DetalheDosRegistos(cpu));
+    return -1;
+  };
+  const std::int64_t n_suf = comprimento(p_sufixo, "do sufixo");
+  const std::int64_t n_txt = (n_suf < 0) ? -1 : comprimento(p_texto, "do texto");
+  if (n_suf < 0 || n_txt < 0) {
+    cpu.Set(kR0, kFalso);
+    return;
+  }
+  // Um sufixo mais comprido do que a cadeia nunca pode ser o fim dela; um
+  // sufixo VAZIO e o fim de qualquer cadeia (e o que `ends_with("")` faz).
+  bool termina = (n_suf <= n_txt);
+  for (std::int64_t k = 0; termina && k < n_suf; ++k) {
+    const std::uint32_t no_texto = p_texto + static_cast<std::uint32_t>(n_txt - n_suf + k);
+    if (mem.Ler8(no_texto) != mem.Ler8(p_sufixo + static_cast<std::uint32_t>(k))) {
+      termina = false;
+    }
+  }
+  cpu.Set(kR0, termina ? kVerdadeiro : kFalso);
+  char det[96];
+  std::snprintf(det, sizeof(det), "sufixo=%lld texto=%lld", static_cast<long long>(n_suf),
+                static_cast<long long>(n_txt));
+  EmitirChamada(traco, brew_ajudantes::kAjudante_strends, det);
+}
+
+// ---------------------------------------------------------------------------
+// 0x0AC -- `uint32 (*aee_GetTimeMS)(void)`
+// ---------------------------------------------------------------------------
+//
+// ASSINATURA, de `AEEStdLib.h:135`. Doc (`AEEStdLib.h:4783-4800`): "returns the
+// number of milliseconds that have elapsed since the last occurrence of
+// 00:00:00 local time" -- um relogio de CALENDARIO, e nao um cronometro. O guia
+// do fabricante diz o mesmo por outra via (`ZeeboDeveloperGuide0.97.md:3498`):
+// "Avoid using BREW function call GETTIMEMS() to retrieve or compute elapsed
+// time for frame rate control".
+//
+// PORQUE DEVOLVE ZERO, E NAO O RELOGIO VIRTUAL. O relogio virtual desta arvore
+// (`Despacho::agora_ms_`, 1 ms por instrucao) e o que responde ao
+// `aee_GetUpTimeMS` -- mas esta tabela NAO o alcanca: `AtenderAjudanteExtra`
+// recebe `cpu`, `memoria`, `alocador` e `traco`, e mais nada, e quem constroi o
+// `Despacho` e `core/brew/despacho.cpp`, fora da frente. Ligar os dois era UMA
+// linha la, e essa linha fica dita aqui para o proximo.
+//
+// Zero e, entao, um valor DECLARADO, e nao medido: o aparelho emulado nunca
+// adquiriu relogio de sistema (o proprio cabecalho manda usar `ISTIMEVALID()`
+// para o saber -- `AEEStdLib.h:4789`), logo "0 ms desde as 00:00:00 locais" e a
+// resposta honesta de um aparelho sem hora. O caminho para um valor plausivel e
+// NAO medido e o `RegistarPressuposto` -- o mesmo que o `GetFreeSpace` do
+// `IFileMgr` usa. O medido: o `gof` pede-o UMA vez.
+void FazerAeeGetTimeMS(Memoria&, Alocador&, ICpu& cpu, Traco& traco) {
+  cpu.Set(kR0, 0);
+  traco.RegistarPressuposto(
+      Area::Brew, "aee_GetTimeMS_meia_noite",
+      "0 ms desde as 00:00:00 locais: o aparelho emulado nao adquiriu relogio de "
+      "sistema (AEEStdLib.h:4786-4790) e o relogio virtual do despacho nao e "
+      "alcancavel desta tabela");
+  EmitirChamada(traco, brew_ajudantes::kAjudante_aee_GetTimeMS, "0 ms (declarado)");
+}
+
+// ---------------------------------------------------------------------------
+// 0x03C -- `void (*wsprintf)(AECHAR *pDest, int nSize, const AECHAR *pFormat, ...)`
+// ---------------------------------------------------------------------------
+//
+// ASSINATURA, de `AEEStdLib.h:69-70`:
+//   r0 = pDest   : AECHAR* -- destino (AECHAR = uint16, AEEStdDef.h:114)
+//   r1 = nSize   : int    -- tamanho TOTAL de pDest, em BYTES
+//   r2 = pFormat : AECHAR* -- cadeia de formato LARGA
+//   r3, pilha    : os varargs, pela convencao do AAPCS
+//   devolve: NADA (void)
+//
+// O QUE CONFIRMA QUE `nSize` E EM BYTES, e nao em AECHARs: o cabecalho di-lo
+// (`AEEStdLib.h:3335`: "nSize: Specifies the total size (in bytes) of pDest
+// buffer"), o exemplo do proprio SDK passa `sizeof(AECHAR) * 512`
+// (`Toolset 7.10 .../c_systemtaskapp_HowTo.xml`, `c_SystemTaskApp.c:2512`) e o
+// zeebx divide-o por 2 antes de escrever (`helper.rs:441`). O medido no
+// `tekken2`: nSize = 0x40 (64 bytes = 32 AECHARs).
+//
+// O QUE `%s` COME E UM AECHAR*, e nao um `char*`. Fonte independente do
+// cabecalho, no proprio SDK: `c_SystemTaskApp.c:3544-3565` monta o formato
+// `L"... BREWMP Version: %s\n AEE Version: %s ..."` num `AECHAR[2048]` e
+// chama-o (`:3643`) com `szBREWMPVersion` e `szAETemp`, que sao `AECHAR[32]` e
+// `AECHAR[128]`. E a razao de o cabecalho dizer que a funcao "is the wide-string
+// equivalent of sprintf()" (`:3320`).
+//
+// AS DUAS LIMITACOES QUE O CABECALHO DECLARA (`AEEStdLib.h:3321-3326`):
+//   1. "It only handles strings as %s. It does not handle len/format specifiers
+//      on strings" -- nada de `%.3s` nem de largura/precisao em `%s`;
+//   2. "This function does not support %f in the format string. If %f is found
+//      anywhere within the format string, this function returns immediately
+//      without doing any processing" -- nada se escreve, nem o que vinha antes
+//      do `%f`. E por isso que a PROCURA pelo `%f` e feita ANTES de formatar: um
+//      destino a meio escrito seria uma resposta que o SDK nao da.
+//
+// UM ESPECIFICADOR QUE NAO SE SABE FORMATAR NAO SE ESCREVE COMO SE SOUBESSE: vai
+// para o destino como veio (o que o `sprintf` tambem faz com o que nao entende)
+// E regista-se a falta, com o nome do slot -- principio P2.
+
+// Uma especificacao de formato lida da cadeia LARGA do guest.
+struct Especificacao {
+  bool zero_a_esquerda = false;
+  bool alinhado_a_esquerda = false;
+  int largura = 0;
+  char16_t conversao = 0;
+};
+
+// Le a especificacao que comeca no `%` em `fmt[inicio]`. `*depois` fica com o
+// indice do caracter a seguir a conversao. `false` quando a cadeia acabou no
+// meio do `%` (que o SDK nao define e se regista).
+bool LerEspecificacao(const std::u16string& fmt, std::size_t inicio, Especificacao* e,
+                      std::size_t* depois) {
+  std::size_t i = inicio + 1;
+  while (i < fmt.size() && (fmt[i] == u'-' || fmt[i] == u'+' || fmt[i] == u' ' ||
+                            fmt[i] == u'0' || fmt[i] == u'#')) {
+    if (fmt[i] == u'0') e->zero_a_esquerda = true;
+    if (fmt[i] == u'-') e->alinhado_a_esquerda = true;
+    ++i;
+  }
+  while (i < fmt.size() && fmt[i] >= u'0' && fmt[i] <= u'9') {
+    if (e->largura < 100000) e->largura = e->largura * 10 + (fmt[i] - u'0');
+    ++i;
+  }
+  // Modificadores de comprimento: no AAPCS um `long` e um `int`, logo sao
+  // absorvidos sem mudar nada -- como no `Formatar` do `formato.cpp`.
+  while (i < fmt.size() && (fmt[i] == u'l' || fmt[i] == u'h' || fmt[i] == u'z' || fmt[i] == u'I')) {
+    ++i;
+  }
+  while (i < fmt.size() && (fmt[i] == u'6' || fmt[i] == u'4')) ++i;  // o "64" do I64
+  if (i >= fmt.size()) return false;
+  e->conversao = fmt[i];
+  *depois = i;
+  return true;
+}
+
+// A contagem de AECHAR de uma cadeia larga, com limite.
+std::u16string LerCadeiaLarga(Memoria& mem, std::uint32_t p, std::uint32_t maximo) {
+  std::u16string s;
+  if (p == 0) return s;
+  for (std::uint32_t k = 0; k < maximo; ++k) {
+    const std::uint16_t c = mem.Ler16(p + k * 2);
+    if (c == 0) break;
+    s.push_back(static_cast<char16_t>(c));
+  }
+  return s;
+}
+
+// O `%f`/`%F` em qualquer ponto do formato -- a condicao que faz o `wsprintf`
+// devolver sem tocar no destino.
+bool TemPontoFlutuante(const std::u16string& fmt) {
+  for (std::size_t i = 0; i < fmt.size(); ++i) {
+    if (fmt[i] != u'%') continue;
+    if (i + 1 < fmt.size() && fmt[i + 1] == u'%') {  // `%%` e um `%` literal
+      ++i;
+      continue;
+    }
+    Especificacao e;
+    std::size_t depois = i;
+    if (!LerEspecificacao(fmt, i, &e, &depois)) continue;
+    if (e.conversao == u'f' || e.conversao == u'F') return true;
+    i = depois;
+  }
+  return false;
+}
+
+// O texto ASCII de um especificador, para o registo da falta.
+std::string NomeDaConversao(char16_t c) {
+  if (c >= 0x20 && c < 0x7F) return std::string(1, static_cast<char>(c));
+  char b[16];
+  std::snprintf(b, sizeof(b), "\\u%04x", static_cast<unsigned>(c));
+  return b;
+}
+
+// O texto de uma conversao numerica, com a largura e o zero a esquerda que o
+// `printf` da maquina ja sabe fazer. O valor entra com o TIPO que o formato
+// espera (`int` para `%d`, `unsigned` para os outros): passar um `uint32` a um
+// `%d` e a mesma coisa em bits e outra coisa em contrato.
+void EscreverNumerico(char* tmp, std::size_t tamanho, const Especificacao& e, char tipo,
+                      std::uint32_t bits) {
+  const int largura = e.largura;
+  const bool com_zero = e.zero_a_esquerda && !e.alinhado_a_esquerda && largura > 0;
+  switch (tipo) {
+    case 'd':
+    case 'i': {
+      const int v = static_cast<std::int32_t>(bits);
+      if (largura > 0) std::snprintf(tmp, tamanho, com_zero ? "%0*d" : "%*d", largura, v);
+      else std::snprintf(tmp, tamanho, "%d", v);
+      break;
+    }
+    case 'u':
+      if (largura > 0) std::snprintf(tmp, tamanho, com_zero ? "%0*u" : "%*u", largura, bits);
+      else std::snprintf(tmp, tamanho, "%u", bits);
+      break;
+    case 'x':
+      if (largura > 0) std::snprintf(tmp, tamanho, com_zero ? "%0*x" : "%*x", largura, bits);
+      else std::snprintf(tmp, tamanho, "%x", bits);
+      break;
+    default:  // 'X'
+      if (largura > 0) std::snprintf(tmp, tamanho, com_zero ? "%0*X" : "%*X", largura, bits);
+      else std::snprintf(tmp, tamanho, "%X", bits);
+      break;
+  }
+}
+
+void FazerWsprintf(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
+  const std::uint32_t p_dest = cpu.Get(kR0);
+  const std::int32_t n_size = static_cast<std::int32_t>(cpu.Get(kR1));
+  const std::uint32_t p_fmt = cpu.Get(kR2);
+  if (p_dest == 0 || p_fmt == 0) {
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_wsprintf, "ponteiro nulo",
+                   DetalheDosRegistos(cpu));
+    cpu.Set(kR0, 0);  // `void`: r0 nao e resultado, mas nao fica com lixo
+    return;
+  }
+  if (n_size < 2) {
+    // 2 bytes = um AECHAR: sem eles nem o terminador cabe, e escrever o
+    // terminador de qualquer maneira era escrever fora do buffer do jogo.
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_wsprintf,
+                   "nSize < 2 bytes (nao cabe o terminador)", DetalheDosRegistos(cpu));
+    cpu.Set(kR0, 0);
+    return;
+  }
+  const std::uint32_t unidades = static_cast<std::uint32_t>(n_size) / 2u;
+  const std::u16string fmt = LerCadeiaLarga(mem, p_fmt, kLimiteDeCadeia);
+
+  if (TemPontoFlutuante(fmt)) {
+    // Regra 2 do cabecalho: devolve SEM PROCESSAR. Nada no destino.
+    EmitirChamada(traco, brew_ajudantes::kAjudante_wsprintf,
+                  "formato com %f: nada escrito (AEEStdLib.h:3324)");
+    cpu.Set(kR0, 0);
+    return;
+  }
+
+  // Os varargs pela convencao do AAPCS: o primeiro no r3, o resto na pilha.
+  const std::uint32_t sp = cpu.Get(kSP);
+  std::uint32_t args[8];
+  int n = 0;
+  args[n++] = cpu.Get(kR3);
+  for (int k = 0; k < 7; ++k) {
+    args[n++] = mem.Ler32(sp + static_cast<std::uint32_t>(k) * 4);
+  }
+  int proximo = 0;
+  const auto argumento = [&]() -> std::uint32_t {
+    return proximo < n ? args[proximo++] : 0u;
+  };
+
+  std::u16string saida;
+  for (std::size_t i = 0; i < fmt.size(); ++i) {
+    if (fmt[i] != u'%') {
+      saida.push_back(fmt[i]);
+      continue;
+    }
+    if (i + 1 < fmt.size() && fmt[i + 1] == u'%') {
+      saida.push_back(u'%');
+      ++i;
+      continue;
+    }
+    Especificacao e;
+    std::size_t depois = i;
+    if (!LerEspecificacao(fmt, i, &e, &depois)) {
+      RegistarRecusa(traco, brew_ajudantes::kAjudante_wsprintf,
+                     "formato acaba num % sem conversao", DetalheDosRegistos(cpu));
+      break;
+    }
+    i = depois;
+    char tmp[64];
+    tmp[0] = 0;
+    switch (e.conversao) {
+      case u'd':
+      case u'i':
+        EscreverNumerico(tmp, sizeof(tmp), e, 'd',
+                         static_cast<std::uint32_t>(static_cast<std::int32_t>(argumento())));
+        break;
+      case u'u':
+        EscreverNumerico(tmp, sizeof(tmp), e, 'u', argumento());
+        break;
+      case u'x':
+        EscreverNumerico(tmp, sizeof(tmp), e, 'x', argumento());
+        break;
+      case u'X':
+        EscreverNumerico(tmp, sizeof(tmp), e, 'X', argumento());
+        break;
+      case u'p':
+        std::snprintf(tmp, sizeof(tmp), "0x%08x", argumento());
+        break;
+      case u'c': {
+        // O cabecalho define `%c` como "a single-byte character"
+        // (`AEEStdLib.h:3016`); num destino largo o byte entra como um AECHAR.
+        const char16_t c = static_cast<char16_t>(argumento() & 0xFFu);
+        saida.push_back(c);
+        break;
+      }
+      case u's': {
+        // Regra 1 do cabecalho: `%s` e a unica forma de string, e o argumento e
+        // um AECHAR* (ver o exemplo do SDK acima).
+        if (e.largura > 0) {
+          RegistarRecusa(traco, brew_ajudantes::kAjudante_wsprintf,
+                         "largura num %s (o cabecalho diz que nao a trata, "
+                         "AEEStdLib.h:3322)",
+                         DetalheDosRegistos(cpu));
+        }
+        const std::u16string s = LerCadeiaLarga(mem, argumento(), kLimiteDeCadeia);
+        saida += s;
+        break;
+      }
+      default:
+        // Nao se sabe formatar isto. Escreve-se como veio E regista-se (P2).
+        RegistarRecusa(traco, brew_ajudantes::kAjudante_wsprintf,
+                       "especificador nao suportado",
+                       "especificador %" + NomeDaConversao(e.conversao) + " | " +
+                           DetalheDosRegistos(cpu));
+        saida.push_back(u'%');
+        saida.push_back(e.conversao);
+        break;
+    }
+    if (tmp[0] != 0) {
+      for (const char* q = tmp; *q != 0; ++q) {
+        saida.push_back(static_cast<char16_t>(static_cast<unsigned char>(*q)));
+      }
+      // Alinhamento a esquerda: o `snprintf` da maquina nao o faz, e sem isto
+      // um `%-8d` escrevia o numero colado ao que vem a seguir.
+      if (e.alinhado_a_esquerda && e.largura > 0) {
+        std::size_t escritos = 0;
+        for (const char* q = tmp; *q != 0; ++q) ++escritos;
+        for (int k = static_cast<int>(escritos); k < e.largura; ++k) saida.push_back(u' ');
+      }
+    }
+  }
+
+  // O LIMITE: `unidades - 1` AECHARs e o terminador DENTRO do buffer. Escrever
+  // o terminador fora era escrever memoria do jogo.
+  const std::size_t cabe = static_cast<std::size_t>(unidades - 1u);
+  std::size_t escrito = 0;
+  for (std::size_t k = 0; k < cabe && k < saida.size(); ++k) {
+    mem.Escrever16(p_dest + static_cast<std::uint32_t>(k) * 2,
+                   static_cast<std::uint16_t>(saida[k]));
+    ++escrito;
+  }
+  mem.Escrever16(p_dest + static_cast<std::uint32_t>(escrito) * 2, 0);
+  cpu.Set(kR0, 0);
+
+  char det[128];
+  std::snprintf(det, sizeof(det), "nSize=%d unidades=%u escrito=%u de %u", n_size, unidades,
+                static_cast<unsigned>(escrito), static_cast<unsigned>(saida.size()));
+  EmitirChamada(traco, brew_ajudantes::kAjudante_wsprintf, det);
+}
+
 constexpr Implementacao kImplementados[] = {
     {brew_ajudantes::kAjudante_strstr, "strstr", FazerStrstr},
     {brew_ajudantes::kAjudante_wstrlen, "wstrlen", FazerWstrlen},
@@ -834,6 +1294,10 @@ constexpr Implementacao kImplementados[] = {
     {brew_ajudantes::kAjudante_strdup, "strdup", FazerStrdup},
     {brew_ajudantes::kAjudante_strncmp, "strncmp", FazerStrncmp},
     {brew_ajudantes::kAjudante_stricmp, "stricmp", FazerStricmp},
+    {brew_ajudantes::kAjudante_atoi, "atoi", FazerAtoi},
+    {brew_ajudantes::kAjudante_strends, "strends", FazerStrends},
+    {brew_ajudantes::kAjudante_aee_GetTimeMS, "aee_GetTimeMS", FazerAeeGetTimeMS},
+    {brew_ajudantes::kAjudante_wsprintf, "wsprintf", FazerWsprintf},
 };
 
 // AS ANCORAS DA LISTA, verificadas em tempo de COMPILACAO. Cada uma e um offset
@@ -860,9 +1324,13 @@ static_assert(brew_ajudantes::kAjudante_strtoul == 0x0C4, "0x0c4 e strtoul");
 static_assert(brew_ajudantes::kAjudante_snprintf == 0x144, "0x144 e snprintf");
 static_assert(brew_ajudantes::kAjudante_strlcpy == 0x14C, "0x14c e strlcpy");
 static_assert(brew_ajudantes::kAjudante_strlcat == 0x150, "0x150 e strlcat");
+static_assert(brew_ajudantes::kAjudante_atoi == 0x090, "0x090 e atoi");
+static_assert(brew_ajudantes::kAjudante_strends == 0x0FC, "0x0fc e strends");
+static_assert(brew_ajudantes::kAjudante_aee_GetTimeMS == 0x0AC, "0x0ac e aee_GetTimeMS");
+static_assert(brew_ajudantes::kAjudante_wsprintf == 0x03C, "0x03c e wsprintf");
 static_assert(
     sizeof(kImplementados) / sizeof(kImplementados[0]) ==
-        14,
+        18,
     "a lista das implementacoes mudou: actualiza o numero e o teste");
 
 }  // namespace

@@ -57,6 +57,16 @@ struct Bancada {
     mem.Escrever8(onde + static_cast<std::uint32_t>(s.size()), 0);
   }
 
+  // Escreve uma cadeia LARGA (AECHAR) a partir de texto ASCII, com o
+  // terminador -- o que o `EscreverLarga` faz com uma lista de unidades.
+  void EscreverLargaAscii(std::uint32_t onde, const std::string& s) {
+    for (std::size_t i = 0; i < s.size(); ++i) {
+      mem.Escrever16(onde + static_cast<std::uint32_t>(i) * 2,
+                     static_cast<std::uint16_t>(static_cast<unsigned char>(s[i])));
+    }
+    mem.Escrever16(onde + static_cast<std::uint32_t>(s.size()) * 2, 0);
+  }
+
   void EscreverLarga(std::uint32_t onde, const std::vector<std::uint16_t>& s) {
     for (std::size_t i = 0; i < s.size(); ++i) {
       mem.Escrever16(onde + static_cast<std::uint32_t>(i) * 2, s[i]);
@@ -474,11 +484,13 @@ TEST(AjudantesExtra, OffsetForaDaTabelaNaoERecusadoAqui) {
   EXPECT_TRUE(b.traco.ContagemFaltas().empty());
 }
 
-TEST(AjudantesExtra, ImplementadosSaoCatorzeEATodosNoCatalogo) {
+TEST(AjudantesExtra, ImplementadosSaoDezoitoEATodosNoCatalogo) {
   // 7 da etapa anterior + os 6 da frente io2 (wstrlen, wstrncopyn, strtoul,
-  // snprintf, strlcpy, strlcat) + o stricmp (0x0d0) da frente park.
-  EXPECT_EQ(AjudantesExtra::Implementados(), 14u);
-  for (std::uint32_t off : {0x0D8u, 0x044u, 0x050u, 0x0E8u, 0x138u, 0x0F4u, 0x0CCu, 0x0D0u}) {
+  // snprintf, strlcpy, strlcat) + o stricmp (0x0d0) da frente park + os 4 da
+  // frente ajud2 (atoi, strends, aee_GetTimeMS, wsprintf).
+  EXPECT_EQ(AjudantesExtra::Implementados(), 18u);
+  for (std::uint32_t off : {0x0D8u, 0x044u, 0x050u, 0x0E8u, 0x138u, 0x0F4u, 0x0CCu, 0x0D0u,
+                            0x090u, 0x0FCu, 0x0ACu, 0x03Cu}) {
     EXPECT_NE(DeclaracaoDoOffset(off), nullptr) << "0x" << std::hex << off;
   }
 }
@@ -785,6 +797,240 @@ TEST(AjudantesExtra, StrlcatConcatenaComLimite) {
   b.cpu.Set(kR2, 5);
   b.Atender(0x150);
   EXPECT_EQ(b.LerCadeia(kTexto), "abcd");
+}
+
+
+// ---------------------------------------------------------------------------
+// FRENTE ajud2 -- os ajudantes que faltavam por DEMANDA MEDIDA.
+//
+// Cada um destes testes existe por uma razao dita: o `atoi` porque a libc tem
+// regras que se escrevem mal de cabeca; o `strends` porque a ORDEM dos
+// argumentos e ao contrario do que o nome sugere; o `wsprintf` porque `nSize` e
+// em BYTES e `%s` come um AECHAR*; o `aee_GetTimeMS` porque a resposta e um
+// valor DECLARADO e tem de aparecer como tal.
+// ---------------------------------------------------------------------------
+
+TEST(AjudantesExtra, AtoiConverteComoALibcEIgnoraOResto) {
+  // O cabecalho: "a wrapper around the atoi() function provided by the standard
+  // C library. Its behavior is identical to that of atoi()" (AEEStdLib.h:2390).
+  Bancada b;
+  b.EscreverCadeia(kTexto, "  -42xyz");
+  b.cpu.Set(kR0, kTexto);
+  EXPECT_EQ(b.Atender(0x090), Atendimento::Implementado);
+  EXPECT_EQ(static_cast<std::int32_t>(b.cpu.Get(kR0)), -42) << "espacos, sinal, e para no 'x'";
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x090] atoi"), 0u);
+
+  // Sem digitos nenhuns: ZERO e o ponteiro NAO se move (nao ha endptr aqui).
+  b.EscreverCadeia(kTexto, "xyz");
+  b.cpu.Set(kR0, kTexto);
+  b.Atender(0x090);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u);
+
+  // Os dois extremos exactos da representacao.
+  b.EscreverCadeia(kTexto, "2147483647");
+  b.cpu.Set(kR0, kTexto);
+  b.Atender(0x090);
+  EXPECT_EQ(static_cast<std::int32_t>(b.cpu.Get(kR0)), 2147483647);
+  b.EscreverCadeia(kTexto, "-2147483648");
+  b.cpu.Set(kR0, kTexto);
+  b.Atender(0x090);
+  EXPECT_EQ(static_cast<std::int32_t>(b.cpu.Get(kR0)), INT32_MIN)
+      << "o tecto depende do sinal: um tecto unico saturado este valor";
+}
+
+TEST(AjudantesExtra, AtoiSaturaEDeclaraOPressuposto) {
+  // O transbordo nao tem definicao no SDK (na libc e indefinido). O que NAO se
+  // pode e inventar um numero em silencio: satura-se E declara-se.
+  Bancada b;
+  b.EscreverCadeia(kTexto, "99999999999999999999");
+  b.cpu.Set(kR0, kTexto);
+  EXPECT_EQ(b.Atender(0x090), Atendimento::Implementado);
+  EXPECT_EQ(static_cast<std::int32_t>(b.cpu.Get(kR0)), INT32_MAX);
+  const auto& p = b.traco.ContagemPressupostos();
+  const auto it = p.find("atoi_saturado");
+  ASSERT_NE(it, p.end()) << "a saturacao tem de ficar declarada";
+  EXPECT_EQ(it->second, 1u);
+}
+
+TEST(AjudantesExtra, AtoiComPonteiroNuloRecusa) {
+  Bancada b;
+  b.cpu.Set(kR0, 0);
+  EXPECT_EQ(b.Atender(0x090), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u);
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x090] atoi"), 1u);
+}
+
+TEST(AjudantesExtra, StrendsLeOSufixoPrimeiro) {
+  // `boolean (*strends)(const char *cpszSuffic, const char *psz)` -- o pedaco
+  // vem PRIMEIRO (AEEStdLib.h:160 e :2798). Trocar a ordem e o erro facil.
+  Bancada b;
+  b.EscreverCadeia(kTexto, "dat");           // sufixo
+  b.EscreverCadeia(kTexto2, "settings.dat"); // cadeia
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, kTexto2);
+  EXPECT_EQ(b.Atender(0x0FC), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), 1u) << "settings.dat acaba em dat";
+
+  // A ORDEM TROCADA da FALSE: e este o caso que fixa a assinatura.
+  b.cpu.Set(kR0, kTexto2);
+  b.cpu.Set(kR1, kTexto);
+  b.Atender(0x0FC);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u) << "'dat' nao acaba em 'settings.dat'";
+
+  // Um sufixo mais comprido do que a cadeia nunca cabe no fim dela.
+  b.EscreverCadeia(kTexto, "settings.dat");
+  b.EscreverCadeia(kTexto2, "dat");
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, kTexto2);
+  b.Atender(0x0FC);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u);
+
+  // Maiusculas contam: o SDK so tem variante insensivel para o strbegins
+  // (STRIBEGINS, AEEStdLib.h:333), e nao para o strends.
+  b.EscreverCadeia(kTexto, "DAT");
+  b.EscreverCadeia(kTexto2, "settings.dat");
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, kTexto2);
+  b.Atender(0x0FC);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u);
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x0fc] strends"), 0u) << "nada disto e falta";
+}
+
+TEST(AjudantesExtra, StrendsComSufixoVazioENulo) {
+  Bancada b;
+  // O sufixo vazio e o fim de qualquer cadeia (e o que `ends_with("")` faz).
+  b.EscreverCadeia(kTexto, "");
+  b.EscreverCadeia(kTexto2, "abc");
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, kTexto2);
+  b.Atender(0x0FC);
+  EXPECT_EQ(b.cpu.Get(kR0), 1u);
+  // Duas cadeias vazias: uma acaba na outra.
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, kTexto);
+  b.Atender(0x0FC);
+  EXPECT_EQ(b.cpu.Get(kR0), 1u);
+  // Ponteiro nulo: FALSE e a falta registada, com o nome do slot.
+  b.cpu.Set(kR0, 0);
+  b.Atender(0x0FC);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u);
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x0fc] strends"), 1u);
+}
+
+TEST(AjudantesExtra, AeeGetTimeMSDeclaraAMeiaNoite) {
+  // `GETTIMEMS` e um relogio de CALENDARIO (AEEStdLib.h:4783). O aparelho
+  // emulado nao adquiriu hora, logo o valor e DECLARADO, e nao medido -- e o
+  // caminho do `Traco` para isso e o pressuposto, nao a falta.
+  Bancada b;
+  EXPECT_EQ(b.Atender(0x0AC), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u);
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x0ac] aee_GetTimeMS"), 0u);
+  const auto& p = b.traco.ContagemPressupostos();
+  const auto it = p.find("aee_GetTimeMS_meia_noite");
+  ASSERT_NE(it, p.end()) << "um valor nao medido tem de aparecer no registo";
+  EXPECT_EQ(it->second, 1u);
+}
+
+TEST(AjudantesExtra, WsprintfFormataLargoComLimiteEmBytes) {
+  // O medido no tekken2: r0=dest, r1=0x40 (64 BYTES = 32 AECHARs), r2=formato.
+  // `%s` come um AECHAR* (o exemplo do SDK, c_SystemTaskApp.c:3555+3643, passa
+  // `AECHAR[32]` a um formato com %s).
+  Bancada b;
+  constexpr std::uint32_t kPilha = 0x80104000u;
+  constexpr std::uint32_t kLargo = 0x80105000u;
+  b.EscreverLargaAscii(kLargo, "abc");
+  b.EscreverLargaAscii(kTexto2, "%s-%d!");
+  b.cpu.Set(kSP, kPilha);
+  b.cpu.Set(kR0, kTexto);   // pDest
+  b.cpu.Set(kR1, 64);       // nSize, em BYTES
+  b.cpu.Set(kR2, kTexto2);  // pFormat (AECHAR)
+  b.cpu.Set(kR3, kLargo);   // primeiro vararg
+  b.mem.Escrever32(kPilha, 7);
+  EXPECT_EQ(b.Atender(0x03C), Atendimento::Implementado);
+  EXPECT_EQ(b.LerLarga(kTexto, 32), "abc-7!");
+  EXPECT_EQ(b.mem.Ler16(kTexto + 6 * 2), 0u) << "terminador";
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x03c] wsprintf"), 0u);
+}
+
+TEST(AjudantesExtra, WsprintfTruncaDentroDoBufferENaoEscreveFora) {
+  Bancada b;
+  constexpr std::uint32_t kPilha = 0x80104000u;
+  constexpr std::uint32_t kLargo = 0x80105000u;
+  // O buffer todo com 0x4141 antes: o que nao for escrito fica provado.
+  for (std::uint32_t k = 0; k < 8; ++k) b.mem.Escrever16(kTexto + k * 2, 0x4141);
+  b.EscreverLargaAscii(kLargo, "abcdef");
+  b.EscreverLargaAscii(kTexto2, "%s");
+  b.cpu.Set(kSP, kPilha);
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, 8);  // 8 BYTES = 4 AECHARs => 3 caracteres + terminador
+  b.cpu.Set(kR2, kTexto2);
+  b.cpu.Set(kR3, kLargo);
+  b.Atender(0x03C);
+  EXPECT_EQ(b.LerLarga(kTexto, 8), "abc");
+  EXPECT_EQ(b.mem.Ler16(kTexto + 3 * 2), 0u) << "o terminador cabe DENTRO dos 8 bytes";
+  EXPECT_EQ(b.mem.Ler16(kTexto + 4 * 2), 0x4141u) << "nada foi escrito fora do limite";
+}
+
+TEST(AjudantesExtra, WsprintfComPontoFlutuanteNaoEscreveNada) {
+  // Regra do cabecalho (AEEStdLib.h:3324): "If %f is found anywhere within the
+  // format string, this function returns immediately without doing any
+  // processing". Nem o que vinha ANTES do %f se escreve.
+  Bancada b;
+  for (std::uint32_t k = 0; k < 8; ++k) b.mem.Escrever16(kTexto + k * 2, 0x4141);
+  b.EscreverLargaAscii(kTexto2, "X%fY");
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, 64);
+  b.cpu.Set(kR2, kTexto2);
+  EXPECT_EQ(b.Atender(0x03C), Atendimento::Implementado);
+  for (std::uint32_t k = 0; k < 8; ++k) {
+    EXPECT_EQ(b.mem.Ler16(kTexto + k * 2), 0x4141u) << "unidade " << k << " mexida";
+  }
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x03c] wsprintf"), 0u)
+      << "nao e falta: e o que o cabecalho manda fazer";
+}
+
+TEST(AjudantesExtra, WsprintfEspecificadorDesconhecidoEscreveEregistra) {
+  Bancada b;
+  b.EscreverLargaAscii(kTexto2, "a%qb");
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, 64);
+  b.cpu.Set(kR2, kTexto2);
+  EXPECT_EQ(b.Atender(0x03C), Atendimento::Implementado);
+  EXPECT_EQ(b.LerLarga(kTexto, 8), "a%qb") << "escreve-se como veio";
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x03c] wsprintf"), 1u) << "e registado (P2)";
+  EXPECT_NE(b.DetalheDaFalta("AEEHelperFuncs[0x03c] wsprintf").find("nao suportado"),
+            std::string::npos);
+}
+
+TEST(AjudantesExtra, WsprintfComNSizeZeroRecusaESenaoEscreve) {
+  Bancada b;
+  b.mem.Escrever16(kTexto, 0x4141);
+  b.EscreverLargaAscii(kTexto2, "abc");
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, 1);  // 1 byte: nem um AECHAR inteiro cabe
+  b.cpu.Set(kR2, kTexto2);
+  EXPECT_EQ(b.Atender(0x03C), Atendimento::Implementado);
+  EXPECT_EQ(b.mem.Ler16(kTexto), 0x4141u);
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x03c] wsprintf"), 1u);
+}
+
+TEST(AjudantesExtra, SetupNativeImageNaoEAtendidoPorEstaTabela) {
+  // 0x064 e `SetupNativeImage` -- o `CONVERTBMP` do SDK (AEEStdLib.h:88 e :384)
+  // e NAO um ajudante de texto: devolve um buffer de imagem, e o que ele
+  // precisa (o descodificador e um bitmap na faixa de saida) esta FORA desta
+  // tabela. Este teste existe para que a proxima frente nao o tome por um
+  // `atoi` maior, e para que a recusa continue NOMEADA.
+  EXPECT_EQ(brew_ajudantes::kAjudante_SetupNativeImage, 0x064u);
+  ASSERT_NE(DeclaracaoDoOffset(0x064), nullptr);
+  EXPECT_STREQ(DeclaracaoDoOffset(0x064)->nome, "SetupNativeImage");
+  EXPECT_STREQ(DeclaracaoDoOffset(0x064)->assinatura,
+               "void *(*SetupNativeImage)(AEECLSID cls, void *pBuffer, AEEImageInfo *pii, "
+               "boolean *pbRealloc)");
+  Bancada b;
+  b.cpu.Set(kR0, 0x01004001u);  // AEECLSID_WINBMP, o que o CONVERTBMP passa
+  EXPECT_EQ(b.Atender(0x064), Atendimento::Recusado);
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x064] SetupNativeImage"), 1u);
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeUnsupported);
 }
 
 
