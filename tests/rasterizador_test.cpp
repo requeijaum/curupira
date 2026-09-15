@@ -821,5 +821,70 @@ TEST(Rasterizador, ATexturaEInterpoladaComPerspectiva) {
   EXPECT_NE(g.pixels.at({5, 3}), static_cast<std::uint32_t>(13u << 5));
 }
 
+TEST(Rasterizador, OTrianguloQueAtravessaOPlanoProximoERecortadoEmVezDeDesaparecer) {
+  Memoria mem(nullptr);
+  Gravador g;
+  Rasterizador r(mem, g);
+  EstadoDeRasterizacao e = EstadoBase();
+  PorFrustum(&e);
+
+  // A E B EM FRENTE, C ATRAS DA CAMARA:
+  //   A = (-2, 0, -2) -> w = 2 -> janela (0, 4)
+  //   B = ( 2, 0, -2) -> w = 2 -> janela (8, 4)
+  //   C = ( 0, 4,  2) -> w = -2 < 0 (atras da camera), e clip.z + clip.w < 0.
+  //
+  // ANTES DESTA ETAPA: o triangulo INTEIRO era descartado (0 pixels).
+  // COM O RECORTE DO PLANO PROXIMO: o poligono recortado tem 4 vertices e cobre
+  // a metade superior da janela (32 pixels em 8x8), sem descartar.
+  constexpr Endereco kV = 0x00100000;
+  PorVerticesZ(mem, kV, {{-2.0f, 0.0f, -2.0f}, {2.0f, 0.0f, -2.0f}, {0.0f, 4.0f, 2.0f}});
+  e.vertices = {true, 3, GL_FLOAT, 12, kV};
+  PedidoDeDesenho p;
+  p.primitiva = GL_TRIANGLES;
+  p.quantos = 3;
+  std::string motivo;
+  ASSERT_TRUE(r.Desenhar(e, p, &motivo)) << motivo;
+
+  // A metade superior da janela de 8x8 pixels: 32 pixels (y de 0 a 3, x de 0 a 7).
+  EXPECT_EQ(g.escritas.size(), 32u);
+  EXPECT_EQ(g.total, 32u);
+  for (int y = 0; y < 4; ++y) {
+    for (int x = 0; x < 8; ++x) {
+      EXPECT_TRUE(g.SoEstePixel(x, y, 0xF800u)) << "pixel " << x << "," << y;
+      EXPECT_EQ(g.Vezes(x, y), 1);
+    }
+  }
+
+  // Estatisticas do recorte:
+  EXPECT_EQ(r.TriangulosRecortados(), 1u);
+  EXPECT_EQ(r.TriangulosDescartados(), 0u);
+  EXPECT_EQ(r.Triangulos(), 2u);  // 4 vertices divididos em 2 triangulos
+  EXPECT_NE(motivo.find("recortados"), std::string::npos) << motivo;
+}
+
+TEST(Rasterizador, OTrianguloTotalmenteAtrasDoPlanoProximoEDescartado) {
+  Memoria mem(nullptr);
+  Gravador g;
+  Rasterizador r(mem, g);
+  EstadoDeRasterizacao e = EstadoBase();
+  PorFrustum(&e);
+
+  // Tres vertices atras da camera (z > 0, logo clip.z + clip.w < 0)
+  constexpr Endereco kV = 0x00100000;
+  PorVerticesZ(mem, kV, {{0.0f, 0.0f, 2.0f}, {1.0f, 0.0f, 3.0f}, {0.0f, 1.0f, 4.0f}});
+  e.vertices = {true, 3, GL_FLOAT, 12, kV};
+  PedidoDeDesenho p;
+  p.primitiva = GL_TRIANGLES;
+  p.quantos = 3;
+  std::string motivo;
+  ASSERT_TRUE(r.Desenhar(e, p, &motivo)) << motivo;
+
+  EXPECT_EQ(g.escritas.size(), 0u);
+  EXPECT_EQ(r.Pixels(), 0u);
+  EXPECT_EQ(r.TriangulosRecortados(), 0u);
+  EXPECT_EQ(r.TriangulosDescartados(), 1u);
+}
+
+
 }  // namespace
 }  // namespace zb2::video

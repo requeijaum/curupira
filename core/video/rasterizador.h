@@ -32,9 +32,11 @@
 //
 //   1. PERSPECTIVA: a interpolacao de textura e cor E CORRIGIDA POR PERSPECTIVA
 //      (atributos divididos por w no rasterizador).
-//   2. SEM RECORTE DE FRUSTUM: um triangulo com qualquer vertice com w <= 0 e
-//      DESCARTADO (contado em `TriangulosDescartados()`), e nao recortado
-//      contra o plano proximo.
+//   2. RECORTE DO PLANO PROXIMO: triangulos que cruzam o plano proximo
+//      (clip.z + clip.w >= 0) sao recortados (Sutherland-Hodgman) gerando poligonos
+//      de 3 ou 4 vertices com atributos interpolados. Triangulos totalmente atras sao
+//      descartados (contados em `TriangulosDescartados()`). Os outros 5 planos do frustum
+//      continuam tratados por descarte de caixa delimitadora no viewport.
 //   3. SEM BLENDING (`GL_BLEND`), SEM ALPHA TEST, SEM STENCIL, SEM DITHER,
 //      SEM POLYGON OFFSET, SEM SCISSOR, SEM COLOR MASK por canal: o pixel
 //      escrito e a cor calculada, opaca. As capacidades que os titulos ligarem
@@ -213,6 +215,7 @@ class Rasterizador {
   std::uint64_t Pixels() const { return pixels_; }
   std::uint64_t Triangulos() const { return triangulos_; }
   std::uint64_t TriangulosDescartados() const { return descartados_; }
+  std::uint64_t TriangulosRecortados() const { return recortados_; }
   std::uint64_t PrimitivasRecusadas() const { return recusadas_; }
 
  private:
@@ -232,11 +235,14 @@ class Rasterizador {
   Rgba AmostrarTextura(const EstadoDeRasterizacao& e, float u, float v) const;
   void PrepararProfundidade();
 
+  static Vertice InterpolarVertice(const Vertice& a, const Vertice& b, double t);
+  int RecortarPlanoProximo(const Vertice* entrada, Vertice* saida) const;
+
   Memoria& mem_;
   Superficie& superficie_;
   std::vector<float> profundidade_;
   int largura_ = 0, altura_ = 0;
-  std::uint64_t pixels_ = 0, triangulos_ = 0, descartados_ = 0, recusadas_ = 0;
+  std::uint64_t pixels_ = 0, triangulos_ = 0, descartados_ = 0, recortados_ = 0, recusadas_ = 0;
 };
 
 }  // namespace zb2::video

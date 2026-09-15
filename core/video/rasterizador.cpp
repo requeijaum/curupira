@@ -289,6 +289,43 @@ bool Rasterizador::LerVertice(const EstadoDeRasterizacao& e, std::uint32_t indic
   return true;
 }
 
+Rasterizador::Vertice Rasterizador::InterpolarVertice(const Vertice& a, const Vertice& b, double t) {
+  Vertice v;
+  for (int k = 0; k < 4; ++k) {
+    v.clip[k] = static_cast<float>(a.clip[k] + (b.clip[k] - a.clip[k]) * t);
+  }
+  v.u = static_cast<float>(a.u + (b.u - a.u) * t);
+  v.v = static_cast<float>(a.v + (b.v - a.v) * t);
+  auto canal = [&](std::uint8_t ca, std::uint8_t cb) -> std::uint8_t {
+    const double val = static_cast<double>(ca) + (static_cast<double>(cb) - static_cast<double>(ca)) * t;
+    return static_cast<std::uint8_t>(std::min(255.0, std::max(0.0, val + 0.5)));
+  };
+  v.cor = Rgba{canal(a.cor.r, b.cor.r), canal(a.cor.g, b.cor.g),
+               canal(a.cor.b, b.cor.b), canal(a.cor.a, b.cor.a)};
+  return v;
+}
+
+int Rasterizador::RecortarPlanoProximo(const Vertice* tri, Vertice* saida) const {
+  // Sutherland-Hodgman contra o plano proximo: clip.z + clip.w >= 0.
+  int n = 0;
+  for (int i = 0; i < 3; ++i) {
+    const Vertice& a = tri[i];
+    const Vertice& b = tri[(i + 1) % 3];
+    const double da = static_cast<double>(a.clip[2]) + static_cast<double>(a.clip[3]);
+    const double db = static_cast<double>(b.clip[2]) + static_cast<double>(b.clip[3]);
+    const bool a_dentro = da >= 0.0;
+    const bool b_dentro = db >= 0.0;
+    if (a_dentro) {
+      saida[n++] = a;
+    }
+    if (a_dentro != b_dentro) {
+      const double t = da / (da - db);
+      saida[n++] = InterpolarVertice(a, b, t);
+    }
+  }
+  return n;
+}
+
 bool Rasterizador::Projetar(const EstadoDeRasterizacao& e, Vertice* v) const {
   const float w = v->clip[3];
   if (!(w > 0.0f)) return false;  // atras da camara: sem recorte de frustum (ver o topo)
@@ -541,22 +578,26 @@ bool Rasterizador::Desenhar(const EstadoDeRasterizacao& estado, const PedidoDeDe
     }
     vertices.push_back(v);
   }
-  for (Vertice& v : vertices) {
-    if (!Projetar(estado, &v)) {
-      // UM VERTICE ATRAS DA CAMARA INVALIDA O TRIANGULO EM QUE ENTRA, e nao o
-      // desenho todo: o recorte de frustum nao existe (ponto 2 do cabecalho), e
-      // descartar so aquele triangulo e a versao honesta do que se faz aqui.
-      v.clip[3] = -1.0f;
-    }
-  }
-
   const std::size_t n = vertices.size();
   const auto triangulo = [&](std::size_t i, std::size_t j, std::size_t k) {
-    if (vertices[i].clip[3] <= 0.0f || vertices[j].clip[3] <= 0.0f || vertices[k].clip[3] <= 0.0f) {
+    const Vertice trio[3] = {vertices[i], vertices[j], vertices[k]};
+    Vertice poli[4];
+    const int n_rec = RecortarPlanoProximo(trio, poli);
+    if (n_rec < 3) {
       ++descartados_;
       return;
     }
-    RasterizarTriangulo(estado, vertices[i], vertices[j], vertices[k]);
+    if (n_rec > 3) ++recortados_;
+    for (int m = 0; m < n_rec; ++m) {
+      if (!Projetar(estado, &poli[m])) {
+        ++descartados_;
+        return;
+      }
+    }
+    RasterizarTriangulo(estado, poli[0], poli[1], poli[2]);
+    if (n_rec == 4) {
+      RasterizarTriangulo(estado, poli[0], poli[2], poli[3]);
+    }
   };
   if (modo == GL_TRIANGLES) {
     for (std::size_t i = 0; i + 2 < n; i += 3) triangulo(i, i + 1, i + 2);
@@ -575,9 +616,9 @@ bool Rasterizador::Desenhar(const EstadoDeRasterizacao& estado, const PedidoDeDe
   char detalhe[192];
   std::snprintf(detalhe, sizeof(detalhe),
                 "%u vertices -> %" PRIu64 " pixels em %" PRIu64 " triangulos (%" PRIu64
-                " descartados)",
+                " recortados, %" PRIu64 " descartados)",
                 pedido.quantos, escritos, triangulos_ - triangulos_antes,
-                descartados_ - descartados_antes);
+                recortados_, descartados_ - descartados_antes);
   *motivo = detalhe;
   return true;
 }
