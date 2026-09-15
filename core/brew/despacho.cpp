@@ -11,6 +11,10 @@
 #include "core/brew/clsids.h"
 #include "core/brew/formato.h"
 #include "core/brew/imedia.h"
+// O `Inflar` (RFC1950) dos `.pkg` -- REUSADO, e nao copiado: core/carga e de
+// outro agente, e so se le daqui. O gzip (RFC1952) dos `.bar` e tratado neste
+// ficheiro, por cima dele.
+#include "core/carga/inflate.h"
 
 namespace zb2::brew {
 
@@ -141,6 +145,31 @@ constexpr std::uint32_t kSlotIdSprintf = 1560, kSlotIdVsprintf = 1561, kSlotIdHe
 // `grep -n "= 15[0-9][0-9]" core/brew/despacho.cpp`), e a guarda
 // `SemIdsRepetidos` abaixo passa a recusar a proxima colisao no arranque.
 constexpr std::uint32_t kSlotIdDbgPrintf = 1580;
+// A FRENTE io2 (etapa 12): IUnzipAStream e IMemAStream, servidos a serio.
+//
+// Os objectos e as vtables sao construidos no `InstalarAjudantes` (indices
+// 15000/15010, objectos 0x80060700/0x80060800 -- a faixa dos genericos e de
+// OUTRO agente). Os ids de saida desta frente estao em 1590+, conferidos livres
+// por `grep "= 15[0-9][0-9]"` antes de escolher. Os slots NAO servidos das duas
+// interfaces apontam para faixas proprias (1599+ e 1660+) que RECUSAM com o
+// nome do SDK em vez de cairem no ramo dos ajudantes.
+constexpr std::uint32_t kClsidMemAStream = 0x0100100cu;  // AEEClassIDs.h:75
+// (o kClsidUnzipStream = 0x01001014u ja vive no topo deste ficheiro)
+constexpr std::uint32_t kSlotIdUnzipReadable = 1590;
+constexpr std::uint32_t kSlotIdUnzipRead = 1591;
+constexpr std::uint32_t kSlotIdUnzipCancel = 1592;
+constexpr std::uint32_t kSlotIdUnzipSetStream = 1593;
+constexpr std::uint32_t kSlotIdMemStreamReadable = 1594;
+constexpr std::uint32_t kSlotIdMemStreamRead = 1595;
+constexpr std::uint32_t kSlotIdMemStreamCancel = 1596;
+constexpr std::uint32_t kSlotIdMemStreamSet = 1597;
+constexpr std::uint32_t kSlotIdMemStreamSetEx = 1598;
+constexpr std::uint32_t kSlotIdUnzipSlots = 1599;  // 58 slots: 6..63 da vtable
+constexpr std::uint32_t kSlotIdMemStreamSlots = 1660;  // 57 slots: 7..63
+constexpr std::uint32_t kVtUnzip = 15000;
+constexpr std::uint32_t kVtMemStream = 15010;
+constexpr std::uint32_t kObjUnzip = 0x80060700u;
+constexpr std::uint32_t kObjMemStream = 0x80060800u;
 constexpr std::uint32_t kBaseDoSlot = 1000;
 // A LARGURA DECLARADA DE UM CARACTERE no `DrawText` sem fonte carregada. Nao e
 // uma medida de fonte nenhuma: e a aproximacao que este modulo assume, dita uma
@@ -288,7 +317,233 @@ std::string LerTextoDe(const Memoria& mem, std::uint32_t p, std::size_t maximo) 
 std::uint32_t IdentificadorDeFicheiro(std::uint32_t obj) {
   return (obj >= kObjFileBase) ? (obj - kObjFileBase) / 0x40 : 0;
 }
+
+// ---------------------------------------------------------------------------
+// A DESCOMPRESSAO DA FRENTE io2.
+//
+// O `IUnzipAStream` do SDK descomprime "o algoritmo deflate, o usado pelo
+// gzip". Os recursos `.bar` de tipo imagem chegam num AEEResBlob cujo dado e
+// um stream GZIP (o allstarcards, medido: mime=application/x-gzip-compressed e
+// o 1f 8b logo a seguir ao blob); os `.pkg` usam zlib puro (RFC1950). O
+// `Inflar` de core/carga cobre o zlib; o gzip precisa de tirar o envelope ANTES
+// e de validar o RODAPE (`CRC32` + `ISIZE`, os 8 bytes finais do RFC1952) --
+// que e o que este ficheiro faz, sem tocar em core/carga.
+// ---------------------------------------------------------------------------
+
+// CRC32 do RFC1952 (gzip), polinomio normal (0xEDB88320) da libz. Tabela fixa
+// de 256 entradas, escrita UMA vez a pedido (a treliça da primeira chamada).
+std::uint32_t Crc32(const std::uint8_t* dados, std::size_t n) {
+  static std::uint32_t tabela[256];
+  static bool pronta = false;
+  if (!pronta) {
+    for (std::uint32_t i = 0; i < 256; ++i) {
+      std::uint32_t c = i;
+      for (int k = 0; k < 8; ++k) {
+        c = (c & 1u) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+      }
+      tabela[i] = c;
+    }
+    pronta = true;
+  }
+  std::uint32_t crc = 0xFFFFFFFFu;
+  for (std::size_t k = 0; k < n; ++k) {
+    crc = tabela[(crc ^ dados[k]) & 0xFFu] ^ (crc >> 8);
+  }
+  return ~crc;
+}
+
+// Descomprime o interior de um stream GZIP (RFC1952) usando o `Inflar` dos
+// `.pkg` (RFC1950). O `Inflar` nao conhece o gzip: recebe o PAYLOAD deflate
+// dentro de um cabecalho zlib sintetico com um adler32 falso no fim. Ele
+// descomprime os blocos todos e recusa no adler -- com a saida inteira no
+// vector. A VALIDACAO do gzip e o rodape dele: `CRC32(saida)` e `ISIZE`
+// conferem, e nada disso depende do adler falsificado. Um ficheiro de
+// verdade corrompido falha no CRC e recusa com o motivo do inflate.
+bool InflarGzip(const std::vector<std::uint8_t>& entrada, std::vector<std::uint8_t>* saida,
+                std::string* motivo) {
+  if (entrada.size() < 18 || entrada[0] != 0x1Fu || entrada[1] != 0x8Bu) {
+    if (motivo != nullptr) *motivo = "nao comeca em 1f 8b (gzip)";
+    return false;
+  }
+  if (entrada[2] != 8u) {
+    if (motivo != nullptr) *motivo = "CM != 8: o gzip so define deflate";
+    return false;
+  }
+  const std::uint8_t flg = entrada[3];
+  if ((flg & 0xE0u) != 0u) {
+    if (motivo != nullptr) *motivo = "flags reservadas do cabecalho gzip";
+    return false;
+  }
+  std::size_t p = 10;
+  if ((flg & 0x04u) != 0u) {  // FEXTRA
+    if (p + 2 > entrada.size()) return false;
+    const std::size_t xlen = entrada[p] | (static_cast<std::size_t>(entrada[p + 1]) << 8);
+    p += 2 + xlen;
+  }
+  for (std::uint32_t bit = 0; bit < 2; ++bit) {  // FNAME, FCOMMENT
+    if ((flg & (bit == 0 ? 0x08u : 0x10u)) == 0u) continue;
+    while (p < entrada.size() && entrada[p] != 0) ++p;
+    ++p;
+  }
+  if ((flg & 0x02u) != 0u) p += 2;  // FHCRC
+  if (p + 8 > entrada.size()) {
+    if (motivo != nullptr) *motivo = "faltam os 8 bytes do rodape gzip";
+    return false;
+  }
+  const std::size_t plen = entrada.size() - p - 8;
+  const std::uint32_t crc_esperado = static_cast<std::uint32_t>(entrada[entrada.size() - 8]) |
+                                     (static_cast<std::uint32_t>(entrada[entrada.size() - 7]) << 8) |
+                                     (static_cast<std::uint32_t>(entrada[entrada.size() - 6]) << 16) |
+                                     (static_cast<std::uint32_t>(entrada[entrada.size() - 5]) << 24);
+  const std::uint32_t isize = static_cast<std::uint32_t>(entrada[entrada.size() - 4]) |
+                              (static_cast<std::uint32_t>(entrada[entrada.size() - 3]) << 8) |
+                              (static_cast<std::uint32_t>(entrada[entrada.size() - 2]) << 16) |
+                              (static_cast<std::uint32_t>(entrada[entrada.size() - 1]) << 24);
+
+  std::vector<std::uint8_t> zlibbuf;
+  zlibbuf.reserve(2 + plen + 4);
+  zlibbuf.push_back(0x78);
+  zlibbuf.push_back(0x01);
+  zlibbuf.insert(zlibbuf.end(), entrada.begin() + static_cast<std::ptrdiff_t>(p),
+                 entrada.begin() + static_cast<std::ptrdiff_t>(p + plen));
+  zlibbuf.push_back(0);
+  zlibbuf.push_back(0);
+  zlibbuf.push_back(0);
+  zlibbuf.push_back(0);
+  std::string motivo_inflate;
+  const bool ok_inflate = zb2::Inflar(zlibbuf.data(), zlibbuf.size(), saida, &motivo_inflate,
+                                      0u, nullptr);
+  const std::uint32_t crc_calculado = Crc32(saida->data(), saida->size());
+  const bool rodape_confere =
+      crc_calculado == crc_esperado && saida->size() == static_cast<std::size_t>(isize);
+  if (!ok_inflate && !rodape_confere) {
+    if (motivo != nullptr) {
+      *motivo = "inflate: " + motivo_inflate + " | crc gzip=0x" +
+                Hex(crc_esperado) + " calculado=0x" + Hex(crc_calculado) +
+                " isize=" + std::to_string(isize) + " saida=" + std::to_string(saida->size());
+    }
+    saida->clear();
+    return false;
+  }
+  // ok_inflate a TRUE com rodape a falhar e um inflate que "passou" num stream
+  // que nao e o nosso interior: recusa tambem, com o mesmo criterio do CRC.
+  if (ok_inflate && !rodape_confere) {
+    if (motivo != nullptr) {
+      *motivo = "blocos decodificados mas o rodape gzip nao confere (crc/isize)";
+    }
+    saida->clear();
+    return false;
+  }
+  return true;
+}
+
+// O que o IUnzipAStream descomprime: um stream zlib (RFC1950, o dos `.pkg`) ou
+// um gzip (RFC1952, o dos `.bar`), ambos com o prefixo AEEResBlob possivel
+// (`[0]` = bDataOffset, `[1]` = 0; o dado comeca em `entrada[entrada[0]]`).
+// Um cabecalho zlib valido nunca tem o segundo byte a zero, por isso a
+// heuristica do blob nao engana os streams crus.
+bool InflarParaUnzip(const std::vector<std::uint8_t>& entrada, std::vector<std::uint8_t>* saida,
+                     std::string* motivo) {
+  std::size_t off = 0;
+  if (entrada.size() >= 2 && entrada[1] == 0 && entrada[0] >= 0x10u &&
+      entrada[0] < entrada.size()) {
+    off = entrada[0];
+  }
+  if (off + 2 <= entrada.size() && entrada[off] == 0x1Fu && entrada[off + 1] == 0x8Bu) {
+    std::vector<std::uint8_t> gzip(entrada.begin() + static_cast<std::ptrdiff_t>(off),
+                                   entrada.end());
+    return InflarGzip(gzip, saida, motivo);
+  }
+  std::string motivo_zlib;
+  if (zb2::Inflar(entrada.data() + off, entrada.size() - off, saida, &motivo_zlib, 0u, nullptr)) {
+    return true;
+  }
+  if (off != 0) {
+    // O salto do blob nao deu num stream valido: tenta o comeco, por seguranca.
+    return zb2::Inflar(entrada.data(), entrada.size(), saida, motivo, 0u, nullptr);
+  }
+  if (motivo != nullptr) *motivo = motivo_zlib;
+  return false;
+}
+
 }  // namespace
+
+bool Despacho::ExpandirUnzip(EstadoDoUnzip& e) {
+  // A ORIGEM e um IAStream. O BREW aceita dois como tal: um IMemAStream (o caso
+  // MEDIDO do allstarcards: o blob gzip de um recurso) e um IFile aberto (o
+  // padrao que o zeebx documenta para o Double Dragon).
+  std::vector<std::uint8_t> comprimido;
+  const std::uint32_t origem = e.origem;
+  if (origem == kObjMemStream) {
+    auto it = memstreams_.find(origem);
+    if (it == memstreams_.end()) {
+      traco_.RegistarFalta(Area::Brew, "IUnzipAStream::Read",
+                           "a origem e o IMemAStream que nao existe (objecto nunca criado)");
+      return false;
+    }
+    auto& ms = it->second;
+    while (ms.pos < ms.tamanho) {
+      comprimido.push_back(mem_.Ler8(ms.base + ms.pos));
+      ++ms.pos;
+    }
+  } else if (origem >= kObjFileBase) {
+    // Um IFile como origem: le da posicao corrente ate ao fim, como o
+    // `drain_stream` do zeebx.
+    const std::uint32_t id = IdentificadorDeFicheiro(origem);
+    const std::uint32_t info = al_.Malloc(76);  // FileInfo
+    if (info == 0) {
+      traco_.RegistarFalta(Area::Brew, "IUnzipAStream::Read", "o alocador recusou o FileInfo");
+      return false;
+    }
+    if (!arquivos_.Informacao(id, mem_, info)) {
+      al_.Free(info);
+      traco_.RegistarFalta(Area::Brew, "IUnzipAStream::Read", "a origem IFile nao respondeu GetInfo");
+      return false;
+    }
+    const std::uint32_t tamanho = mem_.Ler32(info + 8);  // FileInfo.dwSize
+    al_.Free(info);
+    if (tamanho > 0) {
+      const std::uint32_t buf = al_.Malloc(tamanho);
+      if (buf == 0) {
+        traco_.RegistarFalta(Area::Brew, "IUnzipAStream::Read",
+                             "o alocador recusou " + std::to_string(tamanho) + " bytes para ler a origem");
+        return false;
+      }
+      const std::int32_t lidos = arquivos_.Ler(id, mem_, buf, tamanho);
+      if (lidos != static_cast<std::int32_t>(tamanho)) {
+        al_.Free(buf);
+        traco_.RegistarFalta(Area::Brew, "IUnzipAStream::Read",
+                             "leu " + std::to_string(lidos) + " dos " + std::to_string(tamanho) +
+                                 " bytes da origem IFile");
+        return false;
+      }
+      comprimido.resize(tamanho);
+      for (std::uint32_t k = 0; k < tamanho; ++k) comprimido[k] = mem_.Ler8(buf + k);
+      al_.Free(buf);
+    }
+  } else {
+    traco_.RegistarFalta(Area::Brew, "IUnzipAStream::Read",
+                         "a origem 0x" + Hex(origem) + " nao e IMemAStream nem IFile");
+    return false;
+  }
+
+  // O BLOB do .bar pode ter o prefijo AEEResBlob; o `InflarParaUnzip` trata
+  // dele, do zlib e do gzip.
+  std::string motivo;
+  if (!InflarParaUnzip(comprimido, &e.saida, &motivo)) {
+    traco_.RegistarFalta(Area::Brew, "IUnzipAStream::Read",
+                         "nao descomprimiu: " + motivo +
+                             " (origem com " + std::to_string(comprimido.size()) + " bytes)");
+    e.saida.clear();
+    return false;
+  }
+  e.pos = 0;
+  traco_.RegistarPressuposto(Area::Brew, "IUnzipAStream::Read",
+                             "descomprimiu " + std::to_string(comprimido.size()) + " -> " +
+                                 std::to_string(e.saida.size()) + " bytes");
+  return true;
+}
+
 
 bool Despacho::InstalarEntrada(const Saidas& saidas, std::uint32_t base) {
   if (entrada_pronta_) {
@@ -346,7 +601,8 @@ bool Despacho::ClasseConhecida(std::uint32_t cls) const {
   const bool e_classe_servida = (IndiceDaClasse(cls) < kQuantasClasses);
   return cls == kIidDisplay || cls == 0x010127d4u || cls == kIidFileMgr || cls == kIidHeap ||
          cls == kIidSound || cls == kIidGraphics || cls == kIidRootForm ||
-         cls == kIidHid || cls == kIidSqlMgr ||
+         cls == kIidHid || cls == kIidSqlMgr || cls == kClsidMemAStream ||
+         cls == kClsidUnzipStream ||
          (entrada_pronta_ && cls == kClsidSignalCBFactory) || e_o_titulo || e_classe_servida;
 }
 
@@ -531,6 +787,67 @@ void Despacho::InstalarAjudantes(const Saidas& saidas, Endereco tabela) {
   for (const auto& lig : kLigados) {
     mem_.Escrever32(tabela + lig.off, saidas.Endereco(lig.saida));
   }
+
+  // A FRENTE io2: os objectos IUnzipAStream e IMemAStream. Construidos AQUI --
+  // no mesmo passo de construcao do sistema -- porque `tools/bateria.cpp` e
+  // partilhado e esta frente nao o altera, e os objectos genericos (9000+)
+  // sao de outra frente. As vtables vivem nos indices 15000/15010 da faixa de
+  // saida (livres: a entrada usa 20000+, o GL 30000+, os widgets 60000+).
+  //
+  // CABLAGEM COM LEITURA DE VOLTA, como a da ferramenta: uma vtable que se
+  // perde em silencio ja custou uma ronda nesta arvore.
+  {
+    struct LigacaoDeStream {
+      std::uint32_t slot;
+      std::uint32_t saida;
+    };
+    const LigacaoDeStream kUnzip[] = {
+        {0, 3}, {1, 4}, {2, kSlotIdUnzipReadable}, {3, kSlotIdUnzipRead},
+        {4, kSlotIdUnzipCancel}, {5, kSlotIdUnzipSetStream},
+    };
+    const LigacaoDeStream kMem[] = {
+        {0, 3}, {1, 4},
+        {2, kSlotIdMemStreamReadable}, {3, kSlotIdMemStreamRead},
+        {4, kSlotIdMemStreamCancel}, {5, kSlotIdMemStreamSet},
+        {6, kSlotIdMemStreamSetEx},
+    };
+    const auto ligar = [&](std::uint32_t vt, std::uint32_t slot, std::uint32_t saida_id) {
+      mem_.Escrever32(saidas.Endereco(vt) + slot * 4, saidas.Endereco(saida_id));
+    };
+    for (const LigacaoDeStream& l : kUnzip) ligar(kVtUnzip, l.slot, l.saida);
+    for (std::uint32_t slot = 6; slot < 64; ++slot) {
+      ligar(kVtUnzip, slot, kSlotIdUnzipSlots + (slot - 6));
+    }
+    for (const LigacaoDeStream& l : kMem) ligar(kVtMemStream, l.slot, l.saida);
+    for (std::uint32_t slot = 7; slot < 64; ++slot) {
+      ligar(kVtMemStream, slot, kSlotIdMemStreamSlots + (slot - 7));
+    }
+    mem_.Escrever32(kObjUnzip, saidas.Endereco(kVtUnzip));
+    mem_.Escrever32(kObjUnzip + 4, 1);  // contagem da convencao desta arvore
+    mem_.Escrever32(kObjMemStream, saidas.Endereco(kVtMemStream));
+    mem_.Escrever32(kObjMemStream + 4, 1);
+    // A LEITURA DE VOLTA.
+    bool ok = true;
+    for (const LigacaoDeStream& l : kUnzip) {
+      ok = ok && mem_.Ler32(saidas.Endereco(kVtUnzip) + l.slot * 4) ==
+                     saidas.Endereco(l.saida);
+    }
+    for (const LigacaoDeStream& l : kMem) {
+      ok = ok && mem_.Ler32(saidas.Endereco(kVtMemStream) + l.slot * 4) ==
+                     saidas.Endereco(l.saida);
+    }
+    ok = ok && mem_.Ler32(kObjUnzip) == saidas.Endereco(kVtUnzip) &&
+         mem_.Ler32(kObjMemStream) == saidas.Endereco(kVtMemStream);
+    if (!ok) {
+      traco_.RegistarFalta(Area::Brew, "cablagem_dos_streams",
+                           "a vtable do IUnzipAStream/IMemAStream divergiu da instalacao");
+    }
+    traco_.Emitir(Area::Brew, Nivel::Informacao, "STREAMS_INSTALADOS",
+                  "IUnzipAStream obj=0x" + Hex(kObjUnzip) + " vtable=" + Hex(saidas.Endereco(kVtUnzip)) +
+                      " | IMemAStream obj=0x" + Hex(kObjMemStream) +
+                      " vtable=" + Hex(saidas.Endereco(kVtMemStream)));
+  }
+
   // O WIDGET, no fim da instalacao dos ajudantes. Fica AQUI -- e nao num sitio
   // que a bateria tenha de chamar -- porque esta frente nao pode obrigar a mudar
   // a ferramenta: `tools/bateria.cpp` e partilhado. O `InstalarWidgets` e
@@ -942,6 +1259,12 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         else if (entrada_pronta_ && iid == kClsidSignalCBFactory) {
           devolver = sinais_.EnderecoDaFabrica();
         }
+        // A FRENTE io2: IUnzipAStream e IMemAStream sao objectos A SERIO (vtable
+        // e comportamento proprios), e nao genericos. O `0x01001014` ESTAVA em
+        // `kGenericos` com o nome "IFile" -- e o objecto generico recusava o
+        // `Read`/`SetStream` que o allstarcards pede em laco (310 KB).
+        else if (iid == kClsidUnzipStream) devolver = kObjUnzip;
+        else if (iid == kClsidMemAStream) devolver = kObjMemStream;
         // Os que tem objecto generico: o jogo fica com uma interface cujos
         // metodos recusam, e a bateria aprende quais sao.
         else {
@@ -1074,47 +1397,88 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         cpu.Set(kR0, kAeeSuccess);  // método void; a recusa fica no Traco.
       } else if (idx == kBaseDoShell + brew_slots::kShell_GetDeviceInfoEx) {
         // `int GetDeviceInfoEx(IShell*, AEEDeviceItem, void*, int*)` (AEEIShell.h).
-        // Pedido 2x na bateria (recklessracing, rt2): nItem=0x29=41=MODEL_NAME.
         // *pnSize e in/out: entrada = bytes do buffer, saida = bytes necessarios.
+        //
+        // OS ITENS MEDIDOS OU DEMANDADOS:
+        //   nItem=0x29 (MODEL_NAME) -- a demanda antiga (recklessracing, rt2);
+        //   nItem=0x1c (IMEI) -- o allstarcards (1x, corrida_fmg);
+        //   nItem=0x02 (MOBILE_ID) e 0x01 (CHIP_ID) -- o chessbots (1x cada).
+        // Valores de `AEEDeviceItems.h` do SDK MP (a extracao 4.0.2 nao traz o
+        // cabecalho; os numeros sao os do BrewMPSDK-7.12.5) e nomes por extenso
+        // em `AEEDeviceItems.h:31-41`.
         const std::uint32_t item = cpu.Get(kR1);
         const std::uint32_t p_buf = cpu.Get(kR2);
         const std::uint32_t p_tam = cpu.Get(kR3);
-        constexpr std::uint32_t kItemModelName = 0x29u;
-        // u"Zeebo" DECLARADO (sem medicao): 5 AECHAR + NUL = 12 bytes UTF-16LE.
-        constexpr std::uint16_t kModelo[] = {'Z', 'e', 'e', 'b', 'o', 0};
-        constexpr std::uint32_t kNecessario = sizeof(kModelo);
+        struct Item {
+          std::uint32_t id;
+          const char* nome;
+          // AECHAR (UTF-16LE) quando nao nulo; ASCII quando `larga` e nulo.
+          const std::uint16_t* larga;
+          const char* ascii;
+          std::uint32_t bytes;
+        };
+        // u"MSM7201A" -- o fabricante do Zeebo, do guia oficial
+        // (ZeeboDeveloperGuide0.97.md:224, "o MSM7201A").
+        static const std::uint16_t kModelo[] = {'Z', 'e', 'e', 'b', 'o', 0};
+        static const std::uint16_t kChipDoZeebo[] = {'M', 'S', 'M', '7', '2', '0', '1', 'A', 0};
+        // O IMEI e o do zeebx: sintetico, com os 15 digitos e o digito de Luhn
+        // certo (quem pede um IMEI costuma confere-lo). O MOBILE_ID de uma
+        // consola sem rede e a cadeia vazia -- honesto.
+        static const Item kItens[] = {
+            {0x01u, "CHIP_ID", kChipDoZeebo, nullptr, sizeof(kChipDoZeebo)},
+            {0x02u, "MOBILE_ID", nullptr, "", 1},
+            {0x1cu, "IMEI", nullptr, "350000000000006", 16},
+            {0x29u, "MODEL_NAME", kModelo, nullptr, sizeof(kModelo)},
+        };
+        const Item* item_servido = nullptr;
+        for (const Item& it : kItens) {
+          if (it.id == item) item_servido = &it;
+        }
         if (p_tam == 0) {
           cpu.Set(kR0, kAeeBadParm);
-        } else if (item != kItemModelName) {
+        } else if (item_servido == nullptr) {
           char det[64];
           std::snprintf(det, sizeof(det), "nItem=0x%08x sem suporte", item);
           traco_.RegistarFalta(Area::Brew, "IShell::GetDeviceInfoEx", det);
           cpu.Set(kR0, kAeeUnsupported);
         } else if (p_buf == 0) {
-          mem_.Escrever32(p_tam, kNecessario);
+          mem_.Escrever32(p_tam, item_servido->bytes);
           cpu.Set(kR0, kAeeSuccess);
           traco_.Emitir(Area::Brew, Nivel::Depuracao, "ISHELL_GETDEVICEINFOEX",
-                        "MODEL_NAME so-tamanho -> 12");
+                        std::string(item_servido->nome) + " so-tamanho -> " +
+                            std::to_string(item_servido->bytes));
         } else {
           const std::uint32_t cabem = mem_.Ler32(p_tam);
-          if (cabem >= kNecessario) {
-            for (std::uint32_t i = 0; i < 6; ++i) {
-              mem_.Escrever16(p_buf + i * 2, kModelo[i]);
+          if (item_servido->larga != nullptr) {
+            const std::uint32_t unidades = item_servido->bytes / 2;
+            if (cabem >= item_servido->bytes) {
+              for (std::uint32_t i = 0; i < unidades; ++i) {
+                mem_.Escrever16(p_buf + i * 2, item_servido->larga[i]);
+              }
+            } else {
+              // Preenchimento parcial com NUL final garantido (unidades de 2).
+              const std::uint32_t que_cabem = cabem / 2;
+              for (std::uint32_t i = 0; i < que_cabem; ++i) {
+                const std::uint16_t c =
+                    (i + 1 == que_cabem) ? 0 : item_servido->larga[i];
+                mem_.Escrever16(p_buf + i * 2, c);
+              }
             }
           } else {
-            // Preenchimento parcial com NUL final garantido (unidades de 2).
-            const std::uint32_t unidades = cabem / 2;
-            for (std::uint32_t i = 0; i < unidades; ++i) {
-              const std::uint16_t c =
-                  (i + 1 == unidades) ? 0 : kModelo[i];
-              mem_.Escrever16(p_buf + i * 2, c);
+            const std::uint32_t n = item_servido->bytes - 1;  // sem o NUL
+            if (cabem > 0) {
+              const std::uint32_t copiar = std::min(cabem - 1, n);
+              for (std::uint32_t i = 0; i < copiar; ++i) {
+                mem_.Escrever8(p_buf + i, static_cast<std::uint8_t>(item_servido->ascii[i]));
+              }
+              mem_.Escrever8(p_buf + copiar, 0);
             }
           }
-          mem_.Escrever32(p_tam, kNecessario);
+          mem_.Escrever32(p_tam, item_servido->bytes);
           cpu.Set(kR0, kAeeSuccess);
           char det[96];
-          std::snprintf(det, sizeof(det), "MODEL_NAME cabem=%u -> %u", cabem,
-                        kNecessario);
+          std::snprintf(det, sizeof(det), "%s cabem=%u -> %u", item_servido->nome, cabem,
+                        item_servido->bytes);
           traco_.Emitir(Area::Brew, Nivel::Depuracao, "ISHELL_GETDEVICEINFOEX", det);
         }
       } else if (idx == kBaseDoShell + brew_slots::kShell_SendEvent) {
@@ -1218,6 +1582,13 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         else if (idx >= zb2::brew::kVtableDisplay) { iface = "IDisplay"; slot = idx - zb2::brew::kVtableDisplay; }
         else { iface = "IShell"; slot = idx - kBaseDoShell; }
         std::snprintf(nome, sizeof(nome), "%s::slot%u", iface, slot);
+        // O RAMO DE NOMES CONSULTA A TABELA (frente io2): para o objecto
+        // IUnzipAStream (kGenericos[1]) o nome do SDK diz QUAL metodo foi
+        // pedido -- `Read`, `SetStream` -- e nao um numero. O `IFile` do nome
+        // antigo era o erro de dois nomes que esta frente corrigiu.
+        if (kgen == 1 && slot < 6) {
+          std::snprintf(nome, sizeof(nome), "%s::%s", iface, NomeDeUnzipStream(slot));
+        }
         // Os ARGUMENTOS no detalhe: para o CreateInstance (slot 2) o r1 e o ClsId
         // pedido, e sem ele nao se sabe o que responder. Foi assim que se
         // percebeu, na arvore antiga, quais das interfaces eram as mesmas por
@@ -1254,6 +1625,111 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
                       r0, cpu.Get(kR1), cpu.Get(kR2), cpu.Get(kR3), mem_.Ler32(sp),
                       mem_.Ler32(sp + 4), cpu.Get(kLR), txt);
         traco_.RegistarFalta(Area::Brew, nome, det);
+        cpu.Set(kR0, kAeeUnsupported);
+        recusou_agora = true;
+        if (++recusas_seguidas > 200) { resultado.motivo = "parou_em_slot_nao_implementado"; return resultado; }
+      } else if (idx == kSlotIdUnzipSetStream) {
+        // `void SetStream(IUnzipAStream *po, IAStream *pIAStream)` -- slot 5
+        // (`AEEUnzipStream.h`). Guarda a origem e RESETA o estado: uma origem
+        // nova anula a expansao anterior (o ALLSTARCARDS entrega o IMemAStream
+        // que criou sobre o blob gzip de um recurso).
+        EstadoDoUnzip& e = unzips_[r0];
+        e = EstadoDoUnzip{};
+        e.origem = cpu.Get(kR1);
+        traco_.Emitir(Area::Brew, Nivel::Depuracao, "UNZIP_SETSTREAM",
+                      "obj=0x" + Hex(r0) + " origem=0x" + Hex(e.origem));
+      } else if (idx == kSlotIdUnzipReadable) {
+        // `boolean Readable(po, pfn, pUser)` -- slot 2. A resposta honesta e
+        // FALSE enquanto nao ha bytes por ler (sem SetStream, ou antes da
+        // primeira leitura); TRUE depois, enquanto a posicao esta no meio. O
+        // zeebx devolve o mesmo por "o conteudo ja esta inteiro na memoria".
+        const auto it = unzips_.find(r0);
+        const bool tem = it != unzips_.end() && it->second.expandido &&
+                         it->second.pos < it->second.saida.size();
+        cpu.Set(kR0, tem ? 1u : 0u);
+      } else if (idx == kSlotIdUnzipRead) {
+        // `int32 Read(po, pDest, nWant)` -- slot 3. A descompressao corre de
+        // UMA VEZ na primeira leitura (como o zeebx, `UnzipState`), e as
+        // leituras seguintes saem do buffer. No fim, 0 -- o contrato do
+        // IAStream. O allstarcards le 310 KB em pedacos e testa o retorno.
+        EstadoDoUnzip& e = unzips_[r0];
+        if (!e.expandido) {
+          e.expandido = true;
+          if (e.origem == 0) {
+            // Sem origem (o SetStream recebeu NULL): nao ha o que descomprimir.
+            // EOF, com a razao no traco -- um 0 em silencio esconderia o
+            // ficheiro em falta (P2).
+            if (!e.origem_desconhecida) {
+              e.origem_desconhecida = true;
+              traco_.RegistarFalta(Area::Brew, "IUnzipAStream::Read",
+                                   "SetStream nunca recebeu origem (NULL): fim do stream");
+            }
+          } else if (!ExpandirUnzip(e)) {
+            // A recusa ja foi registada pelo ExpandirUnzip; a leitura devolve
+            // EOF para o jogo nao ficar em laco de saidas.
+          }
+        }
+        const std::uint32_t p_dest = cpu.Get(kR1);
+        const std::uint32_t pedido = cpu.Get(kR2);
+        const std::uint32_t disponivel =
+            e.pos < e.saida.size() ? static_cast<std::uint32_t>(e.saida.size() - e.pos) : 0u;
+        const std::uint32_t n = std::min(pedido, disponivel);
+        for (std::uint32_t i = 0; i < n; ++i) {
+          mem_.Escrever8(p_dest + i, e.saida[e.pos + i]);
+        }
+        e.pos += n;
+        cpu.Set(kR0, n);
+      } else if (idx == kSlotIdUnzipCancel) {
+        // `void Cancel(po, pfn, pUser)` -- slot 4. Nao ha leitura assincrona
+        // aqui: cancelar nao tem trabalho, e o metodo e void.
+        cpu.Set(kR0, kAeeSuccess);
+      } else if (idx >= kSlotIdUnzipSlots && idx < kSlotIdUnzipSlots + 58) {
+        // Os slots 6..63 do IUnzipAStream (nenhum titulo os pede, medido): a
+        // recusa leva o NOME do SDK e nao cai no ramo dos ajudantes, que os
+        // nomearia como offsets de uma tabela que nao e a deles.
+        const unsigned slot = 6 + (idx - kSlotIdUnzipSlots);
+        traco_.RegistarFalta(Area::Brew, std::string("IUnzipAStream::") + NomeDeUnzipStream(slot),
+                             "sem implementacao nesta etapa");
+        cpu.Set(kR0, kAeeUnsupported);
+        recusou_agora = true;
+        if (++recusas_seguidas > 200) { resultado.motivo = "parou_em_slot_nao_implementado"; return resultado; }
+      } else if (idx == kSlotIdMemStreamSet || idx == kSlotIdMemStreamSetEx) {
+        // `void Set(po, pBuff, dwSize, dwOffset, bSysMem)` e `SetEx` -- slots
+        // 5/6 do IMemAStream (AEE.h, IMEMASTREAM_Set). A janela de leitura
+        // comeca em `pBuff + dwOffset` (o SDK diz-o por extenso) e tem `dwSize`
+        // bytes. O `SetEx` traz funcoes de libertao que nao se aplicam: o
+        // buffer e do guest e a VFS nao o possui -- declarado no pressuposto.
+        auto& m = memstreams_[r0];
+        m.base = cpu.Get(kR1) + cpu.Get(kR3);
+        m.tamanho = cpu.Get(kR2);
+        m.pos = 0;
+        if (idx == kSlotIdMemStreamSetEx) {
+          traco_.RegistarPressuposto(Area::Brew, "IMemAStream::SetEx",
+                                     "pUserFreeFn/pUserFeeData nao aplicados: o buffer e do guest");
+        }
+      } else if (idx == kSlotIdMemStreamReadable) {
+        const auto it = memstreams_.find(r0);
+        const bool tem = it != memstreams_.end() && it->second.pos < it->second.tamanho;
+        cpu.Set(kR0, tem ? 1u : 0u);
+      } else if (idx == kSlotIdMemStreamRead) {
+        // `int32 Read(po, pDest, nWant)` -- slot 3. Le do bloco que o `Set`
+        // declarou, da posicao corrente ate ao fim.
+        auto& m = memstreams_[r0];
+        const std::uint32_t p_dest = cpu.Get(kR1);
+        const std::uint32_t pedido = cpu.Get(kR2);
+        const std::uint32_t resta = m.pos < m.tamanho ? m.tamanho - m.pos : 0u;
+        const std::uint32_t n = std::min(pedido, resta);
+        for (std::uint32_t i = 0; i < n; ++i) {
+          mem_.Escrever8(p_dest + i, mem_.Ler8(m.base + m.pos + i));
+        }
+        m.pos += n;
+        cpu.Set(kR0, n);
+      } else if (idx == kSlotIdMemStreamCancel) {
+        cpu.Set(kR0, kAeeSuccess);
+      } else if (idx >= kSlotIdMemStreamSlots && idx < kSlotIdMemStreamSlots + 57) {
+        const unsigned slot = 7 + (idx - kSlotIdMemStreamSlots);
+        traco_.RegistarFalta(Area::Brew, std::string("IMemAStream::") + NomeDeMemStream(slot),
+                             "sem implementacao nesta etapa");
         cpu.Set(kR0, kAeeUnsupported);
         recusou_agora = true;
         if (++recusas_seguidas > 200) { resultado.motivo = "parou_em_slot_nao_implementado"; return resultado; }

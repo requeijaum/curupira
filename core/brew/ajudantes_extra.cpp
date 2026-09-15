@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <string>
 
+#include "core/brew/formato.h"
+
 namespace zb2::brew {
 
 namespace {
@@ -495,8 +497,288 @@ void FazerStrncmp(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
   EmitirChamada(traco, brew_ajudantes::kAjudante_strncmp, det);
 }
 
+
+// ---------------------------------------------------------------------------
+// A FRENTE io2 (etapa 12): os seis ajudantes que a corrida fmg mediu como os
+// mais pedidos depois da ronda anterior. Assinaturas em `AEEStdLib.h` e nomes
+// em `tools/ajudantes_slots.inc` (gerado, ancoras conferidas no fim).
+// ---------------------------------------------------------------------------
+
+// 0x030 -- `int (*wstrlen)(const AECHAR *p)`. Conta AECHAR (unidades de 16
+// bits) ate ao NUL; um byte a mais nao pode entrar na conta (SDK: "the number
+// of AECHAR characters in string, excluding the terminal NULL").
+void FazerWstrlen(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
+  const std::uint32_t p_in = cpu.Get(kR0);
+  if (p_in == 0) {
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_wstrlen, "ponteiro nulo",
+                   DetalheDosRegistos(cpu));
+    cpu.Set(kR0, 0);
+    return;
+  }
+  std::uint32_t n = 0;
+  while (mem.Ler16(p_in + n * 2) != 0) {
+    if (++n >= kLimiteDeCaracteres) {
+      RegistarRecusa(traco, brew_ajudantes::kAjudante_wstrlen,
+                     "cadeia larga sem fim (limite de caracteres)", "");
+      cpu.Set(kR0, 0);
+      return;
+    }
+  }
+  cpu.Set(kR0, n);
+  char det[48];
+  std::snprintf(det, sizeof(det), "AECHAR=%u", n);
+  EmitirChamada(traco, brew_ajudantes::kAjudante_wstrlen, det);
+}
+
+// 0x080 -- `int (*wstrncopyn)(AECHAR *pszDest, int cbDest, const AECHAR *pszSource, int lenSource)`.
+//
+// O SDK declara por extenso: `cbDest` e a capacidade do destino EM AECHAR; o
+// destino e SEMPRE terminado a NUL; `lenSource` nao inclui o NUL, e -1 copia a
+// origem inteira; devolve o numero de AECHAR copiados. Medido no chessbots
+// (1x): destino na pilha (0x802001c6), cbDest=0x200=512, origem numa cadeia
+// larga de zeros dentro do modulo.
+void FazerWstrncopyn(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
+  const std::uint32_t p_dest = cpu.Get(kR0);
+  const std::int32_t cb_dest = static_cast<std::int32_t>(cpu.Get(kR1));
+  const std::uint32_t p_src = cpu.Get(kR2);
+  const std::int32_t len_source = static_cast<std::int32_t>(cpu.Get(kR3));
+  if (p_dest == 0 || p_src == 0 || cb_dest <= 0) {
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_wstrncopyn,
+                   "ponteiro nulo ou cbDest < 1", DetalheDosRegistos(cpu));
+    cpu.Set(kR0, 0);
+    return;
+  }
+  const std::uint32_t limite = static_cast<std::uint32_t>(cb_dest) - 1u;  // o NUL final
+  std::uint32_t copiados = 0;
+  while ((len_source < 0 || static_cast<std::int32_t>(copiados) < len_source) &&
+         copiados < limite) {
+    const std::uint16_t w = mem.Ler16(p_src + copiados * 2);
+    if (w == 0) break;
+    mem.Escrever16(p_dest + copiados * 2, w);
+    ++copiados;
+    if (copiados >= kLimiteDeCaracteres) {
+      RegistarRecusa(traco, brew_ajudantes::kAjudante_wstrncopyn,
+                     "cadeia de entrada sem fim (limite de caracteres)", "");
+      cpu.Set(kR0, 0);
+      return;
+    }
+  }
+  mem.Escrever16(p_dest + copiados * 2, 0);
+  cpu.Set(kR0, copiados);
+  char det[96];
+  std::snprintf(det, sizeof(det), "cbDest=%d lenSource=%d AECHAR=%u", cb_dest, len_source,
+                copiados);
+  EmitirChamada(traco, brew_ajudantes::kAjudante_wstrncopyn, det);
+}
+
+// 0x0C4 -- `uint32 (*strtoul)(const char *nptr, char **endptr, int base)`.
+//
+// O SDK diz que e "a wrapper around the standard C library function strtoul()",
+// logo as regras sao as da libc: espacos iniciais, sinal, prefixo 0x/0 quando
+// base 0, paragem no primeiro caracter que nao e do numero, endptr = onde
+// parou (nptr quando nada converteu), 0 sem conversao.
+void FazerStrtoul(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
+  const std::uint32_t p_in = cpu.Get(kR0);
+  const std::uint32_t p_end = cpu.Get(kR1);
+  const std::int32_t base = static_cast<std::int32_t>(cpu.Get(kR2));
+  if (p_in == 0) {
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_strtoul, "ponteiro nulo",
+                   DetalheDosRegistos(cpu));
+    cpu.Set(kR0, 0);
+    return;
+  }
+  const auto byte = [&](std::uint32_t pos) -> std::uint8_t {
+    return mem.Ler8(p_in + pos);
+  };
+  std::uint32_t i = 0;
+  while (byte(i) == ' ' || byte(i) == '\t' || byte(i) == '\n' || byte(i) == '\v' ||
+         byte(i) == '\f' || byte(i) == '\r') {
+    ++i;
+  }
+  bool negativo = false;
+  if (byte(i) == '+' || byte(i) == '-') {
+    negativo = (byte(i) == '-');
+    ++i;
+  }
+  int b = base;
+  if (b == 0) {
+    if (byte(i) == '0' && (byte(i + 1) == 'x' || byte(i + 1) == 'X')) {
+      b = 16;
+      i += 2;
+    } else if (byte(i) == '0') {
+      b = 8;
+    } else {
+      b = 10;
+    }
+  } else if (b == 16 && byte(i) == '0' && (byte(i + 1) == 'x' || byte(i + 1) == 'X')) {
+    i += 2;
+  }
+  if (b < 2 || b > 36) {
+    b = 0;  // "invalid base": nada converte (a libc devolve 0 e endptr=nptr)
+    i = 0;
+  }
+  std::uint64_t valor = 0;
+  bool algum_digito = false;
+  for (;;) {
+    const std::uint8_t c = byte(i);
+    std::uint32_t d = 0;
+    if (c >= '0' && c <= '9') d = c - '0';
+    else if (c >= 'a' && c <= 'z') d = c - 'a' + 10;
+    else if (c >= 'A' && c <= 'Z') d = c - 'A' + 10;
+    else break;
+    if (d >= static_cast<std::uint32_t>(b)) break;
+    algum_digito = true;
+    valor = valor * static_cast<std::uint64_t>(b) + d;
+    if (valor > 0xFFFFFFFFull) valor = 0xFFFFFFFFull;  // satura como ULONG_MAX
+    ++i;
+    if (i >= kLimiteDeCadeia) {
+      RegistarRecusa(traco, brew_ajudantes::kAjudante_strtoul,
+                     "numero sem fim (limite de caracteres)", "");
+      cpu.Set(kR0, 0);
+      return;
+    }
+  }
+  if (!algum_digito) i = 0;  // endptr = nptr, e nada se converteu
+  if (p_end != 0) mem.Escrever32(p_end, p_in + i);
+  std::uint32_t r = static_cast<std::uint32_t>(valor);
+  if (negativo) r = static_cast<std::uint32_t>(-static_cast<std::int64_t>(r));
+  cpu.Set(kR0, r);
+  char det[96];
+  std::snprintf(det, sizeof(det), "base=%d valor=%u", base, r);
+  EmitirChamada(traco, brew_ajudantes::kAjudante_strtoul, det);
+}
+
+// 0x144 -- `int32 (*snprintf)(char *buf, uint32 f, const char *format, ...)`.
+// Igual ao `sprintf` (0x020) com o limite `f` no r1 e o formato no r2; os
+// varargs comecam no r3 (AAPCS). O MEDIDO no allstarcards: formato
+// "udata/settings%d.dat" com limite 32.
+void FazerSnprintf(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
+  const std::uint32_t pbuf = cpu.Get(kR0);
+  const std::uint32_t limite = cpu.Get(kR1);
+  const std::uint32_t pfmt = cpu.Get(kR2);
+  if (pbuf == 0 || pfmt == 0) {
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_snprintf, "ponteiro nulo",
+                   DetalheDosRegistos(cpu));
+    cpu.Set(kR0, 0);
+    return;
+  }
+  const std::uint32_t sp = cpu.Get(kSP);
+  std::uint32_t args[8];
+  int n = 0;
+  args[n++] = cpu.Get(kR3);
+  for (int i = 0; i < 7; ++i) {
+    args[n++] = mem.Ler32(sp + static_cast<std::uint32_t>(i) * 4);
+  }
+  cpu.Set(kR0, Formatar(mem, pbuf, pfmt, args, n, limite));
+  char det[96];
+  std::snprintf(det, sizeof(det), "buf=0x%08x f=%u fmt=0x%08x", pbuf, limite, pfmt);
+  EmitirChamada(traco, brew_ajudantes::kAjudante_snprintf, det);
+}
+
+// 0x14C -- `size_t (*strlcpy)(char *dst, const char *src, size_t nSize)`.
+// O SDK: "guarantee that it is NULL terminated"; devolve o comprimento da
+// cadeia que se TENTOU copiar (para se saber se truncou); (size_t)-1 para erro.
+void FazerStrlcpy(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
+  const std::uint32_t p_dst = cpu.Get(kR0);
+  const std::uint32_t p_src = cpu.Get(kR1);
+  const std::uint32_t n_size = cpu.Get(kR2);
+  if (p_dst == 0 || p_src == 0) {
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_strlcpy, "ponteiro nulo",
+                   DetalheDosRegistos(cpu));
+    cpu.Set(kR0, 0xFFFFFFFFu);  // (size_t)-1, o erro que o SDK declara
+    return;
+  }
+  std::uint32_t comprimento = 0;
+  while (mem.Ler8(p_src + comprimento) != 0) {
+    if (++comprimento >= kLimiteDeCadeia) {
+      RegistarRecusa(traco, brew_ajudantes::kAjudante_strlcpy,
+                     "origem sem fim (limite de caracteres)", "");
+      cpu.Set(kR0, 0xFFFFFFFFu);
+      return;
+    }
+  }
+  if (n_size > 0) {
+    const std::uint32_t copiar = (comprimento < n_size - 1) ? comprimento : (n_size - 1);
+    for (std::uint32_t k = 0; k < copiar; ++k) {
+      mem.Escrever8(p_dst + k, mem.Ler8(p_src + k));
+    }
+    mem.Escrever8(p_dst + copiar, 0);
+  }
+  cpu.Set(kR0, comprimento);
+  char det[96];
+  std::snprintf(det, sizeof(det), "nSize=%u comprimento=%u", n_size, comprimento);
+  EmitirChamada(traco, brew_ajudantes::kAjudante_strlcpy, det);
+}
+
+// 0x150 -- `size_t (*strlcat)(char *dst, const char *src, size_t nSize)`.
+// Devolve o comprimento que se TENTOU criar (dst + src); (size_t)-1 para erro.
+void FazerStrlcat(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
+  const std::uint32_t p_dst = cpu.Get(kR0);
+  const std::uint32_t p_src = cpu.Get(kR1);
+  const std::uint32_t n_size = cpu.Get(kR2);
+  if (p_dst == 0 || p_src == 0) {
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_strlcat, "ponteiro nulo",
+                   DetalheDosRegistos(cpu));
+    cpu.Set(kR0, 0xFFFFFFFFu);
+    return;
+  }
+  std::uint32_t fim = 0;
+  while (fim < n_size && mem.Ler8(p_dst + fim) != 0) {
+    ++fim;
+    if (fim > kLimiteDeCadeia) {
+      RegistarRecusa(traco, brew_ajudantes::kAjudante_strlcat,
+                     "destino sem fim (limite de caracteres)", "");
+      cpu.Set(kR0, 0xFFFFFFFFu);
+      return;
+    }
+  }
+  if (fim >= n_size) {
+    // O destino ja encheu o buffer: nada se acrescenta, e o comprimento
+    // TENTADO continua a ser fim + strlen(src).
+    std::uint32_t resto = 0;
+    while (mem.Ler8(p_src + resto) != 0) {
+      if (++resto >= kLimiteDeCadeia) break;
+    }
+    cpu.Set(kR0, fim + resto);
+    return;
+  }
+  // Copia o que couber de src a partir de `fim`, termina, e conta o total.
+  std::uint32_t lidos = 0;
+  const std::uint32_t espaco = n_size - fim;  // inclui o NUL final
+  while (lidos + 1 < espaco) {
+    const std::uint8_t c = mem.Ler8(p_src + lidos);
+    if (c == 0) break;
+    mem.Escrever8(p_dst + fim + lidos, c);
+    ++lidos;
+    if (lidos >= kLimiteDeCadeia) {
+      RegistarRecusa(traco, brew_ajudantes::kAjudante_strlcat,
+                     "origem sem fim (limite de caracteres)", "");
+      cpu.Set(kR0, 0xFFFFFFFFu);
+      return;
+    }
+  }
+  mem.Escrever8(p_dst + fim + lidos, 0);
+  std::uint32_t total = fim + lidos;
+  // O comprimento TENTADO inclui o resto da origem que nao coube.
+  while (mem.Ler8(p_src + lidos) != 0) {
+    ++lidos;
+    if (lidos > kLimiteDeCadeia) break;
+  }
+  total = fim + lidos;
+  cpu.Set(kR0, total);
+  char det[96];
+  std::snprintf(det, sizeof(det), "nSize=%u total=%u", n_size, total);
+  EmitirChamada(traco, brew_ajudantes::kAjudante_strlcat, det);
+}
+
 constexpr Implementacao kImplementados[] = {
     {brew_ajudantes::kAjudante_strstr, "strstr", FazerStrstr},
+    {brew_ajudantes::kAjudante_wstrlen, "wstrlen", FazerWstrlen},
+    {brew_ajudantes::kAjudante_wstrncopyn, "wstrncopyn", FazerWstrncopyn},
+    {brew_ajudantes::kAjudante_strtoul, "strtoul", FazerStrtoul},
+    {brew_ajudantes::kAjudante_snprintf, "snprintf", FazerSnprintf},
+    {brew_ajudantes::kAjudante_strlcpy, "strlcpy", FazerStrlcpy},
+    {brew_ajudantes::kAjudante_strlcat, "strlcat", FazerStrlcat},
     {brew_ajudantes::kAjudante_wstrtostr, "wstrtostr", FazerWstrToStr},
     {brew_ajudantes::kAjudante_utf8towstr, "utf8towstr", FazerUtf8ToWstr},
     {brew_ajudantes::kAjudante_stristr, "stristr", FazerStristr},
@@ -522,9 +804,15 @@ static_assert(brew_ajudantes::kAjudante_utf8towstr == 0x050, "0x050 e utf8towstr
 static_assert(brew_ajudantes::kAjudante_GetRAMFree == 0x138, "0x138 e GetRAMFree");
 static_assert(brew_ajudantes::kAjudante_strdup == 0x0F4, "0x0f4 e strdup");
 static_assert(brew_ajudantes::kAjudante_strncmp == 0x0CC, "0x0cc e strncmp");
+static_assert(brew_ajudantes::kAjudante_wstrlen == 0x030, "0x030 e wstrlen");
+static_assert(brew_ajudantes::kAjudante_wstrncopyn == 0x080, "0x080 e wstrncopyn, nao strncpy");
+static_assert(brew_ajudantes::kAjudante_strtoul == 0x0C4, "0x0c4 e strtoul");
+static_assert(brew_ajudantes::kAjudante_snprintf == 0x144, "0x144 e snprintf");
+static_assert(brew_ajudantes::kAjudante_strlcpy == 0x14C, "0x14c e strlcpy");
+static_assert(brew_ajudantes::kAjudante_strlcat == 0x150, "0x150 e strlcat");
 static_assert(
     sizeof(kImplementados) / sizeof(kImplementados[0]) ==
-        7,
+        13,
     "a lista das implementacoes mudou: actualiza o numero e o teste");
 
 }  // namespace

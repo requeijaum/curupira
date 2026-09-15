@@ -187,6 +187,13 @@ ResultadoCablagem Cablar(Memoria& mem, const Saidas& saidas, const Ligacao* liga
 // O nome que o SDK da ao offset na tabela de ajudantes, ou `nullptr`.
 const char* NomeDoAjudante(std::uint32_t offset);
 
+// O nome que o SDK da ao slot das interfaces de stream com nome proprio
+// (frente io2): `IUnzipAStream` (AEEUnzipStream.h) e `IMemAStream` (AEE.h).
+// Usados pelo ramo de nomes do despacho para nao dizer `slot<N>` de uma
+// interface que tem nomes em cabecalho.
+const char* NomeDeUnzipStream(unsigned slot);
+const char* NomeDeMemStream(unsigned slot);
+
 }  // namespace zb2::brew
 
 #endif

@@ -6,7 +6,13 @@ namespace zb2::brew {
 // `IShell::CreateInstance` mais pediu no corpus. Foi assim que se percebeu, na
 // arvore antiga, quais das interfaces eram as mesmas por dois nomes diferentes.
 const Generico kGenericos[7] = {
-    {0x01001002u, "IHeap"},    {0x01001014u, "IFile"},  {0x01001056u, "ISound"},
+    {0x01001002u, "IHeap"},
+    // 0x01001014 NAO e o IFile: e o `AEECLSID_UNZIPSTREAM`
+    // (`AEEClassIDs.h:82`, `AEECLSID_CORE + 20`). O nome errado ("IFile") vivia
+    // AQUI e na copia de `tools/bateria.cpp`; a da ferramenta fica para outro
+    // agente, e o ramo de nomes do despacho consulta a tabela certa.
+    {0x01001014u, "IUnzipAStream"},
+    {0x01001056u, "ISound"},
     {0x01002001u, "IGraphics"}, {0x01028e51u, "IRootForm"},
     {0x0106c411u, "IHID"},     {0x0102c4e8u, "ISQLMgr"},
 };
@@ -81,6 +87,24 @@ ResultadoCablagem Cablar(Memoria& mem, const Saidas& saidas, const Ligacao* liga
     }
   }
   return {true, ""};
+}
+
+// Os nomes dos slots do `IUnzipAStream` (`AEEUnzipStream.h`): cabeca
+// `INHERIT_IAStream` = IBase(2) + Readable/Read/Cancel + SetStream.
+const char* NomeDeUnzipStream(unsigned slot) {
+  static const char* const k[] = {
+      "AddRef", "Release", "Readable", "Read", "Cancel", "SetStream",
+  };
+  return slot < 6 ? k[slot] : "slot_fora_da_tabela";
+}
+
+// Os nomes dos slots do `IMemAStream` (`AEE.h`, `INHERIT_IMemAStream`):
+// IAStream(2..4) + Set + SetEx.
+const char* NomeDeMemStream(unsigned slot) {
+  static const char* const k[] = {
+      "AddRef", "Release", "Readable", "Read", "Cancel", "Set", "SetEx",
+  };
+  return slot < 7 ? k[slot] : "slot_fora_da_tabela";
 }
 
 const char* NomeDoAjudante(std::uint32_t offset) {

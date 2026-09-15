@@ -1100,26 +1100,147 @@ TEST(CheckPrivLevel, UmaClasseQueSabemosCriarPassaEUmaQueNaoNao) {
   EXPECT_EQ(b.Faltas("IShell::CheckPrivLevel"), 1u);
 }
 
-TEST(QueryClass, O0x01001014EUnzipStreamENaoIFileEPorIssoRecusa) {
-  // `0x01001014` = `AEECLSID_UNZIPSTREAM` (`AEEClassIDs.h:82` do SDK 4.0.2 da
-  // consola: `AEECLSID_CORE + 20`, com `AEECLSID_CORE = QVERSION + 0x1000`).
-  //
-  // Estava na nossa lista com o nome `kIidFile`, e o `QueryClass` respondia
-  // SIM -- a uma classe que o `CreateInstance` nao serve. Dizer "suporto" e
-  // depois nao criar e PIOR do que recusar: o titulo segue o ramo que assume
-  // ter descompressao.
-  //
-  // A constante esta em NOVE dos 62 .mod, logo nao e hipotetico.
+TEST(QueryClass, OUnzipStreamEOMemStreamPassamASerClassesServidas) {
+  // `0x01001014` = `AEECLSID_UNZIPSTREAM` e `0x0100100c` = `AEECLSID_MEMASTREAM`
+  // (`AEEClassIDs.h:75,82` do SDK 4.0.2 da consola). A frente io2 passou a
+  // SERVI-LOS no `CreateInstance` (objectos com vtable de verdade), logo o
+  // `QueryClass` tem de dizer TRUE -- a classe que nao se sabe criar diz FALSE.
   Bancada b;
   constexpr std::uint32_t kQueryClass = 1541;  // kSlotIdQueryClass
-  EXPECT_EQ(b.ChamaSaida(kQueryClass, kObjShell, 0x01001014u), 0u)
-      << "AEECLSID_UNZIPSTREAM nao e servido: o QueryClass tem de dizer FALSE";
+  EXPECT_NE(b.ChamaSaida(kQueryClass, kObjShell, 0x01001014u), 0u)
+      << "AEECLSID_UNZIPSTREAM e servido desde a frente io2";
+  EXPECT_NE(b.ChamaSaida(kQueryClass, kObjShell, 0x0100100cu), 0u)
+      << "AEECLSID_MEMASTREAM e servido desde a frente io2";
 
-  // E as que SAO servidas continuam a dizer TRUE -- para o teste provar que a
-  // lista nao ficou simplesmente vazia.
+  // Uma classe desconhecida de verdade continua a dizer FALSE,
+  EXPECT_EQ(b.ChamaSaida(kQueryClass, kObjShell, 0x01DEAD00u), 0u);
+  // E as que ja eram servidas continuam a dizer TRUE.
   EXPECT_NE(b.ChamaSaida(kQueryClass, kObjShell, 0x01001003u), 0u) << "AEECLSID_FILEMGR";
   EXPECT_NE(b.ChamaSaida(kQueryClass, kObjShell, 0x01001001u), 0u) << "AEECLSID_DISPLAY";
   EXPECT_NE(b.ChamaSaida(kQueryClass, kObjShell, 0x01001002u), 0u) << "AEECLSID_HEAP";
 }
+
+
+// ===========================================================================
+// A FRENTE io2: IMemAStream (0x0100100c) e IUnzipAStream (0x01001014).
+//
+// O allstarcards (medido em corrida_fmg.json) cria um MEMASTREAM sobre o blob
+// gzip de um recurso, entrega-o ao UNZIPSTREAM por `SetStream` e LE 310 KB em
+// laco. Estes testes provam a CABLAGEM (leem a vtable do objecto que o
+// CreateInstance devolveu e chamam o endereco que a tabela diz) e nao um id
+// interno -- armadilha 3 da sessao.
+// ===========================================================================
+
+// O indice de saida a partir do endereco que a vtable guarda.
+std::uint32_t IndiceDeSaida(const Saidas& s, std::uint32_t endereco) {
+  return (endereco - s.base) / s.passo;
+}
+
+TEST(UnzipStream, OCreateInstanceServeOsDoisObjectosComVTablesCabladas) {
+  Bancada b;
+  constexpr std::uint32_t kPpo = 0x00094000u;
+  // 0x01001014 = AEECLSID_UNZIPSTREAM (AEEClassIDs.h:82, AEECLSID_CORE+20).
+  EXPECT_EQ(b.ChamaSaida(kBaseDoShell + 2, kObjShell, 0x01001014u, kPpo), kAeeSuccess);
+  const std::uint32_t unzip = b.Mem().Ler32(kPpo);
+  EXPECT_NE(unzip, 0u);
+  // 0x0100100c = AEECLSID_MEMASTREAM (AEEClassIDs.h:75, AEECLSID_CORE+12).
+  EXPECT_EQ(b.ChamaSaida(kBaseDoShell + 2, kObjShell, 0x0100100cu, kPpo), kAeeSuccess);
+  const std::uint32_t mem = b.Mem().Ler32(kPpo);
+  EXPECT_NE(mem, 0u);
+  EXPECT_NE(unzip, mem);
+
+  // A vtable do unzip: IBase (0/1) + Readable/Read/Cancel/SetStream (2..5);
+  // todos os slots 2..5 APONTAM PARA A FAIXA DE SAIDA e sao distintos entre si.
+  const std::uint32_t vt_u = b.Mem().Ler32(unzip);
+  EXPECT_NE(vt_u, 0u);
+  std::uint32_t anteriores = 0;
+  for (std::uint32_t slot = 2; slot <= 5; ++slot) {
+    const std::uint32_t entra = b.Mem().Ler32(vt_u + slot * 4);
+    EXPECT_TRUE(b.S().Contem(entra)) << "slot " << slot << " aponta para a faixa";
+    EXPECT_NE(entra, anteriores) << "slot " << slot << " e distinto do anterior";
+    anteriores = entra;
+  }
+  // A vtable do memstream: IBase + Readable/Read/Cancel/Set/SetEx (2..6).
+  const std::uint32_t vt_m = b.Mem().Ler32(mem);
+  EXPECT_NE(vt_m, 0u);
+  for (std::uint32_t slot = 2; slot <= 6; ++slot) {
+    EXPECT_TRUE(b.S().Contem(b.Mem().Ler32(vt_m + slot * 4)))
+        << "slot " << slot << " do memstream aponta para a faixa";
+  }
+}
+
+TEST(UnzipStream, DescomprimeOGzipEntreguePorUmMemStream) {
+  Bancada b;
+  constexpr std::uint32_t kPpo = 0x00094000u;
+  constexpr std::uint32_t kDados = 0x00095000u;
+  constexpr std::uint32_t kDest = 0x00096000u;
+  // O MESMO PADRAO do allstarcards: um AEEResBlob (offset 32 + mime
+  // application/x-gzip-compressed) seguido do stream gzip.
+  static const std::uint8_t kBlob[123] = {
+      0x20, 0x00, 0x61, 0x70, 0x70, 0x6c, 0x69, 0x63, 0x61, 0x74, 0x69, 0x6f,
+      0x6e, 0x2f, 0x78, 0x2d, 0x67, 0x7a, 0x69, 0x70, 0x2d, 0x63, 0x6f, 0x6d,
+      0x70, 0x72, 0x65, 0x73, 0x73, 0x65, 0x64, 0x00, 0x1f, 0x8b, 0x08, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x02, 0x03, 0xcb, 0x2f, 0x4a, 0x54, 0x48, 0x4a,
+      0xcd, 0xd5, 0x51, 0xc8, 0x2c, 0x2e, 0xc9, 0x57, 0x48, 0x55, 0x28, 0xcd,
+      0x55, 0x48, 0x2e, 0x2d, 0x2a, 0xce, 0x2f, 0xf2, 0x4c, 0xc9, 0x49, 0xd5,
+      0x4b, 0xca, 0x2d, 0x50, 0x48, 0x49, 0x2d, 0x4e, 0xce, 0xcf, 0x2d, 0x28,
+      0xca, 0xcc, 0xcd, 0x4c, 0xc9, 0x57, 0x28, 0x48, 0xcd, 0xc9, 0x57, 0xf0,
+      0x0c, 0xcd, 0xab, 0xca, 0x2c, 0x70, 0x0c, 0x2e, 0x29, 0x4a, 0x4d, 0xcc,
+      0xe5, 0xca, 0x1f, 0x2e, 0x46, 0x00, 0x00, 0xae, 0x7a, 0xee, 0x9a, 0x0c,
+      0x01, 0x00, 0x00,
+  };
+  for (std::size_t k = 0; k < sizeof(kBlob); ++k) {
+    b.Mem().Escrever8(kDados + static_cast<std::uint32_t>(k), kBlob[k]);
+  }
+  const std::string esperado =
+      "ora bem, isto e um cursorIdle.bmp descomprimido pelo IUnzipAStream\n"
+      "ora bem, isto e um cursorIdle.bmp descomprimido pelo IUnzipAStream\n"
+      "ora bem, isto e um cursorIdle.bmp descomprimido pelo IUnzipAStream\n"
+      "ora bem, isto e um cursorIdle.bmp descomprimido pelo IUnzipAStream\n";
+
+  // MEMASTREAM.Set(po, pBuf, dwSize, dwOffset, bSysMem) -- slot 5 da vtable.
+  ASSERT_EQ(b.ChamaSaida(kBaseDoShell + 2, kObjShell, 0x0100100cu, kPpo), kAeeSuccess);
+  const std::uint32_t mem = b.Mem().Ler32(kPpo);
+  const std::uint32_t vt_m = b.Mem().Ler32(mem);
+  const std::uint32_t set_saida = b.Mem().Ler32(vt_m + 5 * 4);
+  b.ChamaSaida(IndiceDeSaida(b.S(), set_saida), mem, kDados,
+               static_cast<std::uint32_t>(sizeof(kBlob)), 0, 1);
+
+  // UNZIPSTREAM.SetStream(po, pIAStream) -- slot 5 da vtable do unzip.
+  ASSERT_EQ(b.ChamaSaida(kBaseDoShell + 2, kObjShell, 0x01001014u, kPpo), kAeeSuccess);
+  const std::uint32_t unzip = b.Mem().Ler32(kPpo);
+  const std::uint32_t vt_u = b.Mem().Ler32(unzip);
+  const std::uint32_t ss_saida = b.Mem().Ler32(vt_u + 5 * 4);
+  b.ChamaSaida(IndiceDeSaida(b.S(), ss_saida), unzip, mem);
+
+  // UNZIPSTREAM.Read(po, pDest, nWant) -- slot 3. Le em pedacos ate EOF, como
+  // o allstarcards (ele le em pedacos de 20 e testa o retorno).
+  const std::uint32_t read_saida = b.Mem().Ler32(vt_u + 3 * 4);
+  const std::uint32_t idx_read = IndiceDeSaida(b.S(), read_saida);
+  std::string lido;
+  for (int volta = 0; volta < 40; ++volta) {
+    const std::uint32_t n = b.ChamaSaida(idx_read, unzip, kDest, 64);
+    if (n == 0) break;
+    for (std::uint32_t k = 0; k < n; ++k) {
+      lido.push_back(static_cast<char>(b.Mem().Ler8(kDest + k)));
+    }
+  }
+  EXPECT_EQ(lido, esperado);
+}
+
+TEST(UnzipStream, ReadSemOrigemDevolveFimDoStreamERegistaAFalta) {
+  Bancada b;
+  constexpr std::uint32_t kPpo = 0x00094000u;
+  constexpr std::uint32_t kDest = 0x00096000u;
+  ASSERT_EQ(b.ChamaSaida(kBaseDoShell + 2, kObjShell, 0x01001014u, kPpo), kAeeSuccess);
+  const std::uint32_t unzip = b.Mem().Ler32(kPpo);
+  const std::uint32_t vt_u = b.Mem().Ler32(unzip);
+  const std::uint32_t read_saida = b.Mem().Ler32(vt_u + 3 * 4);
+  // Sem SetStream nao ha origem: EOF (0), e a razao fica no traco -- um stub
+  // que devolve 0 em silencio esconderia o ficheiro em falta.
+  EXPECT_EQ(b.ChamaSaida(IndiceDeSaida(b.S(), read_saida), unzip, kDest, 64), 0u);
+  EXPECT_EQ(b.Faltas("IUnzipAStream::Read"), 1u);
+}
+
 
 }  // namespace zb2::brew

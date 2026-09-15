@@ -74,6 +74,18 @@ struct Bancada {
     return s;
   }
 
+  // Le uma cadeia LARGA (AECHAR, 2 bytes por unidade) e devolve-a em UTF-8,
+  // para os testes do WSTRLEN/WSTRNCOPYN poderem comparar com texto.
+  std::string LerLarga(std::uint32_t onde, std::uint32_t max = 64) const {
+    std::string s;
+    for (std::uint32_t i = 0; i < max; ++i) {
+      const std::uint16_t c = mem.Ler16(onde + i * 2);
+      if (c == 0) break;
+      s.push_back(static_cast<char>(c & 0xFFu));
+    }
+    return s;
+  }
+
   // As faltas registadas com um dado nome. Devolve quantas vezes.
   std::uint64_t Faltas(const std::string& nome) const {
     const auto it = traco.ContagemFaltas().find(nome);
@@ -462,8 +474,10 @@ TEST(AjudantesExtra, OffsetForaDaTabelaNaoERecusadoAqui) {
   EXPECT_TRUE(b.traco.ContagemFaltas().empty());
 }
 
-TEST(AjudantesExtra, ImplementadosSaoCincoEATodosNoCatalogo) {
-  EXPECT_EQ(AjudantesExtra::Implementados(), 7u);
+TEST(AjudantesExtra, ImplementadosSaoTrezeEATodosNoCatalogo) {
+  // 7 da etapa anterior + os 6 da frente io2 (wstrlen, wstrncopyn, strtoul,
+  // snprintf, strlcpy, strlcat).
+  EXPECT_EQ(AjudantesExtra::Implementados(), 13u);
   for (std::uint32_t off : {0x0D8u, 0x044u, 0x050u, 0x0E8u, 0x138u, 0x0F4u, 0x0CCu}) {
     EXPECT_NE(DeclaracaoDoOffset(off), nullptr) << "0x" << std::hex << off;
   }
@@ -571,5 +585,145 @@ TEST(AjudantesExtra, OContratoDoGanchoEDeUmaLinha) {
   EXPECT_TRUE(AtenderAjudanteExtra(b.cpu, b.mem, b.alocador, b.traco, 0x12C));
   EXPECT_FALSE(AtenderAjudanteExtra(b.cpu, b.mem, b.alocador, b.traco, 0x1D4));
 }
+
+
+// ---------------------------------------------------------------------------
+// A FRENTE io2, os seis ajudantes demandados (corrida_fmg.json): wstrlen
+// (0x030, allstarcards), wstrncopyn (0x080, chessbots), strtoul (0x0c4,
+// alpineracerex 392x), snprintf (0x144), strlcpy (0x14c) e strlcat (0x150) --
+// estes tres ultimos no allstarcards.
+//
+// As assinaturas vem do `tools/ajudantes_slots.inc` (gerado do AEEStdLib.h):
+//   0x030  int  (*wstrlen)(const AECHAR *p)
+//   0x080  int  (*wstrncopyn)(AECHAR *pszDest, int cbDest, const AECHAR *pszSource, int lenSource)
+//   0x0c4  uint32 (*strtoul)(const char *nptr, char **endptr, int base)
+//   0x144  int32 (*snprintf)(char *buf, uint32 f, const char *format, ...)
+//   0x14c  size_t (*strlcpy)(char *dst, const char *src, size_t nSize)
+//   0x150  size_t (*strlcat)(char *dst, const char *src, size_t nSize)
+// ---------------------------------------------------------------------------
+
+TEST(AjudantesExtra, WstrlenContaAECHARsENaoBytes) {
+  Bancada b;
+  // 6 AECHARs = 12 bytes (a latina ocupa 2 bytes). Um byte a mais nao pode
+  // entrar na conta: o SDK diz "the number of AECHAR characters".
+  b.EscreverLarga(kTexto, std::vector<std::uint16_t>{'Z', 'e', 'e', 'b', 'o', 0x00e9});
+  b.cpu.Set(kR0, kTexto);
+  EXPECT_EQ(b.Atender(0x030), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), 6u);
+  // Vazia (so o NUL): 0.
+  b.EscreverLarga(kTexto, {});
+  b.cpu.Set(kR0, kTexto);
+  b.Atender(0x030);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u);
+}
+
+TEST(AjudantesExtra, WstrncopynCopiaAteLenSourceETerminaSempre) {
+  Bancada b;
+  b.EscreverLarga(kTexto2, std::vector<std::uint16_t>{'0', '1', '2', '3', '4', '5', '6', '7', '8', '9'});
+  // lenSource < comprimento: copia 4 e termina.
+  b.cpu.Set(kR0, kTexto);   // pDest
+  b.cpu.Set(kR1, 8);        // cbDest (AECHARs de capacidade)
+  b.cpu.Set(kR2, kTexto2);  // pSrc
+  b.cpu.Set(kR3, 4);        // lenSource
+  EXPECT_EQ(b.Atender(0x080), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), 4u) << "4 AECHAR copiados";
+  EXPECT_EQ(b.LerLarga(kTexto, 8), "0123");
+  // lenSource = -1: copia a cadeia inteira (o SDK diz exactamente isto),
+  // com o destino a dar espaco (cbDest=16).
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, 16);
+  b.cpu.Set(kR3, -1);
+  b.Atender(0x080);
+  EXPECT_EQ(b.LerLarga(kTexto, 16), "0123456789");
+  EXPECT_EQ(b.cpu.Get(kR0), 10u);
+  // cbDest curto: nunca transborda -- a terminação NUL cabe SEMPRE no destino.
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, 3);
+  b.cpu.Set(kR3, -1);
+  b.Atender(0x080);
+  EXPECT_EQ(b.LerLarga(kTexto, 3), "01");
+}
+
+TEST(AjudantesExtra, StrtoulConverteEDevolveOndeParou) {
+  Bancada b;
+  constexpr std::uint32_t kEnd = 0x80103000u;
+  b.EscreverCadeia(kTexto, "123abc");
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, kEnd);
+  b.cpu.Set(kR2, 10);
+  EXPECT_EQ(b.Atender(0x0C4), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), 123u);
+  EXPECT_EQ(b.mem.Ler32(kEnd), kTexto + 3) << "endptr aponta para o 'a'";
+  // Base 16 com prefixo 0x, base 0 a detectar o prefixo.
+  b.EscreverCadeia(kTexto, "0x1Fff");
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, 0);  // endptr nulo
+  b.cpu.Set(kR2, 0);
+  b.Atender(0x0C4);
+  EXPECT_EQ(b.cpu.Get(kR0), 0x1FFFu);
+  // Sem conversao: 0 e endptr = nptr (o SDK diz exactamente isto).
+  b.EscreverCadeia(kTexto, "xyz");
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, kEnd);
+  b.cpu.Set(kR2, 10);
+  b.Atender(0x0C4);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u);
+  EXPECT_EQ(b.mem.Ler32(kEnd), kTexto);
+}
+
+TEST(AjudantesExtra, SnprintfFormataComLimiteEVarargs) {
+  Bancada b;
+  // O MEDIDO no allstarcards: snprintf(buf, 32, "udata/settings%d.dat", n).
+  b.EscreverCadeia(kTexto2, "udata/settings%d.dat");
+  b.cpu.Set(kR0, kTexto);   // buf
+  b.cpu.Set(kR1, 32);       // f
+  b.cpu.Set(kR2, kTexto2);  // format
+  b.cpu.Set(kR3, 3);        // primeiro vararg
+  EXPECT_EQ(b.Atender(0x144), Atendimento::Implementado);
+  EXPECT_EQ(b.LerCadeia(kTexto), "udata/settings3.dat");
+  // O limite corta e termina: f=8 escreve 8 caracteres + NUL (o contrato
+  // de `limite` do Formatar: "sem o terminador").
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, 8);
+  b.cpu.Set(kR2, kTexto2);
+  b.cpu.Set(kR3, 3);
+  b.Atender(0x144);
+  EXPECT_EQ(b.LerCadeia(kTexto), "udata/se");
+}
+
+TEST(AjudantesExtra, StrlcpyCopiaTerminaEdevolveOComprimentoTentado) {
+  Bancada b;
+  b.EscreverCadeia(kTexto2, "abcdefghij");
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, kTexto2);
+  b.cpu.Set(kR2, 5);
+  EXPECT_EQ(b.Atender(0x14C), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), 10u) << "o comprimento TENTADO (10)";
+  EXPECT_EQ(b.LerCadeia(kTexto), "abcd") << "5 bytes: 4 + NUL";
+  // Destino curto de mais nao transborda nunca.
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR2, 3);
+  b.Atender(0x14C);
+  EXPECT_EQ(b.LerCadeia(kTexto), "ab");
+}
+
+TEST(AjudantesExtra, StrlcatConcatenaComLimite) {
+  Bancada b;
+  b.EscreverCadeia(kTexto, "ab");
+  b.EscreverCadeia(kTexto2, "cdef");
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, kTexto2);
+  b.cpu.Set(kR2, 8);
+  EXPECT_EQ(b.Atender(0x150), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), 6u) << "2 + 4 = 6 (o comprimento TENTADO)";
+  EXPECT_EQ(b.LerCadeia(kTexto), "abcdef");
+  // Limite que nao sobra para tudo: "ab" + "cdef" com nSize=5 => "abcd".
+  b.EscreverCadeia(kTexto, "ab");
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR2, 5);
+  b.Atender(0x150);
+  EXPECT_EQ(b.LerCadeia(kTexto), "abcd");
+}
+
 
 }  // namespace

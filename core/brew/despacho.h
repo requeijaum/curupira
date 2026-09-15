@@ -433,6 +433,31 @@ class Despacho {
   std::uint32_t vtable_bitmap_ = 0;
   std::uint32_t vtable_ficheiro_ = 0;
 
+  // A FRENTE io2: o estado dos objectos IUnzipAStream e IMemAStream, por
+  // endereco de objecto. Os objectos nascem no `InstalarAjudantes` (kObjUnzip /
+  // kObjMemStream); o estado do unzip guarda a origem (o IAStream do SetStream)
+  // e o RESULTADO da descompressao, feito de uma vez na primeira leitura --
+  // o zeebx faz o mesmo (`UnzipState`, src/machine.rs:1241+).
+  struct EstadoDoUnzip {
+    std::uint32_t origem = 0;
+    std::vector<std::uint8_t> saida;
+    std::uint32_t pos = 0;
+    bool expandido = false;
+    bool origem_desconhecida = false;
+  };
+  struct EstadoDoMemStream {
+    std::uint32_t base = 0;  // pBuff + dwOffset (o dado comeca aqui)
+    std::uint32_t tamanho = 0;
+    std::uint32_t pos = 0;
+  };
+  std::map<std::uint32_t, EstadoDoUnzip> unzips_;
+  std::map<std::uint32_t, EstadoDoMemStream> memstreams_;
+
+  // Le a origem ate ao fim e descomprime tudo de uma vez. `false` = recusa ja
+  // registada no traco, com a razao; a leitura devolve EOF (0), para o jogo nao
+  // ficar em laco de saidas.
+  bool ExpandirUnzip(EstadoDoUnzip& e);
+
   std::string dir_;
   std::string pasta_;
   std::uint32_t clsid_titulo_ = 0;
