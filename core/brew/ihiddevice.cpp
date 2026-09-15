@@ -18,31 +18,51 @@ constexpr std::uint32_t kUidDesconhecido = 0xFFFFFFFFu;  // "-1" = nao suportado
 
 // --- a tabela dos botoes ----------------------------------------------------
 //
-// Os 16 UIDs sao os do cabecalho (AEEHIDDevice_Joystick.h, linhas 24-39). A
-// coluna do INDICE e a que vem da tabela de saltos do Rolimaz
-// (0x133d30..0x133d98, destinos da tabela em 0x133cf0) e do `enum`
-// `eGamePadButtons` do sample do SDK (GamepadMgr.h) -- as duas concordam nos
-// quatro que ambas cobrem: 12=Up, 13=Left, 14=Down, 15=Right.
+// Os 16 UIDs sao os do cabecalho do SDK (`AEEHIDDevice_Joystick.h`, linhas 24-39
+// do `BrewMPSDK-7.12.5/SDKPro/1.0.4.601 Pro/platform/hardware/inc/`).
 //
-// O Rolimaz cobre 13 dos 16 e o `a3d` confirma 12 deles (nao mapeia os dois
-// polegares); os tres que sobram estao marcados com `medido = false`. Um deles (Start) tem o nome no `enum` mas
-// nenhum UID medido a apontar-lhe o indice; os outros dois sao os ombros de baixo.
-// A ordem deles e POR ELIMINACAO, esta dito, e nao se acrescenta nada sem uma
-// medicao que o sustente.
+// A COLUNA DO INDICE TEM DUAS FONTES, e as duas cobrem coisas diferentes:
+//
+//  1. OS DOZE PRIMEIROS (0..11), do ARQUIVO DO PROPRIO CONSOLE: cada uma das
+//     cinco entradas de controle do `hid_devices.cfg` declara
+//     `BUTTON:<indice>:<UID>`, e todos os doze pares batem com esta tabela.
+//     `research/sources/zeemu/rootfs/sys/hid_devices.cfg` (as cinco entradas) e,
+//     pelo lado do SDK, `AEEHID.bid` -- o texto que documenta o FORMATO do
+//     arquivo traz a mesma entrada "Generic Joystick" com os mesmos doze pares.
+//     Nao vem dos jogos: vem do console e do SDK, que sao as duas fontes que
+//     podem dizer qual e o `nButtonID`.
+//     A UNICA discordancia medida nas cinco entradas: a do RumblePad2 traz
+//     `BUTTON:9:0x0106c403` (`Back`) onde as outras quatro trazem `0x0106c402`
+//     (`Start`). Quatro contra uma, e o `BUTTON:9` e o `Start` no `enum` do
+//     sample: fica `0x0106c402` -- e a discordancia esta escrita aqui em vez de
+//     escondida (a copia do SDK, `platform/simulation/hid_devices.cfg`, traz
+//     `0x0106c402` nessa linha: o `0x403` e erro de transcricao de uma entrada).
+//
+//  2. OS QUATRO DO D-PAD (12..15), que o arquivo do console NAO lista ("Note that
+//     the DPAD buttons don't need to be included in this file, as they are always
+//     mapped to the expected values" -- exemplo do mesmo arquivo, no SDK). Estes
+//     quatro vem das TABELAS DE SALTO DOS JOGOS: `Rolimaz.mod` 0x133d30..0x133d98
+//     e `a3d.mod` 0x10422c..0x104288 (os dois com o mesmo par UID->indice), mais o
+//     `enum eGamePadButtons` do sample do SDK (`GamepadMgr.h`: GAMEPAD_DPAD_UP=12,
+//     LEFT=13, DOWN=14, RIGHT=15).
+//
+// NENHUMA ENTRADA FICA SEM FONTE -- kQuantosBotoesSemMedicao e zero, e o teste
+// `Hid.OsTresIndicesQueFaltavam...` (em `tests/hid_test.cpp`) le a tabela do
+// arquivo do console contra o codigo, para o numero nao depender de memoria.
 const BotaoDoZeebo kBotoesDoZeebo[kQuantosBotoes] = {
-    {0x0106c40au, "Button_1", 0, true},
-    {0x0106c40bu, "Button_2", 1, true},
-    {0x0106c40cu, "Button_3", 2, true},
-    {0x0106c40du, "Button_4", 3, true},
-    {0x0106c406u, "Left_Shoulder_Upper", 4, true},
-    {0x0106c408u, "Right_Shoulder_Upper", 5, true},
-    {0x0106c407u, "Left_Shoulder_Lower", 6, false},   // indice NAO medido
-    {0x0106c409u, "Right_Shoulder_Lower", 7, false},  // indice NAO medido
-    {0x0106c403u, "Back", 8, true},
-    {0x0106c402u, "Start", 9, false},                 // indice NAO medido
-    {0x0106c404u, "Left_Thumbstick", 10, true},
-    {0x0106c405u, "Right_Thumbstick", 11, true},
-    {0x0106c3feu, "DPad_Up", 12, true},
+    {0x0106c40au, "Button_1", 0, true},             // BUTTON:0   das cinco entradas
+    {0x0106c40bu, "Button_2", 1, true},             // BUTTON:1
+    {0x0106c40cu, "Button_3", 2, true},             // BUTTON:2
+    {0x0106c40du, "Button_4", 3, true},             // BUTTON:3
+    {0x0106c406u, "Left_Shoulder_Upper", 4, true},  // BUTTON:4
+    {0x0106c408u, "Right_Shoulder_Upper", 5, true}, // BUTTON:5
+    {0x0106c407u, "Left_Shoulder_Lower", 6, true},  // BUTTON:6
+    {0x0106c409u, "Right_Shoulder_Lower", 7, true}, // BUTTON:7
+    {0x0106c403u, "Back", 8, true},                 // BUTTON:8
+    {0x0106c402u, "Start", 9, true},                // BUTTON:9 (ver a discordancia)
+    {0x0106c404u, "Left_Thumbstick", 10, true},     // BUTTON:10
+    {0x0106c405u, "Right_Thumbstick", 11, true},    // BUTTON:11
+    {0x0106c3feu, "DPad_Up", 12, true},             // tabela de saltos do Rolimaz/a3d
     {0x0106c3ffu, "DPad_Left", 13, true},
     {0x0106c400u, "DPad_Down", 14, true},
     {0x0106c401u, "DPad_Right", 15, true},
@@ -60,6 +80,64 @@ const EixoDoZeebo kEixosDoZeebo[kQuantosEixos] = {
     {0x0106c4ceu, "RightThumb_X", 3},  // AXIS:Z
     {0x0106c4cfu, "RightThumb_Y", 6},  // AXIS:RZ
 };
+
+// --- a tabela dos TIPOS DE DISPOSITIVO (`nDeviceType`) ----------------------
+//
+// O numero que o jogo passa no r1 do `GetConnectedDevices` e um UID de CLASSE de
+// dispositivo. A lista que a documentacao do proprio metodo aceita tem TRES
+// valores, e estes tres (todos em
+// `BrewMPSDK-7.12.5/SDKPro/1.0.4.601 Pro/platform/hardware/inc/`):
+//
+//   AEEHIDDevice_Mouse.h:21     AEEUID_HID_Mouse_Device        0x0106c3fb
+//   AEEHIDDevice_Keyboard.h:21  AEEUID_HID_Keyboard_Device     0x0106c3fc
+//   AEEHIDDevice_Joystick.h:21  AEEUID_HID_Joystick_Device     0x0106c3fd
+//
+// ("The user can filter the results based on the nDevice type. Following values
+//  can be used: Joystick - AEEUID_HID_Joystick_Device, Keyboard -
+//  AEEUID_HID_Keyboard_Device, Mouse - AEEUID_HID_Mouse_Device" -- comentario do
+//  `IHID_GetConnectedDevices` em `AEEIHID.h`, e a mesma pagina da documentacao.)
+//
+// O QUE FICA DE FORA, e por que: `AEEUID_HID_Unknown_DeviceType` (0x106c3fa,
+// `AEEIHIDDevice.h:34`) NAO esta na tabela. Ele nao e uma classe para enumerar --
+// e o marcador que o `GetDeviceInfo` devolve quando nao identifica o aparelho -- e
+// nao aparece na lista que o metodo aceita. Um pedido com ele e um tipo nao
+// suportado, e a resposta do contrato e `AEE_EBADPARM`.
+//
+// E O ZERO, que nao e um tipo: e "TODOS". Esta escrito na documentacao do proprio
+// metodo (`AEEIHID.h` nesta arvore, e
+// `.../documentation/API Reference/Hardware/HID/methods/IHID_GetConnectedDevices.htm`):
+//   "The nDeviceType parameter should be set to either a UID for the type of
+//    device that the user is interested in or 0 to return all attached devices."
+// e a mesma pagina da o codigo da recusa:
+//   "AEE_EBADPARM : if an unsupported device type is specified."
+// (Nulla: o `zeemu` C++, que e o outro emulador desta familia, ja respondia
+//  assim -- `r1 == 0` inclui joystick E teclado, e um tipo fora da lista devolve
+//  `AEE_EBADPARM`; `research/sources/zeemu/brew/BrewHID.cpp:298-330`.)
+//
+// Os DOIS primeiros tipos existem e nao tem dispositivo NENHUM aqui (nem ha
+// caminho de teclado ou de rato neste emulador); o terceiro e o unico que responde
+// com um handle. Responder zero para um tipo declarado e a resposta verdadeira --
+// e o que nao pode acontecer e responder em silencio.
+const TipoDeDispositivo kTiposDeDispositivo[kQuantosTipos] = {
+    {0x0106c3fbu, "Mouse_Device", false},           // AEEHIDDevice_Mouse.h:21
+    {0x0106c3fcu, "Keyboard_Device", false},        // AEEHIDDevice_Keyboard.h:21
+    {kUidJoystickDevice, "Joystick_Device", true},  // AEEHIDDevice_Joystick.h:21
+};
+
+namespace {
+
+// O tipo pelo UID, ou nulo quando o SDK nao declara esse numero. A procura e
+// pela TABELA (`kTiposDeDispositivo`, no cabecalho) -- e nao uma cadeia de `if`
+// com os tres numeros escritos a mao: um segundo sitio com o mesmo numero e um
+// sitio que diverge.
+const TipoDeDispositivo* TipoPorUid(std::uint32_t uid) {
+  for (std::uint32_t k = 0; k < kQuantosTipos; ++k) {
+    if (kTiposDeDispositivo[k].uid == uid) return &kTiposDeDispositivo[k];
+  }
+  return nullptr;
+}
+
+}  // namespace
 
 Ihid::Ihid(Memoria& mem, Traco& traco, Sinais& sinais, EntradaDoZeebo& entrada)
     : mem_(mem), traco_(traco), sinais_(sinais), entrada_(entrada) {
@@ -130,9 +208,12 @@ bool Ihid::Construir(const Saidas& saidas, std::uint32_t base_das_saidas) {
   // para o guest (`Ihid::GetDeviceInfo`), senao o numero mediria quantas vezes o
   // emulador arrancou -- e nao quantos titulos foram informados.
   traco_.Emitir(Area::Entrada, Nivel::Informacao, "HID_DECLARADO",
-                "wProductID=0x0135 wVendorID=0x1eaa (DECLARADOS, sem medicao) | eixos: "
-                "centro=128 MEDIDO (funsoccer 0x1ed504), min=0/max=255 DECLARADOS | "
-                "botoes com indice sem medicao: " + std::to_string(kQuantosBotoesSemMedicao));
+                "wProductID=0x0135 wVendorID=0x1eaa (MEDIDOS por terceiros: descritor USB do "
+                "console + hid_devices.original.cfg, via zeebx) | 1 aparelho DECLARADO (o "
+                "console tinha 3) | eixos: 4, centro=128 MEDIDO (funsoccer 0x1ed504), "
+                "min=0/max=255 DECLARADOS (nenhuma fonte os da) | botoes: 16 canais, indice com "
+                "medicao: " + std::to_string(kQuantosBotoes - kQuantosBotoesSemMedicao) + "/" +
+                    std::to_string(kQuantosBotoes));
   return true;
 }
 
@@ -226,15 +307,46 @@ bool Ihid::AtenderIhid(ICpu& cpu, std::uint32_t slot) {
       const std::uint32_t handles = cpu.Get(kR2);
       const std::uint32_t quantos_cabem = cpu.Get(kR3);
       const std::uint32_t preq = mem_.Ler32(cpu.Get(kSP));
-      if (tipo != 0x0106c3fdu) {  // AEEUID_HID_Joystick_Device
-        // ZERO DISPOSITIVOS, e dito: este emulador tem UM joystick e mais nada.
-        // O tipo de teclado (`AEEUID_HID_Keyboard_Device` = 0x0106c3fc) e pedido
-        // por 11 dos 62 titulos -- o numero esta medido, e a resposta honesta e
-        // "nao ha teclado nenhum aqui", nao um sucesso com uma lista vazia e muda.
+      // OS TRES CASOS DO CONTRATO, e nenhum deles fica mudo:
+      //
+      //   `0`                    -> TODOS os dispositivos ligados. NAO e "nenhum":
+      //                             era o achado B2 da auditoria
+      //                             (`docs/rewrite/auditoria/aud-media-hid-widget.md:58`),
+      //                             que respondia zero dispositivos com sucesso;
+      //   UID que o SDK declara  -> os desse tipo (zero, quando nao ha nenhum);
+      //   qualquer outro numero  -> `AEE_EBADPARM`, com o numero no NOME da falta.
+      //
+      // A pergunta do tipo vai a TABELA, e nao a uma cadeia de `if` com os numeros
+      // escritos a mao: um segundo sitio com o mesmo numero e um sitio que diverge.
+      const TipoDeDispositivo* t = TipoPorUid(tipo != 0 ? tipo : kUidJoystickDevice);
+      if (t == nullptr) {
         if (preq != 0) mem_.Escrever32(preq, 0);
+        // O NOME DA FALTA TEM O NUMERO. "tipo desconhecido" sem o numero obriga a
+        // ir ao desmonte para saber QUAL pedido ficou por responder.
+        traco_.RegistarFalta(Area::Entrada, "IHID::GetConnectedDevices tipo " + Hex(tipo),
+                             "a lista que o metodo aceita e 0x0106c3fb Mouse, 0x0106c3fc "
+                             "Keyboard e 0x0106c3fd Joystick (e 0 = todos); AEE_EBADPARM e o "
+                             "codigo do contrato para um tipo nao suportado");
+        cpu.Set(kR0, kAeeBadParm);
+        return true;
+      }
+      if (!t->existe) {
+        // TIPO DECLARADO, E SEM DISPOSITIVO NENHUM AQUI. "nao ha teclado nenhum
+        // ligado" e a resposta VERDADEIRA (o console responde o mesmo com a porta
+        // vazia), e o que nao se pode e responde-la em SILENCIO: o zero e um valor
+        // que este emulador NAO mediu -- nao ha caminho de teclado nenhum aqui --
+        // logo vai como PRESSUPOSTO, que e a metade que a bateria publica
+        // (`Traco::RegistarPressuposto`). A auditoria mediu o custo do contrario:
+        // `ausencia de falta != ausencia de chamada` (`aud-media-hid-widget.md`,
+        // secao e), e a constante do teclado aparece no codigo de 11 dos 62
+        // titulos (varredura de constantes de 32 bits, `:444`).
+        if (preq != 0) mem_.Escrever32(preq, 0);
+        traco_.RegistarPressuposto(Area::Entrada,
+                                   "IHID::GetConnectedDevices sem " + std::string(t->nome),
+                                   "o tipo 0x" + Hex(t->uid) +
+                                       " e DECLARADO no SDK e este emulador nao tem nenhum "
+                                       "dispositivo dele: responde zero");
         cpu.Set(kR0, kAeeSuccess);
-        traco_.Emitir(Area::Entrada, Nivel::Depuracao, "HID_SEM_DISPOSITIVO",
-                      "tipo pedido 0x" + Hex(tipo) + " (so ha joystick 0x0106c3fd)");
         return true;
       }
       if (preq != 0) mem_.Escrever32(preq, 1);
@@ -242,7 +354,8 @@ bool Ihid::AtenderIhid(ICpu& cpu, std::uint32_t slot) {
       conectados_ = 1;
       cpu.Set(kR0, kAeeSuccess);
       traco_.Emitir(Area::Entrada, Nivel::Depuracao, "HID_DISPOSITIVOS",
-                    "joystick handle=" + std::to_string(kHandleDoDispositivo) +
+                    (tipo == 0 ? std::string("todos (0) ") + t->nome : std::string(t->nome)) +
+                        " handle=" + std::to_string(kHandleDoDispositivo) +
                         " cabem=" + std::to_string(quantos_cabem));
       return true;
     }

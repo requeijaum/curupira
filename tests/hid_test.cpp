@@ -110,6 +110,16 @@ class Bancada {
     return it == f.end() ? 0 : static_cast<std::size_t>(it->second);
   }
 
+  // Os PRESSUPOSTOS sao a metade que a bateria publica e o `faltas` NAO cobre:
+  // um valor respondido sem medicao. A `auditoria` mediu que `ausencia de falta
+  // != ausencia de chamada` (`aud-media-hid-widget.md`, secao e), logo o zero
+  // teclados tem de ter contador proprio.
+  std::size_t QuantosPressupostos(const std::string& nome) const {
+    const auto& p = traco_.ContagemPressupostos();
+    const auto it = p.find(nome);
+    return it == p.end() ? 0 : static_cast<std::size_t>(it->second);
+  }
+
   Memoria& Mem() { return mem_; }
   Traco& Tr() { return traco_; }
   DestinoMemoria& Destino() { return destino_; }
@@ -224,14 +234,49 @@ TEST(Hid, TabelaDeBotoesConfereComOCabecalho) {
   EXPECT_EQ(kBotoesDoZeebo[15].uid, 0x0106c401u);
   EXPECT_EQ(kBotoesDoZeebo[12].id, 12u);
   EXPECT_EQ(kBotoesDoZeebo[15].id, 15u);
-  // E ha tres pares (uid, indice) SEM medicao. O numero esta aqui para nao se
-  // perder: uma medicao futura baixa-o, e o teste tem de ser mudado de proposito.
+  // NENHUMA ENTRADA SEM FONTE (era 3: os indices 6, 7 e 9). O contador fica -- e o
+  // instrumento que acende se alguem acrescentar uma entrada sem fonte.
   std::uint32_t sem_medicao = 0;
   for (std::uint32_t k = 0; k < kQuantosBotoes; ++k) {
     if (!kBotoesDoZeebo[k].medido) ++sem_medicao;
   }
   EXPECT_EQ(sem_medicao, kQuantosBotoesSemMedicao);
-  EXPECT_EQ(kQuantosBotoesSemMedicao, 3u);
+  EXPECT_EQ(kQuantosBotoesSemMedicao, 0u);
+}
+
+TEST(Hid, OsDozeIndicesDoArquivoDoConsoleEstaoNaTabela) {
+  // A FONTE, linha a linha: `research/sources/zeemu/rootfs/sys/hid_devices.cfg`,
+  // entrada "Logitech Dual Action" (as cinco entradas do ficheiro trazem os MESMOS
+  // doze pares -- so a do RumblePad2 diverge no `BUTTON:9`, ver o cabecalho do
+  // `ihiddevice.cpp`). O primeiro campo e o `nButtonID`, o segundo o UID.
+  const std::uint32_t kDoArquivo[12] = {
+      0x0106c40a,  // BUTTON:0
+      0x0106c40b,  // BUTTON:1
+      0x0106c40c,  // BUTTON:2
+      0x0106c40d,  // BUTTON:3
+      0x0106c406,  // BUTTON:4
+      0x0106c408,  // BUTTON:5
+      0x0106c407,  // BUTTON:6  <- era "indice NAO medido"
+      0x0106c409,  // BUTTON:7  <- era "indice NAO medido"
+      0x0106c403,  // BUTTON:8
+      0x0106c402,  // BUTTON:9  <- era "indice NAO medido"
+      0x0106c404,  // BUTTON:10
+      0x0106c405,  // BUTTON:11
+  };
+  for (std::uint32_t k = 0; k < 12; ++k) {
+    EXPECT_EQ(kBotoesDoZeebo[k].uid, kDoArquivo[k])
+        << "BUTTON:" << k << " do hid_devices.cfg do console";
+    EXPECT_EQ(kBotoesDoZeebo[k].id, k) << "o indice do arquivo e o nButtonID";
+    EXPECT_TRUE(kBotoesDoZeebo[k].medido) << "a entrada " << k << " tem fonte";
+  }
+  // E OS TRES QUE FORAM PROMOVIDOS, pelo nome, para o teste nao passar por engano
+  // se a ordem da tabela mudar.
+  EXPECT_EQ(kBotoesDoZeebo[6].uid, 0x0106c407u);
+  EXPECT_STREQ(kBotoesDoZeebo[6].nome, "Left_Shoulder_Lower");
+  EXPECT_EQ(kBotoesDoZeebo[7].uid, 0x0106c409u);
+  EXPECT_STREQ(kBotoesDoZeebo[7].nome, "Right_Shoulder_Lower");
+  EXPECT_EQ(kBotoesDoZeebo[9].uid, 0x0106c402u);
+  EXPECT_STREQ(kBotoesDoZeebo[9].nome, "Start");
 }
 
 TEST(Hid, TabelaDeEixosConfereComOArquivoDoConsole) {
@@ -777,6 +822,91 @@ TEST(Hid, DuasCorridasDoMesmoGuiaoDaoOMesmoResultado) {
       "250 eixo 0x0106c4d0 128\n"
       "300 botao 0x0106c401 1\n");
   EXPECT_NE(a, d);
+}
+
+// ===========================================================================
+// 10. O `nDeviceType` DO `IHID::GetConnectedDevices`: ZERO, TIPO DECLARADO, LIXO
+//
+// A citacao que governa os tres casos e do proprio metodo (`AEEIHID.h`, copia
+// local, e `BrewMPSDK-7.12.5/.../documentation/API Reference/Hardware/HID/
+// methods/IHID_GetConnectedDevices.htm:69,109`):
+//
+//   "The nDeviceType parameter should be set to either a UID for the type of
+//    device that the user is interested in or 0 to return all attached devices."
+//   "AEE_EBADPARM : if an unsupported device type is specified."
+//
+// O primeiro caso e o achado **B2** da auditoria
+// (`docs/rewrite/auditoria/aud-media-hid-widget.md:58`): `0` respondia zero
+// dispositivos. Nao era um caso de laboratorio -- `0` e o valor documentado
+// para "todos".
+// ===========================================================================
+TEST(Hid, GetConnectedDevicesComZeroDevolveTodosOsDispositivos) {
+  Bancada b;
+  constexpr std::uint32_t kHandles = 0x0020b800u, kReq = 0x0020b900u;
+  b.Mem().Escrever32(kReq, 0xFFFFFFFFu);
+  ASSERT_EQ(b.ChamaPai(kIHID_GetConnectedDevices, b.Dispositivo().EnderecoDoIhid(), 0, kHandles, 2,
+                       kReq),
+            kAeeSuccess);
+  EXPECT_EQ(b.Mem().Ler32(kReq), 1u) << "0 = TODOS os dispositivos ligados, e ha um";
+  EXPECT_EQ(b.Mem().Ler32(kHandles), kHandleDoDispositivo);
+}
+
+TEST(Hid, UmTipoDeclaradoSemDispositivoRespondeZeroEConta) {
+  Bancada b;
+  constexpr std::uint32_t kHandles = 0x0020ba00u, kReq = 0x0020bb00u;
+  // A lista comeca com um valor que NAO e handle nenhum: se o caminho do "tipo
+  // declarado sem dispositivo" escrevesse na lista, o teste ve-lo-ia.
+  b.Mem().Escrever32(kHandles, 0xA5A5A5A5u);
+  // O teclado (0x0106c3fc, `AEEHIDDevice_Keyboard.h:21`) e o rato (0x0106c3fb,
+  // `AEEHIDDevice_Mouse.h:21`) sao tipos DECLARADOS. Zero dispositivos e a
+  // resposta certa -- e NAO pode ser muda: e um valor que este emulador NAO
+  // mediu (nao ha caminho de teclado nenhum aqui), logo vai como PRESSUPOSTO,
+  // que e a metade que a bateria publica.
+  ASSERT_EQ(b.ChamaPai(kIHID_GetConnectedDevices, b.Dispositivo().EnderecoDoIhid(), 0x0106c3fcu,
+                       kHandles, 2, kReq),
+            kAeeSuccess);
+  EXPECT_EQ(b.Mem().Ler32(kReq), 0u);
+  EXPECT_EQ(b.QuantosPressupostos("IHID::GetConnectedDevices sem Keyboard_Device"), 1u);
+  ASSERT_EQ(b.ChamaPai(kIHID_GetConnectedDevices, b.Dispositivo().EnderecoDoIhid(), 0x0106c3fbu,
+                       kHandles, 2, kReq),
+            kAeeSuccess);
+  EXPECT_EQ(b.QuantosPressupostos("IHID::GetConnectedDevices sem Mouse_Device"), 1u);
+  // Um tipo declarado e sem dispositivo NAO inventa handle nenhum: a lista fica
+  // como estava (nao se escreve lixo no array do jogo).
+  EXPECT_EQ(b.Mem().Ler32(kHandles), 0xA5A5A5A5u) << "nada foi escrito pelo teclado nem pelo rato";
+}
+
+TEST(Hid, UmTipoQueOSdkNaoDeclaraERecusadoComONome) {
+  Bancada b;
+  constexpr std::uint32_t kHandles = 0x0020bc00u, kReq = 0x0020bd00u;
+  b.Mem().Escrever32(kReq, 0xFFFFFFFFu);
+  // `AEE_EBADPARM` = 14 (`AEEStdErr.h:30`) e o codigo que o metodo declara para
+  // "unsupported device type". Lixo NAO passa em silencio, e o numero do tipo
+  // entra no NOME da falta: uma falta sem o numero obriga a ir ao desmonte.
+  EXPECT_EQ(b.ChamaPai(kIHID_GetConnectedDevices, b.Dispositivo().EnderecoDoIhid(), 0xDEADBEEFu,
+                       kHandles, 2, kReq),
+            kAeeBadParm);
+  EXPECT_EQ(kAeeBadParm, 14u);
+  EXPECT_EQ(b.QuantasFaltas("IHID::GetConnectedDevices tipo 0xdeadbeef"), 1u);
+  // E o `Unknown_DeviceType` (0x106c3fa, `AEEIHIDDevice.h:34`) tambem nao e um
+  // tipo para ENUMERAR: a lista que a documentacao do metodo aceita e joystick,
+  // teclado e rato (e zero = todos).
+  EXPECT_EQ(b.ChamaPai(kIHID_GetConnectedDevices, b.Dispositivo().EnderecoDoIhid(), 0x0106c3fau,
+                       kHandles, 2, kReq),
+            kAeeBadParm);
+  EXPECT_EQ(b.QuantasFaltas("IHID::GetConnectedDevices tipo 0x0106c3fa"), 1u);
+  // O `AEEUID_HID_Unknown_DeviceType` e o marcador do `GetDeviceInfo` para um
+  // aparelho nao identificado (`AEEIHIDDevice.h:34`), NAO uma classe para
+  // enumerar: nao esta na tabela, e um pedido com ele e um tipo nao suportado.
+  for (std::uint32_t k = 0; k < kQuantosTipos; ++k) {
+    EXPECT_NE(kTiposDeDispositivo[k].uid, 0x0106c3fau);
+  }
+  EXPECT_EQ(kQuantosTipos, 3u);
+  // Recusar nao escreve handle nenhum na lista, e o comprimento sai ZERO em vez do
+  // 0xFFFFFFFF que o teste la pos: um jogo que leia o comprimento sem olhar para o
+  // codigo de erro ve "nenhum dispositivo", e nao um numero que nao existe.
+  EXPECT_EQ(b.Mem().Ler32(kReq), 0u);
+  EXPECT_EQ(b.Mem().Ler32(kHandles), 0u);
 }
 
 }  // namespace zb2::brew

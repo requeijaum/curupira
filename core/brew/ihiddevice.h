@@ -166,12 +166,27 @@
 //     `mod/274755/tectoy.cfg:17  joystick_ignore_thresh=59` -- um limiar de 59
 //     nao tem sentido numa escala de 16 bits, e tem-no numa escala centrada em
 //     128.
-// O QUE FALTA MEDIR, e fica escrito em vez de adivinhado: uma medicao DIRETA dos
-// extremos seria um titulo que chamasse `GetMinPositionInfo`/`GetMaxPositionInfo`
-// (slots 11 e 12) e normalizasse por `(max - min)`. Nenhum dos 62 foi medido a
-// faze-lo. Este modulo publica min=0/max=255/centro=128 para os QUATRO eixos
-// mapeados, e `0/0` (o marcador de "eixo nao suportado" do cabecalho) para os
-// outros -- e o desvio, se a medicao aparecer, corrige-se AQUI e num so sitio.
+// O QUE FALTA MEDIR, e fica escrito em vez de adivinhado: os EXTREMOS. Duas
+// rondas de procura de fonte, para o registo:
+//   * o `hid_devices.cfg` NAO PODE dar os extremos: a lista de comandos do formato
+//     esta no SDK (`platform/hardware/inc/AEEHID.bid`) e e VERSION, VID/PID,
+//     DEVICETYPE, BUTTON, AXIS, RUMBLE e INVERT -- nao ha comando de minimo nem de
+//     maximo. Nao e "nao encontrei": e "esse numero nao vem daqui".
+//   * o guia (§6.3, "For each axes and button there is a minimum value, maximum
+//     value and a unique ID associated") diz que o numero EXISTE e nao o da.
+//   * o `AEEHIDThumbsticks.c` -- o ajudante que o guia §6.4 manda usar para
+//     remapear os analógicos, e o sitio onde uma normalizacao `(valor - min) /
+//     (max - min)` apareceria -- NAO esta no SDK extraido: a pasta `src/` do BREW
+//     SDK que o tem nao veio no pacote.
+//   * o descritor USB do controle do console traria o `Logical Minimum/Maximum` do
+//     report; em zeebx `docs/implementacao/09-entrada.md:44-48` essa parte vem como
+//     `** UNAVAILABLE **` no dump.
+// Uma medicao DIRETA dos extremos seria um titulo que chamasse
+// `GetMinPositionInfo`/`GetMaxPositionInfo` (slots 11 e 12) e normalizasse por
+// `(max - min)`. Nenhum dos 62 foi medido a faze-lo. Este modulo publica
+// min=0/max=255/centro=128 para os QUATRO eixos mapeados, e `0/0` (o marcador de
+// "eixo nao suportado" do cabecalho) para os outros -- e o desvio, se a medicao
+// aparecer, corrige-se AQUI e num so sitio.
 
 #include <cstdint>
 #include <deque>
@@ -239,10 +254,27 @@ constexpr std::uint32_t kClsidHid = 0x0106c411u;       // AEECLSID_HID, ja usado
 // invencao: vem do `enum eGamePadButtons` do sample do SDK e da tabela de saltos
 // do Rolimaz, que concordam nos quatro que ambos cobrem (12,13,14,15).
 //
-// TRES ENTRADAS ESTAO MARCADAS COMO NAO MEDIDAS. O Rolimaz mapeia 13 dos 16 UIDs;
-// sobram tres indices (6, 7 e 9) e tres UIDs sem indice medido (Start,
-// Left_Shoulder_Lower, Right_Shoulder_Lower). A ordem deles aqui vem POR
-// ELIMINACAO, e esta dito que vem -- e o sitio onde uma medicao futura corrige.
+// NENHUMA DAS 16 ENTRA DICAS ESTA SEM FONTE. As tres que estavam marcadas a mao
+// como "indice NAO medido" (6 = Left_Shoulder_Lower, 7 = Right_Shoulder_Lower e
+// 9 = Start) foram PROMOVIDAS nesta ronda, e a fonte e o ARQUIVO DO PROPRIO
+// CONSOLE: `research/sources/zeemu/rootfs/sys/hid_devices.cfg`, onde cada uma das
+// cinco entradas de controle declara `BUTTON:6:0x0106c407`, `BUTTON:7:0x0106c409`
+// e `BUTTON:9:0x0106c402`. As cinco concordam nestes tres, e o texto que documenta
+// o FORMATO do arquivo esta tambem no SDK (`platform/hardware/inc/AEEHID.bid`, a
+// entrada "Generic Joystick", com os mesmos doze pares 0..11).
+//
+// UMA DISCORDANCIA MEDIDA, e fica escrita: na quinta entrada (Logitech RumblePad2)
+// do arquivo do console o `BUTTON:9` vale 0x0106c403 (`Back`) em vez de 0x0106c402
+// (`Start`). As outras quatro entradas e a copia do SDK
+// (`platform/simulation/hid_devices.cfg`) dizem 0x0106c402, que e o que o sample
+// do SDK chama de Start no `enum eGamePadButtons`. Quatro contra uma.
+//
+// O QUE ISSO AINDA NAO PROVA, e nao se pode deixar de o dizer: o indice do
+// `nButtonID` do APARELHO `1eaa:0135` (o Dragon) nao foi lido -- o
+// `hid_devices.original.cfg` que o tem nao esta nesta arvore (a copia que temos e
+// a do `fs:/sys/` do console, com as entradas dos controles de PC). O que esta
+// medido e a convencao de indices do arquivo do console, identica nas cinco
+// entradas, e e a unica fonte que pode dizer qual e o `nButtonID`.
 struct BotaoDoZeebo {
   std::uint32_t uid;
   const char* nome;      // o nome do SDK, sem o prefixo AEEUID_HIDJoystick_
@@ -251,7 +283,16 @@ struct BotaoDoZeebo {
 };
 
 constexpr std::uint32_t kQuantosBotoes = 16;
-constexpr std::uint32_t kQuantosBotoesSemMedicao = 3;
+// OS 16 CANAIS DE BOTAO DO SDK, e o numero que o `GetNumberOfButtons` publica. O
+// CONTROLE do Zeebo nao tem 16 botoes fisicos: tem 11 (o d-pad como quatro
+// direcoes, dois analógicos, quatro botoes de acao, ZL e ZR, e o HOME) -- guia
+// §6.1 e o mapa do proprio controle no exemplo do `hid_devices.cfg` do SDK. Os
+// outros cinco UIDs existem no cabecalho e nunca sao apertados neste aparelho.
+//
+// ESTE CONTADOR E ZERO, e o zero e uma medicao: as tres entradas que estavam sem
+// fonte (indices 6, 7 e 9) foram promovidas ao arquivo do console. O CAMPO FICA --
+// e o instrumento que acende se alguem acrescentar uma entrada sem fonte.
+constexpr std::uint32_t kQuantosBotoesSemMedicao = 0;
 extern const BotaoDoZeebo kBotoesDoZeebo[kQuantosBotoes];
 
 // Os EIXOS. A `palavra` e o indice da palavra em `AEEHIDPositionInfo` (a palavra
@@ -273,6 +314,28 @@ struct EixoDoZeebo {
 };
 constexpr std::uint32_t kQuantosEixos = 4;
 extern const EixoDoZeebo kEixosDoZeebo[kQuantosEixos];
+
+// --- os TIPOS DE DISPOSITIVO (`nDeviceType`) --------------------------------
+//
+// O que o jogo passa no r1 do `IHID::GetConnectedDevices`. Sao estes tres, a
+// lista que a documentacao do proprio metodo aceita ("Following values can be
+// used: Joystick, Keyboard, Mouse"), e o ZERO, que nao e um tipo: e "todos os
+// dispositivos ligados". O comentario comprido, com ficheiro e linha de cada
+// numero e o que fica de fora (`AEEUID_HID_Unknown_DeviceType`), esta em
+// `ihiddevice.cpp`, na definicao da tabela.
+//
+// `existe` diz se este emulador tem algum dispositivo DESSE tipo: so o joystick
+// tem. Um tipo declarado sem dispositivo responde ZERO com sucesso -- e conta-se
+// como PRESSUPOSTO, para o zero nao ficar invisivel na corrida.
+struct TipoDeDispositivo {
+  std::uint32_t uid;
+  const char* nome;  // o nome do SDK, sem o prefixo AEEUID_HID_
+  bool existe;
+};
+constexpr std::uint32_t kQuantosTipos = 3;
+extern const TipoDeDispositivo kTiposDeDispositivo[kQuantosTipos];
+
+constexpr std::uint32_t kUidJoystickDevice = 0x0106c3fdu;  // AEEHIDDevice_Joystick.h:21
 
 // `AEEHIDPositionInfo` tem 25 palavras (1 + 24 eixos). O `bRelativeAxes` e a
 // palavra 0.
