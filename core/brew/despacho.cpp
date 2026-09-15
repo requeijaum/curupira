@@ -1729,8 +1729,32 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // desenha no bitmap do ecra desenhava num quarto da area. O guia oficial
         // (`ZeeboDeveloperGuide0.97.md:490`) diz "Zeebo will only support VGA
         // (640x480) display configuration".
+        // 320x240 e 16 bits: os valores do ZEEBO, DECLARADOS como tal.
+        //
+        // O `wStructSize` E CAMPO DE ENTRADA, e nao de saida. O cabecalho diz-o
+        // com todas as letras (`AEEIShell.h:116-120`): "In order to use the
+        // following fields, you MUST fill-in the wStructSize element of the
+        // structure before passing this to the GetDeviceInfo call."
+        //
+        // Ou seja: a cauda (`wStructSize`, `dwNetLinger`, `dwSleepDefer`,
+        // `wMaxPath`, `dwPlatformID`) so pode ser escrita se o CHAMADOR tiver
+        // declarado que a struct dele chega la. Escrevia-se sempre 64 bytes --
+        // e um titulo compilado contra a struct curta (44 bytes, ate ao
+        // `dwLang`) levava VINTE bytes por cima do que estivesse a seguir, que
+        // na esmagadora maioria dos casos e a pilha do proprio chamador.
+        //
+        // MEDIDO nesta arvore: `sizeof(AeeDeviceInfo)` = 64,
+        // `offsetof(w_struct_size)` = 44, `offsetof(dw_net_linger)` = 48
+        // (compilado e impresso). O zeebx tem os MESMOS offsets, escritos a mao
+        // e chegados la por outro caminho (`src/machine/shell.rs:425-455`), e
+        // diz o titulo que o obrigou: o Bejeweled Twist manda 64 e, enquanto so
+        // recebia os 44 primeiros bytes, lia `wMaxPath = 0` -- nenhum caminho de
+        // ficheiro lhe cabia.
         const std::uint32_t pi = cpu.Get(kR1);
         if (pi != 0) {
+          // LE-SE ANTES DE ESCREVER. O campo pertence ao chamador.
+          const std::uint32_t pedido = mem_.Ler16(pi + kOffsetDeWStructSize);
+          const bool quer_a_cauda = pedido >= sizeof(AeeDeviceInfo);
           AeeDeviceInfo di{};
           di.cx_screen = static_cast<std::uint16_t>(zb2::brew::kLarguraDoEcra);
           di.cy_screen = static_cast<std::uint16_t>(zb2::brew::kAlturaDoEcra);
@@ -1753,9 +1777,21 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           di.w_max_path = 256;
           di.dw_platform_id = 0;
           const auto* b = reinterpret_cast<const std::uint8_t*>(&di);
-          for (std::size_t k = 0; k < sizeof(AeeDeviceInfo); ++k) {
+          const std::size_t quantos = quer_a_cauda ? sizeof(AeeDeviceInfo) : kOffsetDeWStructSize;
+          for (std::size_t k = 0; k < quantos; ++k) {
             mem_.Escrever8(pi + static_cast<std::uint32_t>(k), b[k]);
           }
+          // A DEMANDA MAIS ALTA DO CORPUS (18 titulos) nao deixava rasto nenhum.
+          // Os valores sao DECLARADOS: ficam contados, com o tamanho que o
+          // titulo pediu -- e assim a proxima pessoa nao tem de adivinhar quais
+          // dos 62 pedem a cauda.
+          char det[128];
+          std::snprintf(det, sizeof(det),
+                        "%ux%u, %u bits, wStructSize pedido=%u -> escritos %u bytes",
+                        static_cast<unsigned>(di.cx_screen), static_cast<unsigned>(di.cy_screen),
+                        static_cast<unsigned>(di.n_color_depth), static_cast<unsigned>(pedido),
+                        static_cast<unsigned>(quantos));
+          traco_.RegistarPressuposto(Area::Brew, "IShell::GetDeviceInfo", det);
         }
         cpu.Set(kR0, 0);
       } else if (idx == kSlotIdMkDir) {

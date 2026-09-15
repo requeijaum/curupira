@@ -12,6 +12,7 @@
 // tem DOIS membros (`AddRef`, `Release`) e eu contava TRES -- a procura de um
 // `QueryInterface` que nao existe em `INHERIT_IBase`.
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -88,6 +89,21 @@ struct AeeDeviceInfo {
   std::uint16_t w_max_path;
   std::uint32_t dw_platform_id;
 };
+
+// O CORTE DA STRUCT: tudo o que vem a partir daqui so existe se o CHAMADOR o
+// pedir, enchendo o `wStructSize` ANTES da chamada (`AEEIShell.h:116-120`).
+//
+// Os dois numeros sao MEDIDOS pelo compilador, e nao escritos a mao: a auditoria
+// que deu por isto teve de os DEDUZIR do layout, e uma deducao de offset ja
+// custou uma ronda nesta arvore. Um `static_assert` transforma a deducao em
+// prova, e um cabecalho do SDK que mude parte o build em vez de partir a pilha
+// do guest.
+constexpr std::size_t kOffsetDeWStructSize = offsetof(AeeDeviceInfo, w_struct_size);
+static_assert(kOffsetDeWStructSize == 44, "o corte da AEEDeviceInfo e o +44 do wStructSize");
+static_assert(sizeof(AeeDeviceInfo) == 64, "a AEEDeviceInfo completa sao 64 bytes");
+static_assert(offsetof(AeeDeviceInfo, dw_lang) == 40,
+              "o dwLang e o ultimo campo antes do corte (AEEIShell.h:115)");
+
 
 // --- construcao -------------------------------------------------------------
 

@@ -741,4 +741,67 @@ TEST(GetAEEVersion, BufferPequenoDemaisNaoTransbordaEUmBufferNuloNaoEscreve) {
   EXPECT_EQ(b.Mem().Ler8(kBuf), static_cast<std::uint8_t>('4'));
 }
 
+// ===========================================================================
+// `GetDeviceInfo`: o `wStructSize` e campo DE ENTRADA.
+//
+// `AEEIShell.h:116-120`: "In order to use the following fields, you MUST
+// fill-in the wStructSize element of the structure before passing this to the
+// GetDeviceInfo call."
+// ===========================================================================
+TEST(GetDeviceInfo, UmaStructCurtaNaoLevaEscritaNaCauda) {
+  // O DEFEITO MEDIDO: escreviam-se sempre 64 bytes. Um titulo compilado contra a
+  // struct curta (44 bytes, ate ao `dwLang`) levava 20 bytes por cima do que
+  // estivesse a seguir -- e o `AEEDeviceInfo` do guest esta quase sempre na
+  // PILHA, logo por cima das variaveis locais de quem chamou.
+  Bancada b;
+  // O MESMO endereco de saida que a `tools/bateria.cpp:633` cabla no slot 4 do
+  // IShell (`kSlotIdGetDeviceInfo`, `despacho.cpp:75`).
+  constexpr std::uint32_t kSaidaGetDeviceInfo = 1549;
+  constexpr std::uint32_t kPi = 0x00092000u;
+  for (std::uint32_t k = 0; k < 96; ++k) b.Mem().Escrever8(kPi + k, 0x5Au);
+  // O chamador NAO declarou tamanho nenhum: o campo fica com o lixo que tinha.
+  b.Mem().Escrever16(kPi + 44, 0);
+  b.ChamaSaida(kSaidaGetDeviceInfo, 0x80020000u, kPi);
+
+  EXPECT_NE(b.Mem().Ler16(kPi + 0), 0x5A5Au) << "a cabeca da struct tem de ser escrita";
+  for (std::uint32_t k = 46; k < 64; ++k) {
+    EXPECT_EQ(b.Mem().Ler8(kPi + k), 0x5Au)
+        << "byte " << k << ": escrita para la do que o titulo declarou";
+  }
+  EXPECT_EQ(b.Mem().Ler16(kPi + 44), 0u) << "o proprio wStructSize e do chamador";
+}
+
+TEST(GetDeviceInfo, UmaStructCOMPLETAPedidaPeloTituloLevaACauda) {
+  // O outro lado da mesma regra, e o titulo que o obrigou do lado do zeebx
+  // (Bejeweled Twist, `src/machine/shell.rs:425-430`): quem declara 64 quer o
+  // `wMaxPath`, e recebe-lo a zero seria "nenhum caminho de ficheiro cabe".
+  Bancada b;
+  // O MESMO endereco de saida que a `tools/bateria.cpp:633` cabla no slot 4 do
+  // IShell (`kSlotIdGetDeviceInfo`, `despacho.cpp:75`).
+  constexpr std::uint32_t kSaidaGetDeviceInfo = 1549;
+  constexpr std::uint32_t kPi = 0x00092100u;
+  for (std::uint32_t k = 0; k < 96; ++k) b.Mem().Escrever8(kPi + k, 0x5Au);
+  b.Mem().Escrever16(kPi + 44, 64);
+  b.ChamaSaida(kSaidaGetDeviceInfo, 0x80020000u, kPi);
+
+  EXPECT_EQ(b.Mem().Ler16(kPi + 44), 64u);
+  EXPECT_EQ(b.Mem().Ler16(kPi + 56), 256u) << "wMaxPath (+56)";
+  EXPECT_EQ(b.Mem().Ler8(kPi + 64), 0x5Au) << "nem um byte para la da struct";
+}
+
+TEST(GetDeviceInfo, OValorDECLARADOFicaContado) {
+  // A demanda mais alta do corpus (18 titulos) nao deixava rasto nenhum.
+  Bancada b;
+  // O MESMO endereco de saida que a `tools/bateria.cpp:633` cabla no slot 4 do
+  // IShell (`kSlotIdGetDeviceInfo`, `despacho.cpp:75`).
+  constexpr std::uint32_t kSaidaGetDeviceInfo = 1549;
+  constexpr std::uint32_t kPi = 0x00092200u;
+  b.Mem().Escrever16(kPi + 44, 64);
+  b.ChamaSaida(kSaidaGetDeviceInfo, 0x80020000u, kPi);
+  const auto& p = b.Tr().ContagemPressupostos();
+  ASSERT_NE(p.find("IShell::GetDeviceInfo"), p.end())
+      << "um valor declarado que nao se conta e um valor invisivel";
+  EXPECT_EQ(p.at("IShell::GetDeviceInfo"), 1u);
+}
+
 }  // namespace zb2::brew
