@@ -1961,3 +1961,20 @@ TEST(Cpu, ThumbStmiaELdmia) {
   EXPECT_EQ(c.R(1), 0x12345678u);
   EXPECT_EQ(c.R(2), 0x9ABCDEF0u);
 }
+
+TEST(Cpu, ThumbLslZerosEMovNaoZera) {
+  // O imm5=0 do LSL e um MOV (0x0006 objdump "movs r6, r0"), e NAO "deslocar
+  // por 32": o LSR/ASR com imm5=0 valem 32, o LSL zero NAO. MEDIDO no create
+  // do rocketweb (rock3): os 4 `movs` do prologo zeravam r6=r0=clsid,
+  // r7=po, r5=shell, o `cmp r6,r1` falhava sempre e o applet nunca nascia.
+  Bancada b;
+  b.R(7, 0x00100005u);
+  b.R(0, 0x12345678u);
+  b.R(1, 0xABCDEF01u);
+  b.R(14, 0x77777777u);  // carry de partida: tem de ficar INALTERADO
+  b.Instrucao(0xE12FFF17u);
+  b.Thumb(0x0008u);  // lsl r0, r1, #0  (imm5=0: MOV)
+  b.Terminar();
+  b.Correr(2);
+  EXPECT_EQ(b.R(0), 0xABCDEF01u) << "lsl #0 nao desloca: deve copiar r1";
+}

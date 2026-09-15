@@ -1677,16 +1677,27 @@ void ArmInterpreter::ExecutarThumb(std::uint16_t instr, std::uint32_t pc) {
     if (op == 0 && imm5 == 0) familia_ = "mov";
     else familia_ = kNomes[op];
     const Reg v = Get(static_cast<int>(rm));
-    // `imm5` zero VALE 32 nestas tres formas (o Thumb nao tem "deslocar por 0").
-    const std::uint32_t n = (imm5 == 0) ? 32u : imm5;
     Reg r = 0;
     if (op == 0) {
-      r = (n >= 32u) ? 0u : static_cast<Reg>(v << n);
-      c_ = ((v >> (32u - n)) & 1u) != 0;
+      // O imm5=0 do LSL e um MOV (objdump imprime `movs`), NAO um deslocamento
+      // de 32 -- so o LSR e o ASR tratam o zero como 32.
+      //
+      // MEDIDO (frente rock3, rocketweb 0x762/0x764/0x766): executar o LSL#0
+      // como deslocamento de 32 ZERAVA o registador. No create do rocketweb os
+      // tres `movs` que preparam o compare do CLSID -- r6=clsid, r0=ppobj,
+      // r7=po, r2=shell -- saiam todos a zero, o `cmp r6,r1` falhava SEMPRE
+      // (mesmo com o CLSID certo) e o create tomava o caminho "classe
+      // desconhecida" e retornava "sucesso" sem escrever o applet: os 60 passos
+      // e o `retornou_sem_applet` do 279394.
+      r = (imm5 == 0) ? v : static_cast<Reg>(v << imm5);
+      if (imm5 != 0) c_ = ((v >> (32u - imm5)) & 1u) != 0;
     } else if (op == 1) {
+      // `imm5` zero vale 32 no LSR e no ASR.
+      const std::uint32_t n = (imm5 == 0) ? 32u : imm5;
       r = (n >= 32u) ? 0u : (v >> n);
       c_ = ((v >> (n - 1u)) & 1u) != 0;
     } else {
+      const std::uint32_t n = (imm5 == 0) ? 32u : imm5;
       const std::int32_t s = static_cast<std::int32_t>(v);
       r = (n >= 32u) ? static_cast<Reg>(s >> 31) : static_cast<Reg>(s >> n);
       c_ = ((v >> (n - 1u)) & 1u) != 0;
