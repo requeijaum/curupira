@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "core/brew/classes.h"   // kObjetoIgles/kObjetoIglesExt, ObjetoDaClasse (kQEGL)
 #include "core/brew/interface.h"
 
 namespace zb2::brew {
@@ -81,6 +82,28 @@ const char* NomeDoErro(std::uint32_t erro) {
 }
 
 }  // namespace
+
+// O NOME DE UM IID DA FAMILIA GL -- publico (egl.h) porque a recusa da frente
+// qegl usa-o noutro modulo e tem de o poder auditar (P1).
+const char* NomeDoIidDaFamiliaGl(std::uint32_t iid) {
+  switch (iid) {
+    case kIidGles10: return "AEEIID_GLES10";              // AEEGLES10.h:22
+    case kIidGles11: return "AEEIID_GLES11";              // AEEGLES11.h:20
+    case kIidGles10Ext: return "AEEIID_GLES10EXT";        // AEEGLES10Ext.h:22
+    case kIidGles11Ext: return "AEEIID_GLES11EXT";        // AEEGLES11Ext.h:22
+    case kIidGles11ExtPak: return "AEEIID_GLES11EXTPAK";  // AEEGLES11ExtPak.h:22
+    case kIidEgl10: return "AEEIID_EGL10";                // AEEEGL10.h:22
+    case kIidEgl11: return "AEEIID_EGL11";                // AEEEGL11.h:20
+    case kIidEglGetColorBuffer: return "AEEIID_EGLGETCOLORBUFFER";    // AEEEGLGetColorBuffer.h:20
+    case kIidEglGetPowerLevel: return "AEEIID_EGLGETPOWERLEVEL";      // AEEEGLGetPowerLevel.h:20
+    case kIidEglOesSwapInterval: return "AEEIID_EGLOESSWAPINTERVAL";  // AEEEGLOESSwapInterval.h:22
+    case kIidEglSurfaceManipV1: return "AEEIID_EGLSURFACEMANIP_V1";   // AEEEGLSurfaceManip.h:23
+    case kIidEglSurfaceManip: return "AEEIID_EGLSURFACEMANIP";        // AEEEGLSurfaceManip.h:252
+    case kIidGlesImageonExtV1: return "AEEIID_GLESIMAGEONEXT_V1";     // AEEGLESImageonEXT.h:23
+    case kIidGlesImageonExt: return "AEEIID_GLESIMAGEONEXT";          // AEEGLESImageonEXT.h:204
+    default: return "iid_fora_da_tabela";
+  }
+}
 
 // A TABELA E PUBLICA (esta fora do namespace anonimo) porque o TESTE tem de
 // poder comparar cada valor com a origem escrita ao lado -- uma tabela que so o
@@ -418,14 +441,55 @@ ResultadoEgl Egl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint3
       return feito(1, n - 1);
     }
     case kIegl_QueryInterface: {
+      // `int QueryInterface(IQI* pMe, AEEIID, void** ppObj)` (INHERIT_IQI,
+      // AEEGL.h). O CONTRATO, medido no zeebx (machine.rs 9815-9860): o
+      // objecto do QEGL responde por VARIAS interfaces, e devolver `this`
+      // para tudo entregava a vtable do EGL a quem pediu a do GL.
       const std::uint32_t iid = a.reg[1], ppo = a.reg[2];
       if (ppo == 0) return recusa(3, "ppObj nulo", EGL_BAD_PARAMETER);
-      if (iid == kClsidIegl) {
-        mem_.Escrever32(ppo, objeto_);
-        return feito(3, 0);  // SUCCESS
+      // O OBJECT O GL EXISTE, e a prova e a primeira palavra do objecto: a
+      // `ConstruirIgles` do setup de cada titulo (classes.cpp:603) escreve o
+      // ponteiro da vtable nela. Um endereco a zeros nao foi construido.
+      const auto objecto_gl_existe = [&](std::uint32_t objeto) {
+        return objeto != 0 && mem_.Ler32(objeto) != 0;
+      };
+      std::uint32_t servido = 0;  // 0 = sem objecto para este IID
+      switch (iid) {
+        case kClsidIegl:  // AEECLSID_EGL (AEEGL.h:37): o proprio objecto.
+          servido = objeto_;
+          break;
+        case kIidGles10:  // AEEGLES10.h:22
+        case kIidGles11:  // AEEGLES11.h:20 -- o objecto GL (IGLES11).
+          servido = objecto_gl_existe(kObjetoIgles) ? kObjetoIgles : 0;
+          break;
+        case kIidGles11Ext:  // AEEGLES11Ext.h:22 -- o objecto de extensao.
+          servido = objecto_gl_existe(kObjetoIglesExt) ? kObjetoIglesExt : 0;
+          break;
+        case kIidEgl10:   // AEEEGL10.h:22
+        case kIidEgl11: { // AEEEGL11.h:20 -- 'this', o objecto que recebeu o
+                          // pedido (o QEGL, classes.h, quando foi ele).
+          const std::uint32_t pme = a.reg[0];
+          const std::uint32_t qegl =
+              ObjetoDaClasse(static_cast<std::uint32_t>(Classe::kQEGL));
+          servido = (pme == qegl || pme == objeto_) ? pme : objeto_;
+          break;
+        }
+        default:
+          break;  // extensoes sem objecto proprio: recusa COM O NOME abaixo.
+      }
+      if (servido != 0) {
+        mem_.Escrever32(ppo, servido);
+        char det[128];
+        std::snprintf(det, sizeof(det), "iid=%s (0x%08x) -> objecto 0x%08x",
+                      NomeDoIidDaFamiliaGl(iid), iid, servido);
+        return feito_com(3, 0, det);  // SUCCESS, com o objecto dito no registo
       }
       mem_.Escrever32(ppo, 0);
-      return recusa(3, "IID nao servido por este objecto", EGL_BAD_PARAMETER);
+      if (retorno != nullptr) *retorno = static_cast<std::uint32_t>(zb2::kAeeClassNotSupported);
+      char det[160];
+      std::snprintf(det, sizeof(det), "iid=0x%08x (%s): sem objecto desta interface nesta arvore",
+                    iid, NomeDoIidDaFamiliaGl(iid));
+      return recusa(3, det, EGL_BAD_PARAMETER);
     }
 
     // --- as consultas basicas ----------------------------------------------

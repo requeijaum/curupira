@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 
+#include "core/brew/classes.h"   // kObjetoIgles/kObjetoIglesExt + ConstruirIgles
 #include "core/brew/despacho.h"
 #include "core/cpu/arm_interpreter.h"
 #include "core/brew/egl.h"
@@ -147,6 +148,111 @@ TEST(TabelaDoIegl, InstalarCablaEObjEConfere) {
   EXPECT_EQ(b.mem.Ler32(b.egl.Vtable() + 4), b.saidas.Endereco(4));
   EXPECT_EQ(b.mem.Ler32(b.egl.Vtable() + kIegl_MakeCurrent * 4),
             b.saidas.Endereco(kVtableIegl + kIegl_MakeCurrent));
+}
+
+// ---------------------------------------------------------------------------
+// 1b. O QUERYINTERFACE: os IIDs da familia GL (frente qegl)
+// ---------------------------------------------------------------------------
+//
+// O QUE ISTO PROTEGE. O `AEECLSID_QEGL` (0x0103d8ec) e UM objecto que responde
+// por VARIAS interfaces -- o EGL e o OpenGL ES. O contrato esta medido no zeebx
+// (`src/machine.rs` 9815-9860, `egl_query_interface`), e o aviso deles e o
+// defeito que estes testes impedem: "devolver `this` para tudo entregava a
+// vtable do EGL a quem pediu a do GL -- a primeira chamada caia num slot que
+// nao existe".
+//
+// O OBJECT O GL NAO SE INVENTA AQUI: ele ja existe no setup de cada titulo
+// (`ConstruirIgles`, `core/brew/classes.cpp:603`), e o QI devolve-O. O teste
+// constroi os objectos como o despacho constroi, e exige o ENDERECO.
+
+TEST(QueryInterfaceDoIegl, Gles11DevolveOObjectoGl) {
+  Banco b;
+  ConstruirIgles(b.mem, b.saidas, b.traco);
+  const std::uint32_t ppo = 0x00070000u;
+  std::uint32_t ret = 0xDEADu;
+  EXPECT_EQ(b.egl.Executar(kIegl_QueryInterface, Args(b.egl.Objeto(), kIidGles11, ppo), &ret),
+            ResultadoEgl::Feito);
+  EXPECT_EQ(ret, 0u);  // SUCCESS
+  EXPECT_EQ(b.mem.Ler32(ppo), kObjetoIgles)
+      << "o QI tem de devolver o objecto GL, e nao o do EGL";
+  EXPECT_NE(b.mem.Ler32(ppo), b.egl.Objeto());
+}
+
+TEST(QueryInterfaceDoIegl, Gles10DevolveOObjectoGl) {
+  Banco b;
+  ConstruirIgles(b.mem, b.saidas, b.traco);
+  const std::uint32_t ppo = 0x00070000u;
+  std::uint32_t ret = 0xDEADu;
+  EXPECT_EQ(b.egl.Executar(kIegl_QueryInterface, Args(b.egl.Objeto(), kIidGles10, ppo), &ret),
+            ResultadoEgl::Feito);
+  EXPECT_EQ(ret, 0u);
+  EXPECT_EQ(b.mem.Ler32(ppo), kObjetoIgles);
+}
+
+TEST(QueryInterfaceDoIegl, Gles11ExtDevolveOObjectoDeExtensao) {
+  Banco b;
+  ConstruirIgles(b.mem, b.saidas, b.traco);
+  const std::uint32_t ppo = 0x00070000u;
+  std::uint32_t ret = 0xDEADu;
+  // `AEEIID_GLES11EXT` (AEEGLES11Ext.h:22) e o OUTRO objecto, o de 15 slots
+  // (`kObjetoIglesExt`): e dele que sai o `glDrawTexivOES` que o
+  // `GL_OES_draw_texture` anunciado promete.
+  EXPECT_EQ(b.egl.Executar(kIegl_QueryInterface, Args(b.egl.Objeto(), kIidGles11Ext, ppo), &ret),
+            ResultadoEgl::Feito);
+  EXPECT_EQ(ret, 0u);
+  EXPECT_EQ(b.mem.Ler32(ppo), kObjetoIglesExt);
+}
+
+TEST(QueryInterfaceDoIegl, Egl11DevolveOProprioObjecto) {
+  Banco b;
+  const std::uint32_t ppo = 0x00070000u;
+  std::uint32_t ret = 0xDEADu;
+  // `AEEIID_EGL10/EGL11` (AEEEGL10.h:22, AEEEGL11.h:20): 'this'.
+  EXPECT_EQ(b.egl.Executar(kIegl_QueryInterface, Args(b.egl.Objeto(), kIidEgl11, ppo), &ret),
+            ResultadoEgl::Feito);
+  EXPECT_EQ(ret, 0u);
+  EXPECT_EQ(b.mem.Ler32(ppo), b.egl.Objeto());
+}
+
+TEST(QueryInterfaceDoIegl, OObjectoGlTemDeExistirParaSerServido) {
+  Banco b;
+  // SEM `ConstruirIgles` o endereco esta a zeros: servir um objecto que nao
+  // existe seria a promessa que o `0x8F010000` nao cumpre (P2).
+  const std::uint32_t ppo = 0x00070000u;
+  std::uint32_t ret = 0xDEADu;
+  EXPECT_EQ(b.mem.Ler32(kObjetoIgles), 0u);
+  EXPECT_EQ(b.egl.Executar(kIegl_QueryInterface, Args(b.egl.Objeto(), kIidGles11, ppo), &ret),
+            ResultadoEgl::Recusado);
+  EXPECT_EQ(b.mem.Ler32(ppo), 0u);
+  EXPECT_EQ(ret, static_cast<std::uint32_t>(zb2::kAeeClassNotSupported));
+}
+
+TEST(QueryInterfaceDoIegl, IidSemObjectoRecusaComONome) {
+  Banco b;
+  ConstruirIgles(b.mem, b.saidas, b.traco);
+  const std::uint32_t ppo = 0x00070000u;
+  std::uint32_t ret = 0xDEADu;
+  // `AEEIID_GLESIMAGEONEXT` (AEEGLESImageonEXT.h:204): 27 slots proprios, e
+  // esta arvore nao tem objecto desta interface. A recusa diz o NOME do IID --
+  // um "IID nao servido" sem nome obriga a ir ao cabecalho contar numeros.
+  EXPECT_EQ(b.egl.Executar(kIegl_QueryInterface, Args(b.egl.Objeto(), kIidGlesImageonExt, ppo),
+                           &ret),
+            ResultadoEgl::Recusado);
+  EXPECT_EQ(b.mem.Ler32(ppo), 0u);
+  EXPECT_EQ(ret, static_cast<std::uint32_t>(zb2::kAeeClassNotSupported));
+  ASSERT_FALSE(b.egl.Ultimas().empty());
+  EXPECT_NE(b.egl.Ultimas().back().motivo.find("AEEIID_GLESIMAGEONEXT"), std::string::npos)
+      << "a recusa nao diz QUAL foi o IID pedido";
+}
+
+TEST(QueryInterfaceDoIegl, OIidDoEglContinuaASerServido) {
+  Banco b;
+  const std::uint32_t ppo = 0x00070000u;
+  std::uint32_t ret = 0xDEADu;
+  EXPECT_EQ(b.egl.Executar(kIegl_QueryInterface, Args(b.egl.Objeto(), kClsidIegl, ppo), &ret),
+            ResultadoEgl::Feito);
+  EXPECT_EQ(ret, 0u);
+  EXPECT_EQ(b.mem.Ler32(ppo), b.egl.Objeto());
 }
 
 // ---------------------------------------------------------------------------

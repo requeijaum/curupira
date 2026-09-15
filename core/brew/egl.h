@@ -113,6 +113,31 @@ constexpr std::uint32_t kAlturaDaSuperficie = kAlturaDoEcra;    // ecra.h
 // 84 handlers de GL.
 const char* NomeDoAtributoEgl(std::uint32_t atributo);
 
+// --- os IIDs da familia GL que o QueryInterface responde --------------------
+//
+// O CONTRATO, medido no zeebx (`src/machine.rs` 9815-9860, `egl_query_interface`):
+// o objecto `AEECLSID_QEGL` responde por VARIAS interfaces. Devolver `this`
+// para tudo entregava a vtable do EGL a quem pediu a do GL -- a primeira
+// chamada caia num slot que nao existe. Os valores sao os do SDK 4.0.2 (o
+// ficheiro e a linha ao lado); os GLES10/11/11EXT ja vivem em `classes.h`
+// (`kIidGles10/11/11Ext`), e este e o UNICO sitio onde os outros aparecem.
+constexpr std::uint32_t kIidGles10Ext = 0x0103d8deu;         // AEEGLES10Ext.h:22
+constexpr std::uint32_t kIidGles11ExtPak = 0x0103def1u;      // AEEGLES11ExtPak.h:22
+constexpr std::uint32_t kIidEgl10 = 0x0103d8edu;             // AEEEGL10.h:22
+constexpr std::uint32_t kIidEgl11 = 0x0103d8eeu;             // AEEEGL11.h:20
+constexpr std::uint32_t kIidEglGetColorBuffer = 0x0103d8efu; // AEEEGLGetColorBuffer.h:20
+constexpr std::uint32_t kIidEglGetPowerLevel = 0x0103d8f0u;  // AEEEGLGetPowerLevel.h:20
+constexpr std::uint32_t kIidEglOesSwapInterval = 0x010426e3u;  // AEEEGLOESSwapInterval.h:22
+constexpr std::uint32_t kIidEglSurfaceManipV1 = 0x010434ccu; // AEEEGLSurfaceManip.h:23
+constexpr std::uint32_t kIidEglSurfaceManip = 0x01051834u;   // AEEEGLSurfaceManip.h:252
+constexpr std::uint32_t kIidGlesImageonExtV1 = 0x010459b1u;  // AEEGLESImageonEXT.h:23
+constexpr std::uint32_t kIidGlesImageonExt = 0x01058546u;    // AEEGLESImageonEXT.h:204
+
+// O NOME de UM IID da familia, para a recusa dizer O QUE falta (P2): um
+// "IID nao servido" sem nome obrigava a ir ao cabecalho contar numeros em
+// cada ronda. `"iid_fora_da_tabela"` para um valor fora dela.
+const char* NomeDoIidDaFamiliaGl(std::uint32_t iid);
+
 // UMA LINHA DA TABELA DO CONFIG, com a ORIGEM do valor.
 //
 // ESTA TABELA E O CORACAO DA HONESTIDADE DESTE MODULO. O `eglChooseConfig` so
