@@ -165,6 +165,63 @@ constexpr std::uint32_t kVtableIglesExt = 40500;
 constexpr std::uint32_t kIglesExtSlots = 15;
 constexpr std::uint32_t kObjetoIglesExt = 0x8F020000u;
 constexpr std::uint32_t kIidGles11Ext = 0x0103d8ebu;
+
+// --- AS SETE EXTENSOES QUALCOMM DO QEGL (frente qualcomm) ------------------
+//
+// MEDIDO na bateria (corrida /tmp/corrida_thrd.json, 14 titulos): cninja,
+// spinmast, strhoop, supbtime, karnovr, wizdfire, magdrop3, darkseal,
+// baddudes, hbarrel, gof, pbc, ridgeracer e rmp pedem, no `QueryInterface` do
+// objecto da CLASSE QEGL (slot 2), sete IIDs de extensao -- 1x cada. O wrapper
+// do SDK dentro do `.mod` (`GLES_ext.c`) guarda o objecto que receber e chama
+// depois os SLOTS dele; servir o IID com um objecto cuja vtable tem o tamanho
+// REAL do SDK e o minimo que nao faz a primeira chamada cair num slot que nao
+// existe (o aviso do zeebx, machine.rs 9840-9860).
+//
+// A CONTAGEM DE SLOTS VEM DOS CABECALHOS DO SDK 4.0.2 (a linha ao lado de cada
+// nome, no `.cpp`). As V2 sao superconjunto das V1 com o MESMO prefixo de
+// vtable (zeebx): um so objecto atende as duas IIDs de cada par.
+//
+// AS FAIXAS de saida: 40000-40223 sao as classes, 40300-40447 o IGLES11,
+// 40500-40514 o IGLES11Ext. Nada mais vive a seguir; estas sete comecam em
+// 40600, cada uma na sua base, e o teste prova que o slot ALEM da ultima
+// tabela nao e atendido (uma vtable maior do que a real e o defeito que o
+// zeebx avisou).
+//
+// OS OBJECTOS ficam depois do pool das pilhas das threads (0x8F030000 +
+// 0x200000 = 0x8F230000), dentro da faixa 0x8F000000 que a bateria inteira
+// ja provou que o corpus nao toca (o comentario do 0x800C0000 no topo).
+constexpr std::uint32_t kVtableEglGetColorBuffer = 40600;   // 4 (AEEEGLGetColorBuffer.h)
+constexpr std::uint32_t kEglGetColorBufferSlots = 4;
+constexpr std::uint32_t kVtableEglSurfaceManip = 40700;     // 27 (AEEEGLSurfaceManip.h, V2)
+constexpr std::uint32_t kEglSurfaceManipSlots = 27;
+constexpr std::uint32_t kVtableGlesImageonExt = 40800;      // 27 (AEEGLESImageonEXT.h, V2)
+constexpr std::uint32_t kGlesImageonExtSlots = 27;
+constexpr std::uint32_t kVtableGles10Ext = 40900;           // 4 (AEEGLES10Ext.h)
+constexpr std::uint32_t kGles10ExtSlots = 4;
+constexpr std::uint32_t kVtableGles11ExtPak = 41000;        // 30 (AEEGLES11ExtPak.h)
+constexpr std::uint32_t kGles11ExtPakSlots = 30;
+constexpr std::uint32_t kVtableEglOesSwapInterval = 41100;  // 5 (AEEEGLOESSwapInterval.h)
+constexpr std::uint32_t kEglOesSwapIntervalSlots = 5;
+constexpr std::uint32_t kVtableEglGetPowerLevel = 41150;    // 4 (AEEEGLGetPowerLevel.h)
+constexpr std::uint32_t kEglGetPowerLevelSlots = 4;
+
+constexpr std::uint32_t kObjetoEglGetColorBuffer = 0x8F240000u;
+constexpr std::uint32_t kObjetoEglSurfaceManip = 0x8F241000u;
+constexpr std::uint32_t kObjetoGlesImageonExt = 0x8F242000u;
+constexpr std::uint32_t kObjetoGles10Ext = 0x8F243000u;
+constexpr std::uint32_t kObjetoGles11ExtPak = 0x8F244000u;
+constexpr std::uint32_t kObjetoEglOesSwapInterval = 0x8F245000u;
+constexpr std::uint32_t kObjetoEglGetPowerLevel = 0x8F246000u;
+
+// O NOME de UM slot destas sete interfaces, das listas dos `INHERIT_*` do SDK
+// (os ficheiros e as linhas estao no `.cpp`). "?" fora da tabela.
+const char* NomeDoSlotEglGetColorBuffer(std::uint32_t slot);
+const char* NomeDoSlotEglSurfaceManip(std::uint32_t slot);
+const char* NomeDoSlotGlesImageonExt(std::uint32_t slot);
+const char* NomeDoSlotGles10Ext(std::uint32_t slot);
+const char* NomeDoSlotGles11ExtPak(std::uint32_t slot);
+const char* NomeDoSlotEglOesSwapInterval(std::uint32_t slot);
+const char* NomeDoSlotEglGetPowerLevel(std::uint32_t slot);
 // IIDs de interface (AEEGLES10/11.h via 3 refs; sem .h no SDK extract).
 constexpr std::uint32_t kIidGles10 = 0x0103d8ddu;
 constexpr std::uint32_t kIidGles11 = 0x0103d8eau;

@@ -7,6 +7,8 @@
 
 #include "core/brew/ajudantes.h"
 #include "core/brew/classes.h"
+#include "core/brew/ecra.h"   // kBaseDoEcraNoGuest (GetColorBuffer)
+#include "core/brew/egl.h"     // kIidEgl* (os sete IIDs QUALCOMM)
 #include "core/brew/clsids.h"
 #include "core/brew/despacho.h"
 #include "core/brew/interface.h"
@@ -854,6 +856,200 @@ TEST(Classes, OIThreadStartSegundaVezDaAlreadyEExitNaoIniciadaDaFailed) {
   EXPECT_EQ(c.Cpu().Get(kR0), kAeeFailed);
 }
 
+
+}  // namespace
+}  // namespace zb2::brew
+
+namespace zb2::brew {
+namespace {
+
+// ---------------------------------------------------------------------------
+// 8. AS SETE EXTENSOES QUALCOMM DO QEGL (frente qualcomm).
+//
+// MEDIDO na bateria (corrida /tmp/corrida_thrd.json, 14 titulos): cninja,
+// spinmast, strhoop, supbtime, karnovr, wizdfire, magdrop3, darkseal,
+// baddudes, hbarrel, gof, pbc, ridgeracer e rmp pedem, no `QueryInterface` do
+// objecto da CLASSE QEGL (slot 2), SETE IIDs de extensao -- 1x cada. O wrapper
+// do SDK que os titulos trazem dentro do `.mod` (`GLES_ext.c`) faz estes
+// pedidos no primeiro `eglGetProcAddress`, e GUARDA o objecto que receber;
+// as funcoes de extensao (`eglGetColorBufferQUALCOMM`, `eglSetSurfaceScaleQUALCOMM`,
+// ...) chamam depois os SLOTS desses objectos.
+//
+// A CONTAGEM DE SLOTS VEM DOS CABECALHOS DO SDK 4.0.2, e cada lista abaixo
+// cita o ficheiro e o numero da linha do `INHERIT_*` onde o metodo aparece (a
+// mesma regra do `gerar_slots.py`; estes cabecalhos nao estao na lista dele,
+// e por isso a lista e escrita aqui COM a linha ao lado).
+// ---------------------------------------------------------------------------
+TEST(Classes, OQeglAtendeAsSeteExtensoesQualcommComObjetoDoTamanhoReal) {
+  struct Esperado {
+    std::uint32_t iid, objeto, vt, slots;
+  };
+  const Esperado es[] = {
+      // AEEEGLGetColorBuffer.h:20 (4 = 3 da cabeca + GetColorBuffer)
+      {kIidEglGetColorBuffer, kObjetoEglGetColorBuffer, kVtableEglGetColorBuffer,
+       kEglGetColorBufferSlots},
+      // AEEEGLSurfaceManip.h:23/252 (V2 = V1 + 10, o mesmo prefixo de vtable)
+      {kIidEglSurfaceManip, kObjetoEglSurfaceManip, kVtableEglSurfaceManip,
+       kEglSurfaceManipSlots},
+      {kIidEglSurfaceManipV1, kObjetoEglSurfaceManip, kVtableEglSurfaceManip,
+       kEglSurfaceManipSlots},
+      // AEEGLESImageonEXT.h:23/204
+      {kIidGlesImageonExt, kObjetoGlesImageonExt, kVtableGlesImageonExt,
+       kGlesImageonExtSlots},
+      {kIidGlesImageonExtV1, kObjetoGlesImageonExt, kVtableGlesImageonExt,
+       kGlesImageonExtSlots},
+      // AEEGLES10Ext.h:22 (4 slots: 3 + QueryMatrixxOES)
+      {kIidGles10Ext, kObjetoGles10Ext, kVtableGles10Ext, kGles10ExtSlots},
+      // AEEGLES11ExtPak.h:22 (30 slots)
+      {kIidGles11ExtPak, kObjetoGles11ExtPak, kVtableGles11ExtPak, kGles11ExtPakSlots},
+      // AEEEGLOESSwapInterval.h:22 (5 slots)
+      {kIidEglOesSwapInterval, kObjetoEglOesSwapInterval,
+       kVtableEglOesSwapInterval, kEglOesSwapIntervalSlots},
+      // AEEEGLGetPowerLevel.h:20 (4 slots)
+      {kIidEglGetPowerLevel, kObjetoEglGetPowerLevel, kVtableEglGetPowerLevel,
+       kEglGetPowerLevelSlots},
+  };
+  const std::uint32_t q = static_cast<std::uint32_t>(Classe::kQEGL);
+  Bancada b;
+  for (const Esperado& e : es) {
+    b.Cpu().Set(kR0, ObjetoDaClasse(q));
+    b.Cpu().Set(kR1, e.iid);
+    b.Cpu().Set(kR2, 0x80100000u);
+    EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(q) + 2, b.T()));
+    EXPECT_EQ(b.Cpu().Get(kR0), kAeeSuccess) << "iid=0x" << std::hex << e.iid;
+    EXPECT_EQ(b.M().Ler32(0x80100000u), e.objeto) << "iid=0x" << std::hex << e.iid;
+    // O objecto aponta para a vtable, e a vtable TEM O TAMANHO REAL DO SDK:
+    // o primeiro indice ALEM da tabela nao pertence a esta faixa (o
+    // `AtenderClasse` devolve false em vez de servir um slot que nao existe).
+    EXPECT_EQ(b.M().Ler32(e.objeto), b.S().Endereco(e.vt));
+    EXPECT_FALSE(AtenderClasse(b.Cpu(), e.vt + e.slots, b.T()));
+  }
+  // Nenhuma recusa pelo caminho: os sete atendem sem falta.
+  EXPECT_EQ(b.Faltas("QEGL::QueryInterface"), 0u);
+}
+
+TEST(Classes, OGetColorBufferEntregaOBufferDoEcra) {
+  Bancada b;
+  // int GetColorBuffer(void **ret) -- slot 3 de AEEEGLGetColorBuffer.h:25.
+  b.Cpu().Set(kR0, kObjetoEglGetColorBuffer);
+  b.Cpu().Set(kR1, 0x80100000u);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), kVtableEglGetColorBuffer + 3, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
+  // E O BUFFER DE COR DO ECRA VISTO PELO GUEST (ecra.h): RGB565, 640x480. O
+  // titulo ganha a superficie a que o seu desenho vai parar.
+  EXPECT_EQ(b.M().Ler32(0x80100000u), kBaseDoEcraNoGuest);
+  // Ponteiro de saida nulo: EBADPARM, como o resto das cabecas.
+  b.Cpu().Set(kR1, 0);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), kVtableEglGetColorBuffer + 3, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeBadParm);
+  // O resto da interface REcusa com o nome (nao ha "sucesso sem efeito").
+}
+
+TEST(Classes, AsExtensoesQualcommRecusamComONomeOQueNaoServem) {
+  Bancada b;
+  struct Pedido {
+    std::uint32_t vt, slot, objeto;
+    const char* chave;
+  };
+  const Pedido pedidos[] = {
+      // IGLES10Ext::QueryMatrixxOES (AEEGLES10Ext.h:27)
+      {kVtableGles10Ext, 3, kObjetoGles10Ext, "IGLES10Ext::QueryMatrixxOES"},
+      // IGLES11ExtPak::BlendEquation (AEEGLES11ExtPak.h:35)
+      {kVtableGles11ExtPak, 12, kObjetoGles11ExtPak, "IGLES11ExtPak::BlendEquation"},
+      // IGLES11ExtPak::GenFramebuffersOES (AEEGLES11ExtPak.h:46)
+      {kVtableGles11ExtPak, 23, kObjetoGles11ExtPak, "IGLES11ExtPak::GenFramebuffersOES"},
+      // IEGLGetPowerLevel::GetPowerLevel (AEEEGLGetPowerLevel.h:24)
+      {kVtableEglGetPowerLevel, 3, kObjetoEglGetPowerLevel, "IEGLGetPowerLevel::GetPowerLevel"},
+      // IEGLOESSwapInterval::SwapInterval (AEEEGLOESSwapInterval.h:26)
+      {kVtableEglOesSwapInterval, 3, kObjetoEglOesSwapInterval, "IEGLOESSwapInterval::SwapInterval"},
+      // IGLESImageonExt::TexEnvi (AEEGLESImageonEXT.h:41)
+      {kVtableGlesImageonExt, 17, kObjetoGlesImageonExt, "IGLESImageonExt::TexEnvi"},
+      // IGLESImageonExt::BufferDataQUALCOMM (AEEGLESImageonEXT.h:34)
+      {kVtableGlesImageonExt, 10, kObjetoGlesImageonExt, "IGLESImageonExt::BufferDataQUALCOMM"},
+      // IEGLSurfaceManip::SetSurfaceScale (AEEEGLSurfaceManip.h:28)
+      {kVtableEglSurfaceManip, 4, kObjetoEglSurfaceManip, "IEGLSurfaceManip::SetSurfaceScale"},
+  };
+  for (const Pedido& p : pedidos) {
+    b.Cpu().Set(kR0, p.objeto);
+    EXPECT_TRUE(AtenderClasse(b.Cpu(), p.vt + p.slot, b.T()));
+    EXPECT_EQ(b.Cpu().Get(kR0), kAeeUnsupported) << p.chave;
+    EXPECT_EQ(b.Faltas(p.chave), 1u) << p.chave;
+  }
+}
+
+TEST(Classes, AsCabecasDasExtensoesQualcommTemContagemEOQiASiMesmo) {
+  Bancada b;
+  // O `ConstruirObjeto` nasce com a contagem a 1: o AddRef devolve 2, e nao 1.
+  b.Cpu().Set(kR0, kObjetoEglSurfaceManip);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), kVtableEglSurfaceManip + 0, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), 2u);
+  b.Cpu().Set(kR0, kObjetoEglSurfaceManip);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), kVtableEglSurfaceManip + 0, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), 3u);
+  // Release: devolve a contagem restante.
+  b.Cpu().Set(kR0, kObjetoEglSurfaceManip);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), kVtableEglSurfaceManip + 1, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), 2u);
+  // QueryInterface a si proprio: as duas IIDs do par respondem o mesmo objecto.
+  for (std::uint32_t iid : {kIidEglSurfaceManip, kIidEglSurfaceManipV1}) {
+    b.Cpu().Set(kR0, kObjetoEglSurfaceManip);
+    b.Cpu().Set(kR1, iid);
+    b.Cpu().Set(kR2, 0x80100000u);
+    EXPECT_TRUE(AtenderClasse(b.Cpu(), kVtableEglSurfaceManip + 2, b.T()));
+    EXPECT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
+    EXPECT_EQ(b.M().Ler32(0x80100000u), kObjetoEglSurfaceManip);
+  }
+  // E uma IID de fora recusa com o nome da interface.
+  b.Cpu().Set(kR0, kObjetoEglSurfaceManip);
+  b.Cpu().Set(kR1, 0x12345678u);
+  b.Cpu().Set(kR2, 0x80100000u);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), kVtableEglSurfaceManip + 2, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("IEGLSurfaceManip::QueryInterface"), 1u);
+  // Os outros objectos tambem nascem com vtable cablada (leitura de volta).
+  EXPECT_EQ(b.M().Ler32(kObjetoEglGetColorBuffer), b.S().Endereco(kVtableEglGetColorBuffer));
+  EXPECT_EQ(b.M().Ler32(kObjetoGlesImageonExt), b.S().Endereco(kVtableGlesImageonExt));
+  EXPECT_EQ(b.M().Ler32(kObjetoGles10Ext), b.S().Endereco(kVtableGles10Ext));
+  EXPECT_EQ(b.M().Ler32(kObjetoGles11ExtPak), b.S().Endereco(kVtableGles11ExtPak));
+  EXPECT_EQ(b.M().Ler32(kObjetoEglOesSwapInterval),
+            b.S().Endereco(kVtableEglOesSwapInterval));
+  EXPECT_EQ(b.M().Ler32(kObjetoEglGetPowerLevel), b.S().Endereco(kVtableEglGetPowerLevel));
+}
+
+TEST(Classes, OSurfaceScaleCapsDizAVerdadeSemEscalador) {
+  Bancada b;
+  // int GetSurfaceScaleCaps(dpy, surf, AEEEGLSurfaceScaleCaps *param, EGLBoolean *ret)
+  // -- slot 6 de AEEEGLSurfaceManip.h:30. O struct tem DOZE AEEEGLint pela
+  // ordem de AEEEGLTypes.h (Min/MaxXScaleFactor, Min/MaxYScaleFactor,
+  // Min/MaxSrcWidth/Height, Min/MaxDstWidth/Height).
+  //
+  // A VERDADE DESTE MOTOR: nao ha escalador. O factor 1.0 (16.16) nos dois
+  // eixos e o unico que existe, e as janelas de origem/destino sao as da tela.
+  // pMe=r0, dpy=r1, surf=r2, param=r3, ret no PRIMEIRO lugar da pilha (sp).
+  b.Cpu().Set(kR0, kObjetoEglSurfaceManip);
+  b.Cpu().Set(kR1, 0);  // dpy
+  b.Cpu().Set(kR2, 0);  // surf
+  b.Cpu().Set(kR3, 0x80100000u);       // param
+  b.Cpu().Set(kSP, 0x80100004u);       // sp aponta para o argumento da pilha
+  b.M().Escrever32(0x80100004u, 0x80100100u);  // o argumento: *ret
+  b.M().Escrever32(0x80100100u, 0);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), kVtableEglSurfaceManip + 6, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
+  const std::uint32_t p = 0x80100000u;
+  EXPECT_EQ(b.M().Ler32(p + 0u), 1u << 16);  // MinXScaleFactor
+  EXPECT_EQ(b.M().Ler32(p + 4u), 1u << 16);  // MaxXScaleFactor
+  EXPECT_EQ(b.M().Ler32(p + 8u), 1u << 16);  // MinYScaleFactor
+  EXPECT_EQ(b.M().Ler32(p + 12u), 1u << 16); // MaxYScaleFactor
+  EXPECT_EQ(b.M().Ler32(p + 16u), 1u);       // MinSrcWidth
+  EXPECT_EQ(b.M().Ler32(p + 20u), kLarguraDoEcra);
+  EXPECT_EQ(b.M().Ler32(p + 24u), 1u);       // MinSrcHeight
+  EXPECT_EQ(b.M().Ler32(p + 28u), kAlturaDoEcra);
+  EXPECT_EQ(b.M().Ler32(p + 32u), 1u);       // MinDstWidth
+  EXPECT_EQ(b.M().Ler32(p + 36u), kLarguraDoEcra);
+  EXPECT_EQ(b.M().Ler32(p + 40u), 1u);       // MinDstHeight
+  EXPECT_EQ(b.M().Ler32(p + 44u), kAlturaDoEcra);
+  EXPECT_EQ(b.M().Ler32(0x80100100u), 1u);   // EGL_TRUE no *ret
+}
 
 }  // namespace
 }  // namespace zb2::brew

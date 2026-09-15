@@ -583,6 +583,51 @@ void ConstruirClasses(Memoria& mem, const Saidas& saidas, Traco& traco) {
       }
     }
   }
+
+  // AS SETE EXTENSOES QUALCOMM (frente qualcomm): CINCO objectos para SETE
+  // IIDs (o SurfaceManip e o ImageonExt atendem a V1 e a V2 com o MESMO
+  // objecto -- a V2 herda a V1 com o mesmo prefixo de vtable, zeebx). Cada
+  // objecto tem a vtable do SDK CABLEADA ate ao fim da tabela real, e nao um
+  // slot a mais: a primeira chamada de um titulo nao pode cair num slot que nao
+  // existe (o aviso do zeebx). O mesmo `ConstruirObjeto` das classes: objecto
+  // +0 = vtable, +4 = contagem, slots 0/1 = AddRef/Release do despacho.
+  struct VTableQualcomm {
+    std::uint32_t objeto, vt, slots;
+  };
+  const VTableQualcomm qualcomm[] = {
+      {kObjetoEglGetColorBuffer, kVtableEglGetColorBuffer, kEglGetColorBufferSlots},
+      {kObjetoEglSurfaceManip, kVtableEglSurfaceManip, kEglSurfaceManipSlots},
+      {kObjetoGlesImageonExt, kVtableGlesImageonExt, kGlesImageonExtSlots},
+      {kObjetoGles10Ext, kVtableGles10Ext, kGles10ExtSlots},
+      {kObjetoGles11ExtPak, kVtableGles11ExtPak, kGles11ExtPakSlots},
+      {kObjetoEglOesSwapInterval, kVtableEglOesSwapInterval, kEglOesSwapIntervalSlots},
+      {kObjetoEglGetPowerLevel, kVtableEglGetPowerLevel, kEglGetPowerLevelSlots},
+  };
+  for (const VTableQualcomm& e : qualcomm) {
+    ConstruirObjeto(mem, saidas, e.objeto, saidas.Endereco(e.vt), e.slots, e.vt);
+  }
+  // ESTADO POR CORRIDA do SurfaceManip: sem escala, sem rotao, sem transparencia
+  // -- o estado do motor desta arvore nao tem nenhum desses caminhos, e o
+  // objecto tem de nascer a dizer a verdade (e nao com o lixo da corrida
+  // anterior). O bloco fica dentro do objecto (a 0x100), abaixo da proxima
+  // linha (0x8F241000 + 0x1000).
+  mem.Escrever32(kObjetoEglSurfaceManip + 0x100u, 0);  // escala ligada
+  // A LEITURA DE VOLTA (a mesma cerimonia das classes e do IGL: uma cablagem
+  // perdida numa edicao ja custou uma corrida inteira).
+  for (const VTableQualcomm& e : qualcomm) {
+    if (mem.Ler32(e.objeto) != saidas.Endereco(e.vt)) {
+      traco.RegistarFalta(Area::Brew, "classes_da_brewm_cablagem_perdida",
+                          "objecto qualcomm sem vtable");
+      continue;
+    }
+    for (std::uint32_t s = 2; s < e.slots; ++s) {
+      if (mem.Ler32(saidas.Endereco(e.vt) + s * 4) != saidas.Endereco(e.vt + s)) {
+        char det[96];
+        std::snprintf(det, sizeof(det), "qualcomm slot %u", s);
+        traco.RegistarFalta(Area::Brew, "classes_da_brewm_cablagem_perdida", det);
+      }
+    }
+  }
 }
 
 const char* NomeDoSlotIgles(std::uint32_t slot) {
@@ -601,6 +646,143 @@ const char* NomeDoSlotIglesExt(std::uint32_t slot) {
                 "kIglesExtSlots (classes.h) diverge de AEEGLES11Ext.h");
   if (slot >= igles_ext_slots::kQuantos) return "?";
   return igles_ext_slots::kNomes[slot];
+}
+
+// --- OS NOMES DOS SLOTS DAS SETE EXTENSOES QUALCOMM --------------------------
+//
+// Escritos aqui COM o ficheiro e a linha de cada metodo, porque estes sete
+// cabecalhos nao estao na lista do `gerar_slots.py` (que so le os que o
+// Toolset gera). A ordem e a ordem dos membros do `INHERIT_*` de cada um -- a
+// MESMA regra que o gerador aplica aos que ele le. O teste fixa as ancoras
+// (`tests/classes_test.cpp`, `AsExtensoesQualcommRecusamComONomeOQueNaoServem`):
+// se esta tabela mudar de ordem, a recusa passa a ter o nome errado.
+const char* NomeDoSlotEglGetColorBuffer(std::uint32_t slot) {
+  static const char* const nomes[] = {
+      "AddRef", "Release", "QueryInterface",  // INHERIT_IQueryInterface
+      "GetColorBuffer",                       // AEEEGLGetColorBuffer.h:25
+  };
+  return slot < 4 ? nomes[slot] : "?";
+}
+
+const char* NomeDoSlotEglSurfaceManip(std::uint32_t slot) {
+  static const char* const nomes[] = {
+      "AddRef", "Release", "QueryInterface",      // INHERIT_IQueryInterface
+      "SurfaceScaleEnable",                       // AEEEGLSurfaceManip.h:27
+      "SetSurfaceScale",                          // :28
+      "GetSurfaceScale",                          // :29
+      "GetSurfaceScaleCaps",                      // :30
+      "SurfaceRotateEnable",                      // :31
+      "SetSurfaceRotate",                         // :32
+      "GetSurfaceRotate",                         // :33
+      "GetSurfaceRotateCaps",                     // :34
+      "SurfaceTransparencyEnable",                // :35
+      "SetSurfaceTransparency",                   // :36
+      "GetSurfaceTransparency",                   // :37
+      "SetSurfaceTransparencyMap",                // :38
+      "GetSurfaceTransparencyMap",                // :39
+      "GetSurfaceTransparencyCaps",               // :40
+      "SurfaceColorKeyEnable",                    // :256 (INHERIT_IEGLSurfaceManip)
+      "SetSurfaceColorKey",                       // :257
+      "GetSurfaceColorKey",                       // :258
+      "CreateCompositeSurface",                   // :259
+      "SurfaceOverlayEnable",                     // :260
+      "SurfaceOverlayLayerEnable",                // :261
+      "SurfaceOverlayBind",                       // :262
+      "GetSurfaceOverlayBinding",                 // :263
+      "GetSurfaceOverlay",                        // :264
+      "GetSurfaceOverlayCaps",                    // :265
+  };
+  return slot < 27 ? nomes[slot] : "?";
+}
+
+const char* NomeDoSlotGlesImageonExt(std::uint32_t slot) {
+  static const char* const nomes[] = {
+      "AddRef", "Release", "QueryInterface",   // INHERIT_IQueryInterface
+      "PointSizePointerOES",                   // AEEGLESImageonEXT.h:27
+      "BlendEquationSeparateEXT",              // :28
+      "BlendFuncSeparateEXT",                  // :29
+      "BlendEquationEXT",                      // :30
+      "BindBufferQUALCOMM",                    // :31
+      "DeleteBuffersQUALCOMM",                 // :32
+      "GenBuffersQUALCOMM",                    // :33
+      "BufferDataQUALCOMM",                    // :34
+      "BufferSubDataQUALCOMM",                 // :35
+      "IsBufferQUALCOMM",                      // :36
+      "BufferDataATI",                         // :37
+      "MeshListATI",                           // :38
+      "DrawVertexBufferObjectATI",             // :39
+      "GetPointerv",                           // :40
+      "TexEnvi",                               // :41
+      "TexEnviv",                              // :42
+      "TexParameteri",                         // :43
+      "TexParameteriv",                        // :44
+      "TexParameterfv",                        // :45
+      "TexParameterxv",                        // :46
+      "GetMaterialfv",                         // :208 (INHERIT_IGLESImageonExt)
+      "GetTexParameteriv",                     // :209
+      "GetTexParameterfv",                     // :210
+      "GetTexParameterxv",                     // :211
+  };
+  return slot < 27 ? nomes[slot] : "?";
+}
+
+const char* NomeDoSlotGles10Ext(std::uint32_t slot) {
+  static const char* const nomes[] = {
+      "AddRef", "Release", "QueryInterface",  // INHERIT_IQueryInterface
+      "QueryMatrixxOES",                      // AEEGLES10Ext.h:27
+  };
+  return slot < 4 ? nomes[slot] : "?";
+}
+
+const char* NomeDoSlotGles11ExtPak(std::uint32_t slot) {
+  static const char* const nomes[] = {
+      "AddRef", "Release", "QueryInterface",   // INHERIT_IQueryInterface
+      "GetTexGenfv",                           // AEEGLES11ExtPak.h:26
+      "GetTexGeniv",                           // :27
+      "GetTexGenxv",                           // :28
+      "TexGenf",                               // :29
+      "TexGeni",                               // :30
+      "TexGenx",                               // :31
+      "TexGenfv",                              // :32
+      "TexGeniv",                              // :33
+      "TexGenxv",                              // :34
+      "BlendEquation",                         // :35
+      "BlendFuncSeparate",                     // :36
+      "BlendEquationSeparate",                 // :37
+      "BindFramebufferOES",                    // :38
+      "BindRenderbufferOES",                   // :39
+      "CheckFramebufferStatusOES",             // :40
+      "DeleteFramebuffersOES",                 // :41
+      "DeleteRenderbuffersOES",                // :42
+      "FramebufferRenderbufferOES",            // :43
+      "FramebufferTexture2DOES",               // :44
+      "GenerateMipmapOES",                     // :45
+      "GenFramebuffersOES",                    // :46
+      "GenRenderbuffersOES",                   // :47
+      "GetFramebufferAttachmentParameterivOES", // :48
+      "GetRenderbufferParameterivOES",         // :49
+      "IsFramebufferOES",                      // :50
+      "IsRenderbufferOES",                     // :51
+      "RenderbufferStorageOES",                // :52
+  };
+  return slot < 30 ? nomes[slot] : "?";
+}
+
+const char* NomeDoSlotEglOesSwapInterval(std::uint32_t slot) {
+  static const char* const nomes[] = {
+      "AddRef", "Release", "QueryInterface",  // INHERIT_IQueryInterface
+      "SwapInterval",                         // AEEEGLOESSwapInterval.h:26
+      "GetSwapInterval",                      // :27
+  };
+  return slot < 5 ? nomes[slot] : "?";
+}
+
+const char* NomeDoSlotEglGetPowerLevel(std::uint32_t slot) {
+  static const char* const nomes[] = {
+      "AddRef", "Release", "QueryInterface",  // INHERIT_IQueryInterface
+      "GetPowerLevel",                        // AEEEGLGetPowerLevel.h:24
+  };
+  return slot < 4 ? nomes[slot] : "?";
 }
 
 // --- O IGLES11 E O MOTOR DO IGL (frente glbloco) ------------------------------
@@ -869,6 +1051,61 @@ bool DesenharRectTexturaIgles(Memoria& mem, float x, float y, float /*z*/, float
   return true;
 }
 
+namespace {
+
+// A CABECA COMUM das sete extensoes qualcomm: AddRef/Release/QueryInterface.
+// A contagem vive em `objeto + 4`, como em todas as interfaces desta casa
+// (o `ConstruirObjeto` poe-la a 1). `iid1`/`iid2` sao os IIDs que o objecto se
+// serve a si proprio (0 = nao ha segundo); o SurfaceManip e o ImageonExt
+// atendem o par V1/V2. Devolve true se o slot foi atendido; false para o
+// chamador seguir para os metodos proprios da interface.
+bool AtenderCabecaQualcomm(ICpu& cpu, Traco& traco, std::uint32_t objeto,
+                           std::uint32_t slot, const char* interface,
+                           std::uint32_t iid1, std::uint32_t iid2) {
+  Memoria& mem = cpu.Mem();
+  if (slot == 0) {
+    const std::uint32_t n = mem.Ler32(objeto + 4) + 1;
+    mem.Escrever32(objeto + 4, n);
+    cpu.Set(kR0, n);
+    return true;
+  }
+  if (slot == 1) {
+    const std::uint32_t n = mem.Ler32(objeto + 4);
+    if (n == 0) {
+      traco.RegistarFalta(Area::Brew, std::string(interface) + "::Release",
+                          "Release de um objecto com contagem zero");
+      cpu.Set(kR0, kAeeUnsupported);
+      return true;
+    }
+    mem.Escrever32(objeto + 4, n - 1);
+    cpu.Set(kR0, n - 1);
+    return true;
+  }
+  if (slot == 2) {
+    const std::uint32_t iid = cpu.Get(kR1), ppo = cpu.Get(kR2);
+    if (ppo == 0) {
+      traco.RegistarFalta(Area::Brew, std::string(interface) + "::QueryInterface",
+                          "ppObj nulo");
+      cpu.Set(kR0, kAeeBadParm);
+      return true;
+    }
+    if (iid == iid1 || (iid2 != 0 && iid == iid2)) {
+      mem.Escrever32(ppo, objeto);
+      cpu.Set(kR0, kAeeSuccess);
+    } else {
+      mem.Escrever32(ppo, 0);
+      char det[96];
+      std::snprintf(det, sizeof(det), "iid=0x%08x sem objecto nesta interface", iid);
+      traco.RegistarFalta(Area::Brew, std::string(interface) + "::QueryInterface", det);
+      cpu.Set(kR0, kAeeUnsupported);
+    }
+    return true;
+  }
+  return false;
+}
+
+}  // namespace
+
 bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
   // O IGLES11Ext, faixa propria (15 slots, AEEGLES11Ext.h). A CABECA e os
   // OITO `DrawTex*OES` sao o que o `GL_OES_draw_texture` promete, e sao
@@ -973,6 +1210,217 @@ bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
     }
 
     std::snprintf(nome, sizeof(nome), "IGLES11Ext::%s", NomeDoSlotIglesExt(slot));
+    std::snprintf(det, sizeof(det), "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x lr=0x%08x",
+                  cpu.Get(kR0), cpu.Get(kR1), cpu.Get(kR2), cpu.Get(kR3), cpu.Get(kLR));
+    traco.RegistarFalta(Area::Brew, nome, det);
+    cpu.Set(kR0, kAeeUnsupported);
+    return true;
+  }
+  // AS SETE EXTENSOES QUALCOMM (frente qualcomm), cada uma na sua faixa. A
+  // CABECA (AddRef/Release/QueryInterface) e comum; o que cada interface SERVES
+  // abaixo e so o que tem um efeito real nesta arvore -- o resto RECUSA COM O
+  // NOME (P2): nunca "sucesso sem efeito".
+  //
+  // A contagem de slots e a dos cabecalhos do SDK (classes.h, com as linhas no
+  // topo das tabelas de nomes): uma vtable maior do que a real faria a primeira
+  // chamada do titulo cair num slot que nao existe (aviso do zeebx).
+  // -------------------------------------------------------------------------
+  // IEGLGetColorBuffer (AEEEGLGetColorBuffer.h): 4 slots.
+  if (indice >= kVtableEglGetColorBuffer &&
+      indice < kVtableEglGetColorBuffer + kEglGetColorBufferSlots) {
+    const std::uint32_t slot = indice - kVtableEglGetColorBuffer;
+    if (AtenderCabecaQualcomm(cpu, traco, kObjetoEglGetColorBuffer, slot,
+                              "IEGLGetColorBuffer", kIidEglGetColorBuffer, 0)) {
+      return true;
+    }
+    // int GetColorBuffer(void **ret) -- o UNICO metodo proprio (slot 3).
+    // DEVOLVE O BUFFER DE COR DO ECRA NO ESPACO DO GUEST (0x82000000, RGB565,
+    // 640x480 -- `core/brew/ecra.h`): e a superficie de desenho deste motor, e
+    // e o caminho que as frentes de GL deixaram em falta. O titulo escreve
+    // pixels nela e o absorver final da bateria conta-os (como no
+    // `glDrawTex*OES` deste ficheiro).
+    if (slot == 3) {
+      const std::uint32_t ret = cpu.Get(kR1);
+      if (ret == 0) {
+        traco.RegistarFalta(Area::Brew, "IEGLGetColorBuffer::GetColorBuffer",
+                            "ponteiro de retorno nulo");
+        cpu.Set(kR0, kAeeBadParm);
+        return true;
+      }
+      cpu.Mem().Escrever32(ret, kBaseDoEcraNoGuest);
+      traco.Emitir(Area::Brew, Nivel::Depuracao, "IEGLGetColorBuffer::GetColorBuffer",
+                   "buffer do ecra do guest (RGB565, 640x480)");
+      cpu.Set(kR0, kAeeSuccess);
+      return true;
+    }
+    char nome[64], det[160];
+    std::snprintf(nome, sizeof(nome), "IEGLGetColorBuffer::%s",
+                  NomeDoSlotEglGetColorBuffer(slot));
+    std::snprintf(det, sizeof(det), "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x lr=0x%08x",
+                  cpu.Get(kR0), cpu.Get(kR1), cpu.Get(kR2), cpu.Get(kR3), cpu.Get(kLR));
+    traco.RegistarFalta(Area::Brew, nome, det);
+    cpu.Set(kR0, kAeeUnsupported);
+    return true;
+  }
+  // IEGLSurfaceManip (AEEEGLSurfaceManip.h): 27 slots na V2, 17 na V1, o MESMO
+  // prefixo de vtable -- um so objecto atende as duas IIDs (zeebx).
+  if (indice >= kVtableEglSurfaceManip &&
+      indice < kVtableEglSurfaceManip + kEglSurfaceManipSlots) {
+    const std::uint32_t slot = indice - kVtableEglSurfaceManip;
+    if (AtenderCabecaQualcomm(cpu, traco, kObjetoEglSurfaceManip, slot,
+                              "IEGLSurfaceManip", kIidEglSurfaceManip,
+                              kIidEglSurfaceManipV1)) {
+      return true;
+    }
+    Memoria& mem = cpu.Mem();
+    const std::uint32_t sp = cpu.Get(kSP);
+    // O ESTADO DO MOTOR, por objecto (+0x100): 0 = escala desligada. Este motor
+    // NAO tem escalador; o que se serve abaixo e a VERDADE desse estado, nunca
+    // uma promessa de escalar.
+    const std::uint32_t estado = kObjetoEglSurfaceManip + 0x100u;
+    // As consultas que descrevem o estado real (sem escala, sem rotao, sem
+    // transparencia, sem colorkey, sem overlay): SUCCESS com a resposta
+    // verdadeira. E o mesmo desenho do zeebx (extension_call,
+    // "as consultas que nao temos como responder de verdade: zeram a saida").
+    if (slot == 5) {  // GetSurfaceScale(enabled, src, dst, ret)
+      const std::uint32_t enabled = cpu.Get(kR3), src = mem.Ler32(sp + 0u),
+                         dst = mem.Ler32(sp + 4u), ret = mem.Ler32(sp + 8u);
+      if (enabled != 0) mem.Escrever32(enabled, 0);  // escala desligada
+      for (const std::uint32_t rect : {src, dst}) {
+        if (rect == 0) continue;
+        mem.Escrever32(rect + 0u, 0);
+        mem.Escrever32(rect + 4u, 0);
+        mem.Escrever32(rect + 8u, kLarguraDoEcra);
+        mem.Escrever32(rect + 12u, kAlturaDoEcra);
+      }
+      if (ret != 0) mem.Escrever32(ret, 1);  // EGL_TRUE
+      cpu.Set(kR0, kAeeSuccess);
+      return true;
+    }
+    if (slot == 6) {  // GetSurfaceScaleCaps(param, ret): 12 AEEEGLint (AEEEGLTypes.h)
+      const std::uint32_t param = cpu.Get(kR3), ret = mem.Ler32(sp + 0u);
+      if (param != 0) {
+        // OS FACTORES reais deste motor: 1.0 (16.16) nos dois eixos -- nao ha
+        // escalador, e dizer o contrario seria anunciar uma promessa.
+        const std::uint32_t caps[12] = {
+            1u << 16, 1u << 16,  // MinX/MaxXScaleFactor
+            1u << 16, 1u << 16,  // MinY/MaxYScaleFactor
+            1u, kLarguraDoEcra,  // Min/MaxSrcWidth
+            1u, kAlturaDoEcra,   // Min/MaxSrcHeight
+            1u, kLarguraDoEcra,  // Min/MaxDstWidth
+            1u, kAlturaDoEcra,   // Min/MaxDstHeight
+        };
+        for (std::uint32_t k = 0; k < 12; ++k) mem.Escrever32(param + k * 4u, caps[k]);
+      }
+      if (ret != 0) mem.Escrever32(ret, 1);
+      cpu.Set(kR0, kAeeSuccess);
+      return true;
+    }
+    // Ligar uma capacidade que este motor nao tem NAO pode devolver sucesso.
+    // Desligar O QUE JA ESTA DESLIGADO e o estado pedido == estado real, e e
+    // esse o unico caso servido (o `requested state holds` e a verdade).
+    const bool liga = cpu.Get(kR3) != 0;
+    if (!liga && (slot == 3 /*SurfaceScaleEnable*/ || slot == 7 /*SurfaceRotateEnable*/ ||
+                  slot == 11 /*SurfaceTransparencyEnable*/)) {
+      const std::uint32_t ret = mem.Ler32(sp + 0u);
+      if (ret != 0) mem.Escrever32(ret, 1);
+      cpu.Set(kR0, kAeeSuccess);
+      return true;
+    }
+    (void)estado;
+    char nome[64], det[160];
+    std::snprintf(nome, sizeof(nome), "IEGLSurfaceManip::%s",
+                  NomeDoSlotEglSurfaceManip(slot));
+    std::snprintf(det, sizeof(det), "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x lr=0x%08x",
+                  cpu.Get(kR0), cpu.Get(kR1), cpu.Get(kR2), cpu.Get(kR3), cpu.Get(kLR));
+    traco.RegistarFalta(Area::Brew, nome, det);
+    cpu.Set(kR0, kAeeUnsupported);
+    return true;
+  }
+  // IGLESImageonExt (AEEGLESImageonEXT.h): 27 slots V2, 23 V1, mesmo prefixo.
+  if (indice >= kVtableGlesImageonExt &&
+      indice < kVtableGlesImageonExt + kGlesImageonExtSlots) {
+    const std::uint32_t slot = indice - kVtableGlesImageonExt;
+    if (AtenderCabecaQualcomm(cpu, traco, kObjetoGlesImageonExt, slot,
+                              "IGLESImageonExt", kIidGlesImageonExt,
+                              kIidGlesImageonExtV1)) {
+      return true;
+    }
+    // NENHUM metodo proprio tem caminho nesta arvore (os parametros de textura
+    // e os buffers de vertice nao tem motor; anunciar que existem faria o
+    // titulo chamar funcao que nao existe). Recusa com o nome -- e e o nome que
+    // faz a lista de demanda dizer o que falta, em vez de um numero.
+    char nome[64], det[160];
+    std::snprintf(nome, sizeof(nome), "IGLESImageonExt::%s",
+                  NomeDoSlotGlesImageonExt(slot));
+    std::snprintf(det, sizeof(det), "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x lr=0x%08x",
+                  cpu.Get(kR0), cpu.Get(kR1), cpu.Get(kR2), cpu.Get(kR3), cpu.Get(kLR));
+    traco.RegistarFalta(Area::Brew, nome, det);
+    cpu.Set(kR0, kAeeUnsupported);
+    return true;
+  }
+  // IGLES10Ext (AEEGLES10Ext.h): 4 slots; o unico metodo, QueryMatrixxOES, nao
+  // tem motor de matrizes publico aqui -- recusa com o nome.
+  if (indice >= kVtableGles10Ext && indice < kVtableGles10Ext + kGles10ExtSlots) {
+    const std::uint32_t slot = indice - kVtableGles10Ext;
+    if (AtenderCabecaQualcomm(cpu, traco, kObjetoGles10Ext, slot, "IGLES10Ext",
+                              kIidGles10Ext, 0)) {
+      return true;
+    }
+    char nome[64], det[160];
+    std::snprintf(nome, sizeof(nome), "IGLES10Ext::%s", NomeDoSlotGles10Ext(slot));
+    std::snprintf(det, sizeof(det), "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x lr=0x%08x",
+                  cpu.Get(kR0), cpu.Get(kR1), cpu.Get(kR2), cpu.Get(kR3), cpu.Get(kLR));
+    traco.RegistarFalta(Area::Brew, nome, det);
+    cpu.Set(kR0, kAeeUnsupported);
+    return true;
+  }
+  // IGLES11ExtPak (AEEGLES11ExtPak.h): 30 slots (texgen, blend separado, FBO
+  // OES). Nenhum tem motor nesta arvore -- recusa com o nome.
+  if (indice >= kVtableGles11ExtPak &&
+      indice < kVtableGles11ExtPak + kGles11ExtPakSlots) {
+    const std::uint32_t slot = indice - kVtableGles11ExtPak;
+    if (AtenderCabecaQualcomm(cpu, traco, kObjetoGles11ExtPak, slot, "IGLES11ExtPak",
+                              kIidGles11ExtPak, 0)) {
+      return true;
+    }
+    char nome[64], det[160];
+    std::snprintf(nome, sizeof(nome), "IGLES11ExtPak::%s",
+                  NomeDoSlotGles11ExtPak(slot));
+    std::snprintf(det, sizeof(det), "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x lr=0x%08x",
+                  cpu.Get(kR0), cpu.Get(kR1), cpu.Get(kR2), cpu.Get(kR3), cpu.Get(kLR));
+    traco.RegistarFalta(Area::Brew, nome, det);
+    cpu.Set(kR0, kAeeUnsupported);
+    return true;
+  }
+  // IEGLOESSwapInterval (AEEEGLOESSwapInterval.h): 5 slots.
+  if (indice >= kVtableEglOesSwapInterval &&
+      indice < kVtableEglOesSwapInterval + kEglOesSwapIntervalSlots) {
+    const std::uint32_t slot = indice - kVtableEglOesSwapInterval;
+    if (AtenderCabecaQualcomm(cpu, traco, kObjetoEglOesSwapInterval, slot,
+                              "IEGLOESSwapInterval", kIidEglOesSwapInterval, 0)) {
+      return true;
+    }
+    char nome[64], det[160];
+    std::snprintf(nome, sizeof(nome), "IEGLOESSwapInterval::%s",
+                  NomeDoSlotEglOesSwapInterval(slot));
+    std::snprintf(det, sizeof(det), "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x lr=0x%08x",
+                  cpu.Get(kR0), cpu.Get(kR1), cpu.Get(kR2), cpu.Get(kR3), cpu.Get(kLR));
+    traco.RegistarFalta(Area::Brew, nome, det);
+    cpu.Set(kR0, kAeeUnsupported);
+    return true;
+  }
+  // IEGLGetPowerLevel (AEEEGLGetPowerLevel.h): 4 slots.
+  if (indice >= kVtableEglGetPowerLevel &&
+      indice < kVtableEglGetPowerLevel + kEglGetPowerLevelSlots) {
+    const std::uint32_t slot = indice - kVtableEglGetPowerLevel;
+    if (AtenderCabecaQualcomm(cpu, traco, kObjetoEglGetPowerLevel, slot,
+                              "IEGLGetPowerLevel", kIidEglGetPowerLevel, 0)) {
+      return true;
+    }
+    char nome[64], det[160];
+    std::snprintf(nome, sizeof(nome), "IEGLGetPowerLevel::%s",
+                  NomeDoSlotEglGetPowerLevel(slot));
     std::snprintf(det, sizeof(det), "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x lr=0x%08x",
                   cpu.Get(kR0), cpu.Get(kR1), cpu.Get(kR2), cpu.Get(kR3), cpu.Get(kLR));
     traco.RegistarFalta(Area::Brew, nome, det);
@@ -1225,6 +1673,38 @@ bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
       traco.Emitir(Area::Brew, Nivel::Depuracao, "QEGL_QUERYINTERFACE",
                    "iid=EGL10/EGL11 -> o proprio objecto QEGL");
       return true;
+    }
+    // AS SETE EXTENSOES QUALCOMM (frente qualcomm; medido: 14 titulos pedem um
+    // de cada, 1x -- corrida /tmp/corrida_thrd.json). OBJECTOS REAIS, com as
+    // vtables do SDK: o `GLES_ext.c` do proprio titulo guarda o objecto e chama
+    // os SLOTS dele. O SurfaceManip e o ImageonExt atendem o par V1/V2 com o
+    // MESMO objecto (a V2 e superconjunto da V1 com o mesmo prefixo de vtable).
+    struct IidParaObjecto {
+      std::uint32_t iid;
+      std::uint32_t objeto;
+      const char* nome;  // a linha exacta do cabecalho, para o traco
+    };
+    static const IidParaObjecto qualcomm[] = {
+        {kIidEglGetColorBuffer, kObjetoEglGetColorBuffer, "AEEEGLGetColorBuffer.h:20"},
+        {kIidEglSurfaceManip, kObjetoEglSurfaceManip, "AEEEGLSurfaceManip.h:252"},
+        {kIidEglSurfaceManipV1, kObjetoEglSurfaceManip, "AEEEGLSurfaceManip.h:23"},
+        {kIidGlesImageonExt, kObjetoGlesImageonExt, "AEEGLESImageonEXT.h:204"},
+        {kIidGlesImageonExtV1, kObjetoGlesImageonExt, "AEEGLESImageonEXT.h:23"},
+        {kIidGles10Ext, kObjetoGles10Ext, "AEEGLES10Ext.h:22"},
+        {kIidGles11ExtPak, kObjetoGles11ExtPak, "AEEGLES11ExtPak.h:22"},
+        {kIidEglOesSwapInterval, kObjetoEglOesSwapInterval, "AEEEGLOESSwapInterval.h:22"},
+        {kIidEglGetPowerLevel, kObjetoEglGetPowerLevel, "AEEEGLGetPowerLevel.h:20"},
+    };
+    for (const IidParaObjecto& e : qualcomm) {
+      if (iid == e.iid) {
+        cpu.Mem().Escrever32(ppo, e.objeto);
+        cpu.Set(kR0, kAeeSuccess);
+        char det[128];
+        std::snprintf(det, sizeof(det), "iid=0x%08x -> %s (%s)", iid,
+                      NomeDoIidDaFamiliaGl(iid), e.nome);
+        traco.Emitir(Area::Brew, Nivel::Depuracao, "QEGL_QUERYINTERFACE", det);
+        return true;
+      }
     }
     cpu.Mem().Escrever32(ppo, 0);
     // IID DE EXTENSAO SEM OBJECT O NESTA ARVORE: a recusa leva o NOME do IID
