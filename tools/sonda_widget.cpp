@@ -152,7 +152,7 @@ int main(int argc, char** argv) {
   despacho.DefinirFaixaDoModulo(kBase, static_cast<std::uint32_t>(imagem.size()));
   despacho.TelaRef().Limpar();
   despacho.SituarTitulo(dir, t.pasta);
-  despacho.DefinirVtableBitmap(s.Endereco(zb2::brew::kVtableBitmap));
+  despacho.DefinirVtableBitmap(s);
   despacho.DefinirVtableFicheiro(s.Endereco(zb2::brew::kVtableFileObj));
 
   // OS OBJECTOS DO SHELL, e a cablagem. E a MESMA tabela da bateria

@@ -55,7 +55,7 @@ class Bancada {
     cpu_.ConfigurarSaidas(saidas_);
     al_ = new Alocador(mem_, kHeap, kHeapTam, nullptr);
     despacho_ = new Despacho(mem_, traco_, *al_, vfs_);
-    despacho_->DefinirVtableBitmap(saidas_.Endereco(kVtableBitmap));
+    despacho_->DefinirVtableBitmap(saidas_);
     despacho_->DefinirVtableFicheiro(saidas_.Endereco(kVtableFileObj));
     despacho_->InstalarAjudantes(saidas_, kTabela);
     // A FAIXA DO MODULO. Sem isto o modulo da entrada recusa TODO o callback, e o
@@ -285,5 +285,61 @@ TEST(EntradaNoDespacho, OCallbackDoGuiaoChegaACorrerCodigoDoTitulo) {
       << "o callback do sinal de posicao nao chegou a correr codigo do titulo";
   EXPECT_EQ(b.D().IhidRef().SinalizacoesDePosicao(), 1u);
 }
+
+
+// O RELEASE DO IBitmap DO ECRA TEM DE TER ENDERECO.
+//
+// MEDIDO (traco por instrucao, ZB2_PCTRACE, corrida de 2026-09 na base ZERO):
+//   `abd` (279369) em 0x14694-0x1469c faz
+//       ldr r0,[sp]      ; r0 = 0x80050300 (o IBitmap do ecra)
+//       ldr r1,[r0]      ; r1 = 0xF0007D00 (a vtable do bitmap)
+//       ldr r1,[r1,#4]   ; r1 = 0            <-- O SLOT 1 (Release) ESTA A ZERO
+//       blx r1           ; salta para o ENDERECO 0
+//   e a partir dai executa o cabecalho do proprio `.mod` como codigo. O `push`
+//   de lixo em 0x0 desloca o `sp` em 0x10 e, de volta em 0x146a0, o titulo le
+//   0xF0027390 (o r3 derramado) como se fosse um objecto -- e acaba a chamar
+//   `QEGL::eglInitialize(dpy=0xF0027390)`, que o `core/brew/egl.cpp` recusa.
+//   **A recusa do EGL era o SINTOMA; a causa e este slot a zero.**
+//
+// `torkandkral` (280463) faz o mesmo em 0x135c8-0x135d4.
+TEST(VtableDoBitmap, OReleaseDoBitmapDoEcraTemEndereco) {
+  Bancada b;
+  const std::uint32_t saida = 0x80090100u;
+  b.Mem().Escrever32(saida, 0);
+  // `IDisplay::GetDeviceBitmap(po, ppIBitmap)` -- o mesmo endereco de saida que
+  // a `tools/bateria.cpp` cabla no slot 16 do IDisplay.
+  b.ChamaSaida(1550, kObjDisplay, saida);
+  const std::uint32_t bmp = b.Mem().Ler32(saida);
+  ASSERT_EQ(bmp, kObjDibBase + 0x300);
+  const std::uint32_t vt = b.Mem().Ler32(bmp);
+  ASSERT_EQ(vt, b.S().Endereco(kVtableBitmap));
+  EXPECT_NE(b.Mem().Ler32(vt + 0 * 4), 0u) << "IBitmap::AddRef sem endereco: o guest faz blx 0";
+  EXPECT_NE(b.Mem().Ler32(vt + 1 * 4), 0u) << "IBitmap::Release sem endereco: o guest faz blx 0";
+  EXPECT_NE(b.Mem().Ler32(vt + 2 * 4), 0u) << "IBitmap::QueryInterface sem endereco";
+}
+
+// A PROVA DE COMPORTAMENTO, e nao so de conteudo: o guest corre mesmo a
+// sequencia do `abd` e o PC NAO pode chegar a zero.
+TEST(VtableDoBitmap, OGuestReleaseOBitmapSemSaltarParaZero) {
+  Bancada b;
+  const std::uint32_t saida = 0x80090100u;
+  b.ChamaSaida(1550, kObjDisplay, saida);
+  const std::uint32_t bmp = b.Mem().Ler32(saida);
+  ASSERT_NE(bmp, 0u);
+  EXPECT_EQ(b.Mem().Ler32(bmp + 4), 1u) << "a contagem de referencias nasce a 1";
+  // A MESMA sequencia de `abd` 0x14694: ldr r1,[r0]; ldr r1,[r1,#4]; blx r1
+  const std::uint32_t kCodigo = 0x00000400u;
+  b.Mem().Escrever32(kCodigo + 0, 0xE5901000u);  // ldr r1, [r0]
+  b.Mem().Escrever32(kCodigo + 4, 0xE5911004u);  // ldr r1, [r1, #4]
+  b.Mem().Escrever32(kCodigo + 8, 0xE12FFF31u);  // blx r1
+  b.Cpu().Set(kR0, bmp);
+  b.Cpu().Set(kSP, 0x80090000u);
+  b.Cpu().Set(kLR, 0xFFFFFFF0u);
+  b.Cpu().Set(kPC, kCodigo);
+  b.D().Correr(b.Cpu(), 200, 0x80090000u);
+  EXPECT_EQ(b.Mem().Ler32(bmp + 4), 0u)
+      << "o Release da IBase tinha de baixar a contagem de 1 para 0";
+}
+
 
 }  // namespace zb2::brew

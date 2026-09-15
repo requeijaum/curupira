@@ -574,7 +574,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   const std::uint32_t clsid_do_titulo =
       static_cast<std::uint32_t>(std::strtoul(t.clsid.c_str(), nullptr, 0));
   despacho.SituarTitulo(dir, t.pasta, clsid_do_titulo);
-  despacho.DefinirVtableBitmap(s.Endereco(zb2::brew::kVtableBitmap));
+  despacho.DefinirVtableBitmap(s);
   despacho.DefinirVtableFicheiro(s.Endereco(zb2::brew::kVtableFileObj));
 
   // As vtables das interfaces ficam ACIMA da tabela de ajudantes, dentro da

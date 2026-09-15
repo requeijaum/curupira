@@ -102,6 +102,16 @@ void ConstruirObjeto(Memoria& mem, const Saidas& saidas, std::uint32_t objeto,
                      std::uint32_t vtable, std::uint32_t quantos_slots,
                      std::uint32_t base_dos_slots);
 
+// A VTABLE DO IBitmap DO ECRA, construida como a do IDisplay e a do IFileMgr.
+//
+// PORQUE EXISTE: ate aqui so o slot 2 (`QueryInterface`) era cablado, e os slots
+// 0 e 1 (`AddRef`/`Release` da IBase) ficavam A ZERO. Um jogo que faz
+// `IBITMAP_Release(pbmp)` le `[[pbmp] + 4]`, apanha zero e faz `blx 0` -- passa a
+// executar o cabecalho do proprio .mod como codigo e derrama a pilha. MEDIDO no
+// `abd` (279369) em 0x1469c e no `torkandkral` (280463) em 0x135d4: era isso, e
+// nao o EGL, que produzia o `dpy = 0xF0027390` que o `eglInitialize` recusava.
+void ConstruirVtableDoBitmap(Memoria& mem, const Saidas& saidas);
+
 // Uma linha da cablagem: que endereco de saida fica no slot `slot` da vtable `vt`.
 struct Ligacao {
   std::uint32_t vt;

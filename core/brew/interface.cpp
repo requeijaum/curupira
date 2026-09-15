@@ -26,6 +26,11 @@ void ConstruirObjeto(Memoria& mem, const Saidas& saidas, std::uint32_t objeto,
   }
 }
 
+void ConstruirVtableDoBitmap(Memoria& mem, const Saidas& saidas) {
+  ConstruirObjeto(mem, saidas, kObjDibBase + 0x300, saidas.Endereco(kVtableBitmap),
+                  kSlotsPorVtable, kVtableBitmap);
+}
+
 ResultadoCablagem Cablar(Memoria& mem, const Saidas& saidas, const Ligacao* ligacoes,
                          std::size_t quantas) {
   for (std::size_t k = 0; k < quantas; ++k) {

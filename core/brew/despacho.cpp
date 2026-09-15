@@ -693,6 +693,12 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         if (kgen < kNGenericos) {
           iface = kGenericos[kgen].nome;
           slot = idx - zb2::brew::VtGenerico(kgen);
+        } else if (idx >= zb2::brew::kVtableBitmap &&
+                   idx < zb2::brew::kVtableBitmap + zb2::brew::kSlotsPorVtable) {
+          // A vtable do IBitmap do ecra (8000). Sem este ramo, o slot 13 dela
+          // aparecia como `IFileMgr::slot1013` -- o nome errado da interface
+          // errada (7000 + 1013 = 8013).
+          iface = "IBitmap"; slot = idx - zb2::brew::kVtableBitmap;
         } else if (idx >= zb2::brew::kVtableFileMgr) { iface = "IFileMgr"; slot = idx - zb2::brew::kVtableFileMgr; }
         else if (idx >= zb2::brew::kVtableDisplay) { iface = "IDisplay"; slot = idx - zb2::brew::kVtableDisplay; }
         else { iface = "IShell"; slot = idx - kBaseDoShell; }

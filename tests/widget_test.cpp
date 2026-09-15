@@ -78,7 +78,7 @@ class Bancada {
     cpu_.ConfigurarSaidas(saidas_);
     al_ = new Alocador(mem_, kHeap, kHeapTam, nullptr);
     despacho_ = new Despacho(mem_, traco_, *al_, vfs_);
-    despacho_->DefinirVtableBitmap(saidas_.Endereco(kVtableBitmap));
+    despacho_->DefinirVtableBitmap(saidas_);
     despacho_->DefinirVtableFicheiro(saidas_.Endereco(kVtableFileObj));
     // O `InstalarAjudantes` tambem constroi os widgets -- e por isso esta frente
     // nao obriga a mudar `tools/bateria.cpp`.

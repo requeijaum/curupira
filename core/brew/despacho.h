@@ -240,7 +240,17 @@ class Despacho {
   //
   // O `Igl` e o `Egl` vivem AQUI, e nao na ferramenta: a cablagem e do motor.
 
-  void DefinirVtableBitmap(std::uint32_t v) { vtable_bitmap_ = v; }
+  // A VTABLE DO IBitmap: GUARDA O ENDERECO **E CONSTROI A TABELA**.
+  //
+  // As duas coisas juntas de proposito. Enquanto foram duas, a ferramenta
+  // guardava o endereco e ninguem construia a tabela: os slots 0 e 1 (`AddRef` e
+  // `Release` da IBase) ficavam a ZERO e o `IBITMAP_Release` do guest fazia
+  // `blx 0`. MEDIDO no `abd` (279369, 0x1469c) e no `torkandkral` (280463,
+  // 0x135d4) -- ver `tests/entrada_despacho_test.cpp`, TEST(VtableDoBitmap, ...).
+  void DefinirVtableBitmap(const Saidas& s) {
+    vtable_bitmap_ = s.Endereco(kVtableBitmap);
+    ConstruirVtableDoBitmap(mem_, s);
+  }
   void DefinirVtableFicheiro(std::uint32_t v) { vtable_ficheiro_ = v; }
   void DefinirApplet(std::uint32_t v) { applet_ = v; }
 
