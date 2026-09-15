@@ -1791,3 +1791,115 @@ cadeia longa de `else if`** -- a cura seria uma tabela, e nao ramos.
    mortas**: o motor conta-os por dentro e a ferramenta nunca os le.
 5. `max_steps` do corpus e ignorado: o `cnk2` pede 186M passos na carga e recebe
    o teto fixo de 4M.
+
+---
+
+## Sessao de 15/09 -- ICM (`0x01011810`) identificado e recorte do plano proximo
+
+Retomada depois de um crash de RAM/swap (o culpado foi `/tmp/bateria_media.err`,
+828 MB de log em laco; apagado). Dois commits novos, ambos com medicao.
+
+### 1. `0x01011810` = `AEECLSID_CM` (ICM, Call Manager) -- commit `be1cd3f`
+
+O ultimo CLSID por identificar (ponto 3 dos "factos novos" acima) **deixou de
+ser desconhecido**. Nao foi adivinhado: veio de tres fontes independentes que
+concordam --
+
+| fonte | caminho | o que diz |
+|---|---|---|
+| `zeebx-emu` | `src/brew/aee_slots.rs:1027-1056` | slot 28 = `ICM_GetSSInfo`, buffer de `0x340` bytes |
+| `zeebx-emu` | `src/machine/diversos.rs` (`cm_call`) | `+0x00`=2 (servico pleno), `+0x0C`=5 (online), `+0x28`=0x0048 (sinal) |
+| `zeemu` | `brew/BrewShell.cpp:2730` | mesma classe, mesmo slot |
+
+Implementado em `core/brew/classes.{h,cpp}` como `Classe::kCM` (indice 6, 29
+slots). O `GetSSInfo` zera o buffer, escreve os tres campos e devolve sucesso;
+`pinfo == 0` ou `tamanho < 0x2A` devolve `kAeeBadParm`. Teste
+`OCMRespondeGetSSInfoComRadioNoArEServicoPleno` em `tests/classes_test.cpp`.
+
+Efeito colateral necessario: `kObjetoIgles` mudou de `0x8F006000` para
+`0x8F010000` -- o objecto da classe nova colidia com a faixa antiga.
+
+**Medido no `tectoy` (pasta 274755), antes e depois:**
+
+| | antes | depois |
+|---|---|---|
+| `IShell::CreateInstance CLSID desconhecido` | 1x | **0** |
+| `IAppHistory::Back` / `GetClass` | 1x cada | **0** |
+| `passos_start` | 321 | **4 000 000** (orcamento) |
+| motivo do `start` | `retornou` | `orcamento_esgotado` |
+| falta nova | -- | `IShell::slot21` (= `SendEvent`) 1x |
+
+O `start` que "retornava" em 321 passos era o applet a **desistir**; agora corre
+ate ao teto e pede `IShell::SendEvent(clsTo=0, clsFrom=0x01070798, evt=0x7b0a)`.
+Isto e um degrau: o titulo passou de abortar em silencio a rodar o seu ciclo.
+
+**Ruling**: `0x01006c01` (`LCT_SIMCardCtl`) continua RECUSADO de proposito, como
+no zeebx. Custo se errado: o `tectoy` pede SIM e apanha uma recusa nomeada em vez
+de um stub que mente. Custo de stubar: inventar estado de SIM sem medicao.
+
+### 2. Recorte contra o plano proximo -- commit `c60bd49`
+
+O ponto 2 do cabecalho de `core/video/rasterizador.h` dizia "SEM RECORTE DE
+FRUSTUM: um triangulo com qualquer vertice com `w <= 0` e DESCARTADO". Deixou de
+ser verdade, e o cabecalho foi reescrito para dizer o que passou a fazer.
+
+Sutherland-Hodgman contra **um** plano (`clip.z + clip.w >= 0`), com os atributos
+(cor e UV) interpolados linearmente na aresta cortada; `t = d_a / (d_a - d_b)`.
+O poligono sai com 3 ou 4 vertices; com 4, e dividido em leque (`0,1,2` e
+`0,2,3`). So DEPOIS do recorte e que `Projetar` corre -- projectar antes dividia
+por um `w` negativo. Contador novo: `TriangulosRecortados()`.
+
+Dois testes, ambos com numeros escritos:
+- `OTrianguloQueAtravessaOPlanoProximoERecortadoEmVezDeDesaparecer`: A e B a
+  frente, C atras (`w = -2`). Antes: **0 pixels**, 1 descartado. Depois:
+  **32 pixels** (metade superior da janela 8x8), 1 recortado, **0 descartados**,
+  2 triangulos.
+- `OTrianguloTotalmenteAtrasDoPlanoProximoEDescartado`: os tres vertices atras;
+  0 pixels, 1 descartado, 0 recortados. (A prova de que o recorte nao "salva"
+  o que devia morrer.)
+
+### Estado medido no fim da sessao
+
+`build/zb2_bateria corpus62.json ... /tmp/corrida_dev.json`, comparado com
+`tools/baseline/bateria.json` por `build/zb2_comparar`:
+
+```
+carga:   62 -> 62
+modulo:  62 -> 62
+vtable:  48 -> 61
+applet:  37 -> 40
+resultado: 0 regressao(oes), 16 melhoria(s) em 62 titulos -- SEM REGRESSOES
+```
+
+114 campos neutros mudaram (faltas 36, motivo 29, `passos_create` 25,
+`passos_carga` 14, `passos_start` 7, recusadas 2) -- neutros por decisao da
+tabela `kCampos` de `tools/comparar.cpp`, e nao por conveniencia.
+
+Testes: **472 casos, 467 verdes, 5 saltados** (os `BarDeVerdade`/`RecursosDeVerdade`
+que precisam do corpus na cache). `ctest` 10/10 (o `regressao` salta).
+
+### Correccao ao metodo, para nao repetir
+
+A primeira corrida do `tectoy` foi feita com um corpus escrito a mao com
+`clsid_hex: "0x01006c00"` -- **errado**; o valor certo (`0x1070798`) estava em
+`corpus62.json` o tempo todo. A corrida deu "sem applet" e quase foi lida como
+falha da implementacao. **Regra**: um corpus de um titulo so se faz por RECORTE
+do `corpus62.json` (grep + copia da entrada), nunca escrevendo os campos de novo.
+
+Segundo tropecao na mesma sessao: `make zb2_tests` compila os testes, **nao** a
+bateria. A primeira corrida "depois do ICM" ainda usava o binario velho e
+continuava a acusar o CLSID desconhecido. **Regra**: antes de medir, `make -j4`
+(alvo omisso = todos), e nao o alvo dos testes.
+
+### Em aberto, actualizado
+
+1. `quake2brew`: continua a unica vtable em falta (ponto 1 da lista anterior).
+2. ~~`0x01011810`~~ **RESOLVIDO** nesta sessao (`be1cd3f`).
+3. `abd`/`torkandkral`: `eglInitialize` com `dpy` que o emulador nunca deu --
+   inalterado.
+4. `IShell::SendEvent` (slot 21): a falta NOVA do `tectoy`, e o proximo passo
+   honesto para esse titulo. A fila de eventos do BREW nao existe.
+5. `pixels` continua **0/62**: nem o recorte do plano proximo nem a correccao de
+   perspectiva mudaram isso, porque nenhum titulo chega ao `glDraw*`. As duas
+   mudancas sao correctas por teste unitario, e **nao** por medicao de titulo --
+   fica escrito para nao serem lidas como "o desenho ja funciona".
