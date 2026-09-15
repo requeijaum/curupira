@@ -1694,3 +1694,47 @@ TEST(Cpu, ThumbBlxRegistradorEscreveOLr) {
   EXPECT_EQ(b.R(15), 0x00200000u);
   EXPECT_EQ(b.Cpu().Cpsr() & Cpsr::kT, 0u) << "o alvo tem o bit 0 a zero: volta a ARM";
 }
+
+TEST(Cpu, MovPcLrRetornaEAddPcFazTabelaDeSaltos) {
+  // `mov pc,lr` e o retorno de funcao mais comum do ARM: 2 727 ocorrencias em 43
+  // dos 62 modulos do corpus. `add pc,pc,rX,lsl#2` e uma tabela de saltos: 29
+  // em 27 modulos. Nos dois, o `DadosProcessados` escrevia o PC e o despacho
+  // escrevia `pc + 4` por cima -- o salto era anulado em SILENCIO.
+  //
+  // E o MESMO defeito do `ldr pc,[rn,#imm]` (commit d0f1146). Apareceu duas
+  // vezes porque a correccao anterior tratou o SITIO e nao o PADRAO.
+  {
+    Bancada b;
+    b.R(14, 0x00130000u);  // lr
+    const std::uint64_t antes = b.Cpu().InstruscoesRecusadas();
+    b.Instrucao(MoveRegistrador(15, 14, 0, 0));  // mov pc, lr
+    b.Terminar();
+    b.Correr(1);
+    EXPECT_EQ(b.R(15), 0x00130000u) << "mov pc,lr tem de saltar para o lr";
+    EXPECT_NE(b.R(15), 0x00100004u) << "e nao para a instrucao seguinte";
+    EXPECT_EQ(b.Cpu().InstruscoesRecusadas(), antes) << "o defeito era silencioso";
+  }
+  {
+    // `add pc,pc,r1` -- o PC lido como fonte vale pc + 8 (ARM ARM).
+    Bancada b;
+    b.R(1, 0x40u);
+    b.Instrucao(SomaRegistrador(15, 15, 1));  // add pc, pc, r1
+    b.Terminar();
+    b.Correr(1);
+    EXPECT_EQ(b.R(15), 0x00100000u + 8u + 0x40u) << "pc + 8 + r1";
+  }
+  {
+    // E a outra metade da guarda: com a condicao FALSA, avanca como qualquer
+    // outra. Sem isto, a correccao transformaria um `moveq pc,lr` nao tomado
+    // num laco parado.
+    Bancada b;
+    b.R(14, 0x00130000u);
+    b.R(1, 5);
+    b.Instrucao(CmpImediato(1, 7));  // 5 != 7 -> Z = 0
+    const std::uint32_t moveq = (MoveRegistrador(15, 14, 0, 0) & ~(0xFu << 28)) | (0x0u << 28);
+    b.Instrucao(moveq);  // moveq pc, lr -- NAO tomado
+    b.Terminar();
+    b.Correr(2);
+    EXPECT_EQ(b.R(15), 0x00100008u) << "condicao falsa: avanca para a seguinte";
+  }
+}

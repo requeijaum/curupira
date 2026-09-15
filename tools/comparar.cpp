@@ -257,10 +257,16 @@ struct Campo {
   // primeiro campo novo tornaria ilegivel toda a referencia versionada -- e a
   // referencia e o unico ponto de comparacao que temos.
   //
-  // So vale para `kMapaDeContagens`, e a razao e aritmetica: um mapa ausente
+  // O TRATAMENTO DEPENDE DA CLASSE, e a razao e aritmetica: um mapa ausente
   // vale o mapa VAZIO, e o codigo ja trata "chave ausente" como zero. Um numero
   // ou um booleano ausente nao tem valor natural nenhum, e adivinhar um seria o
-  // stub silencioso aplicado ao comparador.
+  // stub silencioso aplicado ao comparador -- por isso NAO SE COMPARA e o nome
+  // do campo vai ao relatorio (ver `nao_comparados`).
+  //
+  // Ate ao commit das recusas por fase isto so era usado por `kMapaDeContagens`
+  // e o codigo punha o mapa vazio em QUALQUER classe. O primeiro campo numerico
+  // opcional fazia `jr->tipo != jn->tipo` e a ferramenta recusava a referencia
+  // inteira. **Estava certo no proposito e errado na classe.**
   bool opcional = false;
 };
 
@@ -348,7 +354,36 @@ const Campo kCampos[] = {
      "-- o titulo ANDOU 444389 passos que nao sabemos executar. Logo o campo "
      "conta CUSTO, e nao progresso: um titulo que passa a andar mais longe "
      "encontra instrucoes novas e o numero SOBE. Declarado neutro para nao "
-     "transformar progresso em falha (o guarda (c) da etapa 9)."},
+     "transformar progresso em falha (o guarda (c) da etapa 9).\n"
+     "DESDE ESTE COMMIT o campo e a SOMA DAS TRES FASES. Antes era so a do "
+     "`CreateInstance`: `ArmInterpreter::Repor` zera o contador e a bateria "
+     "lia-o em absoluto depois de cada fase, logo a carga era apagada pelo "
+     "`Repor` do create e o `EVT_APP_START` nunca era lido. Uma corrida ANTIGA "
+     "e uma corrida NOVA nao medem a mesma coisa neste campo -- e mais uma "
+     "razao para ele nao julgar."},
+    // AS PARCELAS POR FASE. OPCIONAIS: as corridas anteriores ao commit que as
+    // criou nao as tem, e recusa-las seria perder a referencia (o mesmo
+    // tratamento que o campo `pressupostos` recebeu). NEUTRAS: sao a mesma
+    // grandeza do total, so repartida.
+    //
+    // Existem para que a soma `recusadas` seja VERIFICAVEL de fora do
+    // instrumento: `recusadas == carga + create + start + quadros`.
+    {"recusadas_carga", kNumero, kNeutro,
+     "PARCELA: recusas da fase de CARGA (o ponto de entrada do modulo). Era "
+     "esta a parcela apagada pelo `cpu.Repor` do `CreateInstance`.",
+     /*opcional=*/true},
+    {"recusadas_create", kNumero, kNeutro,
+     "PARCELA: recusas do `IModule::CreateInstance`. Era a UNICA que o campo "
+     "`recusadas` publicava antes deste commit.",
+     /*opcional=*/true},
+    {"recusadas_start", kNumero, kNeutro,
+     "PARCELA: recusas da fase do `EVT_APP_START` -- a fase onde os titulos "
+     "fazem o trabalho de arranque. Nunca era lida.",
+     /*opcional=*/true},
+    {"recusadas_quadros", kNumero, kNeutro,
+     "PARCELA: recusas do laco de quadro (`ZB2_QUADROS`). Zero quando o laco "
+     "nao corre.",
+     /*opcional=*/true},
     {"motivo", kTexto, kNeutro,
      "TEXTO LIVRE: diz PORQUE parou, e existe para um humano ler. Nao e metrica, "
      "logo nao pode ser criterio -- o mesmo progresso pode mudar a frase. Uma "
@@ -747,6 +782,9 @@ Resultado CompararTextos(const std::string& referencia, const std::string& corri
   // nem melhorias: sao a prova de que as duas corridas leram ficheiros diferentes,
   // e nesse caso nenhum numero dos dois lados e comparavel.
   std::vector<std::string> entradas_divergentes;
+  // Campos OPCIONAIS nao comparados por faltarem num dos lados (ver abaixo).
+  // Um conjunto, e nao uma linha por titulo: sao 62 linhas iguais.
+  std::set<std::string> nao_comparados;
   // A direcao declarada acompanha cada linha. Um relatorio que diz "piorou" sem
   // dizer PORQUE aquele campo e um criterio obriga quem o le a ir ao codigo --
   // e e essa ida ao codigo que esta ferramenta existe para evitar.
@@ -877,9 +915,28 @@ Resultado CompararTextos(const std::string& referencia, const std::string& corri
         j.tipo = Json::kObjeto;
         return j;
       }();
-      if (c.opcional) {
-        if (jr == nullptr) jr = &kMapaVazio;
-        if (jn == nullptr) jn = &kMapaVazio;
+      if (c.opcional && (jr == nullptr || jn == nullptr)) {
+        if (c.classe == kMapaDeContagens) {
+          if (jr == nullptr) jr = &kMapaVazio;
+          if (jn == nullptr) jn = &kMapaVazio;
+        } else {
+          // UM NUMERO (OU BOOLEANO) OPCIONAL AUSENTE NAO SE COMPARA, E DIZ-SE.
+          //
+          // O `kMapaVazio` so serve o mapa, e a razao esta no `struct Campo`: um
+          // mapa ausente VALE o mapa vazio, um numero ausente nao vale zero.
+          // Substituir os dois pelo mapa vazio dava outro defeito, e ele e
+          // silencioso do pior modo: `jr->tipo != jn->tipo` (objecto contra
+          // numero) disparava o `problema_de_formato` e a ferramenta RECUSAVA a
+          // referencia inteira no primeiro campo numerico novo -- exactamente o
+          // que o `opcional` existe para impedir.
+          //
+          // Nao se compara, e o nome do campo aparece no relatorio: quem le fica
+          // a saber que aquele campo nao foi julgado, em vez de ver um zero
+          // inventado. Nenhum campo opcional e criterio (sao todos `kNeutro`),
+          // logo isto nao esconde regressao nenhuma.
+          nao_comparados.insert(c.nome);
+          continue;
+        }
       }
       if (jr->tipo != jn->tipo) {
         problema_de_formato = onde + ": campo '" + c.nome + "' e " + CodigoDoTipo(*jr) +
@@ -1033,6 +1090,18 @@ Resultado CompararTextos(const std::string& referencia, const std::string& corri
   out << ":\n";
   for (const Mudanca& m : melhorias) out << "  " << m.linha << "\n";
   if (melhorias.empty()) out << "  (nenhuma)\n";
+
+  if (!nao_comparados.empty()) {
+    out << "\nCAMPOS OPCIONAIS NAO COMPARADOS (" << nao_comparados.size()
+        << ") -- faltam numa das corridas:\n  ";
+    bool primeiro = true;
+    for (const std::string& n : nao_comparados) {
+      out << (primeiro ? "" : ", ") << n;
+      primeiro = false;
+    }
+    out << "\n  Um numero ausente nao vale zero. Nao foram julgados; regrava a "
+           "referencia para os passar a comparar.\n";
+  }
 
   out << "\nNEUTROS QUE MUDARAM (" << neutros.size() << ")";
   if (!neutros.empty()) out << "  por campo: " << ResumoPorCampo(neutros);

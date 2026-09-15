@@ -76,6 +76,7 @@ add_executable(zb2_tests
   tests/classes_test.cpp
   tests/pack_test.cpp
   tests/ecra_test.cpp
+  tests/recusas_test.cpp
 )
 # A RAIZ DO REPOSITORIO, para os testes que abrem ficheiros reais (o
 # `pacmania.bar` e o SDK) poderem dizer ONDE procuraram -- e SALTAR em vez de

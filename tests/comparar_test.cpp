@@ -58,6 +58,10 @@ struct Ficha {
   // Campo NOVO e OPCIONAL: vazio quer dizer "a ficha nao o tem", que e a forma
   // de todas as corridas anteriores ao commit que o criou.
   std::string pressupostos = "";
+  // As PARCELAS das recusas por fase. Tambem opcionais, e NUMEROS -- o que as
+  // torna o primeiro caso de campo opcional que nao e um mapa. Vazio = a ficha
+  // nao os tem, como toda a corrida anterior ao commit que os criou.
+  std::string recusadas_por_fase = "";
 };
 
 const char* B(bool v) { return v ? "true" : "false"; }
@@ -79,6 +83,7 @@ std::string Corpo(const std::vector<Ficha>& fichas) {
       << ",\"cores\":" << f.cores << ",\"textos\":" << f.textos
       << ",\"blits\":" << f.blits << ",\"faltas\":" << f.faltas;
     if (!f.pressupostos.empty()) s << ",\"pressupostos\":" << f.pressupostos;
+    if (!f.recusadas_por_fase.empty()) s << "," << f.recusadas_por_fase;
     s << "}";
   }
   s << "\n]";
@@ -317,6 +322,59 @@ TEST(Comparar, ContadoresNeutrosNaoFalhamEIndaAssimSaoDitos) {
 
 // O mesmo para as chaves que NASCEM e para as que DESAPARECEM: uma chave ausente
 // vale zero, e nao "nao sei".
+// (n) UM CAMPO NUMERICO NOVO NAO PODE TORNAR A REFERENCIA ILEGIVEL.
+//
+// O `recusadas` passou a ser a soma das tres fases e nasceram as parcelas
+// (`recusadas_carga`, `..._create`, `..._start`, `..._quadros`). As corridas
+// guardadas NAO as tem. O mecanismo `opcional` existia, mas so servia mapas:
+// punha o MAPA VAZIO em qualquer classe, e um mapa contra um numero disparava
+// "campo 'X' e objeto na referencia e numero na corrida" -- a ferramenta
+// RECUSAVA a referencia inteira, que e o contrario do que o `opcional` quer.
+TEST(Comparar, ParcelasNovasNaoRecusamUmaCorridaAntiga) {
+  Ficha antiga;                      // sem as parcelas -- a referencia guardada
+  Ficha nova;
+  nova.recusadas_por_fase =
+      "\"recusadas_carga\":7,\"recusadas_create\":3,\"recusadas_start\":11,"
+      "\"recusadas_quadros\":0";
+  nova.recusadas = 21;               // a soma das parcelas
+  const auto r = CompararTextos(Montar({antiga}), Montar({nova}), "ref.json", "nova.json");
+  EXPECT_EQ(r.codigo, kSemRegressao) << r.relatorio;
+  // E DIZ QUE NAO OS COMPAROU. Um zero inventado do lado antigo faria o campo
+  // "subir de 0 para 7" -- mediria o commit, e nao o emulador.
+  EXPECT_TRUE(Contem(r.relatorio, "CAMPOS OPCIONAIS NAO COMPARADOS")) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "recusadas_start")) << r.relatorio;
+  EXPECT_FALSE(Contem(r.relatorio, "recusadas_start 0 -> 11")) << r.relatorio;
+}
+
+// (n+1) E quando as DUAS corridas as tem, sao comparadas como qualquer numero
+// neutro -- senao o "opcional" teria virado "nunca se ve".
+TEST(Comparar, ParcelasPresentesNosDoisLadosSaoComparadas) {
+  Ficha a;
+  a.recusadas_por_fase =
+      "\"recusadas_carga\":7,\"recusadas_create\":3,\"recusadas_start\":0,"
+      "\"recusadas_quadros\":0";
+  a.recusadas = 10;
+  Ficha b = a;
+  b.recusadas_por_fase =
+      "\"recusadas_carga\":7,\"recusadas_create\":3,\"recusadas_start\":11,"
+      "\"recusadas_quadros\":0";
+  b.recusadas = 21;
+  const auto r = CompararTextos(Montar({a}), Montar({b}), "ref.json", "nova.json");
+  EXPECT_EQ(r.codigo, kSemRegressao) << r.relatorio;  // neutro: nunca falha
+  EXPECT_FALSE(Contem(r.relatorio, "CAMPOS OPCIONAIS NAO COMPARADOS")) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "recusadas_start 0 -> 11")) << r.relatorio;
+}
+
+// (n+2) GUARDA DO PROPRIO OPCIONAL: um campo que NAO esta declarado continua a
+// ser recusado. Sem isto, "opcional" poderia ter-se tornado "tudo passa".
+TEST(Comparar, CampoNaoDeclaradoContinuaRecusadoApesarDoOpcional) {
+  Ficha a;
+  Ficha b;
+  b.recusadas_por_fase = "\"recusadas_do_futuro\":1";
+  const auto r = CompararTextos(Montar({a}), Montar({b}), "ref.json", "nova.json");
+  EXPECT_NE(r.codigo, kSemRegressao) << r.relatorio;
+}
+
 TEST(Comparar, ChaveDeFaltaQueNasceEDepoisDesaparece) {
   Ficha antes;
   antes.faltas = "{\"IShell::slot41\":3}";

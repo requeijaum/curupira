@@ -850,6 +850,29 @@ void ArmInterpreter::AritmeticaDsp(std::uint32_t instr, std::uint32_t pc) {
   Set(static_cast<int>(rn), meio);
 }
 
+// O DESTINO DE UMA INSTRUCAO DE DADOS PODE SER O PROPRIO PC.
+//
+// `mov pc,lr` e o retorno de funcao mais comum do ARM, e `add pc,pc,rX,lsl#2` e
+// uma tabela de saltos. Nos dois casos o `DadosProcessados` escreve o PC -- e o
+// despacho escrevia `pc + 4` POR CIMA, anulando o salto em silencio.
+//
+// E EXACTAMENTE o mesmo defeito que o `ldr pc,[rn,#imm]` tinha (ver a guarda na
+// transferencia simples, e o commit d0f1146): a rotina faz a coisa certa e quem
+// a chama desfaz. Apareceu duas vezes porque a correccao anterior tratou o sitio
+// e nao o PADRAO.
+//
+// MEDIDO no corpus: 2 727 `mov pc,lr` em 43 dos 62 modulos, e 29 tabelas de
+// saltos `add pc,pc,rX,lsl#2` em 27 deles.
+//
+// A guarda e a mesma: se a instrucao escreveu o PC, quem manda e ela; se a
+// condicao falhou, o PC fica onde estava e avanca.
+void ArmInterpreter::DespacharDadosProcessados(std::uint32_t instr, std::uint32_t pc) {
+  const bool destino_e_pc = ((instr >> 12) & 0xFu) == 15u;
+  Set(kPC, pc);
+  DadosProcessados(instr, pc);
+  if (!destino_e_pc || Get(kPC) == pc) Set(kPC, pc + 4);
+}
+
 void ArmInterpreter::DadosProcessados(std::uint32_t instr, std::uint32_t pc) {
   const std::uint32_t opcode = (instr >> 21) & 0xF;
   // Nome do mnemonico, para a sonda do descodificador. A tabela e a do ARM ARM
@@ -1351,8 +1374,7 @@ void ArmInterpreter::ExecutarArm(std::uint32_t instr, std::uint32_t pc) {
       Set(kPC, pc + 4);
       return;
     }
-    DadosProcessados(instr, pc);
-    Set(kPC, pc + 4);
+    DespacharDadosProcessados(instr, pc);
     return;
   }
   if (g == 1) {
@@ -1363,8 +1385,7 @@ void ArmInterpreter::ExecutarArm(std::uint32_t instr, std::uint32_t pc) {
       Set(kPC, pc + 4);
       return;
     }
-    DadosProcessados(instr, pc);
-    Set(kPC, pc + 4);
+    DespacharDadosProcessados(instr, pc);
     return;
   }
   if (g == 2 || g == 3) {

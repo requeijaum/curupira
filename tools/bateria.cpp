@@ -39,6 +39,7 @@
 #include "core/cpu/arm_interpreter.h"
 #include "core/memoria/memoria.h"
 #include "core/traco/traco.h"
+#include "tools/recusas.h"
 
 using namespace zb2;
 
@@ -430,7 +431,30 @@ struct Estado {
   std::uint64_t passos_carga = 0;
   std::uint64_t passos_create = 0;
   std::uint64_t passos_start = 0;  // a fase do `EVT_APP_START`
+  // AS INSTRUCOES RECUSADAS, SOMADAS SOBRE AS TRES FASES.
+  //
+  // MEDIDO, e e um defeito de INSTRUMENTO (P7) da mesma familia do que o
+  // sub-agente `widget` apanhou nas faltas. Aqui estava
+  // `e.recusadas = cpu.InstruscoesRecusadas();` DUAS vezes (depois da carga e
+  // depois do create), e:
+  //   1. `ArmInterpreter::Repor` faz `recusadas_ = 0`
+  //      (`core/cpu/arm_interpreter.cpp:164`). O `cpu.Repor(ci, kPilha)` que
+  //      prepara o `CreateInstance` APAGAVA a conta da CARGA, e a segunda
+  //      atribuicao (que e `=`, nao `+=`) escrevia por cima da primeira.
+  //   2. A fase do `EVT_APP_START` e o laco de quadro correm DEPOIS da segunda
+  //      leitura e NUNCA eram lidos.
+  // Resultado: o campo `recusadas` do JSON era a conta do `CreateInstance` e so
+  // dela -- carga perdida por reposicao, arranque perdido por omissao.
+  //
+  // Agora a conta e colhida em DELTA depois de cada fase (`Colher`), o que
+  // sobrevive a qualquer `Repor` futuro, e as parcelas vao ao JSON ao lado do
+  // total para que a soma seja VERIFICAVEL de fora
+  // (`tests/bateria_recusadas_test.cpp`).
   std::uint64_t recusadas = 0;
+  std::uint64_t recusadas_carga = 0;
+  std::uint64_t recusadas_create = 0;
+  std::uint64_t recusadas_start = 0;
+  std::uint64_t recusadas_quadros = 0;
   std::uint32_t pixels = 0;
   std::uint32_t cores = 0;
   std::uint32_t textos = 0;
@@ -754,7 +778,16 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   // callback que aponte para fora dela. A base e ZERO (medida); o TAMANHO vem do
   // carregador.
   despacho.DefinirFaixaDoModulo(kBase, carga.tamanho);
+  // O COLECTOR DAS RECUSAS, por DELTA e nao por leitura absoluta (ver
+  // `tools/recusas.h` para o defeito que isto corrige e a medicao dele).
+  zb2::tools::ContadorDeRecusas rec;
+  const auto Colher = [&]() -> std::uint64_t {
+    const std::uint64_t parcela = rec.Colher(cpu);
+    e.recusadas = rec.Total();
+    return parcela;
+  };
   cpu.Repor(kBase, kPilha);
+  rec.Rearmar(cpu);  // o `Repor` acabou de zerar o contador da CPU
   cpu.Set(kR0, kShell);                 // o IShell minimo mas real
   cpu.Set(kR2, kPPMod);
   cpu.Set(kLR, kSentinela);
@@ -763,7 +796,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
     e.passos_carga = r.passos;
     e.motivo = r.motivo;
   }
-  e.recusadas = cpu.InstruscoesRecusadas();
+  e.recusadas_carga = Colher();
   g_applet = mem.Ler32(kPPObj);  // para o `GetAppInstance`
 
   const std::uint32_t modulo = mem.Ler32(kPPMod);
@@ -794,6 +827,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   // mesmo, do lado do instrumento.
   mem.Escrever32(kPPObj, 0);
   cpu.Repor(ci, kPilha);
+  rec.Rearmar(cpu);  // **ESTE `Repor` e o que apagava a conta da carga.**
   // ASSINATURA MEDIDA, por desmonte e por traco de registradores:
   //   r0 = po (o modulo), r1 = pIShell, r2 = ClsId, r3 = ppApplet
   //
@@ -817,7 +851,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
     e.passos_create = r.passos;
     motivo_create = r.motivo;
   }
-  e.recusadas = cpu.InstruscoesRecusadas();
+  e.recusadas_create = Colher();
   g_applet = mem.Ler32(kPPObj);  // para o `GetAppInstance`
   g_despacho->DefinirApplet(g_applet);
   e.create = mem.Ler32(kPPObj) != 0;
@@ -877,6 +911,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
       cpu.Set(kPC, handle_event);
       const zb2::brew::ResultadoFase re = g_despacho->Correr(cpu, limite, kPPObj);
       e.passos_start = re.passos;  // a fase do arranque, contada
+      e.recusadas_start = Colher();  // **e esta parcela que NAO chegava ao JSON**
       e.motivo += " | start:" + re.motivo;
       ++eventos_dados;
     } else {
@@ -899,6 +934,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
     }
   }
   e.quadros = quadros_corridos;
+  e.recusadas_quadros = Colher();
 
   // O TRACO CRU, quando pedido (`ZB2_TRACE=1`). Existe para a pergunta que a
   // tabela NAO responde: um titulo que volta do arranque sem pedir nada que falte
@@ -983,6 +1019,30 @@ int main(int argc, char** argv) {
   for (const Titulo& t : titulos) {
     dm_eventos.clear();
   const Estado e = Medir(t, argv[2]);
+    // O INVARIANTE DAS RECUSAS, verificado ANTES de escrever o JSON.
+    //
+    // E a mesma ideia da LEITURA DE VOLTA da cablagem: uma conta que nao se
+    // confirma a si propria e uma conta que se perde em silencio -- e esta ja se
+    // perdeu uma vez (duas fases de tres nao entravam no campo). Se uma fase
+    // nova aparecer e ninguem a colher, o total deixa de bater com as parcelas e
+    // isto para a corrida com estrondo em vez de publicar um numero curto.
+    {
+      zb2::tools::RecusasPorFase p;
+      p.carga = e.recusadas_carga;
+      p.create = e.recusadas_create;
+      p.start = e.recusadas_start;
+      p.quadros = e.recusadas_quadros;
+      if (p.Soma() != e.recusadas) {
+        std::fprintf(stderr,
+                     "CONTA DE RECUSAS PERDIDA em %s: total=%" PRIu64
+                     " mas as parcelas somam %" PRIu64
+                     " (carga=%" PRIu64 " create=%" PRIu64 " start=%" PRIu64
+                     " quadros=%" PRIu64 ")\n",
+                     t.mod.c_str(), e.recusadas, p.Soma(), p.carga, p.create, p.start,
+                     p.quadros);
+        std::abort();
+      }
+    }
     if (e.carga) ++carregam;
     if (e.modulo) ++com_modulo;
     if (e.create) ++com_applet;
@@ -1010,6 +1070,14 @@ int main(int argc, char** argv) {
             ",\"passos_carga\":" + std::to_string(e.passos_carga) +
             ",\"passos_create\":" + std::to_string(e.passos_create) +
             ",\"recusadas\":" + std::to_string(e.recusadas) +
+            // AS PARCELAS, ao lado do total, para a soma ser verificavel de fora.
+            // Campos NOVOS: o `comparar` declara-os OPCIONAIS (as corridas
+            // anteriores a este commit nao os tem) e NEUTROS (pela mesma
+            // medicao que faz o total neutro).
+            ",\"recusadas_carga\":" + std::to_string(e.recusadas_carga) +
+            ",\"recusadas_create\":" + std::to_string(e.recusadas_create) +
+            ",\"recusadas_start\":" + std::to_string(e.recusadas_start) +
+            ",\"recusadas_quadros\":" + std::to_string(e.recusadas_quadros) +
             ",\"passos_start\":" + std::to_string(e.passos_start) + ",\"motivo\":\"" + e.motivo + "\"" +
             ",\"pixels\":" + std::to_string(e.pixels) +
             ",\"cores\":" + std::to_string(e.cores) +
