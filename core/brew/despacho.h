@@ -397,6 +397,15 @@ class Despacho {
   //                       AEECLSID cls)`
   //   -> r0=po  r1=pszResFile  r2=nResID  r3=cls (`AEEIShell.h:251`)
   bool AtenderLoadResObject(ICpu& cpu);
+
+  // `AEECLSID GetHandler(IShell*, AEECLSID clsBase, const char *pszIn)`
+  //   -> r0=po  r1=clsBase  r2=pszIn  (`AEEIShell.h:800`, o slot 32)
+  //
+  // Devolve o AEECLSID do handler REGISTADO para aquele MIME, ou 0 quando nao
+  // ha nenhum -- que e a resposta que a documentacao preve ("0 (zero), if
+  // otherwise", `AEEIShell.h:6289`). O contrato medido e a tabela do registo
+  // estao no comentario do `AtenderGetHandler`, em `despacho.cpp`.
+  bool AtenderGetHandler(ICpu& cpu);
   // O primeiro IDIB LIVRE da banda dos bitmaps compativeis, ACIMA do ecra
   // (`kObjDibBase + 0x300`), que e a mesma escolha do servico da familia
   // (`core/brew/interface.cpp`, `ProcurarObjectoLivre`) e a razao que la esta

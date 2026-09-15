@@ -1881,4 +1881,142 @@ TEST(FrenteIshell2, OLoadResObjectServeUmIdibDoFicheiroEDoContentor) {
   EXPECT_EQ(b.Faltas("IShell::LoadResObject"), 1u);
 }
 
+// ===========================================================================
+// A FRENTE slot32: `IShell::GetHandler` (o slot 32 da vtable do shell).
+//
+// O CONTRATO, de `AEEIShell.h:800` e da doc em `:6261-6288`:
+//
+//   AEECLSID GetHandler(IShell *po, AEECLSID clsBase, const char *pszIn)
+//     -> r0=po  r1=clsBase  r2=pszIn
+//   Return: AEECLSID of the associated handler class. 0 (zero), if otherwise.
+//
+// O USO E O DOS TITULOS, e o do proprio SDK (`AEEIShell.h:7116`,
+// `doc/AEEMedia.txt:281/327`), e foi medido com `ZB2_TRACE=1`:
+//
+//   95 chamadas em 5 titulos (abd 35, ridgeracer 25, torkandkral 17,
+//   toyraidzeebo 15, pacmania 3), TODAS com `r1 = 0x01005500` (AEECLSID_MEDIA) e
+//   `r2` = a cadeia do MIME que o `DetectType` acabou de devolver:
+//   "audio/wav" 87x e "audio/mpeg" 8x.
+//
+// E o `abd.mod` faz com o retorno o que o exemplo do SDK faz (`strne r0, [sb]`
+// = `if (cls) *pCls = cls;`), logo o que sai daqui vai DIRETO para um
+// `IShell::CreateInstance`.
+//
+// Os testes entram pelo ENDERECO DA VTABLE (armadilha 3): um teste que chamasse
+// um id interno nao provava a cablagem.
+// ===========================================================================
+
+TEST(FrenteSlot32, OSlot32DaVtableRespondeOHandlerDoMimeMedido) {
+  Bancada b;
+  ConstruirOShell(b);
+  const std::uint32_t vtable = b.Mem().Ler32(kObjShell);
+  ASSERT_EQ(vtable, b.S().Endereco(kVtableShell));
+  EXPECT_EQ(b.Mem().Ler32(vtable + 4u * brew_slots::kShell_GetHandler),
+            b.S().Endereco(kBaseDoShell + brew_slots::kShell_GetHandler))
+      << "o slot 32 da vtable do shell tem de apontar para o GetHandler";
+
+  // `audio/wav` -> `AEECLSID_MEDIAADPCM` (0x0100550a), e NAO o `MEDIAPCM`:
+  // `AEEMimeTypes.h:71` chama a este MIME `MT_AUDIO_ADPCM`, e o
+  // `doc/AEEMedia.txt:809` toca `a1.wav` com `AEECLSID_MEDIAADPCM`. O
+  // `MEDIAPCM` (0x01005511) e o PCM CRU do `AEEMedia.txt:1146` (`sample.raw`).
+  // O zeebx mapeia este MIME para o MEDIAPCM -- e a contradicao que fica escrita
+  // no `despacho.cpp`.
+  EscreverCadeia(b.Mem(), kNomeNoGuest, "audio/wav");
+  std::uint32_t r = b.ChamaSaida(kBaseDoShell + brew_slots::kShell_GetHandler, kObjShell,
+                                 0x01005500u, kNomeNoGuest);
+  EXPECT_EQ(r, 0x0100550au) << "AEECLSID_MEDIAADPCM";
+  EXPECT_NE(r, 0x01005511u) << "AEECLSID_MEDIAPCM e o PCM cru, nao o WAV";
+
+  // `audio/mpeg` -> `AEECLSID_MEDIAMP3` (0x01005502). O MIME e o que o NOSSO
+  // `DetectType` devolve para um MP3 (o `MT_AUDIO_MP3` do SDK escreve-se
+  // "audio/mp3"), e as duas referencias concordam neste par.
+  EscreverCadeia(b.Mem(), kNomeNoGuest, "audio/mpeg");
+  r = b.ChamaSaida(kBaseDoShell + brew_slots::kShell_GetHandler, kObjShell, 0x01005500u,
+                   kNomeNoGuest);
+  EXPECT_EQ(r, 0x01005502u) << "AEECLSID_MEDIAMP3";
+
+  // E o nome alternativo do mesmo par (`zeemu BrewShell.cpp:218`). A cadeia e
+  // em minusculas porque e ASSIM que a medicao a viu: o `pszIn` do guest e a
+  // cadeia que o nosso `DetectType` lhe devolveu, e as constantes do
+  // `AEEMimeTypes.h` sao todas minusculas.
+  EscreverCadeia(b.Mem(), kNomeNoGuest, "audio/x-wav");
+  r = b.ChamaSaida(kBaseDoShell + brew_slots::kShell_GetHandler, kObjShell, 0x01005500u,
+                   kNomeNoGuest);
+  EXPECT_EQ(r, 0x0100550au);
+
+  EXPECT_EQ(b.Faltas("IShell::slot32"), 0u)
+      << "o slot deixou de ser servido pelo ramo generico";
+  EXPECT_EQ(b.Faltas("IShell::GetHandler sem handler para o MIME"), 0u);
+}
+
+// O QUE SAI DAQUI TEM DE SER CRIAVEL. O `abd.mod` mete o retorno do `GetHandler`
+// direto num `CreateInstance` (0x16e8 `strne r0,[sb]`, e o pedido seguinte no
+// codigo do titulo): uma classe que o `CreateInstance` recusasse deixaria o jogo
+// sem objecto de midia e a recusa mudava so de nome.
+TEST(FrenteSlot32, OHandlerQueSaiDoSlot32ECriadoPeloCreateInstance) {
+  Bancada b;
+  ConstruirOShell(b);
+  constexpr std::uint32_t kPpo = 0x00094000u;
+  EscreverCadeia(b.Mem(), kNomeNoGuest, "audio/wav");
+  const std::uint32_t cls = b.ChamaSaida(kBaseDoShell + brew_slots::kShell_GetHandler,
+                                         kObjShell, 0x01005500u, kNomeNoGuest);
+  ASSERT_EQ(cls, 0x0100550au);
+  b.Mem().Escrever32(kPpo, 0);
+  EXPECT_EQ(b.ChamaSaida(kBaseDoShell + 2, kObjShell, cls, kPpo), kAeeSuccess)
+      << "o handler do registo tem de ser uma classe que esta arvore cria";
+  const std::uint32_t obj = b.Mem().Ler32(kPpo);
+  ASSERT_NE(obj, 0u) << "o CreateInstance tem de devolver o objecto de midia";
+  EXPECT_TRUE(b.S().Contem(b.Mem().Ler32(obj)))
+      << "e um objecto com vtable na faixa de saida";
+  EXPECT_EQ(b.Faltas("IShell::GetHandler handler nao criavel"), 0u);
+}
+
+// O `0` E A RESPOSTA DO CONTRATO ("0 (zero), if otherwise"), e NAO UM ERRO
+// INVENTADO -- mas o que falta fica DITO, com o nome, em cada um dos tres casos.
+TEST(FrenteSlot32, ORegistoDizNaoAoQueNaoSeServeEDizPorque) {
+  Bancada b;
+  ConstruirOShell(b);
+
+  // 1. UM `clsBase` cujo registo esta arvore nao tem: o `0x01004000` e o
+  //    `AEECLSID_VIEW` (`AEEClassIDs.h:28`, a interface que os viewers de imagem
+  //    implementam), e o `AEEMimeTypes.h`/`AEEMedia.txt` usam ESTA forma (um
+  //    AEECLSID base) nas chamadas ao `GetHandler`. O MIME e o que o nosso
+  //    `DetectType` devolve para um PNG -- e a resposta honesta e NAO, porque um
+  //    `AEECLSID_PNG` (0x01004004) nao se cria aqui.
+  //
+  //    (A outra forma do argumento e o enum DEPRECADO: `HTYPE_VIEWER` e 0,
+  //    `HTYPE_SOUND` e 1 e `HTYPE_BROWSE` e 2, `AEEIShell.h:582-584` -- e nao
+  //    os CLSID. O cabecalho marca-os "***deprecated****" em `:568`.)
+  EscreverCadeia(b.Mem(), kNomeNoGuest, "image/png");
+  EXPECT_EQ(b.ChamaSaida(kBaseDoShell + brew_slots::kShell_GetHandler, kObjShell, 0x01004000u,
+                         kNomeNoGuest),
+            0u);
+  EXPECT_EQ(b.Faltas("IShell::GetHandler sem registo para o clsBase"), 1u)
+      << "o pedido fica contado com o nome do clsBase";
+
+  // 2. Um MIME que o SDK nomeia mas sem classe NESTA familia (`MT_AUDIO_WMA`,
+  //    `AEEMimeTypes.h:74`): nao se inventa um handler.
+  EscreverCadeia(b.Mem(), kNomeNoGuest, "audio/wma");
+  EXPECT_EQ(b.ChamaSaida(kBaseDoShell + brew_slots::kShell_GetHandler, kObjShell, 0x01005500u,
+                         kNomeNoGuest),
+            0u);
+  EXPECT_EQ(b.Faltas("IShell::GetHandler sem handler para o MIME"), 1u);
+
+  // 3. Um `pszIn` que nao chegou: nulo, e vazio.
+  EXPECT_EQ(b.ChamaSaida(kBaseDoShell + brew_slots::kShell_GetHandler, kObjShell, 0x01005500u, 0),
+            0u);
+  EXPECT_EQ(b.Faltas("IShell::GetHandler pszIn nulo ou vazio"), 1u);
+  EscreverCadeia(b.Mem(), kNomeNoGuest, "");
+  EXPECT_EQ(b.ChamaSaida(kBaseDoShell + brew_slots::kShell_GetHandler, kObjShell, 0x01005500u,
+                         kNomeNoGuest),
+            0u);
+  EXPECT_EQ(b.Faltas("IShell::GetHandler pszIn nulo ou vazio"), 2u);
+
+  // E NENHUM destes casos gastou a resposta de um MIME que existe.
+  EscreverCadeia(b.Mem(), kNomeNoGuest, "audio/mid");
+  EXPECT_EQ(b.ChamaSaida(kBaseDoShell + brew_slots::kShell_GetHandler, kObjShell, 0x01005500u,
+                         kNomeNoGuest),
+            0x01005501u);
+}
+
 }  // namespace zb2::brew

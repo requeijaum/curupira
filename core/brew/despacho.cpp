@@ -1079,6 +1079,298 @@ bool Despacho::AtenderLoadResObject(ICpu& cpu) {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// O REGISTO DE HANDLERS (`IShell::GetHandler`, slot 32).
+//
+// ===========================================================================
+// 1) O CONTRATO, do cabecalho do SDK -- e nao adivinhado
+// ===========================================================================
+//
+// `platform/system/inc/AEEIShell.h:800` (a lista `INHERIT_IShell`, a MESMA que
+// da o `kShell_DetectType = 43` e o `kShell_LoadResObject = 19`) e a macro em
+// `:876`:
+//
+//   AEECLSID (*GetHandler)(iname *po, AEECLSID cls, const char *pszIn);
+//   #define ISHELL_GetHandler(p,t,psz)  GET_PVTBL(p,IShell)->GetHandler(p,t,psz)
+//
+// Em AAPCS: `r0=po`, `r1=clsBase`, `r2=pszIn`. O SLOT E O 32, e nao um numero
+// contado a mao: `tools/gerar_slots.py` gerou `kShell_GetHandler = 32` em
+// `tools/brew_slots.inc:45` a partir desta lista, e o zeebulator conta o mesmo
+// (`core/brew/ishell.cpp:227`, "// 32 GetHandler").
+//
+// O bloco de documentacao (`AEEIShell.h:6261-6288`) diz o que cada argumento e
+// e o que se devolve:
+//
+//   clsBase : Handler type (HTYPE_VIEWER, HTYPE_SOUND) or an AEECLSID base
+//             class for the handler to meet.
+//   pszIn   : Input string.
+//   Return  : AEECLSID of the associated handler class.
+//             0 (zero), if otherwise.
+//
+// O USO E O DO PROPRIO SDK, escrito TRES vezes e sempre com a mesma forma:
+//
+//   AEEIShell.h:7116 (o exemplo da doc do `DetectType`)
+//       clsHandler = ISHELL_GetHandler(pIShell, AEECLSID_MEDIA, cpszMIME);
+//       if (clsHandler) ISHELL_CreateInstance(pIShell, clsHandler, ...);
+//   doc/AEEMedia.txt:281 ("first determine the media MIME type using the
+//       ISHELL_DetectType() API. Next, obtain the handler IMedia ClassID for
+//       the MIME type using ISHELL_GetHandler() and the handler type
+//       AEECLSID_MEDIA")
+//   doc/AEEMedia.txt:327 (o exemplo, `cls = ISHELL_GetHandler(ps,
+//       AEECLSID_MEDIA, cpszMIME); if (cls) *pCls = cls;`)
+//
+// ===========================================================================
+// 2) O QUE OS TITULOS PEDEM, MEDIDO (`ZB2_TRACE=1`, 95 chamadas)
+// ===========================================================================
+//
+// Em TODAS as 95 chamadas: `r1 = 0x01005500` (`AEECLSID_MEDIA`) e o `r2` e uma
+// cadeia de MIME na memoria do guest (`0x800204a0` / `0x800204c0`, a mesma do
+// `DetectType`). Nenhuma outra coisa muda.
+//
+//   mime             chamadas  onde (o `lr` de cada sitio de chamada)
+//   audio/wav              87  abd 0x16e4 (34+1) | ridgeracer 0x1b18 (19)
+//                              torkandkral 0x1830 (17) | toyraidzeebo 0x22cc (14)
+//                              pacmania 0x1268 (3)
+//   audio/mpeg              8  ridgeracer 0x1b18 (6) | toyraidzeebo 0x22cc (1)
+//                              abd 0x16e4 (1)
+//
+// Os 95 pedidos vem dos 5 titulos que a frente `ishell2` deixou nomeados:
+// abd 35, ridgeracer 25, torkandkral 17, toyraidzeebo 15, pacmania 3.
+//
+// ===========================================================================
+// 3) O QUE O GUEST FAZ COM ISTO, desmontado (base ZERO, `abd.mod`)
+// ===========================================================================
+//
+// O sitio de chamada do `abd` e o exemplo do `AEEMedia.txt` traduzido para
+// ARM, instrucao a instrucao -- a sonda de tamanho do `DetectType` esta em
+// 0x134c e a segunda chamada, com dados, em 0x16b8:
+//
+//   000016a0  add  r3, sp, #0x0c     ; r3 = &algo
+//   000016a4  str  r3, [sp]          ; [sp+0] = &cpszMIME  (o 5o argumento)
+//   000016a8  ldr  r0, [r5]          ; r0 = o objecto IShell
+//   000016ac  mov  r3, #0            ; r3 = 0 (cpszName)
+//   000016b0  add  r2, sp, #0x30     ; r2 = &dwSize
+//   000016b4  mov  r1, r6            ; r1 = o buffer com os bytes lidos
+//   000016b8  ldr  ip, [r0, #0xac]   ; 0xac = 43*4  -> DetectType
+//   000016c0  blx  ip
+//   000016c4  movs r7, r0            ; r7 = o retorno do DetectType
+//   000016c8  bne  #0x16ec           ; != SUCCESS -> nao ha handler a pedir
+//   000016cc  ldr  r0, [r5]          ; r0 = o IShell
+//   000016d0  ldr  r2, [sp, #0x0c]   ; r2 = o MIME que o DetectType devolveu
+//   000016d4  ldr  r1, [pc, #0x40]   ; r1 = *0x171c = 0x01005500 = AEECLSID_MEDIA
+//   000016d8  ldr  r3, [r0, #0x80]   ; 0x80 = 32*4  -> GetHandler
+//   000016dc  mov  r0, r5
+//   000016e0  blx  r3
+//   000016e4  cmp  r0, #0            ; <<< o `lr` medido
+//   000016e8  strne r0, [sb]         ; if (cls) *pCls = cls;   -- o exemplo do SDK
+//   00001708  mov  r0, r7
+//   0000170c  b    #0x1378           ; volta ao chamador com o CLSID em r0
+//
+// E o literal foi lido do proprio ficheiro: `abd.mod[0x171c] = 0x01005500`.
+// Logo o `0` e o "nao ha handler", e quem o recebe NAO chama o CreateInstance
+// com uma classe inventada -- o `strne` so escreve quando o retorno nao e zero.
+//
+// Os outros quatro titulos tem o MESMO codigo no seu sitio de chamada (o
+// `ldr r3, [r0, #0x80]` a seguir ao `DetectType` e o `strne r0, [sb]`):
+// `pacmania.mod` 0x1264, `torkandkral.mod` 0x182c, e a mesma forma no
+// `ridgeracer` 0x1b14 e no `toyraidzeebo` 0x22c8.
+//
+// E o que se segue, medido na corrida: cada `GetHandler` e seguido de um
+// `IShell::CreateInstance` com EXACTAMENTE o valor que este slot devolveu -- as
+// 95 recusas `iid=0x00000014` eram o `kAeeUnsupported` (20) que o ramo generico
+// escrevia no r0. Ou seja: **a recusa deste slot virava um pedido de criacao de
+// uma classe que nao existe**, e o jogo ficava sem o objecto de midia.
+//
+// ===========================================================================
+// 4) A TABELA, e a CONTRADICAO escrita com a referencia
+// ===========================================================================
+//
+// O que o slot devolve e o AEECLSID do handler REGISTADO. No aparelho o registo
+// e montado no arranque pelos proprios handlers (`ISHELL_RegisterHandler`); o
+// que se pode citar e o mapa que o SDK publica em
+// `platform/system/inc/AEEMimeTypes.h`, onde o NOME da macro diz QUAL e a
+// classe do handler. Duas linhas importam aqui, e as duas foram medidas:
+//
+//   :71  #define MT_AUDIO_ADPCM  "audio/wav"     <-- o WAV e do handler ADPCM
+//   :37  #define ADPCM_EXTENSION "wav"
+//   :64  #define MT_AUDIO_MP3    "audio/mp3"
+//
+// **CONTRADICAO, e ela e da referencia, nao da medicao**: o zeebx mapeia
+// `audio/wav` -> `AEECLSID_MEDIAPCM` (`src/machine.rs:250`, `handler_for`).
+// O SDK diz o contrario em dois sitios independentes: `MT_AUDIO_ADPCM` chama-se
+// ADPCM e vale "audio/wav" (`AEEMimeTypes.h:71`, e o `ADPCM_EXTENSION` e "wav"),
+// e `doc/AEEMedia.txt:807-810` toca TRES ficheiros `a1.wav`/`a2.wav`/`a3.wav`
+// com `AEECLSID_MEDIAADPCM`. O `AEECLSID_MEDIAPCM` e outra coisa: o exemplo de
+// streaming do `AEEMedia.txt:1146` usa-o para um `sample.raw` -- PCM linear CRU
+// com `AEEMediaWaveSpec`, e nao um contentor WAV. O zeemu concorda com o SDK
+// (`brew/BrewShell.cpp:218`, `audio/wav` -> `0x0100550a`). Serve-se o SDK.
+//
+// A tabela so tem entradas cuja classe PERTENCE a familia que esta arvore crIA
+// (`zb2::brew::ClasseDeMidia`, `core/brew/imedia.cpp`: 0x01005500..0x01005514).
+// Um MIME que o SDK nomeia e que nao tem classe nesta familia (`audio/wma`,
+// `video/wmv`) NAO entra: seria uma resposta que nao se pode cumprir.
+struct LinhaDoRegisto {
+  std::uint32_t base;     // o `clsBase` pedido
+  const char* mime;       // a cadeia do `pszIn`
+  std::uint32_t handler;  // o AEECLSID do handler
+  const char* origem;     // onde este par saiu (cabecalho:linha, ou referencia)
+};
+
+// `AEECLSID_MEDIA`: `AEEClassIDs.h:278` (`AEECLSID_MULTIMEDIA = QVERSION+0x5500`
+// = 0x01005500), e o `AEEIMedia.h:27` escreve-o por extenso no comentario:
+// "AEEIID_IMedia 0x01005500 // This is AEECLSID_MEDIA". E o base class que o
+// `doc/AEEMedia.txt:281` manda usar para pedir um handler de midia.
+constexpr std::uint32_t kClsBaseMedia = 0x01005500u;
+
+const LinhaDoRegisto kRegistoDeHandlers[] = {
+    // O PAR MEDIDO nesta arvore (87+8 chamadas): e o unico que o corpus pede.
+    {kClsBaseMedia, "audio/wav", 0x0100550au, "AEEMimeTypes.h:71 MT_AUDIO_ADPCM"},
+    {kClsBaseMedia, "audio/mpeg", 0x01005502u, "AEEMimeTypes.h:64 MT_AUDIO_MP3"},
+    // Os nomes alternativos do MESMO par, aceites pelas referencias (zeemu
+    // `BrewShell.cpp:215-218`) e escritos no proprio `AEEMimeTypes.h`.
+    {kClsBaseMedia, "audio/x-wav", 0x0100550au, "zeemu BrewShell.cpp:218"},
+    {kClsBaseMedia, "audio/wave", 0x0100550au, "zeemu BrewShell.cpp:218"},
+    {kClsBaseMedia, "snd/wav", 0x0100550au, "AEEMimeTypes.h:52 MT_ADPCM"},
+    {kClsBaseMedia, "audio/mp3", 0x01005502u, "AEEMimeTypes.h:64"},
+    {kClsBaseMedia, "snd/mp3", 0x01005502u, "AEEMimeTypes.h:45 MT_MP3"},
+    // O resto do registo do SDK, cada linha com a sua macro. `MT_*` -> a classe
+    // com o mesmo nome (`AEEClassIDs.h:328-345`).
+    {kClsBaseMedia, "audio/mid", 0x01005501u, "AEEMimeTypes.h:63 MT_AUDIO_MIDI"},
+    {kClsBaseMedia, "audio/midi", 0x01005501u, "zeemu BrewShell.cpp:215"},
+    {kClsBaseMedia, "snd/midi", 0x01005501u, "AEEMimeTypes.h:44"},
+    {kClsBaseMedia, "audio/qcp", 0x01005503u, "AEEMimeTypes.h:65 MT_AUDIO_QCP"},
+    {kClsBaseMedia, "audio/vnd.qcelp", 0x01005503u, "AEEMimeTypes.h:66"},
+    {kClsBaseMedia, "snd/qcp", 0x01005503u, "AEEMimeTypes.h:46"},
+    {kClsBaseMedia, "snd/vnd.qcelp", 0x01005503u, "AEEMimeTypes.h:47 MT_VNDQCP"},
+    {kClsBaseMedia, "video/pmd", 0x01005504u, "AEEMimeTypes.h:83 MT_VIDEO_PMD"},
+    {kClsBaseMedia, "audio/qcf", 0x01005506u, "AEEMimeTypes.h:67 MT_AUDIO_QCF"},
+    {kClsBaseMedia, "snd/qcf", 0x01005506u, "AEEMimeTypes.h:48 MT_QCF"},
+    {kClsBaseMedia, "video/mp4", 0x01005507u, "AEEMimeTypes.h:84 MT_VIDEO_MPEG4"},
+    {kClsBaseMedia, "audio/mmf", 0x01005508u, "AEEMimeTypes.h:68 MT_AUDIO_MMF"},
+    {kClsBaseMedia, "snd/mmf", 0x01005508u, "AEEMimeTypes.h:49"},
+    {kClsBaseMedia, "audio/spf", 0x01005509u, "AEEMimeTypes.h:69 MT_AUDIO_PHR"},
+    {kClsBaseMedia, "snd/spf", 0x01005509u, "AEEMimeTypes.h:50 MT_PHR"},
+    {kClsBaseMedia, "audio/aac", 0x0100550bu, "AEEMimeTypes.h:72 MT_AUDIO_AAC"},
+    {kClsBaseMedia, "snd/aac", 0x0100550bu, "AEEMimeTypes.h:53"},
+    {kClsBaseMedia, "audio/imy", 0x0100550cu, "AEEMimeTypes.h:70 MT_AUDIO_IMELODY"},
+    {kClsBaseMedia, "snd/imy", 0x0100550cu, "AEEMimeTypes.h:51"},
+    {kClsBaseMedia, "audio/amr", 0x0100550eu, "AEEMimeTypes.h:73 MT_AUDIO_AMR"},
+    {kClsBaseMedia, "snd/amr", 0x0100550eu, "AEEMimeTypes.h:54"},
+    {kClsBaseMedia, "audio/hvs", 0x0100550fu, "AEEMimeTypes.h:75 MT_AUDIO_HVS"},
+    {kClsBaseMedia, "audio/saf", 0x01005510u, "AEEMimeTypes.h:76 MT_AUDIO_SAF"},
+    {kClsBaseMedia, "audio/xmf", 0x01005512u, "AEEMimeTypes.h:77 MT_AUDIO_XMF"},
+    {kClsBaseMedia, "audio/mxmf", 0x01005512u, "AEEMimeTypes.h:78"},
+    {kClsBaseMedia, "audio/xmf0", 0x01005512u, "AEEMimeTypes.h:79"},
+    {kClsBaseMedia, "audio/xmf1", 0x01005512u, "AEEMimeTypes.h:80"},
+    {kClsBaseMedia, "audio/dls", 0x01005513u, "AEEMimeTypes.h:81 MT_AUDIO_DLS"},
+    {kClsBaseMedia, "video/svg", 0x01005514u, "AEEMimeTypes.h:86 MT_VIDEO_SVG"},
+    {kClsBaseMedia, "video/svgz", 0x01005514u, "AEEMimeTypes.h:87"},
+};
+constexpr std::size_t kQuantasLinhasDoRegisto =
+    sizeof(kRegistoDeHandlers) / sizeof(kRegistoDeHandlers[0]);
+
+// O NOME DOS TRES TIPOS DE HANDLER DEPRECADOS (`AEEIShell.h:582-584`), para o
+// detalhe da recusa nao dizer so um numero. Fora dessa faixa a resposta e vazia:
+// o `clsBase` e um AEECLSID e o nome dele vem do `DescreverClsid`.
+const char* NomeDoTipoDeHandler(std::uint32_t base) {
+  switch (base) {
+    case 0: return " (HTYPE_VIEWER)";
+    case 1: return " (HTYPE_SOUND)";
+    case 2: return " (HTYPE_BROWSE)";
+    default: return "";
+  }
+}
+
+const LinhaDoRegisto* ProcurarNoRegisto(std::uint32_t base, const std::string& mime) {
+  for (std::size_t k = 0; k < kQuantasLinhasDoRegisto; ++k) {
+    if (kRegistoDeHandlers[k].base == base && mime == kRegistoDeHandlers[k].mime) {
+      return &kRegistoDeHandlers[k];
+    }
+  }
+  return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// `IShell::GetHandler` (slot 32) -- a ABI, e a resposta
+// ---------------------------------------------------------------------------
+bool Despacho::AtenderGetHandler(ICpu& cpu) {
+  const std::uint32_t base = cpu.Get(kR1);
+  const std::uint32_t p_entrada = cpu.Get(kR2);
+  // A CADEIA SO SE LE SE O PONTEIRO ESTIVER NA JANELA DO GUEST. Um `pszIn` que
+  // nao esteja nao pode provocar uma leitura a mais: uma leitura num endereco
+  // nao mapeado ficaria registada com o PC da instrucao seguinte e mudaria o que
+  // a bateria mede (ver a memoria
+  // `a_leitura_de_dados_em_endereco_nao_mapeado_do_curupira`).
+  const bool tem_ponteiro = (p_entrada >= 0x00100000u && p_entrada < 0x81000000u);
+  const std::string entrada = tem_ponteiro ? LerTextoDe(mem_, p_entrada, 64) : std::string();
+
+  // A ABI CRUA, SO COM `ZB2_TRACE=1`: foi esta linha que mediu o `clsBase`
+  // (0x01005500 nas 95 chamadas) e a cadeia do `pszIn` -- o `txt` do detalhe da
+  // falta le o `r1`, e neste slot o `r1` e um CLSID, nao texto.
+  traco_.Emitir(Area::Brew, Nivel::Depuracao, "ISHELL_GETHANDLER_ABI",
+                "clsBase=0x" + Hex(base) + " pszIn=\"" +
+                    (entrada.empty() ? (tem_ponteiro ? "<vazia>" : "<ponteiro fora do guest>")
+                                     : entrada) +
+                    "\" lr=0x" + Hex(cpu.Get(kLR)));
+
+  const LinhaDoRegisto* linha =
+      entrada.empty() ? nullptr : ProcurarNoRegisto(base, entrada);
+  std::uint32_t resposta = (linha != nullptr) ? linha->handler : 0;
+
+  // NAO SE ENTREGA UMA CLASSE QUE NAO SE CRIA. Se a linha do registo apontar
+  // para uma classe que o `CreateInstance` desta arvore recusaria, o jogo
+  // ficaria com um AEECLSID que nao da em nada -- e o pedido seguinte, esse
+  // sim, e que apareceria como "CLSID desconhecido". Aqui ve-se antes.
+  if (resposta != 0 && (media_ == nullptr || !zb2::brew::ClasseDeMidia(resposta))) {
+    traco_.RegistarFalta(Area::Brew, "IShell::GetHandler handler nao criavel",
+                         std::string(linha->origem) + ": 0x" + Hex(resposta) + " para '" +
+                             entrada + "' nao e classe desta arvore");
+    resposta = 0;
+  }
+
+  // O QUE NAO SE SERVE DIZ-SE COM O NOME -- e o `0` e a resposta que o SDK
+  // preve ("0 (zero), if otherwise"), nao um erro inventado. As tres razoes
+  // ficam separadas porque exigem correcoes diferentes: um `pszIn` que nao
+  // chegou, um `clsBase` cujo registo nao temos, e um MIME que este registo
+  // nao conhece.
+  if (resposta == 0) {
+    char det[224];
+    if (entrada.empty()) {
+      std::snprintf(det, sizeof(det),
+                    "pszIn %s (0x%08x) com clsBase=0x%08x lr=0x%08x",
+                    tem_ponteiro ? "vazio" : "nulo ou fora do guest", p_entrada, base,
+                    cpu.Get(kLR));
+      traco_.RegistarFalta(Area::Brew, "IShell::GetHandler pszIn nulo ou vazio", det);
+    } else if (linha == nullptr && base != kClsBaseMedia) {
+      // O REGISTO QUE NAO TEMOS. O `clsBase` tem DUAS formas no cabecalho
+      // (`AEEIShell.h:6280`): "Handler type (HTYPE_VIEWER, HTYPE_SOUND) or an
+      // AEECLSID base class". A primeira e o enum DEPRECADO -- `HTYPE_VIEWER`
+      // e **0**, `HTYPE_SOUND` **1**, `HTYPE_BROWSE` **2** (`:582-584`; o
+      // cabecalho di-lo por extenso em `:568`: "***deprecated****"), e ela
+      // pede um IViewer/ISoundPlayer que esta arvore nao sabe criar; a segunda
+      // e um AEECLSID (o 0x01004000 e o `AEECLSID_VIEW`, `AEEClassIDs.h:28`).
+      // O nome entra no detalhe para o pedido seguinte se contar sem ir ao
+      // cabecalho.
+      std::snprintf(det, sizeof(det), "clsBase=0x%08x%s (%s) mime='%s' lr=0x%08x", base,
+                    NomeDoTipoDeHandler(base), zb2::brew::DescreverClsid(base).c_str(),
+                    entrada.c_str(), cpu.Get(kLR));
+      traco_.RegistarFalta(Area::Brew,
+                           "IShell::GetHandler sem registo para o clsBase", det);
+    } else {
+      std::snprintf(det, sizeof(det), "mime='%s' clsBase=0x%08x lr=0x%08x", entrada.c_str(),
+                    base, cpu.Get(kLR));
+      traco_.RegistarFalta(Area::Brew, "IShell::GetHandler sem handler para o MIME", det);
+    }
+  } else {
+    traco_.Emitir(Area::Brew, Nivel::Depuracao, "ISHELL_GETHANDLER",
+                  "'" + entrada + "' -> 0x" + Hex(resposta) + " (" +
+                      zb2::brew::DescreverClsid(resposta) + ", " + linha->origem +
+                      ") lr=0x" + Hex(cpu.Get(kLR)));
+  }
+  cpu.Set(kR0, resposta);
+  return true;
+}
+
 std::uint32_t Despacho::IdibLivre() const {
   for (std::uint32_t obj = zb2::brew::kObjDibBase + 0x340u;
        obj < zb2::brew::kFimDosDibCompativeis; obj += 0x40u) {
@@ -1850,6 +2142,13 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // `IShell::slot43`). O contrato MEDIDO e a implementacao estao no
         // comentario do detector, acima.
         (void)AtenderDetectType(cpu);
+      } else if (idx == kBaseDoShell + brew_slots::kShell_GetHandler) {
+        // `AEECLSID GetHandler(IShell*, AEECLSID clsBase, const char *pszIn)` --
+        // o slot 32, que estava no ramo generico (recusava e dizia
+        // `IShell::slot32`). O argumento `r1` NAO e texto: e o `clsBase`. O
+        // contrato, a medicao das 95 chamadas e a tabela do registo estao no
+        // comentario do `AtenderGetHandler`, acima.
+        (void)AtenderGetHandler(cpu);
       } else if (idx == kBaseDoShell + brew_slots::kShell_LoadResObject) {
         // `IBase *LoadResObject(IShell*, const char*, uint16 nResID, AEECLSID)`
         // -- o slot 19, que estava no ramo generico. O comentario da
