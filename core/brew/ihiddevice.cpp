@@ -321,17 +321,39 @@ void Ihid::GetDeviceInfo(ICpu& cpu) {
     return;
   }
   mem_.Escrever32(pi + 0, 0x0106c3fdu);  // AEEUID_HID_Joystick_Device (linha 21 do cabecalho)
-  // DECLARADOS -- herdados da arvore antiga, e nenhuma medicao os fixa. Um titulo
-  // que compare o par VID/PID com o do controle do Zeebo vai divergir aqui, e o
-  // numero esta escrito no codigo para essa comparacao ser possivel.
+  // O PAR VID/PID ESTAVA MARCADO "DECLARADOS, sem medicao" E ESTA MEDIDO.
+  //
+  // Esta correccao e ao contrario das outras desta ronda: nao tiramos uma
+  // afirmacao forte demais, damos credito a um numero que o estava a perder.
+  // `0x1eaa/0x0135` vem do CONSOLE, por duas vias independentes:
+  //   1. o descritor USB capturado de um Zeebo, "My Power / Usb Game Pad"
+  //      (`docs/vendor/tripleoxygen/hardware/peripheral/joystick_descriptor.txt`,
+  //      citado em zeebx `src/machine/mod.rs:338-342`);
+  //   2. a entrada `VID:0x1EAA:PID:0x0135` do `hid_devices.original.cfg` do
+  //      proprio console (zeebx `docs/implementacao/09-entrada.md:76`,
+  //      `docs/07-inventario-vendor.md:112`), onde o aparelho aparece como
+  //      "New Zeebo Game Controller" -- o Dragon
+  //      (`docs/implementacao/20-boomerang-e-wii-remote.md:19,23`).
+  //
+  // O LIMITE DESTA AFIRMACAO, e fica escrito: **nao lemos o ficheiro original**,
+  // que nao esta nesta arvore. O `hid_devices.cfg` que ESTA
+  // (`research/sources/zeemu/rootfs/sys/hid_devices.cfg`) e outro ficheiro e
+  // NAO tem este par -- so comandos de PC. Logo: MEDIDO no console, por
+  // terceiros, com a fonte nomeada; nao medido por nos.
   mem_.Escrever16(pi + 4, 0x0135);
   mem_.Escrever16(pi + 6, 0x1eaa);
   mem_.Escrever8(pi + 8, 0);  // com fio: `bBluetoothDevice` = falso
   // CONTADO onde o valor SAI para o titulo: assim a corrida diz quantos titulos
   // foram informados destes numeros, e nao quantas vezes o modulo arrancou.
+  //
+  // O que aqui e PRESSUPOSTO ja nao e o par VID/PID: e o aparelho UNICO. O
+  // console tinha pelo menos tres (Dragon `1eaa:0135`, Z-Pad `1a5c:3033` e o
+  // receptor Boomerang `15a2:0003` -- zeebx `src/machine/mod.rs:338-352`), e
+  // este emulador anuncia so o primeiro.
   traco_.RegistarPressuposto(Area::Entrada, "IHIDDevice::GetDeviceInfo",
                              "nDeviceType=0x0106c3fd wProductID=0x0135 wVendorID=0x1eaa "
-                             "bBluetoothDevice=0");
+                             "MEDIDOS no console (descritor USB + hid_devices.original.cfg, "
+                             "via zeebx); DECLARADO e o aparelho UNICO -- o console tinha 3");
   cpu.Set(kR0, kAeeSuccess);
 }
 
