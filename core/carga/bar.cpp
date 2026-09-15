@@ -27,6 +27,28 @@ std::string Hex(std::uint32_t v) {
   return buf;
 }
 
+// O ultimo valor da tabela de deslocamentos de um contentor `.bar`/`.mif`, com
+// a forma do cabecalho conferida: magic 0x0011, indices a seguir aos registos,
+// e o valor no intervalo [inicio dos dados, tamanho do ficheiro]. `false` sem
+// tocar em `*fim` quando o cabecalho nao tem a forma do contentor. E o mesmo
+// uso que `core/brew/recursos.cpp` faz para servir os `.mif` com rodape.
+bool UltimoDeslocamento(const std::vector<std::uint8_t>& bytes, std::uint32_t* fim) {
+  if (bytes.size() < bar_campos::kCabecalho) return false;
+  const std::uint8_t* p = bytes.data();
+  if (Ler16(p) != bar_campos::kVersao || Ler16(p + 2) != bar_campos::kCampo2 ||
+      Ler16(p + 4) != bar_campos::kCampo4) {
+    return false;
+  }
+  const std::uint32_t off_indices = Ler32(p + 16);
+  const std::uint32_t num_ids = Ler32(p + 20);
+  const std::uint32_t off_dados = Ler32(p + 24);
+  if (num_ids == 0u || off_indices + 4u * num_ids + 4u > bytes.size()) return false;
+  const std::uint32_t ultimo = Ler32(p + off_indices + 4u * num_ids);
+  if (ultimo < off_dados || ultimo > bytes.size()) return false;
+  if (fim != nullptr) *fim = ultimo;
+  return true;
+}
+
 }  // namespace
 
 ArquivoBar ArquivoBar::AbrirDados(std::vector<std::uint8_t> bytes, std::string* motivo) {
@@ -339,6 +361,69 @@ BlobDoBar ArquivoBar::LerBlob(const RecursoDoBar& recurso) {
   b.dados = recurso.dados + deslocamento;
   b.tamanho = recurso.tamanho - deslocamento;
   return b;
+}
+
+// ---------------------------------------------------------------------------
+// O CLSID do applet, lido do `.mif`
+// ---------------------------------------------------------------------------
+
+ClsidDoMif LerClsidDoMifDados(const std::vector<std::uint8_t>& bytes) {
+  ClsidDoMif out;
+  if (bytes.empty()) {
+    out.motivo = "ficheiro vazio";
+    return out;
+  }
+
+  // 12 de 62 `.mif` terminam com 20 bytes a mais, DEPOIS do ultimo valor da
+  // tabela (medido em 22b-rec.md). O `ArquivoBar` estrito recusa-os; quando a
+  // validacao falhar, corta-se no ultimo deslocamento e tenta-se outra vez -- o
+  // rodape nao e recurso nenhum.
+  auto corpo = bytes;
+  std::string motivo;
+  for (int tentativa = 0; tentativa < 2; ++tentativa) {
+    const ArquivoBar mif = ArquivoBar::AbrirDados(corpo, &motivo);
+    if (mif.Valido()) {
+      // A seccao do applet tem 20 bytes, o primeiro u32 e o AEECLSID e os
+      // campos +4 e +12 sao zero. A regra recusa as seccoes de 20 bytes que nao
+      // sao applet (o Prey Evil, o Reckless Racing e o Zeebo App comecam em
+      // 0x00xxfeff): o CLSID a zero ou os campos a nao-zero barram-nas.
+      ClsidDoMif achado;
+      for (std::uint32_t k = 0; k < mif.NumeroDeRecursos(); ++k) {
+        const RecursoDoBar r = mif.LerPorIndice(k);
+        if (!r.ok || r.tamanho != 20u) continue;
+        const std::uint32_t clsid = Ler32(r.dados);
+        if (clsid == 0u || Ler32(r.dados + 4) != 0u || Ler32(r.dados + 12) != 0u) {
+          continue;
+        }
+        achado.ok = true;
+        achado.clsid = clsid;
+        break;
+      }
+      if (achado.ok) return achado;
+      out.motivo = "sem registo de applet: nenhuma seccao de 20 bytes com a forma do AEECLSID";
+      return out;
+    }
+    std::uint32_t fim = 0;
+    if (UltimoDeslocamento(corpo, &fim) && fim < corpo.size()) {
+      corpo.resize(fim);
+      continue;
+    }
+    break;
+  }
+  out.motivo = motivo.empty() ? "nao e o contentor .bar/.mif medido" : motivo;
+  return out;
+}
+
+ClsidDoMif LerClsidDoMif(const std::string& caminho) {
+  ClsidDoMif out;
+  std::ifstream f(caminho, std::ios::binary);
+  if (!f) {
+    out.motivo = "nao foi possivel abrir o ficheiro: " + caminho;
+    return out;
+  }
+  std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)),
+                                  std::istreambuf_iterator<char>());
+  return LerClsidDoMifDados(bytes);
 }
 
 }  // namespace zb2

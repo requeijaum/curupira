@@ -35,6 +35,7 @@
 #include <filesystem>
 #include <set>
 
+#include "core/carga/bar.h"
 #include "core/carga/mod.h"
 #include "core/cpu/arm_interpreter.h"
 #include "core/memoria/memoria.h"
@@ -641,8 +642,37 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   // apontaria para memoria morta. A primeira versao fazia isso e o resultado era
   // uma falha de segmentacao no SEGUNDO titulo.
   despacho.TelaRef().Limpar();
-  const std::uint32_t clsid_do_titulo =
+  // O CLSID DO TITULO: o `.mif` e a fonte de verdade (etapa 11, parte 2), e o
+  // corpus a queda com pressuposto registado.
+  //
+  // MEDIDO nos 62 `.mif` do corpus: 58 conferem com o `clsid_hex` do
+  // corpus62.json; 3 NAO conferem (274804, 277495, 279394 -- o valor do corpus
+  // aparece noutra seccao do `.mif`, ou so em pixels de icone) e 1 (12875,
+  // imicro3d) e uma EXTENSAO sem applet -- nesse o clsid do corpus fica a
+  // valer, porque e a CLASSE que o modulo fornece, nao o applet dele.
+  std::uint32_t clsid_do_titulo =
       static_cast<std::uint32_t>(std::strtoul(t.clsid.c_str(), nullptr, 0));
+  // O `.mif` vive NA PASTA IRMA da pasta dos modulos: `debug_nand/mif/` ao
+  // lado de `debug_nand/mod/`, e `games/brew/mif/` ao lado de
+  // `games/brew/mod/` (medido em 22-rec.md, 62 de 62). `dir` e a pasta dos
+  // MODULOS -- logo o caminho sobe um degrau antes de entrar em `mif/`.
+  const ClsidDoMif do_mif = LerClsidDoMif(dir + "/../mif/" + t.pasta + ".mif");
+  if (do_mif.ok) {
+    if (do_mif.clsid != clsid_do_titulo) {
+      std::fprintf(stderr, "CLSID DIVERGE (%s): o .mif diz %s e o corpus diz %s -- a bateria usa o do .mif\n",
+                   t.pasta.c_str(), Hex(do_mif.clsid).c_str(), Hex(clsid_do_titulo).c_str());
+      traco.RegistarPressuposto(Area::Carga, "clsid_do_mif_divergente",
+                                t.pasta + ": mif " + Hex(do_mif.clsid) +
+                                    " <> corpus " + Hex(clsid_do_titulo));
+    } else {
+      traco.RegistarPressuposto(Area::Carga, "clsid_do_mif",
+                                t.pasta + " confere com o corpus");
+    }
+    clsid_do_titulo = do_mif.clsid;
+  } else {
+    traco.RegistarPressuposto(Area::Carga, "clsid_do_corpus",
+                              t.pasta + ": " + do_mif.motivo);
+  }
   despacho.SituarTitulo(dir, t.pasta, clsid_do_titulo);
   despacho.DefinirVtableBitmap(s);
   despacho.DefinirVtableFicheiro(s.Endereco(zb2::brew::kVtableFileObj));

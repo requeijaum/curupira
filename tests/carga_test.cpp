@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "core/brew/ajudantes.h"
+#include "core/carga/bar.h"
 #include "core/carga/mod.h"
 #include "core/cpu/arm_interpreter.h"
 #include "core/memoria/memoria.h"
@@ -446,4 +447,149 @@ TEST(CargaCorpus, IMicro3dCarregaEDevolvePonteiroDeModulo) {
   EXPECT_EQ(b.cpu.InstruscoesRecusadas(), 0u)
       << "nenhuma instrucao recusada: opcode=0x" << std::hex << b.cpu.UltimaRecusada();
   EXPECT_LT(passos, 100u) << "e termina depressa, nao por esgotar o orcamento";
+}
+
+// ===========================================================================
+// O `.mif` e o CLSID do applet (etapa 11, parte 2)
+// ===========================================================================
+
+namespace {
+
+void Mif16(std::vector<std::uint8_t>* b, std::size_t pos, std::uint16_t v) {
+  (*b)[pos] = static_cast<std::uint8_t>(v & 0xff);
+  (*b)[pos + 1] = static_cast<std::uint8_t>((v >> 8) & 0xff);
+}
+
+void Mif32(std::vector<std::uint8_t>* b, std::size_t pos, std::uint32_t v) {
+  for (int k = 0; k < 4; ++k) {
+    (*b)[pos + k] = static_cast<std::uint8_t>((v >> (8 * k)) & 0xff);
+  }
+}
+
+struct RegistoMifDeTeste {
+  std::uint16_t tipo;
+  std::uint16_t id;
+  std::uint16_t delta;
+  std::uint16_t indice;
+};
+
+// O mesmo contentor do `.bar` (ver `MontarBar` em `bar_test.cpp`): cabecalho
+// de 32 bytes, registos de 8, tabela de deslocamentos com num_ids + 1 valores,
+// e as seccoes a seguir. Para o `.mif`, as seccoes sao os registos BREW.
+std::vector<std::uint8_t> MontarMif(const std::vector<RegistoMifDeTeste>& registos,
+                                    const std::vector<std::vector<std::uint8_t>>& seccoes) {
+  std::uint32_t num_ids = 0;
+  for (const RegistoMifDeTeste& r : registos) {
+    num_ids += static_cast<std::uint32_t>(r.delta) + 1u;
+  }
+  const std::uint32_t n_registos = static_cast<std::uint32_t>(registos.size());
+  const std::uint32_t off_registos = 32;
+  const std::uint32_t tam_registos = 8 * n_registos;
+  const std::uint32_t off_indices = off_registos + tam_registos;
+  const std::uint32_t off_dados = off_indices + 4 * (num_ids + 1);
+
+  std::vector<std::uint8_t> dados;
+  std::vector<std::uint32_t> indices;
+  indices.push_back(off_dados);
+  for (const std::vector<std::uint8_t>& s : seccoes) {
+    dados.insert(dados.end(), s.begin(), s.end());
+    indices.push_back(off_dados + static_cast<std::uint32_t>(dados.size()));
+  }
+  while (indices.size() < num_ids + 1) {
+    indices.push_back(indices.back());
+  }
+
+  std::vector<std::uint8_t> b(off_dados + dados.size(), 0);
+  Mif16(&b, 0, 0x0011);
+  Mif16(&b, 2, 1);
+  Mif16(&b, 4, 1);
+  Mif16(&b, 6, static_cast<std::uint16_t>(n_registos));
+  Mif32(&b, 8, off_registos);
+  Mif32(&b, 12, tam_registos);
+  Mif32(&b, 16, off_indices);
+  Mif32(&b, 20, num_ids);
+  Mif32(&b, 24, off_dados);
+  Mif32(&b, 28, static_cast<std::uint32_t>(dados.size()));
+  for (std::uint32_t k = 0; k < n_registos; ++k) {
+    Mif16(&b, off_registos + 8 * k + 0, registos[k].tipo);
+    Mif16(&b, off_registos + 8 * k + 2, registos[k].id);
+    Mif16(&b, off_registos + 8 * k + 4, registos[k].delta);
+    Mif16(&b, off_registos + 8 * k + 6, registos[k].indice);
+  }
+  for (std::size_t k = 0; k < indices.size(); ++k) {
+    Mif32(&b, off_indices + 4 * k, indices[k]);
+  }
+  for (std::size_t k = 0; k < dados.size(); ++k) {
+    b[off_dados + k] = dados[k];
+  }
+  return b;
+}
+
+// A seccao do applet na forma MEDIDA: 20 bytes, primeiro u32 = AEECLSID,
+// zeros em +4 e +12 (e o campo numerado em +8, como nos `.mif` reais).
+std::vector<std::uint8_t> SeccaoApplet(std::uint32_t clsid) {
+  std::vector<std::uint8_t> s(20, 0);
+  Mif32(&s, 0, clsid);
+  Mif32(&s, 8, 1000);
+  return s;
+}
+
+const char* kCaminhosDoMif274804[] = {
+    "/media/rafaelfrequiao/8C5F-19E51/zeebo/ROMs/debug_nand/mif/274804.mif",
+    "/home/rafaelfrequiao/projects/zeebo-lab/games/brew/mif/274804.mif",
+};
+const char* kCaminhosDoMif12875[] = {
+    "/media/rafaelfrequiao/8C5F-19E51/zeebo/ROMs/debug_nand/mif/12875.mif",
+    "/home/rafaelfrequiao/projects/zeebo-lab/games/brew/mif/12875.mif",
+};
+
+}  // namespace
+
+TEST(Carga, ClsidDoMifLeOAppletDeUmMifSintetico) {
+  const auto mif = MontarMif({{0x5000, 0, 0, 0}, {0x5000, 1, 0, 1}},
+                             {SeccaoApplet(0x01087a49u), std::vector<std::uint8_t>(8, 0)});
+  const ClsidDoMif r = LerClsidDoMifDados(mif);
+  ASSERT_TRUE(r.ok) << r.motivo;
+  EXPECT_EQ(r.clsid, 0x01087a49u);
+}
+
+TEST(Carga, UmMifSemAppletRecusaComMotivo) {
+  const auto mif = MontarMif({{0x5000, 0, 0, 0}}, {std::vector<std::uint8_t>(8, 0)});
+  const ClsidDoMif r = LerClsidDoMifDados(mif);
+  EXPECT_FALSE(r.ok);
+  EXPECT_FALSE(r.motivo.empty());
+}
+
+// O CORPUS MENTE EM 3 DOS 62 TITULOS, e este e um deles: o corpus62.json diz
+// 0x1030005 para o `brainchallenge` (274804), e o `.mif` de verdade diz
+// 0x1087a49. Este teste fixa o valor do `.mif` -- a fonte de verdade -- e o
+// ficheiro real ainda por cima traz os 20 bytes do rodape, logo também prova o
+// corte. MEDIDO a 2026-09 nos dois repositorios do corpus.
+TEST(Carga, OClsidDoBrainchallengeVemDoMifENaoDoCorpus) {
+  bool ok = false;
+  std::vector<std::uint8_t> bytes;
+  for (const char* c : kCaminhosDoMif274804) {
+    bytes = LerBytes(c, &ok);
+    if (ok) break;
+  }
+  if (!ok) GTEST_SKIP() << "corpus de 62 titulos nao esta montado nesta maquina";
+  const ClsidDoMif r = LerClsidDoMifDados(bytes);
+  ASSERT_TRUE(r.ok) << r.motivo;
+  EXPECT_EQ(r.clsid, 0x01087a49u);
+}
+
+// O 12875 (`imicro3d`) e a EXTENSAO: o `.mif` NAO tem registo de applet, e o
+// clsid do corpus (0x10292c3) e a CLASSE que o modulo fornece. O leitor tem de
+// o dizer em vez de inventar um applet, para a queda continuar a valer.
+TEST(Carga, OImicro3dNaoTemAppletNoMif) {
+  bool ok = false;
+  std::vector<std::uint8_t> bytes;
+  for (const char* c : kCaminhosDoMif12875) {
+    bytes = LerBytes(c, &ok);
+    if (ok) break;
+  }
+  if (!ok) GTEST_SKIP() << "corpus de 62 titulos nao esta montado nesta maquina";
+  const ClsidDoMif r = LerClsidDoMifDados(bytes);
+  EXPECT_FALSE(r.ok);
+  EXPECT_FALSE(r.motivo.empty());
 }

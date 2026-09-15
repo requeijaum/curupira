@@ -240,6 +240,35 @@ class ArquivoBar {
   std::vector<std::uint32_t> deslocamentos_;
 };
 
+// ---------------------------------------------------------------------------
+// O `.mif`: o MESMO contentor, com o CLSID do applet
+// ---------------------------------------------------------------------------
+//
+// O `.mif` usa o mesmo contentor do `.bar` (magic 0x0011, registos de 8 bytes,
+// tabela de deslocamentos), medido em 62 de 62 `.mif` do corpus. A diferenca e
+// o que a tabela aponta: as seccoes de um `.mif` sao os registos BREW do
+// modulo, e o AEECLSID do applet vive numa seccao de EXACTAMENTE 20 bytes cujo
+// primeiro u32 e o CLSID e cujos campos +4 e +12 sao zero.
+//
+// MEDIDO nos 62 `.mif` do corpus (debug_nand/mif e zeebo-lab/games/brew/mif):
+// 58 conferem com o `clsid_hex` do corpus62.json; 3 NAO conferem (274804, 277495,
+// 279394); 1 (12875, `imicro3d`) e uma EXTENSAO, sem applet nenhum. Este leitor
+// existe para a bateria poder tomar o `.mif` como fonte de verdade e o corpus
+// como queda, com o pressuposto registado quando usa a queda.
+struct ClsidDoMif {
+  bool ok = false;
+  std::string motivo;   // vazio quando ok
+  std::uint32_t clsid = 0;
+};
+
+// Le o `.mif` do caminho e devolve o CLSID do applet. Recusa em voz alta (P2)
+// um ficheiro que nao exista, que nao tenha a forma do contentor, ou que nao
+// traga registo de applet. Os 12 de 62 `.mif` com rodape de 20 bytes sao
+// servidos: corta-se no ultimo deslocamento e valida-se outra vez.
+ClsidDoMif LerClsidDoMif(const std::string& caminho);
+// A variante em memoria, para os testes nao precisarem de ficheiro.
+ClsidDoMif LerClsidDoMifDados(const std::vector<std::uint8_t>& bytes);
+
 // Os nomes medidos no cabecalho (seccao 1). Ficam aqui para o teste os poder
 // usar sem repetir numeros, e para a recusa poder dizer QUAL campo falhou.
 namespace bar_campos {
