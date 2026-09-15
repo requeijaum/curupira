@@ -14,9 +14,11 @@
 #include <cstdint>
 #include <string>
 
+#include "core/brew/despacho.h"
 #include "core/cpu/arm_interpreter.h"
 #include "core/memoria/memoria.h"
 #include "core/traco/traco.h"
+#include "tools/ajudantes_slots.inc"
 #include "tools/recusas.h"
 
 using zb2::ArmInterpreter;
@@ -188,5 +190,178 @@ TEST(RecusasDaBateria, UmReporSemRearmarNaoProduzUmNumeroAbsurdo) {
   EXPECT_LT(rec.Total(), 1000u);
 }
 
+
+
+// ===========================================================================
+// 4. O DESPACHO (a frente "corte"): `saidas > 200` contava TODAS as saidas da
+//    fase, e nao RECUSAS SEGUIDAS (PLAN.md, "A ordem a seguir", item 1).
+//
+//    O `Despacho::Correr` tinha um contador `saidas` que crescia a CADA saida
+//    servida e a cada recusa, e a fase morria quando ele passava de 200.
+//    MEDIDO na corrida de referencia (`corrida_hid_q.json`): fases mortas em
+//    `parou_em_slot_nao_implementado` com `recusadas = 0` e so centenas de
+//    passos -- o jogo fazia 200 chamadas LEGITIMAS e a proxima instrucao
+//    matava a fase. A correccao conta as recusas SEGUIDAS.
+//
+//    O primeiro teste corre 260 saidas legitimas (`strlen`, cujo endereco e
+//    LIDO DA TABELA que o despacho instalou -- a cablagem, e nao um id
+//    interno), UMA recusa (`IShell::slot30`, o ramo generico), e mais uma
+//    saida legitima. Com o detector antigo a fase morre aos ~200 despachos;
+//    com recusas seguidas, a sequencia nunca passa de 1 e a fase RETORNA.
+//
+//    O segundo teste prova o contra-lado: um ciclo de 260 recusas SEGUIDAS
+//    tem de continuar a abortar a fase. O detector nao e arrancado -- e
+//    afinado.
+// ===========================================================================
+
+// O ficheiro vive fora de `namespace zb2::brew`: os nomes do despacho entram
+// por `using`, como o topo do ficheiro faz para o interpretador.
+using zb2::Alocador;
+using zb2::brew::Despacho;
+using zb2::brew::ResultadoFase;
+using zb2::brew::Vfs;
+using zb2::brew::kVtableFileObj;
+using zb2::Saidas;
+
+// O slot generico do IShell: 2000 + 30, sem ramo proprio no despacho -- cai no
+// ramo generico, que REGISTA a falta com o nome e RECUSA.
+constexpr std::uint32_t kDespSlotRecusado = 2030;
+constexpr std::uint32_t kDespBase = 0x00000000u;
+constexpr std::uint32_t kDespPilha = 0x80080000u;
+constexpr std::uint32_t kDespHeap = 0x80200000u;
+constexpr std::uint32_t kDespHeapTam = 0x00C00000u;
+constexpr std::uint32_t kDespTabela = 0x80010000u;
+constexpr std::uint32_t kDespSentinela = 0xFFFFFFF0u;
+constexpr std::uint32_t kDespTamanhoDoModulo = 0x00100000u;
+constexpr std::uint32_t kDespRotina = 0x00004000u;
+
+class BancadaDeDespacho {
+ public:
+  BancadaDeDespacho() {
+    saidas_.base = 0xF0000000u;
+    saidas_.passo = 4;
+    saidas_.quantos = 100000;
+    saidas_.ativa = true;
+    cpu_.ConfigurarSaidas(saidas_);
+    al_ = new Alocador(mem_, kDespHeap, kDespHeapTam, nullptr);
+    despacho_ = new Despacho(mem_, traco_, *al_, vfs_);
+    despacho_->DefinirVtableBitmap(saidas_);
+    despacho_->DefinirVtableFicheiro(saidas_.Endereco(kVtableFileObj));
+    despacho_->InstalarAjudantes(saidas_, kDespTabela);
+    despacho_->DefinirFaixaDoModulo(kDespBase, kDespTamanhoDoModulo);
+  }
+  ~BancadaDeDespacho() {
+    delete despacho_;
+    delete al_;
+  }
+
+  // O ENDERECO DO `strlen` LIDO DA TABELA que o despacho instalou -- a ordem
+  // do guest a serio (`AEEHelperFuncs` -> endereco de saida). Nao e um id
+  // interno escrito a mao: se a cablagem divergir da tabela, e o teste que
+  // falha.
+  std::uint32_t SaidaDoStrlen() const {
+    return mem_.Ler32(kDespTabela + brew_ajudantes::kAjudante_strlen * 4u);
+  }
+
+  // 260 saidas LEGITIMAS, uma RECUSA no meio, e mais uma saida legitima.
+  // Termina devolvendo o controlo (`bx r7`, r7 = sentinela -> "retornou").
+  //   4000  e1a0e00f  mov lr,pc    ; lr = 0x4008
+  //   4004  e12fff18  bx r8        ; saida legitima (r8 = SaidaDoStrlen)
+  //   4008  e2555001  subs r5,r5,#1
+  //   400c  1afffffb  bne 4000
+  //   4010  e1a0e00f  mov lr,pc    ; lr = 0x4018
+  //   4014  e12fff19  bx r9        ; RECUSA (r9 = endereco do slot 2030)
+  //   4018  e1a0e00f  mov lr,pc    ; lr = 0x4020
+  //   401c  e12fff18  bx r8        ; outra saida legitima, a seguir `a recusa
+  //   4020  e12fff17  bx r7        ; retorna
+  void MontarMuitasLegitimasComUmaRecusa(std::uint32_t quantas) {
+    mem_.Escrever32(kDespRotina + 0x00, 0xe1a0e00fu);
+    mem_.Escrever32(kDespRotina + 0x04, 0xe12fff18u);
+    mem_.Escrever32(kDespRotina + 0x08, 0xe2555001u);
+    mem_.Escrever32(kDespRotina + 0x0c, 0x1afffffb);
+    mem_.Escrever32(kDespRotina + 0x10, 0xe1a0e00fu);
+    mem_.Escrever32(kDespRotina + 0x14, 0xe12fff19u);
+    mem_.Escrever32(kDespRotina + 0x18, 0xe1a0e00fu);
+    mem_.Escrever32(kDespRotina + 0x1c, 0xe12fff18u);
+    mem_.Escrever32(kDespRotina + 0x20, 0xe12fff17u);
+    cpu_.Repor(kDespBase, kDespPilha);
+    cpu_.Set(zb2::kPC, kDespRotina);
+    cpu_.Set(zb2::kLR, kDespSentinela);
+    cpu_.Set(zb2::kR0, 0);  // argumento do strlen: a memoria esparsa responde NUL
+    cpu_.Set(zb2::kR5, quantas);
+    cpu_.Set(zb2::kR7, kDespSentinela);
+    cpu_.Set(zb2::kR8, SaidaDoStrlen());
+    cpu_.Set(zb2::kR9, saidas_.Endereco(kDespSlotRecusado));
+  }
+
+  // 260 RECUSAS SEGUIDAS. O detector tem de continuar a parar isto.
+  //   4400  e1a0e00f  mov lr,pc    ; lr = 0x4408
+  //   4404  e12fff19  bx r9        ; RECUSA
+  //   4408  e2555001  subs r5,r5,#1
+  //   440c  1afffffb  bne 4400
+  //   4410  e12fff17  bx r7
+  void MontarCicloDeRecusas(std::uint32_t quantas) {
+    mem_.Escrever32(kDespRotina + 0x400, 0xe1a0e00fu);
+    mem_.Escrever32(kDespRotina + 0x404, 0xe12fff19u);
+    mem_.Escrever32(kDespRotina + 0x408, 0xe2555001u);
+    mem_.Escrever32(kDespRotina + 0x40c, 0x1afffffb);
+    mem_.Escrever32(kDespRotina + 0x410, 0xe12fff17u);
+    cpu_.Repor(kDespBase, kDespPilha);
+    cpu_.Set(zb2::kPC, kDespRotina + 0x400);
+    cpu_.Set(zb2::kLR, kDespSentinela);
+    cpu_.Set(zb2::kR5, quantas);
+    cpu_.Set(zb2::kR7, kDespSentinela);
+    cpu_.Set(zb2::kR9, saidas_.Endereco(kDespSlotRecusado));
+  }
+
+  ResultadoFase Correr(std::uint64_t limite) { return despacho_->Correr(cpu_, limite, 0); }
+  std::size_t Faltas(const std::string& nome) const {
+    const auto& f = traco_.ContagemFaltas();
+    const auto it = f.find(nome);
+    return it == f.end() ? 0 : static_cast<std::size_t>(it->second);
+  }
+
+ private:
+  Memoria mem_;
+  Traco traco_{"despacho_recusas"};
+  Vfs vfs_;
+  Alocador* al_ = nullptr;
+  Despacho* despacho_ = nullptr;
+  Saidas saidas_;
+  ArmInterpreter cpu_{mem_, &traco_};
+};
+
+// 4a. O VERMELHO (antes da correccao): o `saidas > 200` conta TODAS as saidas,
+//     e a fase morre aos ~200 despachos -- no meio das 260 legitimas. Depois da
+//     correccao, a fase passa o ciclo, atende a recusa, atende mais uma saida e
+//     RETORNA.
+TEST(RecusasDoDespacho, MuitasSaidasLegitimasMaisUmaRecusaNaoMatamAFase) {
+  BancadaDeDespacho b;
+  b.MontarMuitasLegitimasComUmaRecusa(260);
+
+  const ResultadoFase r = b.Correr(200000);
+
+  EXPECT_NE(r.motivo, "parou_em_slot_nao_implementado")
+      << "261 saidas (260 legitimas + 1 recusa) nao sao um jogo preso: "
+         "o detector conta recusas SEGUIDAS, e a sequencia aqui nunca passa de 1";
+  EXPECT_EQ(r.motivo, "retornou");
+  EXPECT_GE(r.passos, static_cast<std::uint64_t>(260u * 4u))
+      << "a fase correu o ciclo inteiro antes de retornar";
+  EXPECT_EQ(b.Faltas("IShell::slot30"), 1u)
+      << "a recusa foi registada com o nome -- o teste le a TABELA, nao um id";
+}
+
+// 4b. O contra-lado: um ciclo de recusas SEGUIDAS continua a abortar a fase.
+TEST(RecusasDoDespacho, UmCicloDeRecusasSeguidasContinuaAPararAFase) {
+  BancadaDeDespacho b;
+  b.MontarCicloDeRecusas(260);
+
+  const ResultadoFase r = b.Correr(200000);
+
+  EXPECT_EQ(r.motivo, "parou_em_slot_nao_implementado")
+      << "201 recusas seguidas sao um ciclo preso, e a fase tem de parar";
+  EXPECT_LT(r.passos, static_cast<std::uint64_t>(201u * 4u + 8u))
+      << "parou na sequencia de recusas, e nao no orcamento";
+}
 
 }  // namespace

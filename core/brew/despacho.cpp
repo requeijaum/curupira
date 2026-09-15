@@ -721,6 +721,19 @@ bool Despacho::EntregarEventoAoApplet(ICpu& cpu, std::uint32_t clsapp, std::uint
 
 ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp_saida) {
   ResultadoFase resultado;
+  // DOIS CONTADORES (item 1 do PLAN, docs/rewrite/PLAN.md):
+  //
+  // `recusas_seguidas` conta RECUSAS CONSECUTIVAS: cresce a cada saida
+  // RECUSADA e volta a zero quando uma saida e SERVIDA. E a medida de "um
+  // jogo que insiste num metodo que recusa, em vez de andar em ciclo".
+  //
+  // `saidas` e o TOTAL de saidas da fase, e so marca o ciclo de saidas sem fim
+  // (o limite de 20000). NAO julga recusa nenhuma -- qualquer saida ja o fazia
+  // crescer, e foi assim que o antigo `saidas > 200` matou fases LEGITIMAS.
+  // MEDIDO na corrida de referencia (`corrida_hid_q.json`): 13 fases mortas em
+  // `parou_em_slot_nao_implementado` com `recusadas = 0` e so centenas de
+  // passos -- 200 chamadas legitimas + a proxima instrucao, e a fase morria.
+  std::uint32_t recusas_seguidas = 0;
   std::uint32_t saidas = 0;
   bool continuar_no_laco = false;
   while (resultado.passos < limite) {
@@ -756,6 +769,9 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
     if (cpu.GetSaidas().Contem(pc, &idx)) {
       const std::uint32_t lr = cpu.Get(kLR);
       const std::uint32_t r0 = cpu.Get(kR0);
+      // Esta saida RECUSOU? Os ramos de recusa marcam-no; o epilogo do bloco
+      // usa-o para decidir se a sequencia de recusas recomeca.
+      bool recusou_agora = false;
       if (idx == 0) {
         cpu.Set(kR0, al_.Malloc(r0));
       } else if (idx == 1) {
@@ -877,9 +893,11 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // IShell. **E o erro de ORDEM, que ja apareceu oito vezes nesta arvore.**
         //
         // Os metodos nao implementados RECUSAM COM O NOME DO METODO
-        // (`ITextCtl::SetInputMode`), e o `saidas` conta-os como os outros: um
-        // jogo que insista num metodo que recusa para, em vez de andar em ciclo.
-        if (++saidas > 200) { resultado.motivo = "parou_em_slot_nao_implementado"; return resultado; }
+        // (`ITextCtl::SetInputMode`) e o registo fica no Traco. Aqui nao se
+        // distingue o atendido do recusado (o `AtenderClasse` devolve true nas
+        // duas), logo este ramo conta como SERVIDO: a sequencia de recusas
+        // recomeca, e um ciclo preso num metodo de classe e travado pelo
+        // `laco_de_saidas` (20000) como qualquer outro ciclo de saidas.
       } else if (idx == kBaseDoShell + 2) {
         // IShell::CreateInstance(po, ClsId, ppobj) -- IShell slot 2.
         //
@@ -1172,7 +1190,8 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
                       mem_.Ler32(sp + 4), cpu.Get(kLR), txt);
         traco_.RegistarFalta(Area::Brew, nome, det);
         cpu.Set(kR0, kAeeUnsupported);
-        if (++saidas > 200) { resultado.motivo = "parou_em_slot_nao_implementado"; return resultado; }
+        recusou_agora = true;
+        if (++recusas_seguidas > 200) { resultado.motivo = "parou_em_slot_nao_implementado"; return resultado; }
       } else if (idx == kSlotIdStrlen) {
         // size_t strlen(const char *s) -- conta ate ao NUL, sem limite
         // artificial: a memoria do guest responde zero onde nao ha nada.
@@ -2240,14 +2259,22 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
                       cpu.Get(kR2));
         traco_.RegistarFalta(Area::Brew, nome, det2);
         cpu.Set(kR0, kAeeUnsupported);
-        if (++saidas > 200) { resultado.motivo = "parou_em_slot_nao_implementado"; return resultado; }
+        recusou_agora = true;
+        if (++recusas_seguidas > 200) { resultado.motivo = "parou_em_slot_nao_implementado"; return resultado; }
       } else {
         traco_.RegistarFalta(Area::Brew, "servico_sem_nome_idx" + std::to_string(idx),
                             "chamado com r0=" + Hex(r0));
         cpu.Set(kR0, kAeeUnsupported);
-        if (++saidas > 200) { resultado.motivo = "parou_em_slot_nao_implementado"; return resultado; }
+        recusou_agora = true;
+        if (++recusas_seguidas > 200) { resultado.motivo = "parou_em_slot_nao_implementado"; return resultado; }
       }
       cpu.Set(kPC, lr);
+      // Esta saida foi SERVIDA (nao passou por ramo de recusa): a sequencia de
+      // recusas recomeca. E o "zera quando corre sem recusa" do item 1 do PLAN
+      // -- a zero a cada INSTRUCAO do guest (em vez de a cada saida servida),
+      // um ciclo preso em recusas nunca acumulava 201: entre recusas ha sempre
+      // instrucoes do proprio laco, e o detector morreria em silencio.
+      if (!recusou_agora) recusas_seguidas = 0;
       if (++saidas > 20000) { resultado.motivo = "laco_de_saidas"; return resultado; }
       continue;
     }
@@ -2348,7 +2375,6 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
       }
     }
 
-    if (saidas > 200) { resultado.motivo = "parou_em_slot_nao_implementado"; return resultado; }
     // O ANEL: guarda o PC e a PALAVRA da instrucao antes de a executar. A palavra
     // serve para ver QUAL era a instrucao, e nao so onde estava.
     anel_pc_[ultimas_ % 16] = pc;
