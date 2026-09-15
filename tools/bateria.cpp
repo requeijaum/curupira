@@ -433,6 +433,17 @@ struct Estado {
   int eventos = 0;
   std::string motivo;   // porque parou, quando parou
   std::map<std::string, std::uint64_t> faltas;
+  // OS PRESSUPOSTOS, ao lado das faltas e pela mesma razao.
+  //
+  // MEDIDO pela auditoria de stubs: a bateria so publicava `ContagemFaltas()`, e
+  // tudo o que era `Nivel::Informacao` -- o `HID_DECLARADO`, o `ICM_GETSSINFO`,
+  // e os outros valores DECLARADOS -- existia no codigo e NAO chegava ao JSON.
+  // A classe "declarado" era invisivel no artefacto que se le, e quem lesse uma
+  // corrida via so duas classes (o que passa e o que falta) onde ha tres.
+  //
+  // O zeebx publica a mesma coisa em cada corrida (`src/main.rs:969-974`,
+  // lista `assumptions`).
+  std::map<std::string, std::uint64_t> pressupostos;
 };
 
 std::vector<std::uint8_t> Ler(const std::string& c, bool* ok) {
@@ -751,6 +762,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   if (!e.modulo) {
     e.motivo += " | sem_ponteiro_de_modulo";
     for (const auto& par : traco.ContagemFaltas()) e.faltas[par.first] = par.second;
+    for (const auto& par : traco.ContagemPressupostos()) e.pressupostos[par.first] = par.second;
     dm_eventos = dm.eventos;
     return e;
   }
@@ -890,6 +902,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   }
 
   for (const auto& par : traco.ContagemFaltas()) e.faltas[par.first] = par.second;
+  for (const auto& par : traco.ContagemPressupostos()) e.pressupostos[par.first] = par.second;
   e.pixels = g_despacho->TelaRef().Escritos();
   e.cores = g_despacho->TelaRef().CoresDistintas();
   e.textos = g_textos;
@@ -915,6 +928,11 @@ int main(int argc, char** argv) {
   // ARGUMENTOS, e nao so a contagem).
   std::map<std::string, std::uint64_t> faltas_totais;
   std::map<std::string, std::map<std::string, std::uint64_t>> faltas_detalhe;
+  // Os pressupostos agregados, e os titulos que os provocaram: sem a lista de
+  // titulos, "38 titulos assumem o VID/PID do comando" e um numero sem dono.
+  std::map<std::string, std::uint64_t> pressupostos_totais;
+  std::map<std::string, std::uint64_t> pressupostos_titulos;
+  std::map<std::string, std::map<std::string, std::uint64_t>> pressupostos_detalhe;
   // O CABECALHO DE PROVENIENCIA, e nao so a lista de fichas.
   //
   // Vem de um achado do sub-agente `regressoes`: o comparador deriva a
@@ -960,9 +978,15 @@ int main(int argc, char** argv) {
     if (e.modulo) ++com_modulo;
     if (e.create) ++com_applet;
     for (const auto& par : e.faltas) faltas_totais[par.first] += par.second;
+    for (const auto& par : e.pressupostos) {
+      pressupostos_totais[par.first] += par.second;
+      ++pressupostos_titulos[par.first];
+    }
     for (const auto& ev : dm_eventos) {
       if (ev.nome.rfind("NAO_IMPLEMENTADO: ", 0) == 0) {
         faltas_detalhe[ev.nome.substr(18)][ev.detalhe]++;
+      } else if (ev.nome.rfind("PRESSUPOSTO: ", 0) == 0) {
+        pressupostos_detalhe[ev.nome.substr(13)][ev.detalhe]++;
       }
     }
     std::printf("%-16s %-8u %-6s %-6s %-6s %8" PRIu64 " %8" PRIu64 " %6d %8u %5u  %s\n",
@@ -996,6 +1020,20 @@ int main(int argc, char** argv) {
                 primeiro = false;
               }
               return s;
+            }() + "}" +
+            // OS PRESSUPOSTOS DESTE TITULO, no mesmo formato das faltas: um mapa
+            // nome -> contagem. Campo NOVO, e o `tools/comparar.cpp` declara-o
+            // como OPCIONAL de proposito -- as corridas anteriores a este commit
+            // nao o tem, e recusa-las seria perder a referencia versionada.
+            ",\"pressupostos\":{" + [&] {
+              std::string s;
+              bool primeiro = true;
+              for (const auto& par : e.pressupostos) {
+                s += (primeiro ? "" : ",");
+                s += "\"" + par.first + "\":" + std::to_string(par.second);
+                primeiro = false;
+              }
+              return s;
             }() + "}},\n";
   }
   // O JSON tem de ser VALIDO: uma virgula a mais no fim torna-o ilegivel para
@@ -1015,6 +1053,26 @@ int main(int argc, char** argv) {
   for (const auto& par : ordenado) {
     std::printf("   %-34s pedido %" PRIu64 "x\n", par.second.c_str(), par.first);
     for (const auto& d : faltas_detalhe[par.second]) {
+      std::printf("        %-46s %" PRIu64 "x\n", d.first.c_str(), d.second);
+    }
+  }
+  // OS PRESSUPOSTOS DA CORRIDA, a seguir as faltas e com o mesmo peso de leitura.
+  //
+  // Uma corrida sem faltas nao e uma corrida sem divida: e uma corrida em que a
+  // divida mudou de classe. Esta lista e a segunda metade da verdade -- o que o
+  // emulador RESPONDEU sem ter medido.
+  std::printf("\n== PRESSUPOSTOS (valores DECLARADOS, nao medidos) ==\n");
+  if (pressupostos_totais.empty()) {
+    std::printf("   nenhum -- nenhum titulo chegou a um caminho que declare\n");
+  }
+  std::vector<std::pair<std::uint64_t, std::string>> ordenado_p;
+  for (const auto& par : pressupostos_totais) ordenado_p.push_back({par.second, par.first});
+  std::sort(ordenado_p.begin(), ordenado_p.end(),
+            [](const auto& a, const auto& b) { return a.first > b.first; });
+  for (const auto& par : ordenado_p) {
+    std::printf("   %-34s assumido %" PRIu64 "x em %" PRIu64 " titulo(s)\n", par.second.c_str(),
+                par.first, pressupostos_titulos[par.second]);
+    for (const auto& d : pressupostos_detalhe[par.second]) {
       std::printf("        %-46s %" PRIu64 "x\n", d.first.c_str(), d.second);
     }
   }

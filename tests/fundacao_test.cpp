@@ -134,6 +134,40 @@ TEST(Traco, NaoImplementadoFicaContadoENomeado) {
   EXPECT_EQ(dm.eventos[0].nome, "NAO_IMPLEMENTADO: glScissor");
 }
 
+TEST(Traco, UmValorDECLARADOFicaContadoENomeado) {
+  // Defeito 8: a classe "declarado" (um valor plausivel que NAO se mediu) vivia
+  // num `Emitir(..., Informacao, ...)` e a bateria so publicava as faltas -- ou
+  // seja, existia no codigo e era invisivel na corrida. Agora tem caminho
+  // proprio, contagem por nome, e vai ao JSON da bateria.
+  Tempo t;
+  Traco tr("teste", &t);
+  DestinoMemoria dm;
+  tr.JuntarDestino(&dm);
+  tr.RegistarPressuposto(Area::Entrada, "IHIDDevice::GetDeviceInfo", "VID/PID do comando");
+  tr.RegistarPressuposto(Area::Entrada, "IHIDDevice::GetDeviceInfo", "segunda vez");
+  tr.RegistarPressuposto(Area::Brew, "ICM::GetSSInfo", "sinal 4 barras");
+  ASSERT_EQ(tr.ContagemPressupostos().size(), 2u);
+  EXPECT_EQ(tr.ContagemPressupostos().at("IHIDDevice::GetDeviceInfo"), 2u);
+  EXPECT_EQ(dm.eventos[0].nome, "PRESSUPOSTO: IHIDDevice::GetDeviceInfo");
+  // FRONTEIRA: declarar NAO e recusar. Um pressuposto nao pode entrar nas
+  // faltas -- se entrasse, a lista do que falta implementar passava a contar
+  // caminhos que estao implementados, e a medida perdia o significado.
+  EXPECT_TRUE(tr.ContagemFaltas().empty());
+  EXPECT_EQ(dm.Quantos(Area::Entrada, Nivel::Aviso), 0u);
+  EXPECT_EQ(dm.Quantos(Area::Entrada, Nivel::Informacao), 2u);
+}
+
+TEST(Traco, RegistarPressupostoSemNomeEUmErro) {
+  Tempo t;
+  Traco tr("teste", &t);
+  DestinoMemoria dm;
+  tr.JuntarDestino(&dm);
+  tr.RegistarPressuposto(Area::Video, "", "");
+  ASSERT_EQ(dm.eventos.size(), 1u);
+  EXPECT_EQ(dm.eventos[0].nome, "PRESSUPOSTO_SEM_NOME");
+  EXPECT_TRUE(tr.ContagemPressupostos().empty());
+}
+
 TEST(Traco, RegistarFaltaSemNomeEUmErro) {
   Tempo t;
   Traco tr("teste", &t);

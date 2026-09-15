@@ -55,6 +55,9 @@ struct Ficha {
   long textos = 0;
   long blits = 0;
   std::string faltas = "{}";
+  // Campo NOVO e OPCIONAL: vazio quer dizer "a ficha nao o tem", que e a forma
+  // de todas as corridas anteriores ao commit que o criou.
+  std::string pressupostos = "";
 };
 
 const char* B(bool v) { return v ? "true" : "false"; }
@@ -74,7 +77,9 @@ std::string Corpo(const std::vector<Ficha>& fichas) {
       << ",\"recusadas\":" << f.recusadas
       << ",\"motivo\":\"" << f.motivo << "\",\"pixels\":" << f.pixels
       << ",\"cores\":" << f.cores << ",\"textos\":" << f.textos
-      << ",\"blits\":" << f.blits << ",\"faltas\":" << f.faltas << "}";
+      << ",\"blits\":" << f.blits << ",\"faltas\":" << f.faltas;
+    if (!f.pressupostos.empty()) s << ",\"pressupostos\":" << f.pressupostos;
+    s << "}";
   }
   s << "\n]";
   return s.str();
@@ -514,4 +519,65 @@ TEST(Comparar, MesmoTamanhoNaoRecusa) {
   a.tamanho = 90068;
   const auto r = CompararTextos(MontarCom({a}), MontarCom({a}), "a.json", "b.json");
   EXPECT_EQ(r.codigo, kSemRegressao) << r.relatorio;
+}
+
+// ===========================================================================
+// O CAMPO `pressupostos`: novo, OPCIONAL, e neutro.
+//
+// A referencia versionada foi medida ANTES deste campo existir. Se o comparador
+// exigisse o campo, a primeira corrida nova tornaria a referencia ilegivel -- e
+// perder a referencia e perder a unica medida de regressao que temos.
+// ===========================================================================
+TEST(Comparar, UmaCorridaAntigaSemPressupostosContinuaLegivel) {
+  Ficha velha;                       // sem o campo, como todas as de ate agora
+  Ficha nova;
+  nova.pressupostos = "{\"IShell::GetDeviceInfo\":1}";
+  const auto r = CompararTextos(MontarCom({velha}), MontarCom({nova}), "ref.json", "nova.json");
+  EXPECT_EQ(r.codigo, kSemRegressao) << r.relatorio;
+  // O campo ausente vale o mapa VAZIO: a chave que nasce e reportada como
+  // NEUTRA, com o nome, e nao como regressao nem como formato ilegivel.
+  EXPECT_TRUE(Contem(r.relatorio, "pressupostos.IShell::GetDeviceInfo 0 -> 1")) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "NEUTROS QUE MUDARAM")) << r.relatorio;
+}
+
+TEST(Comparar, UmPressupostoNovoNaoERegressaoEUmQueDesapareceTambemNao) {
+  Ficha antes;
+  antes.pressupostos = "{\"IFileMgr::GetFreeSpace\":1}";
+  Ficha depois;
+  depois.pressupostos = "{\"IFileMgr::GetFreeSpace\":3,\"ICM::GetSSInfo\":1}";
+  const auto r = CompararTextos(MontarCom({antes}), MontarCom({depois}), "ref.json", "nova.json");
+  EXPECT_EQ(r.codigo, kSemRegressao) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "pressupostos.IFileMgr::GetFreeSpace 1 -> 3")) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "pressupostos.ICM::GetSSInfo 0 -> 1")) << r.relatorio;
+  // Neutro quer dizer NEUTRO nos dois sentidos: o inverso tambem nao falha.
+  const auto inverso = CompararTextos(MontarCom({depois}), MontarCom({antes}), "ref.json",
+                                      "nova.json");
+  EXPECT_EQ(inverso.codigo, kSemRegressao) << inverso.relatorio;
+}
+
+// O campo OPCIONAL nao abre a porta ao campo desconhecido: a recusa (d) fica.
+TEST(Comparar, OCampoOpcionalNaoTornaQualquerCampoNovoAceite) {
+  Ficha f;
+  f.pressupostos = "{}";
+  std::string doc = MontarCom({f});
+  const std::string alvo = "\"pressupostos\":{}";
+  const std::size_t p = doc.find(alvo);
+  ASSERT_NE(p, std::string::npos) << doc;
+  doc.insert(p + alvo.size(), ",\"invencao\":1");
+  const auto r = CompararTextos(doc, doc, "a.json", "b.json");
+  EXPECT_EQ(r.codigo, kFormato) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "campo desconhecido 'invencao'")) << r.relatorio;
+}
+
+// E um campo OBRIGATORIO em falta continua a ser recusa: so o que esta marcado
+// `opcional` na tabela pode faltar.
+TEST(Comparar, UmCampoObrigatorioEmFaltaContinuaARecusar) {
+  std::string doc = MontarCom({{}});
+  const std::string alvo = ",\"blits\":0";
+  const std::size_t p = doc.find(alvo);
+  ASSERT_NE(p, std::string::npos) << doc;
+  doc.erase(p, alvo.size());
+  const auto r = CompararTextos(doc, doc, "a.json", "b.json");
+  EXPECT_EQ(r.codigo, kFormato) << r.relatorio;
+  EXPECT_TRUE(Contem(r.relatorio, "faltam: blits")) << r.relatorio;
 }

@@ -249,6 +249,19 @@ struct Campo {
   Classe classe;
   Direcao direcao;
   const char* porque;
+  // UM CAMPO OPCIONAL E UM CAMPO QUE NASCEU DEPOIS DE UMA REFERENCIA.
+  //
+  // O campo desconhecido continua a RECUSAR (e a regra que esta ferramenta
+  // existe para ter). O que isto permite e o contrario: uma ficha ANTIGA a que
+  // falte um campo que a bateria so passou a escrever mais tarde. Sem isto, o
+  // primeiro campo novo tornaria ilegivel toda a referencia versionada -- e a
+  // referencia e o unico ponto de comparacao que temos.
+  //
+  // So vale para `kMapaDeContagens`, e a razao e aritmetica: um mapa ausente
+  // vale o mapa VAZIO, e o codigo ja trata "chave ausente" como zero. Um numero
+  // ou um booleano ausente nao tem valor natural nenhum, e adivinhar um seria o
+  // stub silencioso aplicado ao comparador.
+  bool opcional = false;
 };
 
 const Campo kCampos[] = {
@@ -347,6 +360,17 @@ const Campo kCampos[] = {
      "MAIS slots, e a contagem sobe. NAO se perde informacao: cada chave e "
      "comparada e as chaves que sobem ou nascem sao REPORTADAS com o nome. "
      "Referencia: 4 pedidos em 2 titulos (pacmania 3, zenonia 1)."},
+    {"pressupostos", kMapaDeContagens, kNeutro,
+     "OS VALORES DECLARADOS, contados por nome -- a outra metade da divida. Um "
+     "caminho que responde um valor que nao mediu (o VID/PID do comando, o "
+     "sinal do radio, o espaco livre) nao entra nas `faltas`, e ate este commit "
+     "nao entrava em lado nenhum: era `Nivel::Informacao` e morria no traco. "
+     "NEUTRO pela mesma medicao das `faltas`: quem anda mais longe encontra "
+     "MAIS caminhos declarados, e a contagem SOBE sem que nada tenha piorado. "
+     "Cada chave e comparada e as que nascem sao REPORTADAS com o nome. "
+     "OPCIONAL: as corridas anteriores ao commit que criou o campo nao o tem, e "
+     "recusa-las seria perder a referencia.",
+     /*opcional=*/true},
 };
 
 constexpr std::size_t kNCampos = sizeof(kCampos) / sizeof(kCampos[0]);
@@ -543,15 +567,33 @@ bool LerCorrida(const Json& raiz, const std::string& nome, Corrida* saida, std::
         return false;
       }
     }
-    const std::size_t n = kNCampos;
-    if (item.objeto.size() != n) {
+    // Cada campo DECLARADO tem de estar na ficha, menos os marcados `opcional`
+    // (campos que nasceram depois de uma referencia; ver `struct Campo`). A
+    // contagem exacta ja nao serve como prova: uma ficha antiga tem menos campos
+    // do que a tabela declara e continua a ser legivel.
+    {
       std::string faltam;
+      std::size_t declarados_presentes = 0;
       for (const Campo& c : kCampos) {
-        if (item.Campo(c.nome) == nullptr) faltam += std::string(faltam.empty() ? "" : ", ") + c.nome;
+        if (item.Campo(c.nome) != nullptr) {
+          ++declarados_presentes;
+        } else if (!c.opcional) {
+          faltam += std::string(faltam.empty() ? "" : ", ") + c.nome;
+        }
       }
-      *erro = nome + ": ficha com " + std::to_string(item.objeto.size()) + " campos, e a tabela declara " +
-              std::to_string(n) + (faltam.empty() ? "" : ("; faltam: " + faltam));
-      return false;
+      if (!faltam.empty()) {
+        *erro = nome + ": ficha com " + std::to_string(item.objeto.size()) +
+                " campos, e a tabela declara " + std::to_string(kNCampos) +
+                "; faltam: " + faltam;
+        return false;
+      }
+      // O analisador ja recusa chave repetida e campo desconhecido, logo
+      // "todos os declarados presentes" e "nao ha mais nada" fecham a forma.
+      if (declarados_presentes != item.objeto.size()) {
+        *erro = nome + ": ficha com " + std::to_string(item.objeto.size()) +
+                " campos e " + std::to_string(declarados_presentes) + " declarados";
+        return false;
+      }
     }
     Ficha f;
     f.pasta = LerTexto(item, "pasta");
@@ -825,6 +867,20 @@ Resultado CompararTextos(const std::string& referencia, const std::string& corri
       if (c.classe == kIdentidadeComoTexto) continue;  // a chave; ja e igual
       const Json* jr = fr.dados->Campo(c.nome);
       const Json* jn = fn.dados->Campo(c.nome);
+      // UM CAMPO OPCIONAL AUSENTE VALE O MAPA VAZIO. E a mesma regra que ja
+      // governa as chaves dentro do mapa ("ausente vale zero"), levada um nivel
+      // acima: assim "o campo nasceu" e "a contagem subiu" continuam a ser a
+      // MESMA medida, e uma corrida velha compara-se com uma nova sem que o
+      // campo novo apareca como regressao.
+      static const Json kMapaVazio = [] {
+        Json j;
+        j.tipo = Json::kObjeto;
+        return j;
+      }();
+      if (c.opcional) {
+        if (jr == nullptr) jr = &kMapaVazio;
+        if (jn == nullptr) jn = &kMapaVazio;
+      }
       if (jr->tipo != jn->tipo) {
         problema_de_formato = onde + ": campo '" + c.nome + "' e " + CodigoDoTipo(*jr) +
                               " na referencia e " + CodigoDoTipo(*jn) + " na corrida";

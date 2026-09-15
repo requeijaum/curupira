@@ -134,6 +134,23 @@ class Traco {
   // falta; aparece no relatorio final.
   void RegistarFalta(Area area, const std::string& o_que_falta, const std::string& porque = "");
 
+  // 8. Um valor DECLARADO -- plausivel, escrito no codigo, e NAO MEDIDO -- ficava
+  //    dito num `Emitir(..., Nivel::Informacao, ...)`, e a bateria so publica
+  //    `ContagemFaltas()` (`tools/bateria.cpp:737`, `:936`). Resultado MEDIDO: o
+  //    `HID_DECLARADO`, o `ICM_GETSSINFO` e os outros existiam no codigo e eram
+  //    INVISIVEIS no artefacto que se le. Uma classe inteira de meia-verdade sem
+  //    numero nenhum.
+  //
+  //    `RegistarPressuposto` e para essa classe o que o `RegistarFalta` e para a
+  //    recusa: caminho unico, contado por nome, e publicado. O zeebx tem o
+  //    equivalente ha muito -- imprime uma lista `assumptions` em cada corrida
+  //    (`src/main.rs:969-974`).
+  //
+  //    A REGRA DE FRONTEIRA: recusar e `RegistarFalta`; responder um valor que
+  //    nao se mediu e `RegistarPressuposto`. Um caminho nunca e os dois.
+  void RegistarPressuposto(Area area, const std::string& o_que_se_assume,
+                           const std::string& porque = "");
+
   // Marcas de depuracao: prefixo unico para a limpeza ser um `grep`.
   void Depurar(const std::string& marca, const std::string& detalhe);
 
@@ -141,6 +158,7 @@ class Traco {
   const std::string& EtiquetaConfig() const { return etiqueta_; }
   std::uint64_t TotalEmitidos() const { return total_emitidos_; }
   const std::map<std::string, std::uint64_t>& ContagemFaltas() const { return faltas_; }
+  const std::map<std::string, std::uint64_t>& ContagemPressupostos() const { return pressupostos_; }
   std::vector<std::string> MarcasDeDepuracao() const;
 
   // Compara dois contadores. Recusa quando as etiquetas diferem -- e devolve a
@@ -158,6 +176,7 @@ class Traco {
   std::vector<Destino*> destinos_;
   std::uint64_t total_emitidos_ = 0;
   std::map<std::string, std::uint64_t> faltas_;
+  std::map<std::string, std::uint64_t> pressupostos_;
   std::vector<std::string> marcas_;
 };
 

@@ -125,6 +125,10 @@ bool Ihid::Construir(const Saidas& saidas, std::uint32_t base_das_saidas) {
   // OS VALORES QUE ESTE EMULADOR NAO MEDIU FICAM DITOS NUM TRACO. Um instrumento
   // so entra se puder ser verdadeiro (P7): estes numeros sao DECLARADOS, e quem
   // ler a corrida tem de o poder ver sem ler o codigo.
+  // O QUE FICA AQUI E A INSTALACAO, e nao um valor entregue a um titulo: e por
+  // isso que continua a ser um `Emitir`. O PRESSUPOSTO conta-se onde o valor sai
+  // para o guest (`Ihid::GetDeviceInfo`), senao o numero mediria quantas vezes o
+  // emulador arrancou -- e nao quantos titulos foram informados.
   traco_.Emitir(Area::Entrada, Nivel::Informacao, "HID_DECLARADO",
                 "wProductID=0x0135 wVendorID=0x1eaa (DECLARADOS, sem medicao) | eixos: "
                 "centro=128 MEDIDO (funsoccer 0x1ed504), min=0/max=255 DECLARADOS | "
@@ -323,6 +327,11 @@ void Ihid::GetDeviceInfo(ICpu& cpu) {
   mem_.Escrever16(pi + 4, 0x0135);
   mem_.Escrever16(pi + 6, 0x1eaa);
   mem_.Escrever8(pi + 8, 0);  // com fio: `bBluetoothDevice` = falso
+  // CONTADO onde o valor SAI para o titulo: assim a corrida diz quantos titulos
+  // foram informados destes numeros, e nao quantas vezes o modulo arrancou.
+  traco_.RegistarPressuposto(Area::Entrada, "IHIDDevice::GetDeviceInfo",
+                             "nDeviceType=0x0106c3fd wProductID=0x0135 wVendorID=0x1eaa "
+                             "bBluetoothDevice=0");
   cpu.Set(kR0, kAeeSuccess);
 }
 

@@ -335,8 +335,21 @@ bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
     cpu.Mem().Escrever32(pinfo + 0x0C, 5);       // SYS_OPRT_MODE_ONLINE
     cpu.Mem().Escrever16(pinfo + 0x28, 0x0048);   // 4 barras de sinal
     cpu.Set(kR0, kAeeSuccess);
-    traco.Emitir(Area::Brew, Nivel::Informacao, "ICM_GETSSINFO",
-                 "radio online, servico pleno, sinal 4 barras");
+    // DECLARADO, e agora CONTADO (ver `Traco::RegistarPressuposto`): nenhum
+    // destes tres valores foi medido num Zeebo a funcionar.
+    //
+    // O `AEECMSSInfo`, o `GetSSInfo` e o `AEECLSID_CM` NAO EXISTEM no SDK
+    // extraido (BREW MP 5.0.5.1): greps vazios em
+    // `platform/` por `AEECMSSInfo`, `AEECM_SS_`, `GetSSInfo` e `0x01011810`.
+    // A unica base dos offsets e a engenharia reversa do `tectoy` citada acima.
+    //
+    // A CALIBRACAO do 0x0048, que estava so no zeebx: a rotina 0x69830 do
+    // tectoy faz faixas de nove, e `0x45..0x4d` e a faixa das 4 barras
+    // (zeebx `src/machine/diversos.rs:568-569`, que declara o mesmo valor).
+    traco.RegistarPressuposto(Area::Brew, "ICM::GetSSInfo",
+                              "radio online (+0x00=2), servico pleno (+0x0C=5), sinal "
+                              "0x0048 = 4 barras (faixa 0x45..0x4d, tectoy 0x69830); "
+                              "interface AUSENTE do SDK, offsets so por engenharia reversa");
     return true;
   }
   if (k == kClasseDoAppHistory && slot == brew_slots::kAppHistory_Back) {

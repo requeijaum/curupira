@@ -122,6 +122,19 @@ void Traco::RegistarFalta(Area area, const std::string& o_que_falta, const std::
   Emitir(area, Nivel::Aviso, "NAO_IMPLEMENTADO: " + o_que_falta, detalhe);
 }
 
+void Traco::RegistarPressuposto(Area area, const std::string& o_que_se_assume,
+                                const std::string& porque) {
+  if (o_que_se_assume.empty()) {
+    Emitir(area, Nivel::Erro, "PRESSUPOSTO_SEM_NOME",
+           "quem declara um valor tem de dizer o que assume");
+    return;
+  }
+  ++pressupostos_[o_que_se_assume];
+  // `Informacao` e nao `Aviso`: um pressuposto declarado nao e um defeito. O que
+  // o torna publico e a CONTAGEM, nao o nivel.
+  Emitir(area, Nivel::Informacao, "PRESSUPOSTO: " + o_que_se_assume, porque);
+}
+
 void Traco::Depurar(const std::string& marca, const std::string& detalhe) {
   // Prefixo fixo: a limpeza de toda a instrumentacao de investigacao passa a ser
   // um `grep -r '\[DEBUG-'`, e nao uma varredura a mao (regra 7).
