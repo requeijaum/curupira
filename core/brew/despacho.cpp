@@ -3069,10 +3069,20 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         std::uint32_t args[8];
         int n = 0;
         if (idx == kSlotIdVsprintf || idx == kSlotIdVsnprintf) {
-          const std::uint32_t va = cpu.Get(kR2);
-          for (int i = 0; i < 8; ++i) {
-            args[n++] = va != 0 ? mem_.Ler32(va + static_cast<std::uint32_t>(i) * 4) : 0;
-          }
+          // A LISTA, e nao os argumentos: `AEEOldVaList` e `int**`
+          // (`AEEOldVaList.h:37`), logo o registador traz o endereco da VARIAVEL
+          // `va_list`. E o registador do `vsnprintf` e o **r3**: no `vsnprintf`
+          // o r2 e o FORMATO.
+          //
+          // MEDIDO no `alice` (esta frente): ler a lista no r2 fazia os
+          // argumentos sairem dos BYTES DO PROPRIO FORMATO -- o `%s` de
+          // "  %d @ %s" recebia `mem.Ler32(formato + 4)` = 0x25204020, os ASCII
+          // " @ %" lidos como endereco, e o `Formatar` ia ler uma cadeia em
+          // 0x25204020 (20 recusas do hospedeiro, pc 0x3f04c). O desmonte e os
+          // numeros estao em `core/brew/formato.h`.
+          const std::uint32_t plista = (idx == kSlotIdVsnprintf) ? cpu.Get(kR3) : cpu.Get(kR2);
+          ArgumentosDoVaLists(mem_, plista, args, 8);
+          n = 8;
         } else {
           args[n++] = cpu.Get(kR2);
           args[n++] = cpu.Get(kR3);
@@ -3407,9 +3417,20 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // EFILEEXISTS)` para decidir o que fazer a seguir decide ao contrario.
         cpu.Set(kR0, static_cast<std::uint32_t>(ultimo_erro_do_fm_));
       } else if (idx == kSlotIdDbgPrintf) {
-        // dbgprintf
-        std::string msg;
-        mem_.LerCadeia(r0, &msg, 512);
+        // `void dbgprintf(const char *psz, ...)` -- AEEHelperFuncs 0x09c
+        // (`AEEStdLib.h:83`). O FORMATO esta no r0 e os VARIADICOS comecam no r1
+        // (AAPCS), logo a mensagem tem de ser FORMATA. Imprimir a cadeia de
+        // formato tal e qual -- `GUEST_DBGPRINTF %s`, `...*dbgprintf-%d* %s:%d` --
+        // e o que deixava a mensagem do ASSERT invisivel em 7 titulos.
+        std::uint32_t arg_dbg[8];
+        arg_dbg[0] = cpu.Get(kR1);
+        arg_dbg[1] = cpu.Get(kR2);
+        arg_dbg[2] = cpu.Get(kR3);
+        for (int i = 3; i < 8; ++i) {
+          const std::uint32_t onde = cpu.Get(kSP) + static_cast<std::uint32_t>(i - 3) * 4;
+          arg_dbg[i] = mem_.Existe(onde) ? mem_.Ler32(onde) : 0u;  // nao se le o que nao existe
+        }
+        const std::string msg = FormatarParaTexto(mem_, cpu.Get(kR0), arg_dbg, 8, 512);
         traco_.Emitir(Area::Brew, Nivel::Depuracao, "GUEST_DBGPRINTF", msg);
         cpu.Set(kR0, 0);
       } else if (idx >= kBaseDoSlot &&

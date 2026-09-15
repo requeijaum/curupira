@@ -18,10 +18,13 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
 #include "core/brew/ajudantes_extra.h"
+#include "core/brew/despacho.h"
+#include "core/brew/formato.h"
 #include "core/cpu/arm_interpreter.h"
 #include "core/memoria/memoria.h"
 #include "core/traco/traco.h"
@@ -1033,5 +1036,234 @@ TEST(AjudantesExtra, SetupNativeImageNaoEAtendidoPorEstaTabela) {
   EXPECT_EQ(b.cpu.Get(kR0), kAeeUnsupported);
 }
 
+// ===========================================================================
+// O `AEEOldVaList` (frente `fmt`). O `vsprintf`/`vsnprintf` NAO recebem os
+// argumentos: recebem o ENDERECO da VARIAVEL `va_list` (`typedef int **
+// AEEOldVaList`, `AEEOldVaList.h:37`), e a area de argumentos esta no valor
+// dela. O desmonte do `alice.mod` e a medicao estao em `core/brew/formato.h`.
+// ===========================================================================
+
+constexpr std::uint32_t kAreaDeArgumentos = 0x80102000u;
+constexpr std::uint32_t kListaDeArgumentos = 0x80102400u;
+constexpr std::uint32_t kFormatoDoAssert = 0x80101000u;
+
+TEST(AjudantesExtra, ArgumentosDoVaListsSaemDoValorDaVariavel) {
+  // O layout do `alice`, com os numeros medidos: o registador traz o ENDERECO da
+  // VARIAVEL `va_list` (no traco real, 0x8f0afd7c), a variavel aponta para a
+  // area, e a area tem os argumentos do formato "  %d @ %s" -- a cadeia do
+  // proprio ASSERT do titulo (0x3fa30 no `.mod`).
+  Bancada b;
+  constexpr std::uint32_t kTextoDoAssert = 0x80103000u;
+  b.EscreverCadeia(kFormatoDoAssert, "  %d @ %s");
+  b.EscreverCadeia(kTextoDoAssert, "alice.c");
+  b.mem.Escrever32(kAreaDeArgumentos + 0, 16);
+  b.mem.Escrever32(kAreaDeArgumentos + 4, kTextoDoAssert);
+  b.mem.Escrever32(kListaDeArgumentos, kAreaDeArgumentos);  // *va_list = a area
+  std::uint32_t args[8];
+  EXPECT_EQ(ArgumentosDoVaLists(b.mem, kListaDeArgumentos, args, 8), 8);
+  EXPECT_EQ(args[0], 16u);
+  EXPECT_EQ(args[1], kTextoDoAssert);
+  EXPECT_EQ(FormatarParaTexto(b.mem, kFormatoDoAssert, args, 8), "  16 @ alice.c");
+  // SEM LEITURA FORA DO QUE EXISTE: nem a variavel nem a area nem as palavras
+  // que passam do fim. O valor seria zero de qualquer maneira -- o que muda e que
+  // uma leitura nao mapeada NOSSA deixaria de aparecer como evidencia contra o
+  // guest (e a `Memoria` conta-as todas).
+  b.mem.PararDeSondar();
+  const std::uint64_t lidas = b.mem.LeiturasNaoMapeadas();
+  std::uint32_t outros[8];
+  EXPECT_EQ(ArgumentosDoVaLists(b.mem, 0x7F000000u, outros, 8), 0)
+      << "a VARIAVEL nao esta em memoria: nao se le nada";
+  EXPECT_EQ(ArgumentosDoVaLists(b.mem, kListaDeArgumentos, outros, 8), 8);
+  EXPECT_EQ(b.mem.LeiturasNaoMapeadas(), lidas)
+      << "nenhuma leitura saiu fora da memoria mapeada";
+}
+
+TEST(AjudantesExtra, SemAIndirecaoOsArgumentosSaoOsBytesDoFormato) {
+  // A CONTRADICAO, com os numeros medidos, e fica escrita para a proxima frente
+  // nao ter de a redescobrir: SEM a indirecao -- a ler em `pLista + 4*k`, que e
+  // o que o despacho fazia -- o argumento do `%s` de "  %d @ %s" e
+  // `mem.Ler32(formato + 4)` = 0x25204020 = os ASCII " @ %" lidos como ENDERECO.
+  // A "cadeia" nesse endereco nao existe: e a falta
+  // `Memoria::Ler fora de instrucao`, que a frente `inst` mediu 20 vezes no
+  // `alice` com o pc da chamada (0x3f04c).
+  Bancada b;
+  b.EscreverCadeia(kFormatoDoAssert, "  %d @ %s");
+  std::uint32_t errado[2];
+  errado[0] = b.mem.Ler32(kFormatoDoAssert);
+  errado[1] = b.mem.Ler32(kFormatoDoAssert + 4);
+  EXPECT_EQ(errado[0], 0x64252020u) << "os ASCII \"  %d\" como argumento";
+  EXPECT_EQ(errado[1], 0x25204020u) << "os ASCII \" @ %\" -- o endereco do defeito";
+  const std::uint64_t antes = b.mem.LeiturasNaoMapeadas();
+  EXPECT_EQ(FormatarParaTexto(b.mem, kFormatoDoAssert, errado, 2), "  1680154656 @ ");
+  EXPECT_GT(b.mem.LeiturasNaoMapeadas(), antes)
+      << "o `%s` foi LER os bytes do formato como se fossem um endereco";
+}
+
+TEST(AjudantesExtra, FlutuanteConsomeDoisArgumentosENaoDeslocaOsSeguintes) {
+  // O formato medido no `quake2brew` e `"%4.2f %s %s %s"`, e a cadeia esta no
+  // `.mod` ao lado do proprio double 3.2 (0x299d0 e 0x299ce). Sem consumir os
+  // DOIS argumentos do `double`, o `%s` seguinte recebia 0x7ae147ae -- a METADE
+  // BAIXA do 3.2 -- e a leitura dessa "cadeia" era uma falta NOVA
+  // (`Memoria::Ler fora de instrucao` 0 -> 1 nesse titulo, medido).
+  Bancada b;
+  constexpr std::uint32_t kFmt = 0x80101000u;
+  constexpr std::uint32_t kTxt = 0x80103000u;
+  b.EscreverCadeia(kFmt, "%4.2f %s");
+  b.EscreverCadeia(kTxt, "alice.c");
+  // As duas palavras medidas no `.mod` (0x299ce): sao o double 3.21.
+  const std::uint32_t args[3] = {0x7ae147aeu, 0x4009ae14u, kTxt};
+  EXPECT_EQ(FormatarParaTexto(b.mem, kFmt, args, 3), "3.21 alice.c");
+  EXPECT_EQ(b.mem.LeiturasNaoMapeadas(), 0u) << "nenhuma leitura fora da memoria";
+  // A precisao e do C: o `%f` sai pelo `snprintf` DO SISTEMA, com o texto da
+  // especificacao que o guest escreveu.
+  b.EscreverCadeia(kFmt, "%.3f|");
+  EXPECT_EQ(FormatarParaTexto(b.mem, kFmt, args, 3), "3.210|");
+}
+
+// ===========================================================================
+// A CABLAGEM DO `vsnprintf` (0x140) E DO `vsprintf` (0x13c): a chamada VAI PELA
+// TABELA.
+//
+// ARMADILHA JA PAGA nesta arvore: um teste que chama um `<id interno>` NAO testa
+// a cablagem. Aqui o endereco do ajudante e LIDO da `AEEHelperFuncs` que o
+// proprio despacho instalou, e quem chama e uma rotina do GUEST que salta para
+// ele -- como o `alice` faz (`alice.mod` 0x3f044 `ldr ip,[r0,#0x140]` + `blx
+// ip` em 0x3f04c). Se a tabela e o despacho divergirem, e este teste que falha.
+// ===========================================================================
+
+constexpr std::uint32_t kBtTabela = 0x80010000u;
+constexpr std::uint32_t kBtRotina = 0x00004000u;
+constexpr std::uint32_t kBtPilha = 0x80080000u;
+constexpr std::uint32_t kBtDados = 0x80090000u;
+constexpr std::uint32_t kBtSentinela = 0xFFFFFFF0u;
+constexpr std::uint32_t kBtHeap = 0x80200000u;
+constexpr std::uint32_t kBtHeapTam = 0x00100000u;
+
+void CadeiaEm(Memoria& mem, std::uint32_t onde, const std::string& s) {
+  for (std::size_t k = 0; k < s.size(); ++k) {
+    mem.Escrever8(onde + static_cast<std::uint32_t>(k), static_cast<std::uint8_t>(s[k]));
+  }
+  mem.Escrever8(onde + static_cast<std::uint32_t>(s.size()), 0);
+}
+
+std::string LerEm(const Memoria& mem, std::uint32_t onde) {
+  std::string s;
+  for (std::uint32_t k = 0; k < 128; ++k) {
+    const char ch = static_cast<char>(mem.Ler8(onde + k));
+    if (ch == 0) break;
+    s.push_back(ch);
+  }
+  return s;
+}
+
+class BancadaDaTabela {
+ public:
+  BancadaDaTabela() {
+    saidas_.base = 0xF0000000u;
+    saidas_.passo = 4;
+    saidas_.quantos = 100000;
+    saidas_.ativa = true;
+    cpu_.ConfigurarSaidas(saidas_);
+    al_ = new Alocador(mem_, kBtHeap, kBtHeapTam, nullptr);
+    despacho_ = new Despacho(mem_, traco_, *al_, vfs_);
+    despacho_->DefinirVtableBitmap(saidas_);
+    despacho_->DefinirVtableFicheiro(saidas_.Endereco(kVtableFileObj));
+    despacho_->InstalarAjudantes(saidas_, kBtTabela);
+    despacho_->DefinirFaixaDoModulo(0, 0x00100000u);
+  }
+  ~BancadaDaTabela() {
+    delete despacho_;
+    delete al_;
+  }
+
+  // O ENDERECO DO AJUDANTE, LIDO DA TABELA (`AEEHelperFuncs`): nao e um id
+  // interno escrito a mao. O `offset` e o do SDK, que e o BYTE -- `0x140` e a
+  // 81a entrada (`despacho.cpp:801`: `Escrever32(tabela + lig.off, ...)`).
+  std::uint32_t SaidaDoAjudante(std::uint32_t offset) const {
+    return mem_.Ler32(kBtTabela + offset);
+  }
+
+  // A chamada do guest, em tres instrucoes:
+  //   4000  e1a0e00f  mov lr, pc
+  //   4004  e12fff18  bx  r8   @ o ajudante
+  //   4008  e12fff17  bx  r7   @ a sentinela: a fase RETORNA
+  ResultadoFase Chamar(std::uint32_t saida, std::uint32_t r0, std::uint32_t r1, std::uint32_t r2,
+                       std::uint32_t r3) {
+    mem_.Escrever32(kBtRotina + 0, 0xe1a0e00fu);
+    mem_.Escrever32(kBtRotina + 4, 0xe12fff18u);
+    mem_.Escrever32(kBtRotina + 8, 0xe12fff17u);
+    cpu_.Repor(0, kBtPilha);
+    cpu_.Set(kPC, kBtRotina);
+    cpu_.Set(kLR, kBtSentinela);
+    cpu_.Set(kR7, kBtSentinela);
+    cpu_.Set(kR8, saida);
+    cpu_.Set(kR0, r0);
+    cpu_.Set(kR1, r1);
+    cpu_.Set(kR2, r2);
+    cpu_.Set(kR3, r3);
+    return despacho_->Correr(cpu_, 20000, 0);
+  }
+
+  Memoria mem_;
+  Traco traco_{"vsnprintf_da_tabela"};
+  Vfs vfs_;
+  Alocador* al_ = nullptr;
+  Despacho* despacho_ = nullptr;
+  Saidas saidas_;
+  ArmInterpreter cpu_{mem_, &traco_};
+};
+
+// O bloco de argumentos, montado como o guest o monta: a VARIAVEL `va_list` na
+// `kLista`, ela a apontar para a `kArea`, e a area com (16, "alice.c") para o
+// formato do ASSERT "  %d @ %s".
+void MontarOAssertDoAlice(BancadaDaTabela& b, std::uint32_t kFmt, std::uint32_t kTxt,
+                          std::uint32_t kArea, std::uint32_t kLista) {
+  CadeiaEm(b.mem_, kFmt, "  %d @ %s");
+  CadeiaEm(b.mem_, kTxt, "alice.c");
+  b.mem_.Escrever32(kArea + 0, 16);
+  b.mem_.Escrever32(kArea + 4, kTxt);
+  b.mem_.Escrever32(kLista, kArea);
+}
+
+TEST(AjudantesExtra, VsnprintfDaTabelaFormataComOvaListDoSDK) {
+  BancadaDaTabela b;
+  constexpr std::uint32_t kFmt = kBtDados + 0x000u;
+  constexpr std::uint32_t kBuf = kBtDados + 0x100u;
+  constexpr std::uint32_t kTxt = kBtDados + 0x200u;
+  constexpr std::uint32_t kArea = kBtDados + 0x300u;
+  constexpr std::uint32_t kLista = kBtDados + 0x400u;
+  MontarOAssertDoAlice(b, kFmt, kTxt, kArea, kLista);
+  const ResultadoFase r = b.Chamar(b.SaidaDoAjudante(brew_ajudantes::kAjudante_vsnprintf), kBuf,
+                                   64, kFmt, kLista);
+  EXPECT_EQ(r.motivo, "retornou") << "a rotina do guest correu ate ao fim";
+  EXPECT_EQ(LerEm(b.mem_, kBuf), "  16 @ alice.c");
+  EXPECT_EQ(b.cpu_.Get(kR0), 14u) << "o comprimento escrito, como o `sprintf`";
+  EXPECT_EQ(b.mem_.LeiturasNaoMapeadas(), 0u)
+      << "com o `va_list` do SDK nenhuma leitura sai fora da memoria";
+}
+
+TEST(AjudantesExtra, VsprintfDaTabelaUsaOMesmoVaLists) {
+  BancadaDaTabela b;
+  constexpr std::uint32_t kFmt = kBtDados + 0x000u;
+  constexpr std::uint32_t kBuf = kBtDados + 0x100u;
+  constexpr std::uint32_t kTxt = kBtDados + 0x200u;
+  constexpr std::uint32_t kArea = kBtDados + 0x300u;
+  constexpr std::uint32_t kLista = kBtDados + 0x400u;
+  CadeiaEm(b.mem_, kFmt, "n=%s/%d");
+  CadeiaEm(b.mem_, kTxt, "alice.c");
+  b.mem_.Escrever32(kArea + 0, kTxt);
+  b.mem_.Escrever32(kArea + 4, 7);
+  b.mem_.Escrever32(kLista, kArea);
+  // `vsprintf(buf, fmt, va_list)` -- o formato esta no r1 e a lista no r2.
+  const ResultadoFase r = b.Chamar(b.SaidaDoAjudante(brew_ajudantes::kAjudante_vsprintf), kBuf, kFmt,
+                                   0, 0);
+  EXPECT_EQ(r.motivo, "retornou");
+  EXPECT_EQ(LerEm(b.mem_, kBuf), "n=/0")
+      << "sem lista (r2) nao ha argumentos: o `%s` sai vazio e o `%d` sai 0";
+  const ResultadoFase r2 = b.Chamar(b.SaidaDoAjudante(brew_ajudantes::kAjudante_vsprintf), kBuf, kFmt,
+                                    kLista, 0);
+  EXPECT_EQ(r2.motivo, "retornou");
+  EXPECT_EQ(LerEm(b.mem_, kBuf), "n=alice.c/7");
+}
 
 }  // namespace

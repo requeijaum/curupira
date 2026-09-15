@@ -260,7 +260,11 @@ class BancadaDeDespacho {
   // interno escrito a mao: se a cablagem divergir da tabela, e o teste que
   // falha.
   std::uint32_t SaidaDoStrlen() const {
-    return mem_.Ler32(kDespTabela + brew_ajudantes::kAjudante_strlen * 4u);
+    // `kAjudante_strlen` JA E O OFFSET EM BYTES (`tools/ajudantes_slots.inc`,
+    // gerado do `AEEStdLib.h`: strlen = 0x014, strchr = 0x018, ...). Multiplicar
+    // por 4 lia QUATRO vezes a frente na tabela -- um endereco valido da mesma
+    // familia, e por isso passava por acidente. Medido pela frente fmt.
+    return mem_.Ler32(kDespTabela + brew_ajudantes::kAjudante_strlen);
   }
 
   // 260 saidas LEGITIMAS, uma RECUSA no meio, e mais uma saida legitima.
