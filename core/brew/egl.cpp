@@ -359,10 +359,13 @@ ResultadoEgl Egl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint3
     return ResultadoGl::NaoImplementado;
   };
   // O display tem de ser o nosso. Aceitar um ponteiro qualquer poria o estado do
-  // EGL num objecto que nao existe.
+  // EGL num objecto que nao existe. O objeto QEGL (0x8F005000) tambem vale: o
+  // QEGL delega no mesmo estado unico (titulos inicializam pelo QEGL).
   const auto display_ok = [&](std::uint32_t dpy, std::size_t usados) -> bool {
-    if (dpy == kDisplayUnico) return true;
-    recusa(usados, "dpy nao e o objecto IEGL deste emulador", EGL_BAD_DISPLAY);
+    if (dpy == kDisplayUnico || dpy == 0x8F005000u) return true;
+    char det[64];
+    std::snprintf(det, sizeof(det), "dpy=0x%08x nao e display deste emulador", dpy);
+    recusa(usados, det, EGL_BAD_DISPLAY);
     return false;
   };
   const auto iniciado = [&](std::size_t usados) -> bool {

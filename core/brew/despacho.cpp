@@ -463,13 +463,23 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // apanhava estes slots e devolvia `QEGL::?` sem comportamento (nona
         // ocorrencia do erro de ordem). O slot 2 (QI) fica no AtenderClasse.
         const std::uint32_t qegl_base = VtClasse(static_cast<std::uint32_t>(Classe::kQEGL));
+        const std::uint32_t q_slot = idx - qegl_base;
         ArgumentosGl avq;
         for (int k2 = 0; k2 < 4; ++k2) avq.reg[k2] = cpu.Get(kR0 + k2);
         avq.sp = cpu.Get(kSP);
         avq.lr = cpu.Get(kLR);
         std::uint32_t retornoq = 0;
-        egl_.Executar(QeglParaIegl(idx - qegl_base), avq, &retornoq);
+        egl_.Executar(QeglParaIegl(q_slot), avq, &retornoq);
         cpu.Set(kR0, retornoq);
+        // O QEGL PASSA UM PONTEIRO DE SAIDA no r2 do GetDisplay e le-o depois
+        // (abd 0x14688: `add r2,sp,#0xc`; 0x146c4: `ldr r0,[sp,#0xc]`). O IEGL
+        // classico devolve o display no r0 e nao tem esse argumento -- aqui
+        // escreve-se o MESMO valor nos dois sitios, para o titulo que le a saida
+        // nao ficar com lixo da pilha a fazer de display.
+        if (QeglParaIegl(q_slot) == gl_slots::kIegl_GetDisplay && retornoq != 0) {
+          const std::uint32_t out = cpu.Get(kR2);
+          if (out != 0) mem_.Escrever32(out, retornoq);
+        }
       } else if (AtenderClasse(cpu, idx, traco_)) {
         // AS CLASSES CONHECIDAS (`core/brew/classes.h`). ESTE RAMO VEM ANTES DO
         // `idx >= kBaseDoShell`, e nao e gosto: os indices desta faixa sao 40000+
