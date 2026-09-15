@@ -248,6 +248,7 @@ constexpr std::uint32_t kSlotIdSetClipRect = 1536;
 constexpr std::uint32_t kSlotIdUpdate = 1537;
 constexpr std::uint32_t kSlotIdBacklight = 1542;
 constexpr std::uint32_t kSlotIdMkDir = 1544;
+constexpr std::uint32_t kSlotIdBitmapQI = 1565;
 constexpr std::uint32_t kSlotIdGetDest = 1545;
 constexpr std::uint32_t kSlotIdSetDest = 1546;
 constexpr std::uint32_t kSlotIdRmDir = 1547;
@@ -612,6 +613,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
       {zb2::brew::kVtableFileMgr, kFmGetLastError, kSlotIdFmLastErr},
       {zb2::brew::kVtableFileMgr, 7, kSlotIdRmDir},
       {zb2::brew::kVtableFileMgr, brew_slots::kFileMgr_MkDir, kSlotIdMkDir},
+      {zb2::brew::kVtableBitmap, 2, kSlotIdBitmapQI},
   };
   for (const auto& w : kWire) {
     // A GUARDA: um slot 0 num objecto ROPI e o `QueryInterface` da IBase, e a

@@ -26,6 +26,7 @@ namespace {
 // diferenca so apareceu no numero final. Dai o teste que compara estes valores com
 // a medicao estar em `tests/brew_test.cpp`.
 constexpr std::uint32_t kIidDisplay = 0x01001001u;
+constexpr std::uint32_t kIidDib = 0x01001045u;  // AEEIID_IDIB (AEEIDIB.h:37)
 constexpr std::uint32_t kIidFileMgr = 0x01001003u;
 constexpr std::uint32_t kIidHeap = 0x01001002u;
 constexpr std::uint32_t kIidFile = 0x01001014u;
@@ -67,6 +68,7 @@ constexpr std::uint32_t kSlotIdGetFontMetrics = 1530, kSlotIdMeasureText = 1531,
                        kSlotIdSetColor = 1535, kSlotIdSetClipRect = 1536, kSlotIdUpdate = 1537,
                        kSlotIdCreateDIBitmap = 1538, kSlotIdBacklight = 1542;
 constexpr std::uint32_t kSlotIdMkDir = 1544,
+                       kSlotIdBitmapQI = 1565,
                        kSlotIdGetDest = 1545,
                        kSlotIdSetDest = 1546, kSlotIdRmDir = 1547, kSlotIdGetDeviceInfo = 1549,
                        kSlotIdGetDeviceBitmap = 1550, kSlotIdGetClipRect = 1551,
@@ -1008,13 +1010,42 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         } else {
           cpu.Set(kR0, kAeeUnsupported);
         }
+      } else if (idx == kSlotIdBitmapQI) {
+        // `int QueryInterface(IBitmap*, AEEIID, void**)` no bitmap do ecra.
+        // Regra COM: pedir uma interface que o objeto JA implementa devolve o
+        // proprio objeto (o motor pede IID_DIB no IDIB: cluster WERV).
+        const std::uint32_t iid = cpu.Get(kR1);
+        const std::uint32_t ppo = cpu.Get(kR2);
+        if (ppo == 0) {
+          cpu.Set(kR0, kAeeBadParm);
+        } else if (iid == kIidDib) {
+          mem_.Escrever32(ppo, zb2::brew::kObjDibBase + 0x300);
+          cpu.Set(kR0, kAeeSuccess);
+          traco_.Emitir(Area::Brew, Nivel::Depuracao, "IBITMAP_QUERYINTERFACE",
+                        "IID_DIB -> proprio objeto");
+        } else {
+          mem_.Escrever32(ppo, 0);
+          char det[64];
+          std::snprintf(det, sizeof(det), "iid=0x%08x", iid);
+          traco_.RegistarFalta(Area::Brew, "IBitmap::QueryInterface", det);
+          cpu.Set(kR0, kAeeUnsupported);
+        }
       } else if (idx == kSlotIdGetDeviceBitmap) {
         // `int GetDeviceBitmap(IDisplay *po, IBitmap **ppIBitmap)` -- IDisplay
         // slot 16. O jogo quer o bitmap do ECRA para desenhar por cima dele.
         // E o mesmo objecto que o `GetDestination` devolve.
         const std::uint32_t pp = cpu.Get(kR1);
         if (pp != 0) {
-          mem_.Escrever32(pp, zb2::brew::kObjDibBase + 0x300);
+          // O header do objeto, igual ao GetDestination: sem ele o QI do motor
+          // lia vtable de lixo (cluster WERV: [[0x80050300]+8] = "BREW").
+          const std::uint32_t obj = zb2::brew::kObjDibBase + 0x300;
+          mem_.Escrever32(obj + 0, vtable_bitmap_);
+          mem_.Escrever32(obj + 4, 1);
+          mem_.Escrever32(obj + 8, 0);
+          mem_.Escrever32(obj + 12, zb2::brew::Tela::kLargura);
+          mem_.Escrever32(obj + 16, zb2::brew::Tela::kAltura);
+          mem_.Escrever32(obj + 20, 16);
+          mem_.Escrever32(pp, obj);
           cpu.Set(kR0, 0);  // SUCCESS
         } else {
           cpu.Set(kR0, kAeeUnsupported);
