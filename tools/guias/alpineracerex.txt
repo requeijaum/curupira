@@ -1,0 +1,17 @@
+# alpineracerex (276151) -- O GUIAO MINIMO MEDIDO: UMA tecla, sem largada.
+#
+# MEDIDO, o `start` deste titulo sai do modulo (`saiu_do_modulo_para_0xfec20ad3`,
+# 2 recusas de CPU) -- e passa a `retornou` com 0 recusas -- se e so se um evento
+# de botao for injectado DEPOIS de o jogo registar o sinal do botao
+# (`REGISTA_BOTAO`, lido no traco):
+#
+#   t = 2 410 000  ->  nada (perguntas=0: o jogo nunca pergunta)
+#   t = 2 420 000  ->  nada
+#   t = 2 435 000  ->  `start:retornou`, consumidos=1, perguntas=2, vazias=1
+#   t = 2 500 000  ->  igual, e o `start` acaba no proprio instante (2 500 052)
+#
+# Qualquer botao serve (Button_1 medido; o DPad_Down tambem, por bisseccao a
+# partir de uma escada de 12 eventos), e a largada NAO e precisa: um unico evento
+# `valor 1` reproduz o resultado todo. Um evento ANTES do registo fica na fila e
+# nunca e lido.
+2430000 botao 0x0106c40a 1

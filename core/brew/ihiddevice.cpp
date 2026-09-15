@@ -675,8 +675,10 @@ void Ihid::GetNextButtonEvent(ICpu& cpu) {
   const std::uint32_t pi = cpu.Get(kR1);
   const std::uint32_t pts = cpu.Get(kR2);
   const std::uint32_t pdropped = cpu.Get(kR3);
+  entrada_.NotarPergunta();
   if (fila_.empty()) {
     // "AEE_ENOMORE : No more events are pending" (AEEIHIDDevice.h).
+    entrada_.NotarPerguntaVazia();
     cpu.Set(kR0, kAeeNoMore);
     return;
   }
@@ -686,6 +688,11 @@ void Ihid::GetNextButtonEvent(ICpu& cpu) {
   }
   const EventoDeBotao e = fila_.front();
   fila_.pop_front();
+  // O JOGO LEU-O: e esta a metade da resposta que faltava. "o guiao foi aplicado" e
+  // "o jogo leu o evento" sao perguntas diferentes, e so juntas dizem se o
+  // controle responde -- um evento entregue na fila e nunca lido e um jogo que nao
+  // pergunta pelo controle, e nao um guiao mal escrito.
+  entrada_.NotarConsumido(e.quando_ms);
   mem_.Escrever32(pi + 0, e.id);
   mem_.Escrever32(pi + 4, e.estado);
   mem_.Escrever32(pi + 8, e.uid);
@@ -724,6 +731,11 @@ bool Ihid::Bombear(ICpu& cpu) {
   for (const auto& e : entrada_.Guiao()) {
     if (e.t_ms > agora) break;  // o guiao e nao decrescente em tempo
     if (ja_bombeou_ && e.t_ms <= ultimo_instante_bombeado_) continue;
+    // O CENSO (ver `EntradaDoZeebo::NotarAplicado`): este evento chegou a valer.
+    // Conta-se AQUI, no unico sitio onde um evento do guiao e aceite -- antes do
+    // `continue` que separa eixo de botao, e depois da guarda que impede contar
+    // duas vezes o mesmo evento.
+    entrada_.NotarAplicado(e.tipo, e.t_ms);
     if (e.tipo == TipoNaEntrada::Eixo) {
       eixo_mudou = true;
       traco_.Emitir(Area::Entrada, Nivel::Depuracao, "INJETA_EIXO",

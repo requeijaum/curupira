@@ -174,12 +174,67 @@ class EntradaDoZeebo {
     return ValorEm(agora_ms_, uid, nao_conhecido);
   }
 
+  // Le um guiao de um FICHEIRO de texto, com o MESMO formato do `Ler`.
+  //
+  // PORQUE ISTO EXISTE: um guiao de 62 titulos nao cabe numa linha de ambiente, e
+  // mais importante -- cada titulo tem o SEU guiao. O ficheiro e o que permite
+  // nomear o guiao pelo titulo (`<pasta>/<mod>.txt`), em vez de uma variavel unica
+  // que muda em silencio a corrida dos 62.
+  //
+  // Um ficheiro que NAO se abre e uma RECUSA registada com o caminho, e nao um
+  // guiao vazio: um guiao em falta e um guiao vazio dao corridas diferentes, e so
+  // um deles e o que se pediu.
+  static bool LerFicheiro(const std::string& caminho, EntradaDoZeebo* saida,
+                          std::string* motivo);
+
   const std::vector<EventoDeEntrada>& Guiao() const { return eventos_; }
   std::size_t Quantos() const { return eventos_.size(); }
+
+  // --- O CENSO DO QUE O GUIAO PRODUZIU ------------------------------------
+  //
+  // Sem isto, "com guiao vs sem guiao" e uma caixa preta: um guiao cujo instante a
+  // corrida nunca alcanca e INDISTINGUIVEL de um guiao que o jogo ignorou -- os
+  // dois dao os mesmos pixels e o mesmo motivo. O censo separa as duas perguntas,
+  // e sao perguntas diferentes:
+  //
+  //   APLICADO -- o evento chegou a valer: o relogio injectado passou o instante
+  //               dele e quem injecta (o `Ihid`) olhou para ele.
+  //   CONSUMIDO -- o jogo LEU o evento: `GetNextButtonEvent` tirou-o da fila.
+  //
+  // Um guiao aplicado e nao consumido diz que o jogo nao esta a ler o controle;
+  // um guiao nem aplicado diz que o instante pedido nao coube na corrida.
+  void NotarAplicado(TipoNaEntrada tipo, std::uint32_t t_ms);
+  void NotarConsumido(std::uint32_t t_ms);
+  // Quantas vezes o jogo PERGUNTOU pelo proximo evento de botao, e quantas dessas
+  // perguntas a fila estava VAZIA. E a medida que separa "o jogo nao olha para o
+  // controle" de "o jogo olha e nao ha nada": sem estes dois numeros, o
+  // `consumidos = 0` de uma corrida sem eventos le-se como a primeira coisa, e era
+  // a segunda.
+  void NotarPergunta();
+  void NotarPerguntaVazia();
+  std::uint32_t Perguntas() const { return perguntas_; }
+  std::uint32_t PerguntasVazias() const { return perguntas_vazias_; }
+  std::uint32_t Aplicados() const { return aplicados_; }
+  std::uint32_t AplicadosDeBotao() const { return aplicados_de_botao_; }
+  std::uint32_t AplicadosDeEixo() const { return aplicados_de_eixo_; }
+  std::uint32_t UltimoAplicadoMs() const { return ultimo_aplicado_ms_; }
+  std::uint32_t Consumidos() const { return consumidos_; }
+  std::uint32_t UltimoConsumidoMs() const { return ultimo_consumido_ms_; }
 
  private:
   std::vector<EventoDeEntrada> eventos_;  // por ordem de tempo, nao decrescente
   std::uint32_t agora_ms_ = 0;
+
+  // O censo (ver acima). Contadores CUMULATIVOS da corrida inteira, e nao um
+  // cursor: quem os le quer saber o que ACONTECEU, e nao onde o guiao esta.
+  std::uint32_t aplicados_ = 0;
+  std::uint32_t aplicados_de_botao_ = 0;
+  std::uint32_t aplicados_de_eixo_ = 0;
+  std::uint32_t ultimo_aplicado_ms_ = 0;
+  std::uint32_t consumidos_ = 0;
+  std::uint32_t ultimo_consumido_ms_ = 0;
+  std::uint32_t perguntas_ = 0;
+  std::uint32_t perguntas_vazias_ = 0;
 };
 
 // ---------------------------------------------------------------------------

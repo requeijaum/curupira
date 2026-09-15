@@ -1,6 +1,7 @@
 #include "core/brew/ihid_entrada.h"
 
 #include <cstdio>
+#include <fstream>
 #include <sstream>
 
 namespace zb2::brew {
@@ -147,6 +148,49 @@ bool EntradaDoZeebo::Ler(const std::string& texto, EntradaDoZeebo* saida, std::s
   *saida = nova;
   return true;
 }
+
+bool EntradaDoZeebo::LerFicheiro(const std::string& caminho, EntradaDoZeebo* saida,
+                                std::string* motivo) {
+  if (saida == nullptr) {
+    if (motivo != nullptr) *motivo = "saida nula";
+    return false;
+  }
+  std::ifstream f(caminho, std::ios::binary);
+  if (!f) {
+    // O CAMINHO FICA ESCRITO. "guiao invalido" sem o nome do ficheiro e um erro
+    // que nao se consegue corrigir: ha 62 titulos e um guiao por titulo.
+    if (motivo != nullptr) *motivo = "nao abriu o guiao '" + caminho + "'";
+    return false;
+  }
+  std::ostringstream texto;
+  texto << f.rdbuf();
+  std::string razao;
+  if (!Ler(texto.str(), saida, &razao)) {
+    // O `Ler` nao altera a saida quando recusa (propriedade herdada: meio guiao
+    // aplicado nao se compara com nada), logo este caminho tambem nao.
+    if (motivo != nullptr) *motivo = caminho + ": " + razao;
+    return false;
+  }
+  return true;
+}
+
+void EntradaDoZeebo::NotarAplicado(TipoNaEntrada tipo, std::uint32_t t_ms) {
+  ++aplicados_;
+  if (tipo == TipoNaEntrada::Botao) {
+    ++aplicados_de_botao_;
+  } else {
+    ++aplicados_de_eixo_;
+  }
+  ultimo_aplicado_ms_ = t_ms;
+}
+
+void EntradaDoZeebo::NotarConsumido(std::uint32_t t_ms) {
+  ++consumidos_;
+  ultimo_consumido_ms_ = t_ms;
+}
+
+void EntradaDoZeebo::NotarPergunta() { ++perguntas_; }
+void EntradaDoZeebo::NotarPerguntaVazia() { ++perguntas_vazias_; }
 
 std::int32_t EntradaDoZeebo::ValorEm(std::uint32_t t_ms, std::uint32_t uid,
                                      bool* nao_conhecido) const {

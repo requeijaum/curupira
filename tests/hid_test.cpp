@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -907,6 +909,89 @@ TEST(Hid, UmTipoQueOSdkNaoDeclaraERecusadoComONome) {
   // codigo de erro ve "nenhum dispositivo", e nao um numero que nao existe.
   EXPECT_EQ(b.Mem().Ler32(kReq), 0u);
   EXPECT_EQ(b.Mem().Ler32(kHandles), 0u);
+}
+
+// ===========================================================================
+// O GUIAO POR FICHEIRO, E O CENSO DO QUE ELE PRODUZIU
+//
+// Estes dois testes existem porque a MEDICAO da frente entrada nao se pode ler sem
+// eles: um guiao que a corrida nunca alcanca e um guiao que o jogo ignorou dao o
+// MESMO resultado (zero pixels), e a bateria nao os distingue sem contadores.
+// ===========================================================================
+TEST(Entrada, OGuiaoDeUmFicheiroLeEDeixaOFicheiroInteiroOuNada) {
+  const auto pasta = std::filesystem::temp_directory_path() / "zb2_teste_guiao_entrada";
+  std::error_code ec;
+  std::filesystem::remove_all(pasta, ec);
+  std::filesystem::create_directories(pasta, ec);
+
+  const auto bom = pasta / "bom.txt";
+  {
+    std::ofstream f(bom, std::ios::binary);
+    f << "# o guiao do alvo\n"
+         "0 eixo 0x0106c4d0 0\n"
+         "100 botao 0x0106c40a 1\n"
+         "200 botao 0x0106c40a 0\n";
+  }
+  EntradaDoZeebo e;
+  std::string motivo;
+  ASSERT_TRUE(EntradaDoZeebo::LerFicheiro(bom.string(), &e, &motivo)) << motivo;
+  EXPECT_EQ(e.Quantos(), 3u);
+  EXPECT_EQ(e.Guiao()[1].t_ms, 100u);
+  EXPECT_EQ(e.Guiao()[1].uid, 0x0106c40au) << "o uid do Button_1, na tabela do modulo";
+
+  // UM FICHEIRO EM FALTA NOMEIA-SE. Ha 62 titulos e um guiao por titulo: "guiao
+  // invalido" sem o caminho nao se consegue corrigir.
+  const auto falta = pasta / "nao_existe.txt";
+  motivo.clear();
+  EXPECT_FALSE(EntradaDoZeebo::LerFicheiro(falta.string(), &e, &motivo));
+  EXPECT_NE(motivo.find(falta.string()), std::string::npos) << motivo;
+  EXPECT_EQ(e.Quantos(), 3u) << "um ficheiro que nao abre nao apaga o guiao que la estava";
+
+  // UM FICHEIRO INVALIDO NAO INSTALA MEIO GUIAO (nState 5 num botao digital).
+  const auto mau = pasta / "mau.txt";
+  {
+    std::ofstream f(mau, std::ios::binary);
+    f << "0 eixo 0x0106c4d0 0\n10 botao 0x0106c40a 5\n";
+  }
+  motivo.clear();
+  EXPECT_FALSE(EntradaDoZeebo::LerFicheiro(mau.string(), &e, &motivo));
+  EXPECT_NE(motivo.find("mau.txt"), std::string::npos) << motivo;
+  EXPECT_EQ(e.Quantos(), 3u) << "o guiao anterior ficou intacto";
+  std::filesystem::remove_all(pasta, ec);
+}
+
+TEST(Entrada, OCensoDoGuiaoDistingueAplicadoDeConsumido) {
+  Bancada b("10 botao 0x0106c3fe 1\n");
+  ASSERT_TRUE(b.GuiaoOk()) << b.MotivoDoGuiao();
+  EXPECT_EQ(b.Entrada().Aplicados(), 0u);
+  EXPECT_EQ(b.Entrada().Consumidos(), 0u);
+
+  b.Dispositivo().Bombear(b.Cpu());  // no instante 0: nada a fazer
+  EXPECT_EQ(b.Entrada().Aplicados(), 0u) << "aos 0 ms o evento dos 10 ms ainda nao vale";
+
+  b.Entrada().Avancar(10);
+  b.Dispositivo().Bombear(b.Cpu());
+  EXPECT_EQ(b.Entrada().Aplicados(), 1u);
+  EXPECT_EQ(b.Entrada().AplicadosDeBotao(), 1u);
+  EXPECT_EQ(b.Entrada().AplicadosDeEixo(), 0u);
+  EXPECT_EQ(b.Entrada().UltimoAplicadoMs(), 10u);
+
+  // UMA SEGUNDA BOMBAGEM NO MESMO INSTANTE NAO CONTA OUTRA VEZ: o evento e o
+  // mesmo, e um contador que cresce por chamada mediria o laco e nao o guiao.
+  b.Dispositivo().Bombear(b.Cpu());
+  b.Dispositivo().Bombear(b.Cpu());
+  EXPECT_EQ(b.Entrada().Aplicados(), 1u);
+
+  // E so quando o JOGO o le e que o evento fica consumido: "aplicado" e "lido" sao
+  // perguntas diferentes, e um guiao entregue na fila e nunca lido e um jogo que
+  // nao pergunta pelo controle.
+  EXPECT_EQ(b.Entrada().Consumidos(), 0u);
+  constexpr std::uint32_t kInfo = 0x00203000u;
+  EXPECT_EQ(b.ChamaDispositivo(brew_slots::kHIDDevice_GetNextButtonEvent,
+                               b.Dispositivo().EnderecoDoDispositivo(), kInfo, 0, 0),
+            kAeeSuccess);
+  EXPECT_EQ(b.Entrada().Consumidos(), 1u);
+  EXPECT_EQ(b.Entrada().UltimoConsumidoMs(), 10u);
 }
 
 }  // namespace zb2::brew

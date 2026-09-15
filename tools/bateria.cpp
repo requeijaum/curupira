@@ -540,6 +540,12 @@ std::vector<Titulo> LerCorpus(const std::string& caminho) {
 int g_quadros = kQuadrosPorOmissao;
 int g_eventos = kEventosPorOmissao;
 bool g_trace = false;
+// A PASTA DOS GUIAOS DE ENTRADA (`ZB2_GUIAO`), vazia por omissao.
+//
+// E uma PASTA e nao um ficheiro: o guiao e do TITULO. Uma variavel com o texto de
+// um so guiao aplicada aos 62 titulos muda a corrida dos 62, e ninguem sabe qual
+// deles mudou; o ficheiro `<pasta>/<mod>.txt` diz o dono no proprio caminho.
+std::string g_pasta_dos_guiaos;
 
 Estado Medir(const Titulo& t, const std::string& dir) {
   // O TECTO DESTE TITULO: o que o corpus declara, ou o predefinido. Uma so
@@ -629,11 +635,53 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   if (const char* qu = std::getenv("ZB2_QUADROS")) g_quadros = std::atoi(qu);
   if (const char* ev = std::getenv("ZB2_EVT_START")) g_eventos = std::atoi(ev);
   if (const char* tr = std::getenv("ZB2_TRACE")) g_trace = std::atoi(tr) != 0;
+  // A PASTA DOS GUIAOS. Configuracao lida UMA vez no arranque, como as outras:
+  // a mesma linha de comando com a mesma pasta da a mesma corrida.
+  if (const char* gu = std::getenv("ZB2_GUIAO")) g_pasta_dos_guiaos = gu;
+  if (!g_pasta_dos_guiaos.empty()) {
+    // AVISO EM VOZ ALTA (P2). A entrada faz parte da CORRIDA, e o cabecalho de
+    // proveniencia do JSON nao a leva: o `zb2_comparar` compara dois ficheiros e
+    // nao sabe qual deles tinha guiao. Uma corrida com guiao comparada com a
+    // referencia sem guiao da "regressoes" que sao so ENTRADA DIFERENTE.
+    std::fprintf(stderr,
+                 "AVISO: ZB2_GUIAO='%s' -- corrida COM entrada de guiao; nao e comparavel com uma "
+                 "referencia SEM guiao (ver tools/guias/README.md)\n",
+                 g_pasta_dos_guiaos.c_str());
+  }
   // A ENTRADA (etapa 8). Sem guiao (`ZB2_ENTRADA`) o controle fica em repouso; com
   // um guiao invalido a instalacao RECUSA e diz por que, e a corrida segue sem
   // entrada -- e nao com meia entrada.
   if (!despacho.InstalarEntrada(s, kBaseDasEntradas)) {
     std::fprintf(stderr, "ENTRADA NAO INSTALADA -- ver as faltas\n");
+  }
+  // O GUIAO DO TITULO, POR FICHEIRO (`ZB2_GUIAO=<pasta>`).
+  //
+  // O guiao entra pelo MESMO caminho do `ZB2_ENTRADA`: escreve-se na
+  // `EntradaDoZeebo` que o `Ihid` ja le (`despacho.Entrada()`), e nao num segundo
+  // canal -- um segundo canal de eventos seria o defeito classico de duas
+  // implementacoes que tem de concordar.
+  //
+  // O FICHEIRO GANHA AO AMBIENTE, e a regra e essa porque o ficheiro diz o TITULO:
+  // uma variavel de ambiente no `ZB2_ENTRADA` que sobrevivesse a um guiao de
+  // titulo mudava em silencio a corrida de todos os outros 61.
+  //
+  // Um ficheiro invalido nao instala meio guiao: ficam as faltas e o controle
+  // segue em REPOUSO, que e o estado que se sabe comparar com a referencia.
+  std::string guiao_do_titulo;
+  if (!g_pasta_dos_guiaos.empty()) {
+    const std::string caminho = g_pasta_dos_guiaos + "/" + t.mod + ".txt";
+    std::error_code existe_ec;
+    if (std::filesystem::exists(caminho, existe_ec)) {
+      std::string motivo;
+      if (zb2::brew::EntradaDoZeebo::LerFicheiro(caminho, &despacho.Entrada(), &motivo)) {
+        guiao_do_titulo = caminho;
+        traco.Emitir(zb2::Area::Entrada, zb2::Nivel::Informacao, "GUIAO_DO_TITULO",
+                     caminho + " eventos=" + std::to_string(despacho.Entrada().Quantos()));
+      } else {
+        traco.RegistarFalta(zb2::Area::Entrada, "ZB2_GUIAO", motivo);
+        std::fprintf(stderr, "GUIAO RECUSADO (%s): %s\n", t.mod.c_str(), motivo.c_str());
+      }
+    }
   }
   g_despacho = &despacho;
   despacho.DefinirFaixaDoModulo(kBase, static_cast<std::uint32_t>(imagem.size()));
@@ -977,9 +1025,16 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   // armado pelo titulo no PC e corre-o ate ele voltar a sentinela -- e o proprio
   // callback re-arma o seguinte, que e como um laco de quadro se sustenta em BREW.
   int quadros_corridos = 0;
+  // OS PASSOS DO LACO DE QUADRO, somados. Sem esta soma, o instante de um guiao
+  // nao tem escala: o relogio virtual desta arvore avanca 1 ms POR INSTRUCAO
+  // (`despacho.cpp`, `++agora_ms_` no laco), logo "por a tecla aos 300 ms" e "por a
+  // tecla ao passo 300" -- e o passo 300 cai dentro da CARGA do modulo, muito antes
+  // de o applet existir. Quem escreve um guiao tem de saber onde a corrida esta.
+  std::uint64_t passos_dos_quadros = 0;
   for (int q = 0; q < g_quadros; ++q) {
     if (!g_despacho->PrepararCallbackDoTemporizador(cpu)) break;  // o laco acabou
     const zb2::brew::ResultadoFase rq = g_despacho->Correr(cpu, limite, kPPObj);
+    passos_dos_quadros += rq.passos;
     ++quadros_corridos;
     if (rq.motivo != "retornou") {
       e.motivo += " | quadro:" + rq.motivo;
@@ -988,6 +1043,35 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   }
   e.quadros = quadros_corridos;
   e.recusadas_quadros = Colher();
+
+  // O CENSO DO GUIAO, em UMA linha de stderr por titulo.
+  //
+  // Porque existe, medido: sem ele, "com guiao vs sem guiao" nao distingue tres
+  // coisas que dao o MESMO resultado -- (1) o guiao foi aplicado e o jogo ignorou-o,
+  // (2) o instante pedido nunca foi alcancado pela corrida, (3) nenhum guiao foi
+  // instalado. O `aplicados`, o `consumidos` e o `relogio_final` separam-nas.
+  //
+  // Vai para stderr e NAO para o JSON: o `zb2_comparar` trata campos novos por uma
+  // lista declarada, e um campo novo por declarar faz a comparacao parar. O censo e
+  // LEITURA do guiao, e nao uma medida do titulo -- nao tem de estar no ficheiro
+  // que se compara.
+  // IMPRIME-SE SEMPRE, e nao so quando ha guiao: a linha tem a ESCALA da corrida
+  // (`passos`, `relogio_final`), que e o que diz onde um guiao pode cair. Sem ela,
+  // "a tecla aos 300 ms" e um numero sem referencia.
+  {
+    const zb2::brew::EntradaDoZeebo& ent = despacho.Entrada();
+    const unsigned long long passos_totais =
+        static_cast<unsigned long long>(e.passos_carga + e.passos_create + e.passos_start +
+                                        passos_dos_quadros);
+    std::fprintf(stderr,
+                 "ENTRADA %s guiao=%s eventos=%zu aplicados=%u (botao=%u eixo=%u) "
+                 "ultimo_aplicado=%u consumidos=%u ultimo_consumido=%u perguntas=%u "
+                 "vazias=%u relogio_final=%u passos=%llu (carga+create+start+quadros)\n",
+                 t.mod.c_str(), guiao_do_titulo.empty() ? "-" : guiao_do_titulo.c_str(),
+                 ent.Quantos(), ent.Aplicados(), ent.AplicadosDeBotao(), ent.AplicadosDeEixo(),
+                 ent.UltimoAplicadoMs(), ent.Consumidos(), ent.UltimoConsumidoMs(),
+                 ent.Perguntas(), ent.PerguntasVazias(), ent.Agora(), passos_totais);
+  }
 
   // O TRACO CRU, quando pedido (`ZB2_TRACE=1`). Existe para a pergunta que a
   // tabela NAO responde: um titulo que volta do arranque sem pedir nada que falte
