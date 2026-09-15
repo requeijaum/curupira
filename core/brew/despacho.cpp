@@ -301,6 +301,18 @@ bool Despacho::AtenderEntrada(ICpu& cpu, std::uint32_t indice) {
   return sinais_.Atender(cpu, indice) || ihid_.Atender(cpu, indice);
 }
 
+bool Despacho::ClasseConhecida(std::uint32_t cls) const {
+  // O proprio titulo + as classes que o `CreateInstance` serve. O proprio app
+  // esteve fora desta lista e o `QueryClass` respondia FALSE para ele, em
+  // contradicao com o `CreateInstance` que o servia.
+  const bool e_o_titulo = (tem_clsid_ && cls == clsid_titulo_);
+  const bool e_classe_servida = (IndiceDaClasse(cls) < kQuantasClasses);
+  return cls == kIidDisplay || cls == 0x010127d4u || cls == kIidFileMgr || cls == kIidHeap ||
+         cls == kIidFile || cls == kIidSound || cls == kIidGraphics || cls == kIidRootForm ||
+         cls == kIidHid || cls == kIidSqlMgr ||
+         (entrada_pronta_ && cls == kClsidSignalCBFactory) || e_o_titulo || e_classe_servida;
+}
+
 void Despacho::EscreverCabecalhoDeIdib(std::uint32_t obj, std::uint32_t pbmp,
                                        std::uint32_t largura, std::uint32_t altura) {
   // `AEEIDIB.h:42-55`, campo a campo. O `nPitch` e int16 e conta BYTES de uma
@@ -1687,11 +1699,56 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // unico a mexer", e isso ja e verdade.
         cpu.Set(kR0, 0);
       } else if (idx == kSlotIdCheckPriv) {
-        // `boolean CheckPrivLevel(IShell *po, uint32 dwPriv)` -- IShell slot 39.
-        // Responde TRUE aos privilegios de que este emulador precisa: ficheiro,
-        // percentagem de memoria, e o nivel de sistema. Recusar faria o jogo
-        // desistir de escrever onde tem de escrever.
-        cpu.Set(kR0, 1);
+        // `boolean CheckPrivLevel(IShell *po, AEECLSID clsIDWant,
+        //                         boolean bQueryOnly)` -- IShell slot 39,
+        // `AEEIShell.h:327`. TRES argumentos: o comentario antigo dizia
+        // `uint32 dwPriv` e dois, e o `bQueryOnly` nem era lido.
+        //
+        // Respondia-se TRUE A TUDO, sem sequer ler o argumento. As regras estao
+        // escritas no cabecalho (`AEEIShell.h:4355-4392`) e sao estas:
+        //   - "Every application is a member of the group 0" -> cls 0 e TRUE;
+        //   - "Every application is a member of its own group: the group that
+        //     is equal to the application's class ID" -> o proprio titulo;
+        //   - "If the high-order word of clsIDWant is 0, the value is treated
+        //     as a bit-mask of the old-style privilege bits" (PL_FILE 0x0001,
+        //     PL_NETWORK 0x0002, ... PL_SYSTEM 0xffff -- `AEEPLPrivs.bid:9-19`);
+        //   - caso contrario e um AEECLSID, e a pergunta e "pertenco ao grupo
+        //     dessa classe", que aqui e "sei criar essa classe".
+        //
+        // O QUE CONCEDEMOS, e porque: `PL_FILE` (0x0001) -- ha IFileMgr e ha
+        // ficheiros, ainda que so de leitura. Tudo o resto (rede, TAPI, web,
+        // download, agenda, localizacao, e o `PL_SYSTEM` que e a soma de todos)
+        // nao existe neste emulador, e dizer que sim seria prometer o que nao
+        // ha.
+        const std::uint32_t cls_pedida = cpu.Get(kR1);
+        constexpr std::uint32_t kPlFile = 0x0001u;  // AEEPLPrivs.bid:9
+        bool tem = false;
+        const char* porque = "";
+        if (cls_pedida == 0) {
+          tem = true;  // grupo 0: todos pertencem
+          porque = "grupo 0";
+        } else if ((cls_pedida >> 16) == 0) {
+          // Mascara antiga: so passa se TODOS os bits pedidos forem concedidos.
+          tem = (cls_pedida & ~kPlFile) == 0;
+          porque = "mascara PL_*";
+        } else if (tem_clsid_ && cls_pedida == clsid_titulo_) {
+          tem = true;
+          porque = "o proprio titulo";
+        } else {
+          // "Adding a class ID to the module's Dependencies adds the module to
+          // the group denoted by that class ID" (`AEEIShell.h:4385-4386`). Aqui
+          // a pergunta responde-se com a MESMA lista do `QueryClass`: pertenco
+          // ao grupo das classes que sei servir.
+          tem = ClasseConhecida(cls_pedida);
+          porque = "classe servida pelo CreateInstance";
+        }
+        if (!tem) {
+          char det[96];
+          std::snprintf(det, sizeof(det), "cls=0x%08x (%s) bQueryOnly=%u",
+                        cls_pedida, porque, static_cast<unsigned>(cpu.Get(kR2)));
+          traco_.RegistarFalta(Area::Brew, "IShell::CheckPrivLevel", det);
+        }
+        cpu.Set(kR0, tem ? 1u : 0u);
       } else if (idx == kSlotIdSprintf || idx == kSlotIdVsprintf || idx == kSlotIdVsnprintf) {
         // `int sprintf(char *pBuf, const char *pFmt, ...)` -- AEEHelperFuncs
         // 0x020; `int vsprintf(char*, const char*, va_list)` -- 0x13c.
@@ -1778,6 +1835,16 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
       } else if (idx == kSlotIdFileWrite) {
         // `uint32 Write(IFile*, const void *p, uint32 n)` -- slot 5.
         // A VFS e SO DE LEITURA por DECISAO. Recusa declarada, zero bytes.
+        //
+        // "Declarada" onde? Nao havia registo nenhum. E este e o pior dos tres
+        // silencios desta familia: o `Write` devolve o NUMERO DE BYTES
+        // ESCRITOS, logo zero e uma resposta legitima do contrato -- um jogo que
+        // nao confira o retorno continua como se tivesse gravado.
+        char det_w[64];
+        std::snprintf(det_w, sizeof(det_w), "%u bytes pedidos",
+                      static_cast<unsigned>(cpu.Get(kR2)));
+        traco_.RegistarFalta(Area::Brew, "IFile::Write", det_w);
+        ultimo_erro_do_fm_ = kAeeUnsupported;
         cpu.Set(kR0, 0);
       } else if (idx == kSlotIdSqlOpen) {
         // `int Open(ISQLMgr *po, const char *pszFile, ISQL **ppiSQL, uint32 flags)`
@@ -1786,7 +1853,13 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // Recusa DECLARADA: nao ha SQLite aqui, e implementar meia base de dados
         // seria a pior especie de mentira -- a que so falha mais tarde, ja dentro
         // do jogo. O `tectoy` e o unico que o pede.
+        // A recusa era DECLARADA no comentario e MUDA na corrida.
         if (cpu.Get(kR3) != 0) mem_.Escrever32(cpu.Get(kR3), 0);
+        std::string nome_sql;
+        mem_.LerCadeia(cpu.Get(kR1), &nome_sql, 512);
+        char det_sql[96];
+        std::snprintf(det_sql, sizeof(det_sql), "Open %s", nome_sql.c_str());
+        traco_.RegistarFalta(Area::Brew, "ISQLMgr::Open", det_sql);
         cpu.Set(kR0, kAeeUnsupported);
       } else if (idx == kSlotIdGetDeviceInfo) {
         // `void GetDeviceInfo(IShell *po, AEEDeviceInfo *pi)` -- IShell slot 4,
@@ -1880,6 +1953,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         char det[96];
         std::snprintf(det, sizeof(det), "MkDir %s", nome.c_str());
         traco_.RegistarFalta(Area::Brew, "IFileMgr::MkDir", det);
+        ultimo_erro_do_fm_ = kAeeUnsupported;
         cpu.Set(kR0, kAeeUnsupported);
       } else if (idx == kSlotIdRemove) {
         // `int Remove(IFileMgr *po, const char *pszFile)` -- IFileMgr slot 4.
@@ -1889,6 +1963,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         char det[96];
         std::snprintf(det, sizeof(det), "Remove %s", nome.c_str());
         traco_.RegistarFalta(Area::Brew, "IFileMgr::Remove", det);
+        ultimo_erro_do_fm_ = kAeeUnsupported;
         cpu.Set(kR0, kAeeUnsupported);
       } else if (idx == kSlotIdRmDir) {
         // `int RmDir(IFileMgr *po, const char *pszDir)` -- IFileMgr slot 7.
@@ -1896,6 +1971,17 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // A VFS desta etapa e SO DE LEITURA, e e deliberado: um jogo que apague
         // um ficheiro do modulo destroi a reprodutibilidade. Recusa-se em voz
         // alta (principio P2) em vez de mentir com um sucesso que nao aconteceu.
+        //
+        // "Em voz alta" era so o comentario: o `MkDir` e o `Remove`, dez linhas
+        // acima, registam a falta com o nome; este nao registava nada. Uma
+        // recusa que nao se conta nao aparece na corrida, e quem le a lista do
+        // que falta conclui que ninguem a pediu.
+        std::string nome_rm;
+        mem_.LerCadeia(cpu.Get(kR1), &nome_rm, 512);
+        char det_rm[96];
+        std::snprintf(det_rm, sizeof(det_rm), "RmDir %s", nome_rm.c_str());
+        traco_.RegistarFalta(Area::Brew, "IFileMgr::RmDir", det_rm);
+        ultimo_erro_do_fm_ = kAeeUnsupported;
         cpu.Set(kR0, kAeeUnsupported);
       } else if (idx == kSlotIdGetAppInstance) {
         // `void *GetAppInstance(void)` -- o ponteiro do applet, para o codigo que
@@ -1913,16 +1999,10 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // stub silencioso.
         const std::uint32_t cls = cpu.Get(kR1);
         const std::uint32_t pai = cpu.Get(kR2);
-        // O proprio titulo + as 5 classes que o CreateInstance serve: antes
-        // devolvia FALSE para o proprio app, incoerente com o CreateInstance.
-        const bool e_o_titulo = (tem_clsid_ && cls == clsid_titulo_);
-        const bool e_classe_servida = (IndiceDaClasse(cls) < kQuantasClasses);
-        const bool conhecida = (cls == kIidDisplay || cls == 0x010127d4u || cls == kIidFileMgr ||
-                                cls == kIidHeap || cls == kIidFile || cls == kIidSound ||
-                                cls == kIidGraphics || cls == kIidRootForm ||
-                                cls == kIidHid || cls == kIidSqlMgr ||
-                                (entrada_pronta_ && cls == kClsidSignalCBFactory) ||
-                                e_o_titulo || e_classe_servida);
+        // A LISTA E UMA SO (`ClasseConhecida`), e e partilhada com o
+        // `CheckPrivLevel`: duas listas que tem de concordar sao zero listas --
+        // e esta arvore ja pagou essa licao mais do que uma vez.
+        const bool conhecida = ClasseConhecida(cls);
         if (pai != 0) {
           // AEEAppInfo: cls(0), pszName(4), pszIcon(8), dwIconSize(12), ...
           mem_.Escrever32(pai + 0, cls);
@@ -1942,14 +2022,35 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
                                         nome + (existe == 0 ? " -> OK" : " -> MISS"));
         cpu.Set(kR0, existe);
       } else if (idx == kSlotIdFmFree) {
-        // `uint32 GetFreeSpace(IFileMgr *po, uint32 *pdwTotal)`. Valor
-        // DECLARADO: nao ha disco neste emulador, e inventar um espaco
-        // plausivel e melhor do que devolver zero -- zero faria um jogo recusar
-        // gravar. Fica registado como valor declarado.
-        if (cpu.Get(kR1) != 0) mem_.Escrever32(cpu.Get(kR1), 0x00100000u);
-        cpu.Set(kR0, 0x00080000u);
+        // `uint32 GetFreeSpace(IFileMgr *po, uint32 *pdwTotal)`.
+        //
+        // O TOTAL DEIXA DE SER INVENTADO: o guia oficial do fabricante diz
+        // "The total file system size available on Zeebo is 1GB"
+        // (`ZeeboDeveloperGuide0.97.md:794`). 1 GiB, MEDIDO no documento.
+        //
+        // O LIVRE continua DECLARADO -- e partilhado com tudo o que esteja
+        // instalado, e nenhum documento o fixa. O numero escolhido tem uma
+        // razao escrita: o mesmo guia (`:796-797`) diz que um titulo pode usar
+        // "at most 64KB for save game data", logo qualquer valor muito acima de
+        // 64 KiB responde a pergunta que o jogo faz ("cabe o meu save?") sem
+        // fingir um disco vazio. 64 MiB.
+        //
+        // O comentario antigo PROMETIA "fica registado como valor declarado" e
+        // nao havia registo nenhum. Agora ha.
+        constexpr std::uint32_t kTotalDoFs = 0x40000000u;  // 1 GiB, guia :794
+        constexpr std::uint32_t kLivreDeclarado = 0x04000000u;  // 64 MiB
+        if (cpu.Get(kR1) != 0) mem_.Escrever32(cpu.Get(kR1), kTotalDoFs);
+        traco_.RegistarPressuposto(Area::Brew, "IFileMgr::GetFreeSpace",
+                                   "total=1 GiB MEDIDO (ZeeboDeveloperGuide0.97.md:794); "
+                                   "livre=64 MiB DECLARADO (o guia so fixa os 64 KiB de "
+                                   "save, :796)");
+        cpu.Set(kR0, kLivreDeclarado);
       } else if (idx == kSlotIdFmLastErr) {
-        cpu.Set(kR0, 0);
+        // `int GetLastError(IFileMgr *po)` -- o erro da ULTIMA operacao que
+        // falhou. Devolvia SEMPRE 0, ou seja "correu tudo bem" logo a seguir a
+        // uma recusa: um jogo que faca `if (IFILEMGR_GetLastError(pfm) ==
+        // EFILEEXISTS)` para decidir o que fazer a seguir decide ao contrario.
+        cpu.Set(kR0, static_cast<std::uint32_t>(ultimo_erro_do_fm_));
       } else if (idx == kBaseDoSlot + 500) {
         // dbgprintf
         std::string msg;

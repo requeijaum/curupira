@@ -883,4 +883,88 @@ TEST(BitmapDoEcra, OPBmpAZeroEUmaFALTAComNomeENaoUmSucessoCalado) {
   EXPECT_EQ(b.Mem().Ler8(bmp + 28), 16u);
 }
 
+// ===========================================================================
+// AS RECUSAS MUDAS: `RmDir`, `IFile::Write`, `ISQLMgr::Open`.
+//
+// As tres devolviam o codigo certo e NAO registavam nada -- ao contrario do
+// `MkDir`/`Remove` ao lado, que registam. Uma recusa que nao se conta nao
+// aparece na corrida, e a lista do que falta diz que ninguem pediu.
+// ===========================================================================
+TEST(RecusasMudas, RmDirWriteESqlOpenPassamAContar) {
+  Bancada b;
+  constexpr std::uint32_t kSaidaRmDir = 1547, kSaidaWrite = 1559, kSaidaSqlOpen = 1553;
+  constexpr std::uint32_t kNome = 0x00094000u;
+  const char* dir = "brew/save";
+  for (std::uint32_t k = 0; dir[k] != 0; ++k) b.Mem().Escrever8(kNome + k, static_cast<std::uint8_t>(dir[k]));
+  b.Mem().Escrever8(kNome + 9, 0);
+
+  EXPECT_EQ(b.ChamaSaida(kSaidaRmDir, 0x80060000u, kNome), kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("IFileMgr::RmDir"), 1u);
+
+  EXPECT_EQ(b.ChamaSaida(kSaidaWrite, 0x80060100u, 0x00094100u, 64), 0u);
+  EXPECT_EQ(b.Faltas("IFile::Write"), 1u)
+      << "o Write devolve BYTES ESCRITOS: zero e uma resposta legitima do "
+         "contrato, e por isso e a recusa mais perigosa de calar";
+
+  EXPECT_EQ(b.ChamaSaida(kSaidaSqlOpen, 0x80060200u, kNome, 0x00094200u, 0x00094300u),
+            kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("ISQLMgr::Open"), 1u);
+}
+
+TEST(GetLastError, DevolveOErroDaUltimaOperacaoQueFalhou) {
+  // Devolvia SEMPRE 0 -- "sem erro" logo a seguir a uma recusa.
+  Bancada b;
+  constexpr std::uint32_t kSaidaLastErr = 1512, kSaidaRmDir = 1547;
+  constexpr std::uint32_t kNome = 0x00094400u;
+  b.Mem().Escrever8(kNome, 0);
+  EXPECT_EQ(b.ChamaSaida(kSaidaLastErr, 0x80060000u), 0u) << "sem operacao nenhuma, sem erro";
+  b.ChamaSaida(kSaidaRmDir, 0x80060000u, kNome);
+  EXPECT_EQ(b.ChamaSaida(kSaidaLastErr, 0x80060000u), static_cast<std::uint32_t>(kAeeUnsupported));
+}
+
+TEST(GetFreeSpace, OTotalEODoGuiaEOLivreFicaDeclaradoEContado) {
+  // `ZeeboDeveloperGuide0.97.md:794`: "The total file system size available on
+  // Zeebo is 1GB." O total era 1 MiB inventado.
+  Bancada b;
+  constexpr std::uint32_t kSaidaFree = 1511;
+  constexpr std::uint32_t kPTotal = 0x00094500u;
+  const std::uint32_t livre = b.ChamaSaida(kSaidaFree, 0x80060000u, kPTotal);
+  EXPECT_EQ(b.Mem().Ler32(kPTotal), 0x40000000u) << "1 GiB, do guia do fabricante";
+  EXPECT_EQ(livre, 0x04000000u);
+  EXPECT_GT(livre, 64u * 1024u) << "o guia pede 64 KiB para save (:796); menos que isso "
+                                   "faria o titulo desistir de gravar";
+  const auto& p = b.Tr().ContagemPressupostos();
+  ASSERT_NE(p.find("IFileMgr::GetFreeSpace"), p.end())
+      << "o comentario antigo PROMETIA registo e nao havia nenhum";
+}
+
+// ===========================================================================
+// `CheckPrivLevel`: as regras estao escritas no cabecalho, e nao eram lidas.
+// ===========================================================================
+TEST(CheckPrivLevel, RespondeSimAoQueExisteENaoAoQueNaoExiste) {
+  Bancada b;
+  constexpr std::uint32_t kSaidaCheckPriv = 1564;
+  // "Every application is a member of the group 0" (AEEIShell.h:4391).
+  EXPECT_EQ(b.ChamaSaida(kSaidaCheckPriv, 0x80020000u, 0, 1), 1u);
+  // PL_FILE (0x0001, AEEPLPrivs.bid:9): ha IFileMgr e ha ficheiros.
+  EXPECT_EQ(b.ChamaSaida(kSaidaCheckPriv, 0x80020000u, 0x0001u, 1), 1u);
+  // PL_NETWORK (0x0002): nao ha rede nenhuma neste emulador.
+  EXPECT_EQ(b.ChamaSaida(kSaidaCheckPriv, 0x80020000u, 0x0002u, 1), 0u);
+  // PL_SYSTEM (0xffff): a soma de todos os bits, logo tambem os que nao ha.
+  EXPECT_EQ(b.ChamaSaida(kSaidaCheckPriv, 0x80020000u, 0xFFFFu, 1), 0u);
+  // Uma mascara MISTA (ficheiro + rede) tambem nao passa: o pedido e conjunto.
+  EXPECT_EQ(b.ChamaSaida(kSaidaCheckPriv, 0x80020000u, 0x0003u, 1), 0u);
+  EXPECT_EQ(b.Faltas("IShell::CheckPrivLevel"), 3u) << "cada nao fica com o nome";
+}
+
+TEST(CheckPrivLevel, UmaClasseQueSabemosCriarPassaEUmaQueNaoNao) {
+  Bancada b;
+  constexpr std::uint32_t kSaidaCheckPriv = 1564;
+  // "the group that is equal to the application's class ID" nao se pode provar
+  // sem titulo carregado; prova-se o outro ramo, o do CreateInstance.
+  EXPECT_EQ(b.ChamaSaida(kSaidaCheckPriv, 0x80020000u, kClsidHid, 1), 1u);
+  EXPECT_EQ(b.ChamaSaida(kSaidaCheckPriv, 0x80020000u, 0x01DEAD00u, 1), 0u);
+  EXPECT_EQ(b.Faltas("IShell::CheckPrivLevel"), 1u);
+}
+
 }  // namespace zb2::brew

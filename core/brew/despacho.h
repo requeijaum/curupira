@@ -310,12 +310,21 @@ class Despacho {
   }
 
  private:
+  // "Sei servir esta classe?" -- a lista partilhada pelo `QueryClass` e pelo
+  // `CheckPrivLevel`.
+  bool ClasseConhecida(std::uint32_t cls) const;
   // O IDIB do ECRA. Devolve o endereco do objecto.
   std::uint32_t EscreverCabecalhoDoBitmapDoEcra();
   // A faixa dos objectos de bitmap (a mesma que o `SetDestination` ja aceita).
   static bool EUmObjectoDeBitmap(std::uint32_t p) {
     return p >= zb2::brew::kObjDibBase && p < zb2::brew::kObjDibBase + 0x1000;
   }
+  // O ERRO DA ULTIMA OPERACAO DE FICHEIRO QUE FALHOU (`IFILEMGR_GetLastError`).
+  //
+  // Devolvia-se sempre 0 -- "sem erro" logo a seguir a uma recusa. Um jogo que
+  // decida pelo codigo de erro decidia ao contrario.
+  std::int32_t ultimo_erro_do_fm_ = kAeeSuccess;
+
   // A contagem de referencias dos IDIB vive AQUI, e nao no `+4` do objecto.
   //
   // O `+4` de um IDIB e o `pPaletteMap` (`AEEIDIB.h:44`), um PONTEIRO publico, e
