@@ -53,6 +53,7 @@ void Vfs::Registar(const std::string& pasta) {
   nomes_.clear();
   pacotes_.clear();
   conteudo_.clear();
+  conteudo_pakz_.clear();
   alias_.clear();
   nomes_de_entrada_.clear();
   diretorios_.clear();
@@ -120,6 +121,38 @@ void Vfs::Registar(const std::string& pasta) {
     conteudo_.push_back(std::move(pacote));
   }
 
+  // O MESMO PASSO para os `.pakz`. O recipiente e outro (`Pakz`, LZMA_ALONE) e
+  // o indice vai para o vector proprio -- os dois indices de `PacoteRegistado`
+  // existem porque nao sao o mesmo numero.
+  for (const std::string& f : ficheiros) {
+    if (!TerminaComIgnorandoCaixa(f, ".pakz")) continue;
+    PacoteRegistado registo;
+    registo.ficheiro = f;
+    registo.pakz = true;
+
+    std::ifstream entrada(pasta + "/" + f, std::ios::binary);
+    if (!entrada) {
+      registo.motivo = "nao consegui abrir o ficheiro";
+      pacotes_.push_back(registo);
+      continue;
+    }
+    std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(entrada)),
+                                    std::istreambuf_iterator<char>());
+    Pakz recipiente;
+    std::string porque;
+    if (!recipiente.Parse(std::move(bytes), &porque)) {
+      registo.motivo = porque;
+      pacotes_.push_back(registo);
+      continue;
+    }
+
+    diretorios_.insert(SemExtensao(f));
+    registo.entradas = recipiente.NumeroDeEntradas();
+    registo.indice_no_conteudo_pakz = conteudo_pakz_.size();
+    pacotes_.push_back(registo);
+    conteudo_pakz_.push_back(std::move(recipiente));
+  }
+
   // A UNIAO SO DEPOIS DE TODOS OS PACOTES LIDOS -- e nao durante a leitura de
   // cada um.
   //
@@ -135,15 +168,36 @@ void Vfs::Registar(const std::string& pasta) {
   // `conteudo_` no campo proprio.
   for (std::size_t p = 0; p < pacotes_.size(); ++p) {
     if (!pacotes_[p].motivo.empty()) continue;
-    const std::size_t conteudo = pacotes_[p].indice_no_conteudo;
-    for (std::size_t i = 0; i < conteudo_[conteudo].NumeroDeEntradas(); ++i) {
-      const std::string& nome = conteudo_[conteudo].ListaDeEntradas()[i].nome;
+    const std::size_t n = pacotes_[p].pakz
+                              ? conteudo_pakz_[pacotes_[p].indice_no_conteudo_pakz].NumeroDeEntradas()
+                              : conteudo_[pacotes_[p].indice_no_conteudo].NumeroDeEntradas();
+    for (std::size_t i = 0; i < n; ++i) {
+      const std::string nome =
+          pacotes_[p].pakz
+              ? conteudo_pakz_[pacotes_[p].indice_no_conteudo_pakz].ListaDeEntradas()[i].nome
+              : conteudo_[pacotes_[p].indice_no_conteudo].ListaDeEntradas()[i].nome;
       nomes_de_entrada_.insert(nome);
       for (const std::string& dir : diretorios_) {
         const std::string chave = Chave(dir, nome);
         // O PRIMEIRO GANHA, e a ordem e a dos nomes dos ficheiros: um nome que
         // apareca em dois pacotes da a mesma resposta em todas as corridas.
-        if (alias_.count(chave) == 0) alias_[chave] = {p, conteudo, i};
+        if (alias_.count(chave) == 0) {
+          alias_[chave] = {p, pacotes_[p].pakz ? 0 : pacotes_[p].indice_no_conteudo,
+                           pacotes_[p].indice_no_conteudo_pakz, pacotes_[p].pakz, i};
+        }
+      }
+      // O CAMINHO DA ENTRADA DO `.pakz` E O CAMINHO que o motor TTD pede:
+      // `ani/touxiang1`, `xui/textures/ball.atitc`. A entrada entra tambem na
+      // uniao pelo nome dela INTEIRO (e nao so debaixo de um directorio
+      // servido) -- sem isto, um pedido do guest `ani/touxiang1` nao resolveria,
+      // porque `ani` nao e stem de nenhum mod nem de nenhum pacote. Um nome
+      // solto da tabela (`z1.lua`, sem barra) nao entra aqui: ficou so com o
+      // directorio servido a frente, como uma entrada do `.pkg`.
+      if (pacotes_[p].pakz && nome.find('/') != std::string::npos) {
+        const std::string chave = Minusculas(nome);
+        if (alias_.count(chave) == 0) {
+          alias_[chave] = {p, 0, pacotes_[p].indice_no_conteudo_pakz, true, i};
+        }
       }
     }
   }
@@ -158,14 +212,14 @@ std::string Vfs::CaminhoDePacote(const std::string& limpo) const {
   if (limpo.rfind("roms/neogeo/", 0) == 0) candidatos.push_back(limpo.substr(12));
   if (limpo.rfind("roms/", 0) == 0) candidatos.push_back(limpo.substr(5));
 
+  // A UNIAO E UMA LISTA DE CAMINHOS COMPLETOS: cada directorio servido x cada
+  // entrada (e as entradas do `.pakz` trazem o caminho inteiro delas, que pode
+  // ter mais do que uma barra -- 4 470 das 7 487 medidas tem duas, como
+  // `xui/textures/ball.atitc`). O casamento e por MEMBRESIA EXACTA no indice:
+  // quem nao esta na uniao nao existe, e o teste de "nao existe" prova-o. Os
+  // prefixos `roms/` e `roms/neogeo/` sao retirados antes do casamento.
   for (const std::string& c : candidatos) {
-    const std::size_t barra = c.rfind('/');
-    if (barra == std::string::npos || barra == 0 || barra + 1 >= c.size()) continue;
-    const std::string dir = c.substr(0, barra);
-    const std::string nome = c.substr(barra + 1);
-    if (diretorios_.count(Minusculas(dir)) == 0) continue;
-    if (alias_.find(Chave(dir, nome)) == alias_.end()) continue;
-    return dir + "/" + nome;
+    if (alias_.count(Minusculas(c)) != 0) return c;
   }
   return {};
 }
@@ -213,6 +267,9 @@ bool Vfs::Ler(const std::string& caminho, std::vector<std::uint8_t>* bytes, std:
   if (barra != std::string::npos) {
     const auto it = alias_.find(Chave(canonico.substr(0, barra), canonico.substr(barra + 1)));
     if (it != alias_.end()) {
+      if (it->second.pakz) {
+        return conteudo_pakz_[it->second.conteudo_pakz].Extrair(it->second.entrada, bytes, motivo);
+      }
       return conteudo_[it->second.conteudo].Extrair(it->second.entrada, bytes, motivo);
     }
   }
@@ -248,7 +305,8 @@ void Vfs::DeclararNoTraco(Traco* traco) {
   for (const PacoteRegistado& p : pacotes_) {
     if (p.motivo.empty()) {
       traco->Emitir(Area::Brew, Nivel::Informacao, "VFS_PACOTE",
-                    p.ficheiro + ": " + Dez(p.entradas) + " entradas no indice");
+                    p.ficheiro + ": " + Dez(p.entradas) + " entradas no indice" +
+                        (p.pakz ? " (pakz/LZMA)" : " (pkg/zlib)"));
     } else {
       // Um pacote que NAO entrou fica dito, e nao em silencio: sem isto, "o
       // jogo nao encontra o ficheiro" e "o pacote foi recusado" davam o mesmo
@@ -258,8 +316,8 @@ void Vfs::DeclararNoTraco(Traco* traco) {
   }
   traco->Emitir(Area::Brew, Nivel::Informacao, "VFS_ALIAS",
                 "<dir>/<nome> servido da UNIAO dos pacotes; dirs aceites: " + Lista(diretorios_) +
-                    "; prefixos aceitos antes do casamento: roms/, roms/neogeo/; nome sem distinguir "
-                    "maiusculas");
+                    "; entradas do pakz servem tambem pelo caminho inteiro delas; prefixos aceitos "
+                    "antes do casamento: roms/, roms/neogeo/; nome sem distinguir maiusculas");
 }
 
 }  // namespace zb2::brew

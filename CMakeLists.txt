@@ -20,6 +20,7 @@ add_library(zb2_core STATIC
   core/carga/bar.cpp
   core/carga/inflate.cpp
   core/carga/pack.cpp
+  core/carga/pakz.cpp
   core/brew/ajudantes.cpp
   core/brew/ajudantes_extra.cpp
   core/brew/formato.cpp
@@ -43,6 +44,13 @@ add_library(zb2_core STATIC
 )
 target_include_directories(zb2_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(zb2_core PRIVATE -Wall -Wextra)
+# O LZMA do sistema (liblzma / xz-utils): o decodificador LZMA_ALONE com que o
+# censo em Python bateu byte a byte. Procurado e exigido, como o zlib do PACK.
+find_library(ZB2_LZMA NAMES lzma)
+if(NOT ZB2_LZMA)
+  message(FATAL_ERROR "liblzma (xz-utils) nao encontrada -- a frente pakz precisa do lzma_alone_decoder")
+endif()
+target_link_libraries(zb2_core PUBLIC ${ZB2_LZMA})
 
 # Testes. O googletest ja esta buscado pela arvore antiga; aqui usa-se o mesmo
 # padrao para nao introduzir uma segunda dependencia.
@@ -75,6 +83,7 @@ add_executable(zb2_tests
   tests/rasterizador_test.cpp
   tests/classes_test.cpp
   tests/pack_test.cpp
+  tests/pakz_test.cpp
   tests/ecra_test.cpp
   tests/recusas_test.cpp
   tests/ecra_guest_test.cpp
@@ -192,6 +201,7 @@ add_test(NAME comparar_guardas COMMAND zb2_tests --gtest_filter=Comparar.*)
 # midia nao esta nesta maquina -- e o `GTEST_SKIP` e o unico jeito honesto de
 # dizer "nao correu", como nos `RecursosDeVerdade`.
 add_test(NAME pack COMMAND zb2_tests --gtest_filter=Pack.*)
+add_test(NAME pakz COMMAND zb2_tests --gtest_filter=Pakz.*)
 add_test(NAME comparar_shell
   COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/comparar_guarda.sh $<TARGET_FILE:zb2_comparar>)
 
