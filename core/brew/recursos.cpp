@@ -15,6 +15,36 @@ std::string Hex(std::uint32_t v) {
   return b;
 }
 
+std::uint16_t Ler16(const std::uint8_t* p) {
+  return static_cast<std::uint16_t>(p[0] | (static_cast<std::uint16_t>(p[1]) << 8));
+}
+
+std::uint32_t Ler32(const std::uint8_t* p) {
+  return static_cast<std::uint32_t>(p[0]) | (static_cast<std::uint32_t>(p[1]) << 8) |
+         (static_cast<std::uint32_t>(p[2]) << 16) | (static_cast<std::uint32_t>(p[3]) << 24);
+}
+
+// O ultimo valor da tabela de deslocamentos de um contentor `.bar`/`.mif`, com
+// a forma do cabecalho conferida: magic 0x0011, indices a seguir aos registos,
+// e o valor no intervalo [inicio dos dados, tamanho do ficheiro]. `false` sem
+// tocar em `*fim` quando o cabecalho nao tem a forma do contentor.
+bool UltimoDeslocamento(const std::vector<std::uint8_t>& bytes, std::uint32_t* fim) {
+  if (bytes.size() < bar_campos::kCabecalho) return false;
+  const std::uint8_t* p = bytes.data();
+  if (Ler16(p) != bar_campos::kVersao || Ler16(p + 2) != bar_campos::kCampo2 ||
+      Ler16(p + 4) != bar_campos::kCampo4) {
+    return false;
+  }
+  const std::uint32_t off_indices = Ler32(p + 16);
+  const std::uint32_t num_ids = Ler32(p + 20);
+  const std::uint32_t off_dados = Ler32(p + 24);
+  if (num_ids == 0u || off_indices + 4u * num_ids + 4u > bytes.size()) return false;
+  const std::uint32_t ultimo = Ler32(p + off_indices + 4u * num_ids);
+  if (ultimo < off_dados || ultimo > bytes.size()) return false;
+  if (fim != nullptr) *fim = ultimo;
+  return true;
+}
+
 }  // namespace
 
 const char* Nome(FormaDoRecurso f) {
@@ -247,21 +277,159 @@ ResultadoDoRecurso Recursos::Atender(const PedidoDeRecurso& pedido) {
 ResultadoDoTexto Recursos::ServirTexto(const PedidoDeTexto& pedido) {
   ResultadoDoTexto r;
   ++medicao_.textos;
-  if (pedido.ficheiro.empty()) {
-    // A BASE VAZIA SELECIONA O PROPRIO MODULO, e nao um ficheiro: o SDK le
+  if (pedido.base_nula) {
+    // A BASE NULA SELECIONA O PROPRIO MODULO, e nao um ficheiro: o SDK le
     // autor/direitos/versao com `LoadResString(ps,NULL,IDS_MIF_*,...)`
-    // (`AEEShell.h:300-302`, ids 6/7/8 em `AEEMIF.h:33-35`). Sem modelo de MIF,
-    // servir seria fingir: recusa-se com o id, para a demanda dizer QUAL cadeia
-    // do modulo o titulo pediu (o `alpineracerex` pediu 1x com base vazia).
-    char detalhe[256];
-    std::snprintf(detalhe, sizeof(detalhe),
-                  "pszBaseFile %s com id=%s: cadeia do proprio modulo (MIF, IDS_MIF_*), sem modelo de MIF",
-                  pedido.base_nula ? "nulo (r1=0)" : "vazio ("")",
-                  Hex(pedido.id).c_str());
-    r.motivo = detalhe;
-    ++medicao_.recusados;
-    ++recusas_[r.motivo];
-    if (traco_ != nullptr) traco_->RegistarFalta(Area::Brew, "IShell::LoadResString", r.motivo);
+    // (`AEEShell.h:919-921`, `ISHELL_GetAppAuthor/Copyright/Version`; ids 6/7/8
+    // em `AEEShell.h:129-131`). O conteudo vem do `.mif`, que fica na pasta
+    // IRMA da pasta do modulo -- `<pai de dir_>/mif/<pasta_>.mif`, medido em 62
+    // ficheiros do corpus (um por titulo, ao lado da `mod/` que a bateria
+    // recebe) --, e quem sabe esse caminho e o despacho: uma linha (patch
+    // separado `rec-despacho.patch`) que o poe no `pedido.ficheiro`. Sem essa
+    // linha, recusa-se com o id (P2), e a demanda continua a dizer QUAL cadeia
+    // do modulo o titulo pediu (o `alpineracerex` pediu 1x com base nula).
+    if (pedido.ficheiro.empty()) {
+      char detalhe[256];
+      std::snprintf(detalhe, sizeof(detalhe),
+                    "pszBaseFile nulo com id=%s: cadeia do proprio modulo, mas sem a "
+                    "localizacao do .mif (o despacho ainda nao aplicou o rec-despacho.patch)",
+                    Hex(pedido.id).c_str());
+      r.motivo = detalhe;
+      ++medicao_.recusados;
+      ++recusas_[r.motivo];
+      if (traco_ != nullptr) traco_->RegistarFalta(Area::Brew, "IShell::LoadResString", r.motivo);
+      return r;
+    }
+
+    // O `.mif` le-se pelo CAMINHO, e nao pelo leitor do `.bar`: ele vive FORA
+    // da pasta do titulo (o dominio da VFS), e a VFS RETIRA o `..` em vez de o
+    // resolver (medido em `core/brew/vfs.cpp`). Por isso o `LeitorDaPasta` nao
+    // chega la; quem chega e o caminho directo, posto pelo despacho.
+    std::vector<std::uint8_t> bytes;
+    {
+      std::ifstream f(pedido.ficheiro, std::ios::binary);
+      if (!f) {
+        r.motivo = "nao foi possivel abrir o MIF do proprio modulo: " + pedido.ficheiro;
+        ++medicao_.recusados;
+        ++recusas_[r.motivo];
+        if (traco_ != nullptr) traco_->RegistarFalta(Area::Brew, "IShell::LoadResString", r.motivo);
+        return r;
+      }
+      bytes.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+      if (bytes.empty()) {
+        r.motivo = "MIF vazio: " + pedido.ficheiro;
+        ++medicao_.recusados;
+        ++recusas_[r.motivo];
+        if (traco_ != nullptr) traco_->RegistarFalta(Area::Brew, "IShell::LoadResString", r.motivo);
+        return r;
+      }
+    }
+
+    // O `.mif` e o MESMO contentor do `.bar` (magic 0x0011, registos de 8
+    // bytes, tabela de deslocamentos). 50 de 62 terminam exactamente no ultimo
+    // valor da tabela; os outros 12 trazem 20 bytes a mais, DEPOIS dele
+    // (medido: 274791.mif, 274803.mif, ...) -- o conteudo dos recursos termina
+    // no ultimo deslocamento, e o rodape nao e recurso nenhum. Se a validacao
+    // estrita do `ArquivoBar` recusar por isso, corta-se no ultimo deslocamento
+    // e valida-se outra vez.
+    std::string porque_mif;
+    ArquivoBar mif = ArquivoBar::AbrirDados(bytes, &porque_mif);
+    if (!mif.Valido()) {
+      std::uint32_t fim = 0;
+      if (UltimoDeslocamento(bytes, &fim) && fim < bytes.size()) {
+        bytes.resize(fim);
+        mif = ArquivoBar::AbrirDados(bytes, &porque_mif);
+      }
+    }
+    if (!mif.Valido()) {
+      r.motivo = pedido.ficheiro + " (MIF): " + porque_mif;
+      ++medicao_.recusados;
+      ++recusas_[r.motivo];
+      if (traco_ != nullptr) traco_->RegistarFalta(Area::Brew, "IShell::LoadResString", r.motivo);
+      return r;
+    }
+
+    const RecursoDoBar recurso = mif.Ler(pedido.id, kTipoTexto);
+    if (!recurso.ok) {
+      r.motivo = pedido.ficheiro + " (MIF): " + recurso.motivo;
+      ++medicao_.recusados;
+      ++recusas_[r.motivo];
+      if (traco_ != nullptr) traco_->RegistarFalta(Area::Brew, "IShell::LoadResString", r.motivo);
+      return r;
+    }
+    r.bytes_do_recurso = recurso.tamanho;
+    r.marca = recurso.dados[0];  // a marca que abre o recurso, como no ramo do `.bar`
+
+    // A MARCA do texto, como no `.bar`: 0x03 = um byte por caractere. Os `.mif`
+    // trazem tambem UTF-16 com BOM -- `0xFF 0xFE` (menor primeiro) em 135 dos
+    // recursos de texto dos 62 `.mif` medidos, e o `0xFE 0xFF` (maior primeiro)
+    // e a outra metade do BOM; e o que o SDK chama "UNICODE (UCS2 encoding)"
+    // (`AEEIShell.h`). Qualquer outra marca recusa-se pelo NOME dela (P2), como
+    // no ramo do `.bar`.
+    std::vector<std::uint16_t> codepoints;
+    const std::uint8_t* dados = recurso.dados;
+    const std::uint32_t n = recurso.tamanho;
+    if (n >= 2u && dados[0] == 0xffu && dados[1] == 0xfeu) {
+      for (std::uint32_t k = 2u; k + 1u < n; k += 2u) {
+        const std::uint16_t ch =
+            static_cast<std::uint16_t>(dados[k] | (static_cast<std::uint16_t>(dados[k + 1u]) << 8));
+        if (ch == 0) break;
+        codepoints.push_back(ch);
+      }
+    } else if (n >= 2u && dados[0] == 0xfeu && dados[1] == 0xffu) {
+      for (std::uint32_t k = 2u; k + 1u < n; k += 2u) {
+        const std::uint16_t ch =
+            static_cast<std::uint16_t>((static_cast<std::uint16_t>(dados[k]) << 8) | dados[k + 1u]);
+        if (ch == 0) break;
+        codepoints.push_back(ch);
+      }
+    } else if (n >= 1u && dados[0] == 0x03u) {
+      for (std::uint32_t k = 1u; k < n; ++k) {
+        if (dados[k] == 0) break;
+        codepoints.push_back(dados[k]);
+      }
+    } else {
+      const std::string marca =
+          n >= 2u ? Hex(dados[0]).substr(8, 2) + " " + Hex(dados[1]).substr(8, 2)
+                  : Hex(dados[0]).substr(8, 2);
+      r.motivo = "texto do MIF com marca 0x" + marca +
+                 " (so 0x03 e o BOM UTF-16 0xFF 0xFE / 0xFE 0xFF estao medidas)";
+      ++medicao_.recusados;
+      ++recusas_[r.motivo];
+      if (traco_ != nullptr) traco_->RegistarFalta(Area::Brew, "IShell::LoadResString", r.motivo);
+      return r;
+    }
+    if (codepoints.empty()) {
+      r.motivo = pedido.ficheiro + " id=" + Hex(pedido.id) + ": texto sem caracteres apos a marca";
+      ++medicao_.recusados;
+      ++recusas_[r.motivo];
+      if (traco_ != nullptr) traco_->RegistarFalta(Area::Brew, "IShell::LoadResString", r.motivo);
+      return r;
+    }
+    const std::uint32_t caracteres = static_cast<std::uint32_t>(codepoints.size());
+    // O destino tem de levar os caracteres em UTF-16 e, se couber, o terminador
+    // -- a MESMA regra do ramo do `.bar`.
+    const std::uint32_t precisos = (caracteres + 1u) * 2u;
+    if (pedido.destino == 0 || pedido.n_bytes < precisos) {
+      r.motivo = "buffer de destino com " + Hex(pedido.n_bytes) + " bytes para " +
+                 std::to_string(caracteres) + " caracteres (UTF-16, mais o terminador)";
+      ++medicao_.recusados;
+      ++recusas_[r.motivo];
+      if (traco_ != nullptr) traco_->RegistarFalta(Area::Brew, "IShell::LoadResString", r.motivo);
+      return r;
+    }
+    for (std::uint32_t k = 0; k < caracteres; ++k) {
+      mem_.Escrever16(pedido.destino + k * 2u, codepoints[k]);
+    }
+    mem_.Escrever16(pedido.destino + caracteres * 2u, 0);
+    r.ok = true;
+    r.caracteres = caracteres;
+    ++medicao_.servidos;
+    if (traco_ != nullptr) {
+      traco_->Emitir(Area::Brew, Nivel::Depuracao, "RES_TEXTO",
+                     pedido.ficheiro + " id=" + Hex(pedido.id) + " caracteres=" +
+                         std::to_string(caracteres));
+    }
     return r;
   }
   std::string porque;

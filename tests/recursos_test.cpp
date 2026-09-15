@@ -29,6 +29,8 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -516,16 +518,175 @@ TEST(Recursos, TextoComIdInexistenteRecusa) {
   }
 }
 
-// --- V13: a base vazia e o proprio modulo (MIF), e recusa-se com o id ----
-TEST(Recursos, TextoComBaseVaziaRecusaComoTextoDoModulo) {
+// --- o MIF do proprio modulo (base NULA) ----------------------------------
+//
+// No SDK a base NULA e legal e seleciona a cadeia do PROPRIO modulo (MIF):
+// `ISHELL_GetAppAuthor(ps,buf,tam) = LoadResString(ps,NULL,IDS_MIF_COMPANY=6,...)`
+// (`AEEShell.h:919-921`; `IDS_MIF_*` em `AEEShell.h:129-131`: 6, 7, 8). O `.mif`
+// e o MESMO contentor do `.bar` (magic 0x0011 -- o `MontarBar` acima serve para
+// o construir) e mora na pasta IRMA da pasta do modulo:
+// `<pai de dir_>/mif/<pasta_>.mif` (medido: 62 ficheiros no corpus, um por
+// titulo). O despacho passa esse caminho no `pedido.ficheiro` quando a base e
+// nula -- a linha vive no patch separado `rec-despacho.patch`, porque o
+// `despacho.cpp` esta ocupado por outra frente.
+
+std::string EscreverMifTemp(const std::string& nome, const std::vector<std::uint8_t>& bytes) {
+  const std::filesystem::path pasta =
+      std::filesystem::temp_directory_path() / "zb2_recursos_mif";
+  std::filesystem::create_directories(pasta);
+  const std::filesystem::path caminho = pasta / nome;
+  std::ofstream f(caminho, std::ios::binary);
+  f.write(reinterpret_cast<const char*>(bytes.data()),
+          static_cast<std::streamsize>(bytes.size()));
+  f.close();
+  return caminho.string();
+}
+
+PedidoDeTexto PedidoDeMifDoModulo(const std::string& caminho, std::uint16_t id,
+                                  std::uint32_t n_bytes) {
+  PedidoDeTexto p;
+  p.ficheiro = caminho;
+  p.base_nula = true;
+  p.id = id;
+  p.destino = kEnderecoDoTexto;
+  p.n_bytes = n_bytes;
+  return p;
+}
+
+// --- V13 (novo): a base nula le a cadeia do proprio modulo no `.mif` -------
+TEST(Recursos, TextoComBaseNulaLeAVersaoDoMif) {
+  // id 8 = IDS_MIF_VERSION; o conteudo MEDIDO do 280173.mif e `03 "1.0.20"`.
+  const std::string caminho =
+      EscreverMifTemp("versao.mif", MontarBar({{1, 8, 0, 0}}, {Texto("1.0.20")}).bytes);
   Banco b;
   {
     Recursos r = b.Servico();
-    // O caso da bateria: o `alpineracerex` pede o slot 17 1x com a base vazia.
-    // No SDK a base NULA e legal e seleciona a cadeia do proprio modulo (MIF):
-    // `ISHELL_GetAppAuthor(ps,buf,tam) = LoadResString(ps,NULL,IDS_MIF_COMPANY=6,...)`
-    // (`AEEShell.h:300-302`, `AEEMIF.h:33-35`). Sem modelo de MIF, servir seria
-    // fingir: a recusa diz o id, para a demanda dizer QUAL cadeia se pediu.
+    const ResultadoDoTexto t = r.ServirTexto(PedidoDeMifDoModulo(caminho, 8, 32));
+    ASSERT_TRUE(t.ok) << t.motivo;
+    EXPECT_EQ(t.caracteres, 6u);
+    EXPECT_EQ(t.marca, 0x03);
+    const std::uint16_t esperado[6] = {'1', '.', '0', '.', '2', '0'};
+    for (int k = 0; k < 6; ++k) {
+      EXPECT_EQ(b.Ler16(kEnderecoDoTexto + k * 2), esperado[k]) << "byte " << k;
+    }
+    // V13a: o terminador, como no ramo do `.bar`.
+    EXPECT_EQ(b.Ler16(kEnderecoDoTexto + 12), 0x0000u);
+    EXPECT_EQ(b.Ler8(kEnderecoDoTexto + 14), 0xAA);
+    EXPECT_EQ(r.Contagem().textos, 1u);
+    EXPECT_EQ(r.Contagem().servidos, 1u);
+    EXPECT_TRUE(r.Recusas().empty());
+  }
+}
+
+// --- V14: o BOM UTF-16 menor-primeiro (0xFF 0xFE) do `.mif` ----------------
+// Medido em 135 dos recursos de texto dos 62 `.mif` (ex.: 12875.mif id 6).
+TEST(Recursos, TextoDoMifComBomUtf16MenorPrimeiro) {
+  const std::vector<std::uint8_t> recurso = {0xff, 0xfe, '1', 0, '.', 0,
+                                             '0',  0,    '.', 0, '2', 0,
+                                             '0',  0};
+  const std::string caminho =
+      EscreverMifTemp("bom_le.mif", MontarBar({{1, 8, 0, 0}}, {recurso}).bytes);
+  Banco b;
+  {
+    Recursos r = b.Servico();
+    const ResultadoDoTexto t = r.ServirTexto(PedidoDeMifDoModulo(caminho, 8, 32));
+    ASSERT_TRUE(t.ok) << t.motivo;
+    EXPECT_EQ(t.caracteres, 6u);
+    EXPECT_EQ(b.Ler16(kEnderecoDoTexto + 0), '1');
+    EXPECT_EQ(b.Ler16(kEnderecoDoTexto + 8), '2');
+    EXPECT_EQ(b.Ler16(kEnderecoDoTexto + 12), 0x0000u);  // o terminador
+  }
+}
+
+// --- V15: o BOM UTF-16 maior-primeiro (0xFE 0xFF) --------------------------
+TEST(Recursos, TextoDoMifComBomUtf16MaiorPrimeiro) {
+  const std::vector<std::uint8_t> recurso = {0xfe, 0xff, 0, '1', 0, '.', 0, '0'};
+  const std::string caminho =
+      EscreverMifTemp("bom_be.mif", MontarBar({{1, 8, 0, 0}}, {recurso}).bytes);
+  Banco b;
+  {
+    Recursos r = b.Servico();
+    const ResultadoDoTexto t = r.ServirTexto(PedidoDeMifDoModulo(caminho, 8, 32));
+    ASSERT_TRUE(t.ok) << t.motivo;
+    EXPECT_EQ(t.caracteres, 3u);  // "1.0", com o BOM fora da conta
+    EXPECT_EQ(b.Ler16(kEnderecoDoTexto + 0), '1');
+    EXPECT_EQ(b.Ler16(kEnderecoDoTexto + 2), '.');
+    EXPECT_EQ(b.Ler16(kEnderecoDoTexto + 4), '0');
+    EXPECT_EQ(b.Ler16(kEnderecoDoTexto + 6), 0x0000u);
+  }
+}
+
+// --- V16: um rodape depois do ultimo deslocamento --------------------------
+// 12 de 62 `.mif` do corpus trazem 20 bytes a mais, DEPOIS do ultimo valor da
+// tabela de deslocamentos (medido: 274791.mif, 274803.mif, ...). O conteudo dos
+// recursos termina no ultimo deslocamento; servir nao pode depender disso.
+TEST(Recursos, TextoDoMifComRodapeDeVinteBytes) {
+  BarSintetico m = MontarBar({{1, 8, 0, 0}}, {Texto("1.0.20")});
+  m.bytes.insert(m.bytes.end(), 20, 0xAB);  // o rodape de 20 bytes
+  const std::string caminho = EscreverMifTemp("rodape.mif", m.bytes);
+  Banco b;
+  {
+    Recursos r = b.Servico();
+    const ResultadoDoTexto t = r.ServirTexto(PedidoDeMifDoModulo(caminho, 8, 32));
+    ASSERT_TRUE(t.ok) << t.motivo;
+    EXPECT_EQ(t.caracteres, 6u);
+  }
+}
+
+// --- V17: uma marca que nao esta medida recusa pelo NOME dela --------------
+TEST(Recursos, TextoDoMifComMarcaDesconhecidaRecusaPeloNome) {
+  BarSintetico m = MontarBar({{1, 8, 0, 0}}, {{0xfd, 0xfe, 'x', 0}});
+  const std::string caminho = EscreverMifTemp("marca_bad.mif", m.bytes);
+  Banco b;
+  {
+    Recursos r = b.Servico();
+    const ResultadoDoTexto t = r.ServirTexto(PedidoDeMifDoModulo(caminho, 8, 32));
+    EXPECT_FALSE(t.ok);
+    EXPECT_NE(t.motivo.find("0xfd"), std::string::npos) << t.motivo;
+    for (std::uint32_t k = 0; k < 0x20; ++k) {
+      EXPECT_EQ(b.Ler8(kEnderecoDoTexto + k), 0xAA) << "byte " << k;
+    }
+    EXPECT_EQ(r.Contagem().recusados, 1u);
+  }
+}
+
+// --- V18: um id que nao existe no `.mif` recusa com o id -------------------
+TEST(Recursos, TextoDoMifComIdInexistenteRecusa) {
+  const std::string caminho =
+      EscreverMifTemp("sem_id.mif", MontarBar({{1, 6, 0, 0}}, {Texto("x")}).bytes);
+  Banco b;
+  {
+    Recursos r = b.Servico();
+    const ResultadoDoTexto t = r.ServirTexto(PedidoDeMifDoModulo(caminho, 8, 32));
+    EXPECT_FALSE(t.ok);
+    EXPECT_NE(t.motivo.find("0x00000008"), std::string::npos) << t.motivo;
+    EXPECT_EQ(r.Contagem().recusados, 1u);
+  }
+}
+
+// --- V19: um `.mif` que nao existe recusa com o caminho --------------------
+TEST(Recursos, TextoDoMifInexistenteRecusa) {
+  const std::string caminho =
+      std::filesystem::temp_directory_path().string() + "/zb2_nao_existe.mif";
+  Banco b;
+  {
+    Recursos r = b.Servico();
+    const ResultadoDoTexto t = r.ServirTexto(PedidoDeMifDoModulo(caminho, 8, 32));
+    EXPECT_FALSE(t.ok);
+    EXPECT_NE(t.motivo.find("nao foi possivel abrir"), std::string::npos) << t.motivo;
+    EXPECT_NE(t.motivo.find(caminho), std::string::npos) << t.motivo;
+    EXPECT_EQ(r.Contagem().recusados, 1u);
+  }
+}
+
+// --- V20: sem localizacao (despacho sem o patch) recusa com o id ----------
+// O `.mif` NAO mora dentro da pasta do titulo, e quem sabe o caminho e o
+// despacho (patch separado). Sem ele, a recusa continua a dizer o id -- e a
+// registar a falta, que e o que a demanda da bateria mostra.
+TEST(Recursos, TextoComBaseNulaSemLocalizacaoRecusaComOId) {
+  Banco b;
+  {
+    Recursos r = b.Servico();
     PedidoDeTexto p;
     p.ficheiro = "";
     p.base_nula = true;
@@ -533,10 +694,8 @@ TEST(Recursos, TextoComBaseVaziaRecusaComoTextoDoModulo) {
     p.destino = kEnderecoDoTexto;
     p.n_bytes = 32;
     const ResultadoDoTexto t = r.ServirTexto(p);
-    // V13: recusar com "pszBaseFile vazio" sem o id -- a demanda voltava a dizer
-    // so "vazio" e ninguem sabia que cadeia do modulo o titulo queria.
     EXPECT_FALSE(t.ok);
-    EXPECT_NE(t.motivo.find("MIF"), std::string::npos) << t.motivo;
+    EXPECT_NE(t.motivo.find(".mif"), std::string::npos) << t.motivo;
     EXPECT_NE(t.motivo.find("0x00000006"), std::string::npos) << t.motivo;
     for (std::uint32_t k = 0; k < 0x20; ++k) {
       EXPECT_EQ(b.Ler8(kEnderecoDoTexto + k), 0xAA) << "byte " << k;
@@ -546,6 +705,7 @@ TEST(Recursos, TextoComBaseVaziaRecusaComoTextoDoModulo) {
     EXPECT_EQ(r.Contagem().recusados, 1u);
   }
 }
+
 
 // --- com os ficheiros de verdade ------------------------------------------
 
@@ -654,6 +814,65 @@ TEST(RecursosDeVerdade, OAeeControlsDoSdkServeJaneiroEmEspanhol) {
   EXPECT_EQ(t.caracteres, 5u);
   const std::uint16_t esperado[5] = {'e', 'n', 'e', 'r', 'o'};
   for (int k = 0; k < 5; ++k) EXPECT_EQ(mem.Ler16(kEnderecoDoTexto + k * 2), esperado[k]) << k;
+}
+
+// --- V21: os 3 titulos da demanda, com os `.mif` de verdade -----------------
+// A demanda medida: chessbots (263019), alpineracerex (276151) e allstarcards
+// (280173) pedem o slot 17 1x cada, base NULA, id 8 (IDS_MIF_VERSION). O `.mif`
+// de cada um vive na pasta IRMA da `mod/` da bateria (na NAND de debug:
+// `debug_nand/mif/<pasta>.mif`).
+
+std::string CaminhoDoMif(const char* pasta) {
+  const std::vector<std::string> raizes = {
+      "/media/rafaelfrequiao/8C5F-19E51/zeebo/ROMs/debug_nand/mif",
+      "/home/rafaelfrequiao/projects/zeebo-lab/games/brew/mif",
+  };
+  for (const std::string& raiz : raizes) {
+    const std::string caminho = raiz + "/" + pasta + ".mif";
+    std::ifstream f(caminho, std::ios::binary);
+    if (f) return caminho;
+  }
+  return std::string();
+}
+
+TEST(RecursosDeVerdade, OsTresTitulosDaDemandaServemAVersaoDoMif) {
+  struct Titulo {
+    const char* pasta;
+    const char* mod;
+    const char* versao;
+  };
+  const Titulo titulos[] = {
+      {"263019", "chessbots", "1.2.29"},
+      {"276151", "alpineracerex", "1.0.1"},
+      {"280173", "allstarcards", "1.0.20"},
+  };
+  std::vector<std::string> caminhos;
+  for (const Titulo& t : titulos) caminhos.push_back(CaminhoDoMif(t.pasta));
+  for (const std::string& c : caminhos) {
+    if (c.empty()) {
+      GTEST_SKIP() << "os `.mif` do corpus nao existem nesta maquina -- PULAR, e nao passar";
+    }
+  }
+  Traco traco;
+  Memoria mem(&traco);
+  Alocador alocador(mem, 0x80200000u, 0x00080000u);
+  const LeitorDeRecursos leitor = [](const std::string&, std::vector<std::uint8_t>*, std::string*) {
+    return false;  // o MIF le-se pelo caminho, nao pelo leitor
+  };
+  Recursos r(mem, alocador, leitor, &traco);
+  for (std::size_t i = 0; i < std::size(titulos); ++i) {
+    const Titulo& t = titulos[i];
+    const ResultadoDoTexto txt = r.ServirTexto(PedidoDeMifDoModulo(caminhos[i], 8, 64));
+    ASSERT_TRUE(txt.ok) << t.mod << " (" << t.pasta << "): " << txt.motivo;
+    EXPECT_EQ(txt.caracteres, std::strlen(t.versao)) << t.mod;
+    for (std::size_t k = 0; k < std::strlen(t.versao); ++k) {
+      EXPECT_EQ(mem.Ler16(kEnderecoDoTexto + static_cast<std::uint32_t>(k) * 2),
+                static_cast<std::uint16_t>(t.versao[k]))
+          << t.mod << " byte " << k;
+    }
+    const std::uint32_t fim = static_cast<std::uint32_t>(std::strlen(t.versao)) * 2u;
+    EXPECT_EQ(mem.Ler16(kEnderecoDoTexto + fim), 0x0000u) << t.mod;
+  }
 }
 
 // ---------------------------------------------------------------------------

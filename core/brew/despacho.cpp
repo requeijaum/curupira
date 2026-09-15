@@ -1028,6 +1028,11 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         PedidoDeTexto pedido;
         pedido.ficheiro = LerTextoDe(mem_, cpu.Get(kR1), 512);
         pedido.base_nula = (cpu.Get(kR1) == 0);
+        // A BASE NULA seleciona a cadeia do PROPRIO MODULO, e o `.mif` mora NA
+        // PASTA IRMA da pasta do modulo: `<pai de dir_>/mif/<pasta_>.mif`
+        // (medido em 62 ficheiros do corpus, um por titulo). O caminho vai no
+        // `pedido.ficheiro`; o `Recursos::ServirTexto` le-o directamente.
+        if (pedido.base_nula) pedido.ficheiro = dir_ + "/../mif/" + pasta_ + ".mif";
         pedido.id = static_cast<std::uint16_t>(cpu.Get(kR2));
         pedido.destino = cpu.Get(kR3);
         pedido.n_bytes = mem_.Ler32(sp);

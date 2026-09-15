@@ -149,6 +149,11 @@
 //  - Nao abre ficheiros por si: recebe um `LeitorDeRecursos`. E o que permite
 //    testar as tres formas com um `.bar` SINTETICO, sem ROM e sem disco (P4), e
 //    ao mesmo tempo o motor poder servir-se da VFS e da pasta do titulo.
+//    A UNICA excepcao e o `.mif` do proprio modulo (`LoadResString` com base
+//    NULA): ele mora FORA da pasta do titulo (na pasta irma `mif/`, medida), e
+//    a VFS RETIRA o `..` em vez de o resolver -- logo o caminho posto pelo
+//    despacho (`rec-despacho.patch`) le-se directamente, e o motivo de recusa
+//    diz que caminho se tentou.
 //  - Nao sabe o que e um recurso de tipo 7 (`RESTYPE_STRING`) para alem de
 //    devolver os bytes: o `LoadResString` (slot 17) e outro metodo.
 //  - Nao comprime nem descodifica: o `.bar` do corpus nao tem compressao
@@ -269,10 +274,18 @@ class Recursos {
   // terminacao NUL no fim. Escreve-se quando cabe, porque um jogo que trate o
   // buffer como cadeia C fica correcto e um que conte os caracteres devolvidos
   // nao e afectado.
-  // A BASE VAZIA (NULL ou "") NAO E UM FICHEIRO: no SDK ela seleciona a cadeia
-  // do proprio modulo (MIF -- `AEEShell.h:300-302`, `AEEMIF.h:33-35`). Sem modelo
-  // de MIF, recusa-se com o id no motivo. Demanda medida: o `alpineracerex` pede
-  // o slot 17 1x com base vazia (bateria de 2026-09-15, 62 titulos).
+  // A BASE NULA (NULL) NAO E UM FICHEIRO: no SDK ela seleciona a cadeia do
+  // proprio modulo (MIF -- `AEEShell.h:919-921` = `ISHELL_GetAppAuthor`,
+  // `ISHELL_GetAppCopyright`, `ISHELL_GetAppVersion`; ids 6/7/8 em
+  // `AEEShell.h:129-131`). O conteudo vem do `.mif`, que fica NA PASTA IRMA da
+  // pasta do modulo -- `<pai de dir_>/mif/<pasta_>.mif`, medido em 62 ficheiros
+  // do corpus --, e quem passa o caminho e o DESPACHO, uma linha que vive no
+  // patch separado `rec-despacho.patch` (o ficheiro esta ocupado por outra
+  // frente). Sem essa linha, recusa-se com o id no motivo. Representacao: 0x03
+  // (8 bits) e o BOM UTF-16 0xFF 0xFE / 0xFE 0xFF; 12 de 62 `.mif` trazem 20
+  // bytes depois do ultimo deslocamento, que nao sao recurso nenhum.
+  // Demanda medida: chessbots, `alpineracerex` e `allstarcards` pedem o slot 17
+  // 1x cada, base NULA, id 8 (IDS_MIF_VERSION; bateria de 2026-09-15, 62 titulos).
   ResultadoDoTexto ServirTexto(const PedidoDeTexto& pedido);
 
   // `FreeResData(IShell*, void*)` -- IShell slot 20. So liberta o que o
