@@ -62,6 +62,7 @@ add_executable(zb2_tests
   tests/comparar_test.cpp
   tests/hid_test.cpp
   tests/entrada_despacho_test.cpp
+  tests/sendevent_test.cpp
   tests/bar_test.cpp
   tests/egl_test.cpp
   tests/igl_test.cpp

@@ -47,6 +47,16 @@ constexpr std::uint32_t kIidSqlMgr = 0x0102c4e8u;
 // AEEStdErr.h:36). Tirei a copia: agora o nome resolve para o enum, e ha um
 // numero medido num sitio so.
 constexpr std::uint32_t kSentinela = 0xFFFFFFF0u;
+// O `EVTFLG_ASYNC` do `ISHELL_PostEvent`, MEDIDO em `AEEShell.h:48`. O
+// `PostEvent` e O MESMO SLOT do `SendEvent` (`AEEShell.h:279`), e a unica coisa
+// que os distingue e este bit.
+constexpr std::uint32_t kEvtflgAsync = 0x0002u;
+// O ORCAMENTO DE PASSOS DE UMA ENTREGA DE EVENTO. Nao e o da fase, para o motivo
+// da saida distinguir "o tratador nao voltou" de "a fase esgotou"; mas os passos
+// gastos SAO somados aos da fase (ver `EntregarEventoAoApplet`), porque a entrega
+// corre codigo do titulo e nao pode ser tempo de graca. zeebx usa 10 000 000
+// (`QSORT_BUDGET`, `src/machine/mod.rs:1549`).
+constexpr std::uint64_t kLimiteDoEvento = 4000000ull;
 // A base do modulo. MEDIDA: ver `tests/mod_base_test.cpp` e o `bateria.cpp`.
 constexpr std::uint32_t kBase = 0x00000000u;
 constexpr int kOrcamentoSegundos = 25;
@@ -388,6 +398,124 @@ bool Despacho::PrepararCallbackDoTemporizador(ICpu& cpu) {
   return true;
 }
 
+bool Despacho::EntregarEventoAoApplet(ICpu& cpu, std::uint32_t clsapp, std::uint32_t evt,
+                                      std::uint16_t wp, std::uint32_t dwp,
+                                      std::uint32_t pp_saida, std::uint32_t* devolveu,
+                                      std::uint64_t* passos_gastos) {
+  if (devolveu != nullptr) *devolveu = 0;
+  if (passos_gastos != nullptr) *passos_gastos = 0;
+
+  // 1. QUEM. `clsApp == 0` e "o applet activo" (`AEEIShell.h:3031`, e a macro
+  //    `ISHELL_HandleEvent`, `AEEShell.h:281`); com um so applet e o mesmo
+  //    destino. Uma classe que nao e a do titulo e um evento para alguem que
+  //    aqui nao existe, e a resposta certa e FALSE -- nao ha para quem
+  //    encaminhar. A guarda so aperta quando o CLSID do titulo e CONHECIDO.
+  char det[160];
+  if (clsapp != 0 && tem_clsid_ && clsapp != clsid_titulo_) {
+    std::snprintf(det, sizeof(det), "clsApp=0x%08x nao e o titulo (0x%08x); evt=0x%04x", clsapp,
+                  clsid_titulo_, evt);
+    traco_.RegistarFalta(Area::Brew, "IShell::SendEvent", det);
+    return false;
+  }
+
+  // 2. O APPLET. Quando ainda nao esta registado le-se o `ppObj` do
+  //    `CreateInstance`, porque o `AEEApplet_New` do guest ja la escreveu o
+  //    ponteiro: para o shell, o applet existe quando e CRIADO, e nao quando e
+  //    iniciado (zeebulator `ishell.cpp:200-207`, zeebx `signal.rs:232-241`).
+  std::uint32_t applet = applet_;
+  if (applet == 0 && pp_saida != 0) applet = mem_.Ler32(pp_saida);
+  if (applet == 0) {
+    std::snprintf(det, sizeof(det), "sem applet (ppObj=0x%08x); evt=0x%04x wp=%u", pp_saida, evt,
+                  static_cast<unsigned>(wp));
+    traco_.RegistarFalta(Area::Brew, "IShell::SendEvent", det);
+    return false;
+  }
+
+  // 3. O `HandleEvent` e o SLOT 2 da vtable do applet (AddRef=0, Release=1,
+  //    HandleEvent=2 -- a ordem do `AEEAppGen.c`, a mesma que a bateria ja usa
+  //    para entregar o `EVT_APP_START`).
+  const std::uint32_t vtable = mem_.Ler32(applet);
+  const std::uint32_t handle_event = mem_.Ler32(vtable + 2 * 4);
+  // O DESTINO TEM DE ESTAR DENTRO DO MODULO DO TITULO -- a mesma guarda que a
+  // entrada ja aplica aos callbacks. Sem ela, uma vtable por inicializar punha
+  // o PC num endereco de dados e o laco andava a executar zeros.
+  const std::uint32_t fim_do_modulo = (faixa_fim_ > faixa_base_) ? faixa_fim_ : 0;
+  if (handle_event == 0 || fim_do_modulo == 0 || handle_event < faixa_base_ ||
+      handle_event >= fim_do_modulo) {
+    std::snprintf(det, sizeof(det), "HandleEvent=0x%08x fora do modulo [0x%08x,0x%08x); evt=0x%04x",
+                  handle_event, faixa_base_, fim_do_modulo, evt);
+    traco_.RegistarFalta(Area::Brew, "IShell::SendEvent", det);
+    return false;
+  }
+
+  // 4. O TECTO. `HandleEvent` -> `SendEvent` -> `HandleEvent` e uma cadeia que
+  //    so para com um limite declarado.
+  if (profundidade_de_evento_ >= kMaxProfundidadeDeEvento) {
+    std::snprintf(det, sizeof(det), "aninhamento %d atingiu o tecto %d; evt=0x%04x",
+                  profundidade_de_evento_, kMaxProfundidadeDeEvento, evt);
+    traco_.RegistarFalta(Area::Brew, "IShell::SendEvent(aninhamento)", det);
+    return false;
+  }
+
+  // 5. GUARDAR os 16 registadores e o CPSR: isto corre por cima de um guest com
+  //    registadores VIVOS (o mesmo cuidado de `core/brew/imedia.cpp:397-403`).
+  std::array<std::uint32_t, 16> guardados{};
+  for (int r = 0; r < 16; ++r) guardados[static_cast<std::size_t>(r)] = cpu.Get(r);
+  const std::uint32_t cpsr_guardado = cpu.Cpsr();
+
+  // 6. CHAMAR com a ABI do `IApplet::HandleEvent(pApplet, evt, wParam, dwParam)`.
+  cpu.Set(kR0, applet);
+  cpu.Set(kR1, evt);
+  cpu.Set(kR2, wp);
+  cpu.Set(kR3, dwp);
+  cpu.Set(kLR, kSentinela);
+  cpu.Set(kPC, handle_event);
+
+  // 7. CORRER PELO PROPRIO `Correr`, e NAO por um laco de `cpu.Passo()`: o
+  //    `HandleEvent` de um applet real chama o sistema, e o `Passo` NAO para na
+  //    faixa de saida -- quem para e o `Correr` do interpretador
+  //    (`core/cpu/arm_interpreter.cpp:1527`). Um laco de `Passo` entraria na
+  //    faixa de saida, leria zeros da memoria esparsa e deslizaria ate ao
+  //    limite. (E o defeito latente de `core/brew/imedia.cpp:412`.)
+  ++profundidade_de_evento_;
+  const ResultadoFase r = Correr(cpu, kLimiteDoEvento, pp_saida);
+  --profundidade_de_evento_;
+  if (passos_gastos != nullptr) *passos_gastos = r.passos;
+
+  const bool voltou = (r.motivo == "retornou");
+  const std::uint32_t resposta = voltou ? cpu.Get(kR0) : 0;
+  if (!voltou) {
+    // P2: o caminho que nao concluiu REGISTA. Um tratador que se perde nao
+    // derruba quem mandou o evento -- para ele, ninguem tratou.
+    std::snprintf(det, sizeof(det), "HandleEvent=0x%08x evt=0x%04x nao voltou: %s", handle_event,
+                  evt, r.motivo.c_str());
+    traco_.RegistarFalta(Area::Brew, "IShell::SendEvent(nao_voltou)", det);
+  }
+
+  // 8. REPOR. O r15 E o PC, logo isto repoe tambem o PC do laco de fora; quem
+  //    chama poe o `kR0` DEPOIS desta reposicao, que e o retorno do metodo.
+  for (int r2 = 0; r2 < 16; ++r2) cpu.Set(r2, guardados[static_cast<std::size_t>(r2)]);
+  cpu.SetCpsr(cpsr_guardado);
+
+  // O QUE O APPLET RESPONDEU, no traco de depuracao (`ZB2_TRACE=1`). A resposta
+  // util NAO e o `boolean`: e o que o applet escreveu no `*dwParam` -- e e isso
+  // que o chamador le a seguir (`tectoy.mod:0x6a3a0`). Sem esta linha, uma
+  // entrega que corre e responde ZERO e indistinguivel de uma que corre e
+  // responde o objecto pedido.
+  {
+    char det_ok[192];
+    std::snprintf(det_ok, sizeof(det_ok),
+                  "cls=0x%08x evt=0x%04x wp=%u dwp=0x%08x -> HandleEvent=0x%08x devolveu=%u "
+                  "resposta=0x%08x passos=%llu%s",
+                  clsapp, evt, static_cast<unsigned>(wp), dwp, handle_event, resposta,
+                  dwp != 0 ? mem_.Ler32(dwp) : 0,
+                  static_cast<unsigned long long>(r.passos), voltou ? "" : " (NAO VOLTOU)");
+    traco_.Emitir(Area::Brew, Nivel::Depuracao, "ISHELL_SENDEVENT", det_ok);
+  }
+  if (devolveu != nullptr) *devolveu = resposta;
+  return voltou;
+}
+
 ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp_saida) {
   ResultadoFase resultado;
   std::uint32_t saidas = 0;
@@ -684,6 +812,48 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           std::snprintf(det, sizeof(det), "MODEL_NAME cabem=%u -> %u", cabem,
                         kNecessario);
           traco_.Emitir(Area::Brew, Nivel::Depuracao, "ISHELL_GETDEVICEINFOEX", det);
+        }
+      } else if (idx == kBaseDoShell + brew_slots::kShell_SendEvent) {
+        // ISHELL_SendEvent -- IShell slot 21. ESTE RAMO VEM ANTES DO
+        // `idx >= kBaseDoShell`, que e o ramo generico: la, este pedido era
+        // registado como `IShell::slot21` e respondido com `kAeeUnsupported`
+        // (20). E `SendEvent` devolve **boolean** -- 20 e TRUE. O `tectoy`
+        // (274755) faz `cmp r0,#0 / ldrne r0,[sp,#8]` (0x6a39c-0x6a3a0): com 20
+        // ele seguia o ramo do SUCESSO, lia o zero que ele proprio pos no
+        // `dwParam`, e nem chegava a imprimir `SendEvent to get PrefsDB failed`.
+        // Mentiamos e apagavamos o diagnostico ao mesmo tempo.
+        //
+        //   r1=wFlags  r2=clsApp  r3=evt  [sp+0]=wParam  [sp+4]=dwParam
+        //   (AEEIShell.h:309 -- SEIS argumentos; a macro de cinco poe wFlags=0)
+        const std::uint32_t sp = cpu.Get(kSP);
+        const std::uint32_t flags = cpu.Get(kR1);
+        const std::uint32_t cls = cpu.Get(kR2);
+        const std::uint32_t evt = cpu.Get(kR3);
+        const std::uint16_t wp = static_cast<std::uint16_t>(mem_.Ler32(sp));
+        const std::uint32_t dwp = mem_.Ler32(sp + 4);
+        std::uint32_t devolveu = 0;
+        std::uint64_t gastos = 0;
+        if ((flags & kEvtflgAsync) != 0) {
+          // O `ISHELL_PostEvent` (`AEEShell.h:279`) pede o ADIAMENTO para a
+          // volta seguinte do laco de eventos (`AEEIShell.h:2894`). Aqui nao ha
+          // fila de eventos de applet -- e entrega-lo como se fosse sincrono
+          // mudava a ordem que o titulo pediu. RECUSA COM NOME, e nao um
+          // silencio: e assim que ele aparece na lista de demanda se algum
+          // titulo o usar. (zeebx e zeebulator ignoram os wFlags sem o dizer.)
+          char det_ev[160];
+          std::snprintf(det_ev, sizeof(det_ev),
+                        "wFlags=0x%04x cls=0x%08x evt=0x%04x wp=%u dwp=0x%08x lr=0x%08x", flags,
+                        cls, evt, static_cast<unsigned>(wp), dwp, lr);
+          traco_.RegistarFalta(Area::Brew, "IShell::SendEvent(EVTFLG_ASYNC)", det_ev);
+          cpu.Set(kR0, 0);  // FALSE
+        } else {
+          const bool entregue =
+              EntregarEventoAoApplet(cpu, cls, evt, wp, dwp, pp_saida, &devolveu, &gastos);
+          // OS PASSOS DA ENTREGA SAEM DO ORCAMENTO DA FASE. A entrega corre
+          // codigo do titulo; nao os contar aqui era dar tempo de graca e fazer
+          // a coluna `passos_start` da bateria mentir.
+          resultado.passos += gastos;
+          cpu.Set(kR0, entregue ? devolveu : 0);  // FALSE = ninguem tratou
         }
       } else if (idx >= kBaseDoShell) {
         // O NOME tem de dizer de QUE interface e o slot. Um so "IShell::slot"
@@ -1505,44 +1675,57 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
     // primeiros campos. Chama-se com o contexto no r0, como o SDK define, e o
     // proprio callback re-arma o temporizador -- que e como um laco de quadro
     // se sustenta em BREW.
-    ++agora_ms_;
-    // O RELOGIO VIRTUAL E UM SO, e a entrada le-o daqui.
+    // O LACO DE QUADRO PARA ENQUANTO UM EVENTO ESTA A SER ENTREGUE.
     //
-    // A `EntradaDoZeebo` tem o seu proprio contador (e e ele que decide que
-    // eventos do guiao ja valem), mas quem o avanca e o laco, com o MESMO relogio
-    // que faz vencer os temporizadores. Dois relogios dentro da mesma corrida
-    // seriam duas fontes de tempo -- e o P4 existe para haver uma.
-    if (entrada_pronta_) entrada_.Repor(static_cast<std::uint32_t>(agora_ms_));
-    if (timer_.ativo && agora_ms_ >= timer_.vence_em_ms && timer_.pfn != 0) {
-      // UMA SO IMPLEMENTACAO do disparo do callback: a mesma que quem dirige o
-      // titulo de fora usa. Duas copias disto divergiriam -- e a copia que aqui
-      // estava guardava um `pc_salvo`/`lr_salvo` que nunca serviu para nada.
-      if (PrepararCallbackDoTemporizador(cpu)) {
-        ++resultado.passos;
+    // O `SendEvent` (slot 21) corre o `HandleEvent` do applet por DENTRO deste
+    // laco, com um `Correr` aninhado. Se o relogio virtual continuasse a andar
+    // la dentro, um temporizador de quadro ou um sinal de entrada podia disparar
+    // NO MEIO do tratador -- reentrancia que o BREW nunca faz, e que poria dois
+    // callbacks do titulo a partilhar os mesmos registadores.
+    //
+    // O `agora_ms_` tambem nao avanca: a entrega e instantanea para o guest
+    // (o chamador le a resposta na instrucao seguinte, `tectoy.mod:0x6a3a0`).
+    if (profundidade_de_evento_ == 0) {
+      ++agora_ms_;
+      // O RELOGIO VIRTUAL E UM SO, e a entrada le-o daqui.
+      //
+      // A `EntradaDoZeebo` tem o seu proprio contador (e e ele que decide que
+      // eventos do guiao ja valem), mas quem o avanca e o laco, com o MESMO relogio
+      // que faz vencer os temporizadores. Dois relogios dentro da mesma corrida
+      // seriam duas fontes de tempo -- e o P4 existe para haver uma.
+      if (entrada_pronta_) entrada_.Repor(static_cast<std::uint32_t>(agora_ms_));
+      if (timer_.ativo && agora_ms_ >= timer_.vence_em_ms && timer_.pfn != 0) {
+        // UMA SO IMPLEMENTACAO do disparo do callback: a mesma que quem dirige o
+        // titulo de fora usa. Duas copias disto divergiriam -- e a copia que aqui
+        // estava guardava um `pc_salvo`/`lr_salvo` que nunca serviu para nada.
+        if (PrepararCallbackDoTemporizador(cpu)) {
+          ++resultado.passos;
+          continuar_no_laco = true;
+        }
+      }
+
+      // A ENTRADA, no mesmo lugar do temporizador e pela mesma razao: o laco de
+      // eventos e o unico sitio onde o tempo VIRTUAL avanca (P4).
+      if (entrada_pronta_ && ihid_.Bombear(cpu)) {
         continuar_no_laco = true;
+        continue;
+      }
+
+      // A MIDIA ANDA COM O RELOGIO VIRTUAL DO LACO (P4), e o aviso e entregue aqui.
+      //
+      // As duas coisas juntas, e NAO dentro de um handler: a entrega reentra no
+      // codigo do guest, e o `EntregarAviso` guarda e repoe os 16 registradores, o
+      // CPSR e o PC -- o que so e seguro no passo, onde o guest esta numa fronteira
+      // de instrucao.
+      //
+      // Sem o avanco, o `Play` de um titulo nunca chega ao fim e o aviso DONE -- o
+      // que o `cnk2` conta para so tocar a musica da pista -- nunca nasce.
+      if (media_ != nullptr) {
+        media_->Avancar(kAmostrasDeMidiaPorMs);
+        media_->EntregarAviso(cpu, kSentinela, 200000);
       }
     }
 
-    // A ENTRADA, no mesmo lugar do temporizador e pela mesma razao: o laco de
-    // eventos e o unico sitio onde o tempo VIRTUAL avanca (P4).
-    if (entrada_pronta_ && ihid_.Bombear(cpu)) {
-      continuar_no_laco = true;
-      continue;
-    }
-
-    // A MIDIA ANDA COM O RELOGIO VIRTUAL DO LACO (P4), e o aviso e entregue aqui.
-    //
-    // As duas coisas juntas, e NAO dentro de um handler: a entrega reentra no
-    // codigo do guest, e o `EntregarAviso` guarda e repoe os 16 registradores, o
-    // CPSR e o PC -- o que so e seguro no passo, onde o guest esta numa fronteira
-    // de instrucao.
-    //
-    // Sem o avanco, o `Play` de um titulo nunca chega ao fim e o aviso DONE -- o
-    // que o `cnk2` conta para so tocar a musica da pista -- nunca nasce.
-    if (media_ != nullptr) {
-      media_->Avancar(kAmostrasDeMidiaPorMs);
-      media_->EntregarAviso(cpu, kSentinela, 200000);
-    }
     if (saidas > 200) { resultado.motivo = "parou_em_slot_nao_implementado"; return resultado; }
     // O ANEL: guarda o PC e a PALAVRA da instrucao antes de a executar. A palavra
     // serve para ver QUAL era a instrucao, e nao so onde estava.

@@ -254,6 +254,38 @@ class Despacho {
   void DefinirVtableFicheiro(std::uint32_t v) { vtable_ficheiro_ = v; }
   void DefinirApplet(std::uint32_t v) { applet_ = v; }
 
+  // --- ISHELL_SendEvent (IShell slot 21) -----------------------------------
+  //
+  // A VTABLE TEM SEIS ARGUMENTOS (MEDIDO, `AEEIShell.h:309`):
+  //
+  //   boolean SendEvent(IShell *po, uint16 wFlags, AEECLSID clsApp,
+  //                     AEEEvent evt, uint16 wParam, uint32 dwParam)
+  //     r0=po  r1=wFlags  r2=clsApp  r3=evt  [sp+0]=wParam  [sp+4]=dwParam
+  //
+  // O `ISHELL_SendEvent` de CINCO argumentos e so a macro que poe `wFlags=0`
+  // (`AEEShell.h:278`), e o `ISHELL_PostEvent` e O MESMO SLOT com
+  // `EVTFLG_ASYNC|EVTFLG_UNIQUE` (`AEEShell.h:279`).
+  //
+  // A ENTREGA E SINCRONA porque o chamador le a resposta na instrucao SEGUINTE
+  // ao retorno -- MEDIDO no `tectoy.mod` (274755), `0x6a3a0: ldrne r0,[sp,#8]`,
+  // e declarado no SDK (`AEEIShell.h:2851`, "sends events synchronously").
+  // Uma fila drenada no quadro seguinte entrega DEPOIS de o chamador ja ter
+  // lido zero -- ou seja, nao entrega nada.
+  //
+  // `pp_saida` e o `ppObj` do `IModule::CreateInstance`: o applet manda um
+  // evento a si proprio DE DENTRO do create, antes de `applet_` existir
+  // (`tools/bateria.cpp:785` so o define depois). E o que as duas fontes
+  // fazem: zeebulator `core/brew/ishell.cpp:200-207`, zeebx
+  // `src/machine/signal.rs:232-241`.
+  //
+  // Devolve `true` quando o `HandleEvent` do applet CORREU e VOLTOU; nesse caso
+  // `*devolveu` traz o `boolean` do applet. `*passos_gastos` traz os passos que
+  // a entrega consumiu -- saem do MESMO orcamento da fase, e nao de um
+  // orcamento escondido.
+  bool EntregarEventoAoApplet(ICpu& cpu, std::uint32_t clsapp, std::uint32_t evt,
+                              std::uint16_t wp, std::uint32_t dwp, std::uint32_t pp_saida,
+                              std::uint32_t* devolveu, std::uint64_t* passos_gastos);
+
   // O FIM DA FAIXA DO MODULO, e nao `kBase + 16 MB`.
 
  private:
@@ -302,6 +334,17 @@ class Despacho {
   // O WIDGET. Depois de `tela_` e dos objectos do shell, porque e construido por
   // `InstalarAjudantes` e nao no construtor.
   Widgets widgets_;
+
+  // A PROFUNDIDADE DA ENTREGA DE EVENTOS (guarda de reentrancia): o
+  // `HandleEvent` do applet pode mandar outro evento, e isso e uma cadeia que
+  // so para com um tecto. `4` e o numero do zeebx (`src/machine/mod.rs:1541`,
+  // `MAX_NESTING`); o zeebulator usa 1 (`core/brew/ishell.h:303`).
+  //
+  // ELA TAMBEM DESLIGA O LACO DE QUADRO enquanto a entrega corre: um
+  // temporizador ou um sinal de entrada disparado de DENTRO do `HandleEvent`
+  // seria reentrancia que o BREW nunca faz.
+  int profundidade_de_evento_ = 0;
+  static constexpr int kMaxProfundidadeDeEvento = 4;
 
   std::uint32_t textos_ = 0;
   std::uint32_t blits_ = 0;
