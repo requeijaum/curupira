@@ -266,6 +266,17 @@ Reg ArmInterpreter::OperandoDeslocado(std::uint32_t instr, std::uint32_t pc, boo
     return Deslocar(valor, tipo, quantidade, c_, carry_out);
   }
   uint32_t quantidade = (instr >> 7) & 0x1F;
+  // ROR #0 NAO E ROR: E O RRX (rodar um bit para a direita ATRAVES do carry).
+  // MEDIDO com o binutils: `rrx r0, r1` == 0xE1A00061 -- tipo 3 (ROR) com o
+  // campo de quantidade a ZERO. Converter esse zero em 32, como se fazia aqui,
+  // da ROR #32, que e a IDENTIDADE: o registrador saia intacto e o carry nao
+  // entrava. Um deslocamento que nao desloca nao recusa nada.
+  // As duas referencias fazem o RRX (zeemu `algorithms.cpp:67-70`,
+  // zeebulator `arm_interpreter.cpp:83-91`).
+  if (quantidade == 0 && tipo == 3) {
+    *carry_out = (valor & 1u) != 0;
+    return (valor >> 1) | (c_ ? 0x80000000u : 0u);
+  }
   if (quantidade == 0 && tipo != 0) quantidade = 32;
   return Deslocar(valor, tipo, quantidade, c_, carry_out);
 }
@@ -865,8 +876,13 @@ void ArmInterpreter::DadosProcessados(std::uint32_t instr, std::uint32_t pc) {
     case 0x3: { resultado = op2 - a; auto f = FlagsDaSubtracao(op2, a, 0, resultado); if (s) { c_ = f.c; v_ = f.v; } carry_ja_posto = true; break; }
     case 0x4: { resultado = a + op2; auto f = FlagsDaSoma(a, op2, 0, resultado); if (s) { c_ = f.c; v_ = f.v; } carry_ja_posto = true; break; }
     case 0x5: { const Reg cin = c_ ? 1 : 0; resultado = a + op2 + cin; auto f = FlagsDaSoma(a, op2, cin, resultado); if (s) { c_ = f.c; v_ = f.v; } carry_ja_posto = true; break; }
-    case 0x6: { const Reg b = op2 + (c_ ? 0 : 1); resultado = a - b; auto f = FlagsDaSubtracao(a, b, 0, resultado); if (s) { c_ = f.c; v_ = f.v; } carry_ja_posto = true; break; }
-    case 0x7: { const Reg b = op2 + (c_ ? 0 : 1); resultado = b - a; auto f = FlagsDaSubtracao(b, a, 0, resultado); if (s) { c_ = f.c; v_ = f.v; } carry_ja_posto = true; break; }
+    // O EMPRESTIMO DO SBC/RSC E UM TERCEIRO OPERANDO, e nao uma unidade somada
+    // ao segundo: com `op2 = 0xFFFFFFFF` e C = 0, `op2 + 1` da a VOLTA a zero e
+    // a conta passa a ser `a - 0` -- resultado certo por acaso, mas C e V saem
+    // trocados. MEDIDO na bateria dos 62 titulos: ZERO ocorrencias deste caso
+    // (`sbc_wrap = 0`), logo esta correccao nao explica nenhum sintoma actual.
+    case 0x6: { const Reg emprestimo = c_ ? 0u : 1u; resultado = a - op2 - emprestimo; auto f = FlagsDaSubtracao(a, op2, emprestimo, resultado); if (s) { c_ = f.c; v_ = f.v; } carry_ja_posto = true; break; }
+    case 0x7: { const Reg emprestimo = c_ ? 0u : 1u; resultado = op2 - a - emprestimo; auto f = FlagsDaSubtracao(op2, a, emprestimo, resultado); if (s) { c_ = f.c; v_ = f.v; } carry_ja_posto = true; break; }
     case 0x8: resultado = a & op2; escreve = false; n_ = (resultado >> 31) != 0; z_ = resultado == 0; c_ = carry; break;
     case 0x9: resultado = a ^ op2; escreve = false; n_ = (resultado >> 31) != 0; z_ = resultado == 0; c_ = carry; break;
     case 0xA: { resultado = a - op2; auto f = FlagsDaSubtracao(a, op2, 0, resultado); c_ = f.c; v_ = f.v; n_ = (resultado >> 31) != 0; z_ = resultado == 0; } escreve = false; carry_ja_posto = true; break;
@@ -914,14 +930,27 @@ void ArmInterpreter::TransferenciaSimples(std::uint32_t instr, std::uint32_t pc)
   const bool l = (instr & (1u << 20)) != 0;
   const uint32_t rn = (instr >> 16) & 0xF;
   const uint32_t rd = (instr >> 12) & 0xF;
-  (void)pc;
   familia_ = l ? (b ? "ldrb" : "ldr") : (b ? "strb" : "str");
 
   Reg deslocamento = instr & 0xFFF;
   if (i) {
     const uint32_t rm = instr & 0xF;
     bool lixo = false;
-    deslocamento = Deslocar(Get(static_cast<int>(rm)), (instr >> 5) & 3, (instr >> 7) & 0x1F, c_, &lixo);
+    // AS MESMAS REGRAS DO OPERANDO 2 VALEM AQUI, e faltavam TODAS: o campo de
+    // quantidade a zero significa LSR #32, ASR #32 e RRX (e so no LSL e que
+    // significa "nao deslocar"). Sem isto, `ldr r0,[r1,r2,lsr #0]` somava r2
+    // inteiro a base em vez de somar zero, e `[r1,r2,rrx]` somava r2 em vez do
+    // valor rodado pelo carry. Nenhum dos dois recusa: o endereco sai errado e a
+    // leitura acontece.
+    const uint32_t tipo_do_offset = (instr >> 5) & 3;
+    uint32_t quantidade_do_offset = (instr >> 7) & 0x1F;
+    const Reg valor_do_offset = Get(static_cast<int>(rm));
+    if (quantidade_do_offset == 0 && tipo_do_offset == 3) {
+      deslocamento = (valor_do_offset >> 1) | (c_ ? 0x80000000u : 0u);
+    } else {
+      if (quantidade_do_offset == 0 && tipo_do_offset != 0) quantidade_do_offset = 32;
+      deslocamento = Deslocar(valor_do_offset, tipo_do_offset, quantidade_do_offset, c_, &lixo);
+    }
   }
   // `rn == 15` significa enderecamento relativo ao PC, e no ARM o PC vale
   // `endereco_da_instrucao + 8`. Esquecer o +8 le o sitio errado -- e o sitio
@@ -941,9 +970,28 @@ void ArmInterpreter::TransferenciaSimples(std::uint32_t instr, std::uint32_t pc)
       const uint32_t desal = endereco & 3;
       if (desal != 0) valor = (valor >> (desal * 8)) | (valor << (32 - desal * 8));
     }
-    Set(static_cast<int>(rd), valor);
+    if (rd == kPC && !b) {
+      // O `LDR pc` E UMA ESCRITA DO TIPO BX no ARMv5T e acima: o BIT 0 do valor
+      // carregado escolhe o estado (1 = Thumb) e o PC fica sem esse bit.
+      // Guardar o bit 0 no PC poe o buscador a ler numa morada IMPAR -- e nao ha
+      // recusa nenhuma, porque a instrucao correu.
+      // MEDIDO na bateria dos 62 titulos: 748 `ldr pc`, nenhum deles com o bit 0
+      // ligado (`ldr_pc_bit0 = 0`). A correccao NAO muda nada do que esta medido:
+      // fecha um caminho que hoje nao aparece. A referencia zeebulator faz o
+      // mesmo (`SetPcInterworking`, arm_interpreter.cpp:432-437); o zeemu nao.
+      if ((valor & 1u) != 0) modo_atual_ |= Cpsr::kT;
+      else modo_atual_ &= ~Cpsr::kT;
+      Set(kPC, valor & ~1u);
+    } else {
+      Set(static_cast<int>(rd), valor);
+    }
   } else {
-    const Reg valor = Get(static_cast<int>(rd));
+    // O PC LIDO COMO FONTE VALE `endereco_da_instrucao + 8`, e nao o endereco da
+    // instrucao. O `Passo` nao adianta o PC (ver o comentario la), logo `Get(kPC)`
+    // aqui vale `pc` -- oito a menos. Um `str pc,[...]` gravava a morada da
+    // propria instrucao. As duas referencias gravam pc+8 (zeebulator
+    // `ReadOperandRegister`, arm_interpreter.cpp:196; zeemu pelo pipeline).
+    const Reg valor = (rd == kPC) ? pc + 8 : Get(static_cast<int>(rd));
     if (b) {
       mem_.Escrever8(endereco, static_cast<std::uint8_t>(valor & 0xFF));
     } else {
@@ -973,14 +1021,37 @@ void ArmInterpreter::Bloco(std::uint32_t instr, std::uint32_t pc) {
   for (int i = 0; i < 16; ++i) {
     if ((lista & (1u << i)) == 0) continue;
     if (l) {
-      Set(i, mem_.Ler32(endereco));
+      const Reg lido = mem_.Ler32(endereco);
+      if (i == kPC) {
+        // Igual ao `LDR pc`: no ARMv5T e acima o LDM com o PC na lista honra o
+        // BIT 0 do valor carregado (Thumb). MEDIDO: 534 496 `ldm` com o PC na
+        // bateria, zero com o bit 0 ligado -- a correccao fecha o caminho sem
+        // mexer no que esta medido.
+        if ((lido & 1u) != 0) modo_atual_ |= Cpsr::kT;
+        else modo_atual_ &= ~Cpsr::kT;
+        Set(kPC, lido & ~1u);
+      } else {
+        Set(i, lido);
+      }
     } else {
-      mem_.Escrever32(endereco, Get(i));
+      // O PC COMO FONTE DO STM VALE pc + 8 (ver `TransferenciaSimples`). O
+      // prologo APCS do GCC, `stmfd sp!, {fp, ip, lr, pc}` (0xE92DD800), grava
+      // exactamente isto -- e e dessa palavra que a moldura de pilha se diz.
+      // MEDIDO na bateria: 168 `stm` com o PC na lista.
+      mem_.Escrever32(endereco, i == kPC ? pc + 8 : Get(i));
     }
     endereco += passo;
   }
-  if (w) Set(static_cast<int>(rn), u ? base + static_cast<Reg>(quantos) * passo
-                                     : base - static_cast<Reg>(quantos) * passo);
+  // COM O REGISTADOR BASE DENTRO DA LISTA DE UM LDM, QUEM MANDA E O VALOR
+  // CARREGADO. A escrita na base vinha DEPOIS do laco e apagava-o em silencio:
+  // um `ldmia r4!, {r4, r5}` deixava em r4 o endereco final em vez do valor lido.
+  // MEDIDO na bateria: 11 vezes. A referencia zeemu escreve a base ANTES do laco
+  // (`instructions-arm.cpp:715-718`), o que da o mesmo resultado; a zeebulator
+  // tem o mesmo defeito que tinhamos (`arm_interpreter.cpp:411-413`).
+  const bool base_carregada_da_lista = l && ((lista >> rn) & 1u) != 0;
+  if (w && !base_carregada_da_lista)
+    Set(static_cast<int>(rn), u ? base + static_cast<Reg>(quantos) * passo
+                                : base - static_cast<Reg>(quantos) * passo);
   if (s) Recusar(instr, pc, "LDM/STM com S (banco de usuario) nao implementado");
 
   // O PC avanca AQUI, e nao no despachante -- e so aqui se sabe se a lista de
@@ -1011,16 +1082,24 @@ void ArmInterpreter::Multiplicar(std::uint32_t instr) {
   const bool acumula = (instr & (1u << 21)) != 0;
   const bool s = (instrucao_bandeiras(instr));
   familia_ = acumula ? "mla" : "mul";
-  // ARM ARM, e importa ler a ordem com cuidado:
-  //   MUL  Rd, Rm, Rs      ->  Rd = Rm * Rs        (o campo Rn nao e operando)
-  //   MLA  Rd, Rn, Rm, Rs  ->  Rd = Rn * Rm + Rs   (Rn e o primeiro factor E a
-  //                                                 parcela somada)
-  // A primeira versao deste codigo fazia `Rm * Rs + Rn` para o MLA, que troca
-  // os papeis de Rn e Rs. Num teste com 7 * 6 + 100 isso da 1607 em vez de 142
-  // -- um erro que so aparece com valores diferentes nos tres campos.
-  std::uint32_t r = acumula ? (Get(static_cast<int>(rn)) * Get(static_cast<int>(rm)))
-                            : (Get(static_cast<int>(rm)) * Get(static_cast<int>(rs)));
-  if (acumula) r += Get(static_cast<int>(rs));
+  // ARM ARM A4.1.26/A4.1.32, e o mapa dos campos e o do BINUTILS, nao o da
+  // memoria de ninguem:
+  //
+  //   MUL Rd, Rm, Rs      ->  Rd = Rm * Rs         (o campo 15-12 nao e operando)
+  //   MLA Rd, Rm, Rs, Rn  ->  Rd = Rm * Rs + Rn    (Rn, nos bits 15-12, e A
+  //                                                 PARCELA SOMADA -- nao um factor)
+  //
+  // MEDIDO com `arm-none-eabi-objdump -D -b binary -m arm`:
+  //   0xE0203291 = `mla r0, r1, r2, r3`   (Rd=0, Rm=1, Rs=2, Rn=3)
+  //   0xE0201392 = `mla r0, r2, r3, r1`   (Rd=0, Rm=2, Rs=3, Rn=1)
+  //
+  // A versao anterior calculava `Rn * Rm + Rs`: trocava a PARCELA pelo SEGUNDO
+  // FACTOR. O resultado e uma multiplicacao valida de numeros errados -- nao ha
+  // recusa, nao ha falta, e o erro so aparece na conta. MEDIDO na bateria dos 62
+  // titulos: 15 585 `mla` executados. As duas referencias concordam com o ARM ARM
+  // (zeemu `instructions-arm.cpp:826`, zeebulator `arm_interpreter.cpp:528-529`).
+  std::uint32_t r = Get(static_cast<int>(rm)) * Get(static_cast<int>(rs));
+  if (acumula) r += Get(static_cast<int>(rn));
   Set(static_cast<int>(rd), r);
   if (s) { n_ = (r >> 31) != 0; z_ = r == 0; }
 }
@@ -1406,8 +1485,29 @@ void ArmInterpreter::ExecutarThumb(std::uint16_t instr, std::uint32_t pc) {
     Set(kPC, pc + 2);
     return;
   }
+  if ((instr & 0xF000u) == 0x9000u) {
+    // FORMATO 11 DO THUMB: `1001 L Rd(10-8) Word8` -- LDR/STR RELATIVO AO SP,
+    // com o deslocamento em PALAVRAS e o registador nos bits 10-8.
+    //
+    // ESTE ERA O DEFEITO MAIS SILENCIOSO DO LADO THUMB: a guarda de baixo abria
+    // em `(instr & 0xE000) == 0x8000`, que apanha 0x8000-0x9FFF, e o ramo
+    // tratava tudo o que nao fosse 0x8xxx como o FORMATO 9 (`0110 L imm5 Rn Rd`).
+    // Os campos nao coincidem em nada: o 0x9801 e `ldr r0, [sp, #4]` no objdump
+    // (`-M force-thumb`, conferido) e era executado como `ldr r1, [r0, #0]` --
+    // registador errado, base errada, deslocamento errado, e `familia_` a dizer
+    // "ldr", que e o mesmo nome que o objdump da. Por isso o auditor diferencial
+    // do descodificador tambem nao o via: os dois lados diziam `ldr`.
+    const bool carrega = ((instr >> 11) & 1u) != 0;
+    familia_ = carrega ? "ldr" : "str";
+    const uint32_t rd = (instr >> 8) & 7u;
+    const Reg endereco = Get(kSP) + ((instr & 0xFFu) << 2);
+    if (carrega) Set(static_cast<int>(rd), mem_.Ler32(endereco));
+    else mem_.Escrever32(endereco, Get(static_cast<int>(rd)));
+    Set(kPC, pc + 2);
+    return;
+  }
   if ((instr & 0xE000u) == 0x6000u || (instr & 0xE000u) == 0x7000u ||
-      (instr & 0xE000u) == 0x8000u) {  // LDR/STR, LDRB/STRB, LDRH/STRH
+      (instr & 0xF000u) == 0x8000u) {  // LDR/STR, LDRB/STRB, LDRH/STRH
     // O `L` DESTAS FORMAS E O BIT 11, em todas elas: 0x6000/0x6800 (palavra),
     // 0x7000/0x7800 (byte), 0x8000/0x8800 (meia-palavra) e 0x9000/0x9800
     // (palavra). Ler os bits 12-11 (`(instr >> 11) & 3`) da 0 no 0x6000 mas da
@@ -1493,10 +1593,20 @@ void ArmInterpreter::ExecutarThumb(std::uint16_t instr, std::uint32_t pc) {
     return;
   }
   if ((instr & 0xFF00u) == 0xDF00u) { familia_ = "swi"; SWI(instr, pc); Set(kPC, pc + 2); return; }
-  if ((instr & 0xFF87u) == 0x4700u) {  // BX/BLX registrador
-    familia_ = ((instr & 0x0080u) != 0) ? "blx" : "bx";
-    const Reg alvo = Get(static_cast<int>((instr >> 3) & 0xF));
+  if ((instr & 0xFF07u) == 0x4700u) {  // BX/BLX registrador
+    // A MASCARA ANTIGA (0xFF87) EXIGIA O BIT 7 A ZERO, que e precisamente o bit
+    // que separa o BLX do BX: o ramo do `blx` a seguir era CODIGO MORTO e todo
+    // `blx <reg>` do Thumb (0x4780-0x47F8) caia na recusa final. Conferido no
+    // binutils: 0x4798 = `blx r3`.
+    const bool com_retorno = (instr & 0x0080u) != 0;
+    familia_ = com_retorno ? "blx" : "bx";
+    const uint32_t rm = (instr >> 3) & 0xFu;
+    // `bx pc` e o modo classico de passar de Thumb para ARM, e o PC lido em
+    // Thumb vale `endereco + 4` (alinhado a 4 na leitura como morada).
+    const Reg alvo = (rm == kPC) ? ((pc + 4u) & ~2u) : Get(static_cast<int>(rm));
+    if (com_retorno) Set(kLR, (pc + 2u) | 1u);
     if ((alvo & 1) == 0) modo_atual_ &= ~Cpsr::kT;
+    else modo_atual_ |= Cpsr::kT;
     Set(kPC, alvo & ~1u);
     return;
   }

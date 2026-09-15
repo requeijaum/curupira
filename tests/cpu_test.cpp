@@ -92,10 +92,19 @@ constexpr std::uint32_t Mul(std::uint32_t rd, std::uint32_t rm, std::uint32_t rs
   return (kAl << 28) | ((poe_bandeiras ? 1u : 0u) << 20) | ((rd & 0xF) << 16) | ((rs & 0xF) << 8) |
          0x90u | (rm & 0xF);
 }
-constexpr std::uint32_t Mla(std::uint32_t rd, std::uint32_t rn, std::uint32_t rm, std::uint32_t rs,
-                            bool poe_bandeiras = false) {
-  // ARM ARM: `MLA Rd, Rn, Rm, Rs` calcula Rd = (Rn * Rm) + Rs. O campo Rn vai
-  // nos bits 15-12, o Rm nos 3-0 e o Rs nos 11-8.
+constexpr std::uint32_t Mla(std::uint32_t rd, std::uint32_t rm, std::uint32_t rs,
+                            std::uint32_t rn, bool poe_bandeiras = false) {
+  // ARM ARM A4.1.26: `MLA Rd, Rm, Rs, Rn` calcula Rd = (Rm * Rs) + Rn.
+  //   Rd nos bits 19-16, **Rn (a PARCELA SOMADA) nos 15-12**, Rs nos 11-8 e
+  //   Rm nos 3-0.
+  //
+  // A ORDEM DOS ARGUMENTOS DESTE CONSTRUTOR E A DO ARM ARM, e nao e um detalhe:
+  // a versao anterior recebia `(rd, rn, rm, rs)` e dizia que o resultado era
+  // `Rn * Rm + Rs`. Isso e falso, e o interpretador tinha a MESMA leitura
+  // errada -- os dois concordavam um com o outro e discordavam do processador.
+  // MEDIDO no binutils (`objdump -D -b binary -m arm`):
+  //   0xE0203291 = `mla r0, r1, r2, r3`
+  //   0xE0201392 = `mla r0, r2, r3, r1`
   return (kAl << 28) | (1u << 21) | ((poe_bandeiras ? 1u : 0u) << 20) | ((rd & 0xF) << 16) |
          ((rn & 0xF) << 12) | ((rs & 0xF) << 8) | 0x90u | (rm & 0xF);
 }
@@ -1469,4 +1478,219 @@ TEST(Cpu, AritmeticaSemBitSNaoMexeEmCarryNemOverflow) {
   d.Correr(1);
   EXPECT_TRUE(C(d)) << "com bit S, o carry TEM de ser escrito";
   EXPECT_TRUE(Z(d)) << "0xFFFFFFFF + 1 = 0";
+}
+
+
+// ===========================================================================
+// CACADA DE DEFEITOS SILENCIOSOS -- a segunda ronda (ver docs `10-cpu-cacada`)
+// ===========================================================================
+//
+// O padrao caçado e sempre o mesmo: a instrucao E EXECUTADA, `recusadas` fica a
+// ZERO, nao ha falta nenhuma para registar -- e o efeito esta errado. Cada teste
+// abaixo nomeia a palavra REAL (conferida no `arm-none-eabi-objdump`) e quantas
+// vezes ela correu na bateria dos 62 titulos.
+
+TEST(Cpu, MlaSomaAParcelaDosBits15a12ENaoAMultiplicaPorEla) {
+  // `mla r0, r1, r2, r3` == 0xE0203291 (MEDIDO no binutils). ARM ARM A4.1.26:
+  //   Rd(19-16) = Rm(3-0) * Rs(11-8) + Rn(15-12)
+  // O campo 15-12 e a PARCELA SOMADA. O interpretador lia-o como primeiro
+  // FACTOR e somava o campo 11-8 -- ou seja, calculava `Rn*Rm + Rs`.
+  //
+  // Com 7 * 6 + 100 o certo e 142; o defeito dava 706 (= 100*7 + 6). Nao ha
+  // recusa: e uma multiplicacao valida de numeros errados.
+  // MEDIDO na bateria dos 62 titulos: 15 585 `mla` executados.
+  Bancada b;
+  b.R(1, 7);
+  b.R(2, 6);
+  b.R(3, 100);
+  const std::uint64_t recusadas_antes = b.Cpu().InstruscoesRecusadas();
+  b.Instrucao(Mla(0, 1, 2, 3));  // mla r0, r1, r2, r3 -- r1*r2 + r3
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(0), 142u) << "Rm*Rs + Rn";
+  EXPECT_NE(b.R(0), 706u) << "e nao Rn*Rm + Rs";
+  EXPECT_EQ(b.Cpu().InstruscoesRecusadas(), recusadas_antes) << "o defeito era silencioso";
+}
+
+TEST(Cpu, MlaComACodificacaoRealDoObjdump) {
+  // A MESMA AFIRMACAO, feita com a PALAVRA e nao com o montador: se o montador
+  // dos testes tiver os campos trocados (ja teve), este teste continua a dizer a
+  // verdade. 0xE0201392 = `mla r0, r2, r3, r1` -> r0 = r2*r3 + r1.
+  Bancada b;
+  b.R(1, 7);
+  b.R(2, 6);
+  b.R(3, 100);
+  b.Instrucao(0xE0201392u);
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(0), 607u) << "6 * 100 + 7";
+}
+
+TEST(Cpu, RrxRodaUmBitPeloCarryENaoEIdentidade) {
+  // `rrx r0, r1` == 0xE1A00061 (MEDIDO): tipo ROR com o campo de quantidade a
+  // ZERO. O interpretador convertia esse zero em 32 -- e ROR #32 e a
+  // IDENTIDADE. O registrador saia intacto, sem recusa nenhuma.
+  // MEDIDO na bateria: 7 execucoes no operando 2 e 1 no offset de um LDR/STR.
+  Bancada b;
+  b.R(1, 3u);
+  b.R(4, 0u);
+  b.Instrucao(CmpImediato(4, 0));  // 0 - 0: sem emprestimo -> C = 1
+  b.Instrucao(0xE1A00061u);        // rrx r0, r1
+  b.Terminar();
+  b.Correr(2);
+  EXPECT_EQ(b.R(0), 0x80000001u) << "(3 >> 1) | (C << 31)";
+  EXPECT_NE(b.R(0), 3u) << "e NAO o valor intacto do ROR #32";
+}
+
+TEST(Cpu, RrxComBitSEscreveOCarryDeSaida) {
+  // `movs r0, r1, rrx` == 0xE1B00061: o carry de saida do RRX e o BIT 0 do
+  // valor de entrada. E o par do teste acima -- sem ele, um RRX que devolvesse
+  // o valor certo com o carry errado passaria.
+  Bancada b;
+  b.R(1, 3u);
+  b.R(4, 0u);
+  b.Instrucao(CmpImediato(4, 0));  // C = 1
+  b.Instrucao(0xE1B00061u);        // movs r0, r1, rrx
+  b.Terminar();
+  b.Correr(2);
+  EXPECT_EQ(b.R(0), 0x80000001u);
+  EXPECT_TRUE(C(b)) << "o carry de saida e o bit 0 da entrada";
+}
+
+TEST(Cpu, StmComPcNaListaGravaPcMaisOito) {
+  // `stmfd sp!, {fp, ip, lr, pc}` == 0xE92DD800 -- o prologo APCS do GCC.
+  // O PC LIDO COMO FONTE vale `endereco_da_instrucao + 8`; o `Passo` nao adianta
+  // o PC, logo `Get(kPC)` dentro do executor vale `pc` e a palavra gravada saia
+  // oito bytes atras. Nao ha recusa: o STM corre inteiro e grava um valor errado.
+  // MEDIDO na bateria: 168 `stm` com o PC na lista.
+  Bancada b;
+  b.R(13, 0x80070000u);
+  const std::uint64_t recusadas_antes = b.Cpu().InstruscoesRecusadas();
+  b.Instrucao(0xE92DD800u);
+  b.Terminar();
+  b.Correr(1);
+  // ordem crescente de registrador em enderecos crescentes: fp, ip, lr, pc.
+  EXPECT_EQ(b.Mem().Ler32(b.R(13) + 12), 0x00100008u) << "pc + 8";
+  EXPECT_NE(b.Mem().Ler32(b.R(13) + 12), 0x00100000u) << "e NAO o endereco da propria instrucao";
+  EXPECT_EQ(b.Cpu().InstruscoesRecusadas(), recusadas_antes);
+}
+
+TEST(Cpu, StrDoPcGravaPcMaisOito) {
+  // `str pc, [r4]` == 0xE584F000 -- a mesma regra, na transferencia simples.
+  Bancada b;
+  b.R(4, 0x00120000u);
+  b.Instrucao(0xE584F000u);
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.Mem().Ler32(0x00120000u), 0x00100008u);
+}
+
+TEST(Cpu, LdmComPcHonraOBitZeroEEntraEmThumb) {
+  // `ldmfd sp!, {r4, pc}` == 0xE8BD8010. No ARMv5T e acima, o LDM com o PC na
+  // lista e uma escrita do tipo BX: o bit 0 do valor escolhe o estado.
+  // Guardar o bit 0 dentro do PC poe o buscador a ler numa morada IMPAR.
+  //
+  // MEDIDO na bateria: 534 496 `ldm` com o PC na lista, NENHUM com o bit 0
+  // ligado. Esta correccao nao explica nenhum sintoma actual -- fecha um caminho.
+  Bancada b;
+  b.R(13, 0x80070000u);
+  b.Mem().Escrever32(0x80070000u, 0x00200000u);
+  b.Mem().Escrever32(0x80070004u, 0x00300001u);  // bit 0 ligado
+  b.Instrucao(0xE8BD8010u);
+  b.Correr(1);
+  EXPECT_EQ(b.R(15), 0x00300000u) << "o PC fica sem o bit 0";
+  EXPECT_NE(b.R(15) & 1u, 1u);
+  EXPECT_EQ(b.Cpu().Cpsr() & Cpsr::kT, Cpsr::kT) << "e o estado passa a Thumb";
+}
+
+TEST(Cpu, LdrParaOPcHonraOBitZeroEEntraEmThumb) {
+  // `ldr pc, [r4]` == 0xE594F000 -- a mesma regra do LDM.
+  // MEDIDO na bateria: 748 `ldr pc`, nenhum com o bit 0 ligado.
+  Bancada b;
+  b.R(4, 0x00120000u);
+  b.Mem().Escrever32(0x00120000u, 0x00300001u);
+  b.Instrucao(0xE594F000u);
+  b.Correr(1);
+  EXPECT_EQ(b.R(15), 0x00300000u);
+  EXPECT_EQ(b.Cpu().Cpsr() & Cpsr::kT, Cpsr::kT);
+}
+
+TEST(Cpu, LdmComABaseNaListaNaoApagaOValorCarregado) {
+  // `ldmia r4!, {r4, r5}` == 0xE8B40030. Com o registador base DENTRO da lista,
+  // quem manda e o valor carregado -- a escrita na base vinha depois do laco e
+  // apagava-o. MEDIDO na bateria: 11 ocorrencias.
+  Bancada b;
+  b.R(4, 0x00120000u);
+  b.Mem().Escrever32(0x00120000u, 0xAAAA0000u);
+  b.Mem().Escrever32(0x00120004u, 0xBBBB0000u);
+  b.Instrucao(0xE8B40030u);
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(4), 0xAAAA0000u) << "o valor lido da memoria";
+  EXPECT_NE(b.R(4), 0x00120008u) << "e NAO o endereco final da escrita na base";
+  EXPECT_EQ(b.R(5), 0xBBBB0000u);
+}
+
+TEST(Cpu, SbcsTrataOEmprestimoComoTerceiroOperando) {
+  // `sbcs r0, r1, r2` == 0xE0D10002 com r2 = 0xFFFFFFFF e C = 0.
+  // O codigo antigo fazia `b = op2 + 1`, que DA A VOLTA a zero: a conta passava
+  // a `a - 0`, o resultado saia certo por acaso e o carry saia trocado.
+  // MEDIDO na bateria: ZERO ocorrencias deste caso. Fica pela correccao.
+  Bancada b;
+  b.R(1, 5u);
+  b.R(2, 0xFFFFFFFFu);
+  b.R(4, 1u);
+  b.Instrucao(CmpImediato(4, 2));  // 1 - 2: com emprestimo -> C = 0
+  b.Instrucao(0xE0D10002u);        // sbcs r0, r1, r2
+  b.Terminar();
+  b.Correr(2);
+  EXPECT_EQ(b.R(0), 5u) << "5 - 0xFFFFFFFF - 1 = 5 (mod 2^32)";
+  EXPECT_FALSE(C(b)) << "ha emprestimo: C = 0";
+}
+
+TEST(Cpu, ThumbLdrRelativoAoSpNaoEOFormato9) {
+  // FORMATO 11 DO THUMB: `1001 L Rd(10-8) Word8` -- relativo ao SP.
+  // 0x9801 = `ldr r0, [sp, #4]` (MEDIDO no binutils, `-mthumb`).
+  //
+  // A guarda das transferencias abria em `(instr & 0xE000) == 0x8000`, que
+  // apanha 0x8000-0x9FFF, e tratava o 0x9xxx como FORMATO 9 -- `ldr r1,[r0,#0]`.
+  // Registador errado, base errada, deslocamento errado, ZERO recusas, e a sonda
+  // do descodificador a dizer "ldr", que e o mesmo nome que o objdump da: por
+  // isso o auditor diferencial tambem nao o via.
+  Bancada b;
+  b.R(13, 0x80070000u);
+  b.Mem().Escrever32(0x80070004u, 0x1234ABCDu);
+  b.R(0, 0x00990000u);  // se o formato 9 correr, le daqui e escreve em r1
+  const std::uint64_t recusadas_antes = b.Cpu().InstruscoesRecusadas();
+  b.Cpu().SetCpsr(b.Cpu().Cpsr() | Cpsr::kT);
+  b.Thumb(0x9801u);  // ldr r0, [sp, #4]
+  b.Correr(1);
+  EXPECT_EQ(b.R(0), 0x1234ABCDu) << "o destino e r0 (bits 10-8) e a base e o SP";
+  EXPECT_EQ(b.R(1), 0u) << "o formato 9 escreveria em r1";
+  EXPECT_EQ(b.Cpu().InstruscoesRecusadas(), recusadas_antes) << "era silencioso";
+}
+
+TEST(Cpu, ThumbStrRelativoAoSpEscreveNaPilha) {
+  // 0x9302 = `str r3, [sp, #8]` (MEDIDO no binutils).
+  Bancada b;
+  b.R(13, 0x80070000u);
+  b.R(3, 0xCAFEBABEu);
+  b.Cpu().SetCpsr(b.Cpu().Cpsr() | Cpsr::kT);
+  b.Thumb(0x9302u);
+  b.Correr(1);
+  EXPECT_EQ(b.Mem().Ler32(0x80070008u), 0xCAFEBABEu);
+}
+
+TEST(Cpu, ThumbBlxRegistradorEscreveOLr) {
+  // 0x4798 = `blx r3` (MEDIDO no binutils). A mascara do ramo era 0xFF87, que
+  // exige o BIT 7 A ZERO -- e o bit 7 e exactamente o que separa o BLX do BX.
+  // O ramo do `blx` era CODIGO MORTO e a instrucao caia na recusa final.
+  Bancada b;
+  b.R(3, 0x00200000u);  // alvo em ARM
+  b.Cpu().SetCpsr(b.Cpu().Cpsr() | Cpsr::kT);
+  b.Thumb(0x4798u);
+  b.Correr(1);
+  EXPECT_EQ(b.R(14), 0x00100003u) << "LR = (pc + 2) | 1";
+  EXPECT_EQ(b.R(15), 0x00200000u);
+  EXPECT_EQ(b.Cpu().Cpsr() & Cpsr::kT, 0u) << "o alvo tem o bit 0 a zero: volta a ARM";
 }
