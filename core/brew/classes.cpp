@@ -5,11 +5,13 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "core/brew/clsids.h"
 #include "core/brew/ecra.h"
+#include "core/brew/igl.h"
 #include "tools/brew_slots.inc"
 // A CONTAGEM DO QEGL prende-se ao IEGL gerado: o QEGL e o IEGL sem o
 // `GetProcAddress` (slot 8). Ver o `static_assert` no fim das tabelas abaixo --
@@ -600,7 +602,64 @@ const char* NomeDoSlotIglesExt(std::uint32_t slot) {
   return igles_ext_slots::kNomes[slot];
 }
 
+// --- O IGLES11 E O MOTOR DO IGL (frente glbloco) ------------------------------
+namespace {
+
+// POR QUE NAO HÁ AQUI UM SEGUNDO ESTADO COPIADO: o `core/brew/igl.cpp` ja
+// implementa estes metodos (`kIgl_*`, os 80 slots do IGL) com o estado exacto
+// que o rasterizador consome no desenho (`MontarEstado` ->
+// `EstadoDeRasterizacao`). Uma copia deste estado no rasterizador ou neste
+// ficheiro criaria DUAS verdades paralelas -- e a armadilha 2 desta casa sao
+// exactamente as segundas copias a divergir em silencio (o `tools/bateria.cpp`
+// tinha segundas copias de `kSlotId`, e mudar so um lado dava regressoes
+// falsas). O IGLES11 passa a ter o SEU proprio motor do mesmo tipo, e o
+// `AtenderClasse` desloca os argumentos pela moldura dele.
+std::unique_ptr<Igl> g_igles_igl;
+
+constexpr std::uint32_t kSemSlotNoIgl = 0xFFFFFFFFu;
+
+// O numero do slot no IGL de 80 slots para cada slot IGLES11 desta frente. A
+// correspondencia e POR NOME DO METODO, e nao por numero: as duas interfaces
+// numeram os mesmos metodos em posicoes diferentes (o `kIgles_Enable` e o 56,
+// o `kIgl_Enable` e o 28). Os nomes vem dos geradores
+// (`tools/igles_slots.inc` / `tools/gl_slots.inc`), as DUAS leituras dos
+// cabecalhos do SDK -- e nao de uma copia de outro emulador.
+std::uint32_t SlotIglesNoIgl(std::uint32_t slot) {
+  switch (slot) {
+    case igles_slots::kIgles_Clear: return gl_slots::kIgl_Clear;
+    case igles_slots::kIgles_ClearColorx: return gl_slots::kIgl_ClearColorx;
+    case igles_slots::kIgles_CullFace: return gl_slots::kIgl_CullFace;
+    case igles_slots::kIgles_Disable: return gl_slots::kIgl_Disable;
+    case igles_slots::kIgles_DisableClientState: return gl_slots::kIgl_DisableClientState;
+    case igles_slots::kIgles_Enable: return gl_slots::kIgl_Enable;
+    case igles_slots::kIgles_EnableClientState: return gl_slots::kIgl_EnableClientState;
+    case igles_slots::kIgles_Hint: return gl_slots::kIgl_Hint;
+    case igles_slots::kIgles_LoadIdentity: return gl_slots::kIgl_LoadIdentity;
+    case igles_slots::kIgles_MatrixMode: return gl_slots::kIgl_MatrixMode;
+    case igles_slots::kIgles_ShadeModel: return gl_slots::kIgl_ShadeModel;
+    case igles_slots::kIgles_TexParameterx: return gl_slots::kIgl_TexParameterx;
+    case igles_slots::kIgles_Viewport: return gl_slots::kIgl_Viewport;
+    default: return kSemSlotNoIgl;
+  }
+}
+
+// So DOIS dos doze tem QUATRO argumentos reais, com o quarto NA PILHA por
+// causa do `pMe` em r0: o `Viewport` (x, y, largura, altura) e o `ClearColorx`
+// (r, g, b, a). Nos outros dez o r3 e o terceiro argumento real e nao se le a
+// pilha.
+bool SlotIglesTemQuartoNaPilha(std::uint32_t slot) {
+  return slot == igles_slots::kIgles_Viewport || slot == igles_slots::kIgles_ClearColorx;
+}
+
+}  // namespace
+
+const Igl* EstadoDoIgles11() { return g_igles_igl.get(); }
+
 void ConstruirIgles(Memoria& mem, const Saidas& saidas, Traco& traco) {
+  // O MOTOR DO IGLES11, RECONSTRUIDO POR CORRIDA: o mesmo `Igl` do despacho,
+  // construido de novo a cada `ConstruirClasses` (uma vez por titulo na
+  // bateria), para o estado nao vazar de um titulo para o outro.
+  g_igles_igl = std::make_unique<Igl>(mem, traco);
   ConstruirObjeto(mem, saidas, kObjetoIgles, saidas.Endereco(kVtableIgles),
                   kIglesSlots, kVtableIgles);
   ConstruirObjeto(mem, saidas, kObjetoIglesExt, saidas.Endereco(kVtableIglesExt),
@@ -1054,6 +1113,56 @@ bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
       mem.Escrever32(kIglesTexPonteiro, pixels);
       cpu.Set(kR0, kAeeSuccess);
       return true;
+    }
+
+    // A FRENTE GLBLOCO: os DOZE slots nomeados que 8 titulos pedem (medido na
+    // bateria: abd, gof, pacmania, pbc, ridgeracer, rmp, tekken2, torkandkral).
+    // Antes chegavam aqui e recebiam a recusa generica com nome; agora SERVEM
+    // ESTADO, pelo motor do IGL de 80 slots (ver `SlotIglesNoIgl` acima).
+    const std::uint32_t no_igl = SlotIglesNoIgl(slot);
+    if (no_igl != kSemSlotNoIgl && g_igles_igl != nullptr) {
+      // A MOLDURA DE CHAMADA DO IGLES11: leva `iname *pMe` em r0, logo o
+      // primeiro argumento real esta em r1 (o mesmo deslocamento do QEGL). O
+      // quarto argumento real, quando o metodo tem quatro, esta no primeiro
+      // lugar da pilha (`cpu.Get(kSP)`), e nao em r3.
+      ArgumentosGl av;
+      av.reg[0] = cpu.Get(kR1);
+      av.reg[1] = cpu.Get(kR2);
+      av.reg[2] = cpu.Get(kR3);
+      av.lr = cpu.Get(kLR);
+      const std::uint32_t sp = cpu.Get(kSP);
+      av.sp = sp + 4u;
+      if (SlotIglesTemQuartoNaPilha(slot)) {
+        if (sp < 0x00010000u) {
+          std::snprintf(nome, sizeof(nome), "IGLES11::%s", NomeDoSlotIgles(slot));
+          traco.RegistarFalta(Area::Brew, nome, "argumentos na pilha sem sp valido");
+          cpu.Set(kR0, kAeeBadParm);
+          return true;
+        }
+        av.reg[3] = cpu.Mem().Ler32(sp);
+      }
+      std::uint32_t retorno = 0;
+      const ResultadoGl r = g_igles_igl->Executar(no_igl, av, &retorno);
+      std::snprintf(nome, sizeof(nome), "IGLES11::%s", NomeDoSlotIgles(slot));
+      if (r == ResultadoGl::Feito) {
+        cpu.Set(kR0, kAeeSuccess);
+        const std::string& motivo = g_igles_igl->Ultimas().back().motivo;
+        traco.Emitir(Area::Brew, Nivel::Depuracao, nome,
+                     motivo.empty() ? "estado servido pelo motor do IGL (igl.cpp)" : motivo);
+        return true;
+      }
+      if (r == ResultadoGl::Recusado) {
+        // A RECUSA DO MOTOR COM O MOTIVO DELE, e nao a recusa generica: a regra
+        // desta casa e nunca "sucesso sem efeito". O pendente e o `Clear`: sem
+        // superficie ligada ao objecto IGLES11, a limpeza acumula a mascara e
+        // recusa a ESCRITA (o detalhe diz "TELA LIGADA").
+        traco.RegistarFalta(Area::Brew, nome, g_igles_igl->Ultimas().back().motivo);
+        cpu.Set(kR0, kAeeUnsupported);
+        return true;
+      }
+      // `NaoImplementado` nao acontece com este mapeamento (todos os doze
+      // existem no IGL); se acontecer, cai na recusa generica com nome.
+      (void)retorno;
     }
 
     // CADA SLOT TEM NOME. Uma recusa `IGLES11::slot67` nao se pode ler; a mesma

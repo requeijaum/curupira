@@ -100,6 +100,11 @@
 
 namespace zb2::brew {
 
+// O motor de estado do IGL de 80 slots (`core/brew/igl.h`), que a frente
+// glbloco passa a servir ao objecto IGLES11 (ver `EstadoDoIgles11`). So se
+// usa como ponteiro opaco aqui; a definicao completa fica no `.cpp`.
+class Igl;
+
 // As tres classes conhecidas. A ORDEM e a ordem em que a bateria as encontrou.
 enum class Classe : std::uint32_t {
   kAppHistory = 0,
@@ -258,6 +263,13 @@ bool EnfileirarThreadPeloCallbackDeRetomada(std::uint32_t pcb);
 // chamador segue a cadeia de ramos). `true` = foi atendido, com sucesso OU com
 // recusa REGISTADA.
 bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco);
+
+// O ESTADO DO OBJECTO IGLES11 (frente glbloco, 8 titulos). Um motor do MESMO
+// tipo do IGL de 80 slots, reconstruido por `ConstruirIgles` (uma vez por
+// corrida, como o resto do estado das classes) e observavel pelo teste: e o
+// mesmo estado que o rasterizador consome no desenho. `nullptr` antes de
+// `ConstruirIgles`.
+const Igl* EstadoDoIgles11();
 
 }  // namespace zb2::brew
 

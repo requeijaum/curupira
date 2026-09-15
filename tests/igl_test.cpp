@@ -594,6 +594,14 @@ struct BancoClasses {
     return static_cast<std::uint16_t>(mem.Ler16(
         zb2::brew::kBaseDoEcraNoGuest + static_cast<std::uint32_t>(y * 640 + x) * 2u));
   }
+  // O detalhe da ULTIMA falta com este nome (traco.cpp:122 prefixa
+  // `NAO_IMPLEMENTADO: `). E o que a lista de demanda mostra.
+  std::string Detalhe(const std::string& nome) const {
+    for (const auto& ev : destino.eventos) {
+      if (ev.nome == "NAO_IMPLEMENTADO: " + nome) return ev.detalhe;
+    }
+    return "";
+  }
 };
 
 TEST(FrenteGloe, OAnuncioEServidoNoMesmoCommitDoBlit) {
@@ -805,6 +813,191 @@ TEST(FrenteGloe, ACabecaDoIglesExtViveNoObjecto) {
   EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIglesExt + igles_ext_slots::kIglesExt_Release,
                             b.traco));
   EXPECT_EQ(b.cpu.Get(kR0), 1u);
+}
+
+// ---------------------------------------------------------------------------
+// 5. A FRENTE GLBLOCO: OS DOZE SLOTS NOMEADOS DO IGLES11
+// ---------------------------------------------------------------------------
+//
+// OITO titulos (`abd`, `gof`, `pacmania`, `pbc`, `ridgeracer`, `rmp`,
+// `tekken2`, `torkandkral`) pedem hoje estes metodos do IGLES11 e recebem
+// recusa com nome. A demanda medida (bateria, ZB2_QUADROS=300 ZB2_EVT_START=1):
+//
+//   Disable 8 | MatrixMode 8 | Viewport 8 | LoadIdentity 7 | Hint 6 |
+//   ShadeModel 6 | CullFace 5 | EnableClientState 5 | TexParameterx 4 |
+//   Clear 3 | ClearColorx 3
+//
+// O teste VERMELHO desta frente: cada slot tem de responder SERVINDO ESTADO
+// (r0 = AEE_SUCCESS e nenhuma falta `IGLES11::<nome>`), em vez da recusa
+// generica. E o teste NAO chama `ChamaSaida`: le a TABELA pelo indice
+// `kVtableIgles + slot`, a mesma leitura do despacho.
+//
+// O CAMINHO E O DO IGL DE 80 SLOTS, e a razao esta medida: o `core/brew/igl.cpp`
+// ja implementa estes DOZE metodos com o estado exacto que o rasterizador
+// consome no desenho (`MontarEstado` -> `EstadoDeRasterizacao`). Copiar esse
+// estado para um segundo sitio (rasterizador, classes) criaria DUAS verdades
+// paralelas -- a armadilha 2 desta casa ("segundas copias de kSlotId"). O
+// IGLES11 passa a ter o SEU proprio motor do mesmo tipo, construido em
+// `ConstruirIgles`, e o `AtenderClasse` desloca os argumentos pelo `po` (o
+// IGLES11 leva `iname *pMe` em r0; o IGL de 80 slots nao leva nada) antes de
+// chamar `Igl::Executar`. So o `Clear` fica a dever a ESCRITA: sem superficie
+// ligada a este objecto, a limpeza e uma recusa NOMEADA com o motivo, e nao um
+// "sucesso" sem pixel (a regra dos 86 377 glCullFace).
+
+constexpr std::uint32_t kPilhaDoTeste = 0x0002D000u;  // sp[0] = o 4.o argumento real
+
+struct PedidoIgles {
+  std::uint32_t slot;
+  const char* nome;
+  std::uint32_t r1, r2, r3;
+  std::uint32_t sp0;  // usado so quando `quatro` e true
+  bool quatro;
+};
+
+TEST(FrenteGlbloco, OsOnzeSlotsDeEstadoRespondemComSucessoESemFalta) {
+  const PedidoIgles pedidos[] = {
+      // slot IGLES11, nome, r1, r2, r3, sp[0], usa-sp
+      {igles_slots::kIgles_Enable, "Enable", GL_CULL_FACE, 0, 0, 0, false},
+      {igles_slots::kIgles_Disable, "Disable", GL_CULL_FACE, 0, 0, 0, false},
+      {igles_slots::kIgles_MatrixMode, "MatrixMode", GL_MODELVIEW, 0, 0, 0, false},
+      {igles_slots::kIgles_LoadIdentity, "LoadIdentity", 0, 0, 0, 0, false},
+      {igles_slots::kIgles_Viewport, "Viewport", 0, 0, 640, 480, true},
+      // `GL_PERSPECTIVE_CORRECTION_HINT` e 0x0C02 (gles/gl.h nao o gera neste
+      // `.inc`); o `Hint` acumula o par (alvo, modo) sem o interpretar.
+      {igles_slots::kIgles_Hint, "Hint", 0x0C02u, GL_FASTEST, 0, 0, false},
+      {igles_slots::kIgles_ShadeModel, "ShadeModel", GL_SMOOTH, 0, 0, 0, false},
+      {igles_slots::kIgles_CullFace, "CullFace", GL_BACK, 0, 0, 0, false},
+      {igles_slots::kIgles_EnableClientState, "EnableClientState", GL_VERTEX_ARRAY, 0, 0, 0,
+       false},
+      {igles_slots::kIgles_DisableClientState, "DisableClientState", GL_VERTEX_ARRAY, 0, 0, 0,
+       false},
+      {igles_slots::kIgles_TexParameterx, "TexParameterx", GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+       GL_NEAREST, 0, false},
+      // (1, 0, 0, 1) em GLfixed 16.16: o quarto argumento vai NA PILHA.
+      {igles_slots::kIgles_ClearColorx, "ClearColorx", 0x00010000u, 0, 0, 0x00010000u, true},
+  };
+  BancoClasses b;
+  for (const auto& p : pedidos) {
+    SCOPED_TRACE(p.nome);
+    b.mem.Escrever32(kPilhaDoTeste, p.sp0);
+    b.cpu.Set(kR0, kObjetoIgles);
+    b.cpu.Set(kR1, p.r1);
+    b.cpu.Set(kR2, p.r2);
+    b.cpu.Set(kR3, p.r3);
+    b.cpu.Set(kSP, kPilhaDoTeste);
+    EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + p.slot, b.traco));
+    EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess) << p.nome;
+    EXPECT_EQ(b.Faltas(std::string("IGLES11::") + p.nome), 0u) << p.nome;
+  }
+}
+
+TEST(FrenteGlbloco, OEstadoServeSeNoMotorDoIglEObservavel) {
+  // A ARMADILHA 3 desta casa: um teste que so ve "nao ha falta" nao prova que
+  // o estado MUDOU. Este le o estado do motor (o mesmo `Igl` que o
+  // rasterizador consome no desenho) apos CADA servico.
+  BancoClasses b;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+
+  // Enable/Disable -> o interruptor de capacidade.
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, GL_CULL_FACE);
+  AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Enable, b.traco);
+  EXPECT_TRUE(EstadoDoIgles11()->InterruptorLigado(GL_CULL_FACE));
+  AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Disable, b.traco);
+  EXPECT_FALSE(EstadoDoIgles11()->InterruptorLigado(GL_CULL_FACE));
+
+  // MatrixMode + LoadIdentity -> a matriz da MODE corrente e a identidade.
+  b.cpu.Set(kR1, GL_PROJECTION);
+  AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_MatrixMode, b.traco);
+  EXPECT_EQ(EstadoDoIgles11()->ModoDeMatriz(), kModoProjection);
+  AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_LoadIdentity, b.traco);
+  const float* m = EstadoDoIgles11()->MatrizCorrente();
+  for (int k = 0; k < 4; ++k) EXPECT_FLOAT_EQ(m[k * 4 + k], 1.0f);
+
+  // Viewport, com o quarto argumento NA PILHA (o deslocamento do `pMe`).
+  b.mem.Escrever32(kPilhaDoTeste, 240u);
+  b.cpu.Set(kR1, 10u);
+  b.cpu.Set(kR2, 20u);
+  b.cpu.Set(kR3, 320u);
+  b.cpu.Set(kSP, kPilhaDoTeste);
+  AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Viewport, b.traco);
+  EXPECT_EQ(EstadoDoIgles11()->Viewport(0), 10u);
+  EXPECT_EQ(EstadoDoIgles11()->Viewport(1), 20u);
+  EXPECT_EQ(EstadoDoIgles11()->Viewport(2), 320u);
+  EXPECT_EQ(EstadoDoIgles11()->Viewport(3), 240u);
+
+  // CullFace, ShadeModel, EnableClientState.
+  b.cpu.Set(kR1, GL_BACK);
+  AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_CullFace, b.traco);
+  EXPECT_EQ(EstadoDoIgles11()->CullFace(), GL_BACK);
+  b.cpu.Set(kR1, GL_FLAT);
+  AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_ShadeModel, b.traco);
+  EXPECT_EQ(EstadoDoIgles11()->ShadeModel(), GL_FLAT);
+  b.cpu.Set(kR1, GL_VERTEX_ARRAY);
+  AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_EnableClientState, b.traco);
+  EXPECT_TRUE(EstadoDoIgles11()->ArrayDeClienteLigado(GL_VERTEX_ARRAY));
+
+  // Hint: acumula o par (alvo, modo).
+  b.cpu.Set(kR1, 0x0C02u);
+  b.cpu.Set(kR2, GL_FASTEST);
+  AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Hint, b.traco);
+  const auto* hint = EstadoDoIgles11()->Parametro(kIgl_Hint, 0u);
+  ASSERT_NE(hint, nullptr);
+  ASSERT_EQ(hint->size(), 4u);
+  EXPECT_EQ((*hint)[1], GL_FASTEST);
+
+  // TexParameterx: o valor fica no parametro do slot IGL correspondente.
+  b.cpu.Set(kR1, GL_TEXTURE_2D);
+  b.cpu.Set(kR2, GL_TEXTURE_MIN_FILTER);
+  b.cpu.Set(kR3, GL_NEAREST);
+  AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_TexParameterx, b.traco);
+  const auto* p = EstadoDoIgles11()->Parametro(kIgl_TexParameterx, GL_TEXTURE_MIN_FILTER);
+  ASSERT_NE(p, nullptr);
+  ASSERT_EQ(p->size(), 1u);
+  EXPECT_EQ((*p)[0], GL_NEAREST);
+
+  // ClearColorx: RGBA8 com o byte 0 a ser o VERMELHO (o mesmo desempacotamento
+  // do `rasterizador.h`); o quarto argumento vem da pilha.
+  b.mem.Escrever32(kPilhaDoTeste, 0x00010000u);  // alpha = 1.0
+  b.cpu.Set(kR1, 0x00010000u);                    // vermelho = 1.0
+  b.cpu.Set(kR2, 0u);
+  b.cpu.Set(kR3, 0u);
+  b.cpu.Set(kSP, kPilhaDoTeste);
+  AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_ClearColorx, b.traco);
+  EXPECT_EQ(EstadoDoIgles11()->CorDeLimpeza(), 0xFF0000FFu);
+}
+
+TEST(FrenteGlbloco, OEstadoNaoVazaEntreCorridas) {
+  // O estado vive num motor RECONSTRUIDO por `ConstruirIgles` (uma vez por
+  // titulo na bateria): a segunda Bancada nao pode ver o que a primeira
+  // ligou. Sem isto, o segundo titulo da bateria veria o GL do primeiro.
+  BancoClasses b1;
+  b1.cpu.Set(kR0, kObjetoIgles);
+  b1.cpu.Set(kR1, GL_CULL_FACE);
+  AtenderClasse(b1.cpu, kVtableIgles + igles_slots::kIgles_Enable, b1.traco);
+  EXPECT_TRUE(EstadoDoIgles11()->InterruptorLigado(GL_CULL_FACE));
+  {
+    BancoClasses b2;
+    ASSERT_NE(EstadoDoIgles11(), nullptr);
+    EXPECT_FALSE(EstadoDoIgles11()->InterruptorLigado(GL_CULL_FACE));
+    EXPECT_EQ(EstadoDoIgles11()->Chamadas(), 0u);
+  }
+}
+
+TEST(FrenteGlbloco, OClearAcumulaAMascaraERecusaAEscritaSemSuperficie) {
+  // O `glClear` nao pode "dar certo" aqui: o objecto IGLES11 nao tem
+  // superficie ligada neste incremento, e a regra desta casa e RECUSAR a
+  // limpeza com o motivo, nunca responder sucesso sem escrever um pixel. O que
+  // a frente exige dele e o ESTADO: a mascara acumulada, e o detalhe da recusa
+  // a dizer que e a TELA que falta (e nao "slot sem implementacao").
+  BancoClasses b;
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, GL_COLOR_BUFFER_BIT);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Clear, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("IGLES11::Clear"), 1u);
+  EXPECT_NE(b.Detalhe("IGLES11::Clear").find("TELA LIGADA"), std::string::npos)
+      << b.Detalhe("IGLES11::Clear");
 }
 
 }  // namespace
