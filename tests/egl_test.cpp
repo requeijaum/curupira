@@ -653,6 +653,74 @@ TEST(CicloDoEgl, OMakeCurrentValidaOsHandles) {
   EXPECT_EQ(b.egl.ContextoCorrente(), 0u);
 }
 
+// A LIBERTACAO DO CONTEXTO CORRENTE NA FORMA DO PROPRIO SDK.
+//
+// E a forma que o SDK escreve, e nao uma inventada: os nove samples de OGLES da
+// Qualcomm usam exactamente esta linha para libertar o contexto corrente, por
+// exemplo em
+//   .../Zeebo_sdk_samples.release_02.15.07.beta1/MSM7500_OGLES_qcom_sdk_samples
+//       .../simple_shadow/simple_shadow.c:298
+//       eglMakeCurrent( EGL_NO_DISPLAY, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT );
+//
+// MEDIDO no corpus (`ZB2_TRACE=1`, um titulo de cada vez): os tres titulos 3D
+// (`gof`, `rmp`, `pbc`) fazem esta chamada UMA vez cada, com os QUATRO argumentos
+// a zero, e o emulador recusava-a com `EGL_BAD_DISPLAY` porque o `display_ok` vem
+// antes de tudo. Uma recusa a mais aqui nao e um detalhe de log: e a forma que o
+// SDK manda usar, e quem a le devolve `EGL_FALSE` ao jogo.
+TEST(CicloDoEgl, ALibertacaoNaFormaDoSDKServida) {
+  Banco b;
+  std::uint32_t r = 0;
+  b.egl.Executar(kIegl_Initialize, Args(kDisplayUnico, 0, 0), &r);
+  b.egl.Executar(kIegl_CreateWindowSurface, Args(kDisplayUnico, kConfigUnico, 0, 0), &r);
+  const std::uint32_t sup = r;
+  b.egl.Executar(kIegl_CreateContext, Args(kDisplayUnico, kConfigUnico, 0, 0), &r);
+  const std::uint32_t ctx = r;
+  b.egl.Executar(kIegl_MakeCurrent, Args(kDisplayUnico, sup, sup, ctx), &r);
+  ASSERT_EQ(b.egl.ContextoCorrente(), ctx);
+
+  r = 0xDEADBEEFu;
+  EXPECT_EQ(b.egl.Executar(kIegl_MakeCurrent, Args(0, 0, 0, 0), &r), ResultadoGl::Feito)
+      << "a forma do SDK foi recusada: os quatro zeros nao tem display para validar";
+  EXPECT_EQ(r, static_cast<std::uint32_t>(EGL_TRUE)) << "o SDK espera EGL_TRUE";
+  EXPECT_EQ(b.egl.ContextoCorrente(), 0u);
+  EXPECT_EQ(b.egl.SuperficieCorrente(), 0u);
+  EXPECT_EQ(b.egl.Erro(), EGL_SUCCESS);
+  // E a chamada fica no traco com o NOME dela (P2): servida, nao engolida.
+  ASSERT_FALSE(b.egl.Ultimas().empty());
+  EXPECT_EQ(b.egl.Ultimas().back().nome, "eglMakeCurrent");
+  EXPECT_EQ(b.egl.Ultimas().back().resultado, ResultadoGl::Feito);
+  // Uma recusa a mais aqui e uma falta a mais na lista do que falta.
+  EXPECT_EQ(b.egl.Recusas().count("eglMakeCurrent"), 0u);
+}
+
+// A GUARDA DA LINHA DE CIMA: a excepcao e para os QUATRO zeros, e so para eles.
+//
+// Um `dpy` que nao e o nosso e que traz um contexto a serio continua a ser
+// recusado (`EGL_BAD_DISPLAY`), e um `dpy` nulo com uma superficie nao nula
+// tambem. Sem isto, "aceitar o dpy a zero" abria a porta a qualquer chamada.
+TEST(CicloDoEgl, ALibertacaoNaFormaDoSDKNaoAbreODisplayDeQualquerUm) {
+  Banco b;
+  std::uint32_t r = 0;
+  b.egl.Executar(kIegl_Initialize, Args(kDisplayUnico, 0, 0), &r);
+  b.egl.Executar(kIegl_CreateWindowSurface, Args(kDisplayUnico, kConfigUnico, 0, 0), &r);
+  const std::uint32_t sup = r;
+  b.egl.Executar(kIegl_CreateContext, Args(kDisplayUnico, kConfigUnico, 0, 0), &r);
+  const std::uint32_t ctx = r;
+  // Display a zero com contexto a serio: recusa.
+  EXPECT_EQ(b.egl.Executar(kIegl_MakeCurrent, Args(0, sup, sup, ctx), &r), ResultadoGl::Recusado);
+  EXPECT_EQ(b.egl.Erro(), EGL_BAD_DISPLAY);
+  // Display a zero com superficie e contexto nulos, mas com contexto a zero e
+  // superficie nao nula: recusa (a superficie e que manda).
+  EXPECT_EQ(b.egl.Executar(kIegl_MakeCurrent, Args(0, sup, sup, 0), &r), ResultadoGl::Recusado);
+  // Display a zero com superficie nula e contexto a serio: recusa.
+  EXPECT_EQ(b.egl.Executar(kIegl_MakeCurrent, Args(0, 0, 0, ctx), &r), ResultadoGl::Recusado);
+  EXPECT_EQ(b.egl.ContextoCorrente(), 0u);
+  // E SEM `eglInitialize` a libertacao tambem nao passa: nao ha o que libertar.
+  Banco c;
+  EXPECT_EQ(c.egl.Executar(kIegl_MakeCurrent, Args(0, 0, 0, 0), &r), ResultadoGl::Recusado);
+  EXPECT_EQ(c.egl.Erro(), EGL_NOT_INITIALIZED);
+}
+
 TEST(CicloDoEgl, OCriaContextoRecusaOVersionamento2) {
   Banco b;
   std::uint32_t r = 0;
@@ -785,10 +853,13 @@ struct CenaDoDespacho {
 constexpr std::uint32_t kSentinelaDoLaco = 0xFFFFFFF0u;
 
 std::uint32_t EntrarPeloSlot(CenaDoDespacho& c, std::uint32_t idx, std::uint32_t r0,
-                             std::uint32_t r1 = 0) {
+                             std::uint32_t r1 = 0, std::uint32_t r2 = 0,
+                             std::uint32_t r3 = 0) {
   c.cpu.Repor(c.saidas.Endereco(idx), 0x80080000u);
   c.cpu.Set(kR0, r0);
   c.cpu.Set(kR1, r1);
+  c.cpu.Set(kR2, r2);
+  c.cpu.Set(kR3, r3);
   c.cpu.Set(kLR, kSentinelaDoLaco);
   c.despacho.Correr(c.cpu, 10000, 0);
   return c.cpu.Get(kR0);
@@ -846,6 +917,30 @@ TEST(CablagemGl, AORDEMDoRamoEAGuardaDoOitavoCaso) {
   }
   EXPECT_EQ(linhas_com_o_nome, 1u)
       << "o `glClear` nao ficou registado com o NOME dele (um caminho mudo, e nao um log)";
+}
+
+TEST(CablagemGl, ALibertacaoNaFormaDoSDKChegaAoIeglPelaTabela) {
+  // A TABELA, e nao o ramo: a chamada entra pelo ENDERECO DE SAIDA do slot, como o
+  // guest entra no motor. Um teste que chamasse `Egl::Executar` directamente diria
+  // que a funcao serve a libertacao e nao diria que a libertacao CHEGA la -- que e a
+  // pergunta que a bateria faz. Os quatro registos vao a zero: a forma do SDK,
+  // `eglMakeCurrent(EGL_NO_DISPLAY, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT)`.
+  CenaDoDespacho c;
+  c.despacho.EglRef().Executar(gl_slots::kIegl_Initialize,
+                               Args(kDisplayUnico, 0, 0), nullptr);
+  const std::uint64_t antes = c.despacho.EglRef().Chamadas();
+  const std::uint32_t r0 = EntrarPeloSlot(c, kVtableIegl + gl_slots::kIegl_MakeCurrent, 0, 0, 0, 0);
+  EXPECT_EQ(c.despacho.EglRef().Chamadas(), antes + 1)
+      << "o eglMakeCurrent nao chegou ao IEGL pelo despacho";
+  EXPECT_EQ(c.despacho.EglRef().ChamadasDoSlot(gl_slots::kIegl_MakeCurrent), 1u);
+  EXPECT_EQ(r0, 1u) << "o guest nao recebeu EGL_TRUE na forma do SDK";
+  // E A FALTA TEM DE NAO EXISTIR, com o NOME dela. E aqui que o defeito se ve na
+  // bateria: a chamada era recusada e entrava na lista do que falta.
+  std::uint64_t faltas_com_o_nome = 0;
+  for (const auto& par : c.traco.ContagemFaltas()) {
+    if (par.first == "eglMakeCurrent") faltas_com_o_nome += par.second;
+  }
+  EXPECT_EQ(faltas_com_o_nome, 0u) << "a libertacao na forma do SDK ficou na lista das faltas";
 }
 
 TEST(CablagemGl, OsDoisObjectsSaoDistintos) {

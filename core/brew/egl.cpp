@@ -820,6 +820,43 @@ ResultadoEgl Egl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint3
     }
     case kIegl_MakeCurrent: {
       const std::uint32_t dpy = a.reg[0], draw = a.reg[1], read = a.reg[2], ctx = a.reg[3];
+      // A LIBERTACAO DO CONTEXTO CORRENTE NA FORMA DO PROPRIO SDK, e ela vem ANTES
+      // do `display_ok` porque nao ha display nenhum para validar.
+      //
+      // A FORMA NAO E INVENTADA: os nove samples de OGLES da Qualcomm escrevem
+      // exactamente esta linha para libertar o contexto corrente --
+      //   .../MSM7500_OGLES_qcom_sdk_samples.release_02.15.07.beta1/simple_shadow/
+      //   simple_shadow.c:298   e tambem em matrix_palette:340, spotlight:300,
+      //   vbo:321, point_sprites:321, atitc:321, vbo_cl:331, dot3:320,
+      //   drawtexture:342
+      //       eglMakeCurrent( EGL_NO_DISPLAY, EGL_NO_SURFACE, EGL_NO_SURFACE,
+      //                       EGL_NO_CONTEXT );
+      //
+      // MEDIDO NO CORPUS (`ZB2_TRACE=1`, um titulo de cada vez, `gof`, `rmp` e
+      // `pbc`): os tres titulos 3D fazem esta chamada UMA vez cada, com os QUATRO
+      // argumentos a zero
+      //   EGL_eglMakeCurrent slot=19 args=[00000000 00000000 00000000 00000000]
+      //   -> recusado | dpy=0x00000000 nao e display deste emulador
+      // e a chamada SEGUINTE, no mesmo `lr=0x00069e00` (o wrapper do SDK, 0x69db4 --
+      // `ldr ip,[r2,#0x48]`, o slot 18 do `IEGL10`, `AEEEGL10.h`), ja traz os handles
+      // a serio e e servida. Ou seja: o jogo faz "larga e volta a pegar", e o
+      // emulador respondia ao LARGAR com um erro que no aparelho nao existia.
+      //
+      // O QUE ESTA LINHA NAO FAZ: nao aceita um `dpy` que nao seja o nosso quando
+      // ha um contexto para ligar. Os QUATRO zeros -- e so eles -- sao a forma do
+      // SDK; qualquer das outras combinacoes cai no `display_ok` a seguir e
+      // continua a ser recusada com `EGL_BAD_DISPLAY`.
+      if (dpy == kEglSemDisplay && draw == kEglSemSuperficie && read == kEglSemSuperficie &&
+          ctx == kEglSemContexto) {
+        // O `iniciado` continua a ser exigido: libertar o que nunca foi iniciado e
+        // uma chamada sem sentido, e o EGL chama-lhe EGL_NOT_INITIALIZED.
+        if (!iniciado(4)) return ResultadoGl::Recusado;
+        corrente_draw_ = corrente_read_ = corrente_ctx_ = 0;
+        return feito_com(4, EGL_TRUE,
+                         "libertacao do contexto corrente, na forma do SDK "
+                         "(EGL_NO_DISPLAY, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT): "
+                         "nada para ligar e nada para validar");
+      }
       if (!display_ok(dpy, 4)) return ResultadoGl::Recusado;
       if (!iniciado(4)) return ResultadoGl::Recusado;
       if (ctx == kEglSemContexto) {
