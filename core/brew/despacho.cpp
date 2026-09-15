@@ -499,7 +499,12 @@ void Despacho::InstalarAjudantes(const Saidas& saidas, Endereco tabela) {
   // `strtowstr` e escrevia na memoria do titulo (ver o comentario do
   // `kSlotIdDbgPrintf`). A faixa dos ids e um espaco PARTILHADO e nao tinha
   // guarda nenhuma; agora tem, e ela fala no ARRANQUE em vez de o defeito
-  // aparecer como um titulo que mo!
+  // aparecer como um titulo que morre oito milhoes de passos mais tarde, num
+  // sitio sem ligacao visivel a causa.
+  //
+  // A GUARDA FOI PROVADA, e nao so escrita: ligar dois offsets ao mesmo id
+  // (`strcat` -> `kSlotIdStrcpy`) fa-la falar no arranque, com os dois offsets
+  // no texto. Uma guarda que nunca se viu disparar e uma guarda por provar.
   //
   // Duas condicoes, e as duas ja morderam:
   //   1. dois offsets diferentes com o MESMO id de saida;
