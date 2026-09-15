@@ -821,6 +821,7 @@ std::uint32_t SlotIglesNoIgl(std::uint32_t slot) {
     case igles_slots::kIgles_MatrixMode: return gl_slots::kIgl_MatrixMode;
     case igles_slots::kIgles_ShadeModel: return gl_slots::kIgl_ShadeModel;
     case igles_slots::kIgles_TexParameterx: return gl_slots::kIgl_TexParameterx;
+    case igles_slots::kIgles_TexEnvx: return gl_slots::kIgl_TexEnvx;
     case igles_slots::kIgles_Viewport: return gl_slots::kIgl_Viewport;
     default: return kSemSlotNoIgl;
   }
