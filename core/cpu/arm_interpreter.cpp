@@ -861,12 +861,12 @@ void ArmInterpreter::DadosProcessados(std::uint32_t instr, std::uint32_t pc) {
   switch (opcode) {
     case 0x0: resultado = a & op2; break;
     case 0x1: resultado = a ^ op2; break;
-    case 0x2: { resultado = a - op2; auto f = FlagsDaSubtracao(a, op2, 0, resultado); c_ = f.c; v_ = f.v; carry_ja_posto = true; break; }
-    case 0x3: { resultado = op2 - a; auto f = FlagsDaSubtracao(op2, a, 0, resultado); c_ = f.c; v_ = f.v; carry_ja_posto = true; break; }
-    case 0x4: { resultado = a + op2; auto f = FlagsDaSoma(a, op2, 0, resultado); c_ = f.c; v_ = f.v; carry_ja_posto = true; break; }
-    case 0x5: { resultado = a + op2 + (c_ ? 1 : 0); auto f = FlagsDaSoma(a, op2, c_ ? 1 : 0, resultado); c_ = f.c; v_ = f.v; carry_ja_posto = true; break; }
-    case 0x6: { const Reg b = op2 + (c_ ? 0 : 1); resultado = a - b; auto f = FlagsDaSubtracao(a, b, 0, resultado); c_ = f.c; v_ = f.v; carry_ja_posto = true; break; }
-    case 0x7: { const Reg b = op2 + (c_ ? 0 : 1); resultado = b - a; auto f = FlagsDaSubtracao(b, a, 0, resultado); c_ = f.c; v_ = f.v; carry_ja_posto = true; break; }
+    case 0x2: { resultado = a - op2; auto f = FlagsDaSubtracao(a, op2, 0, resultado); if (s) { c_ = f.c; v_ = f.v; } carry_ja_posto = true; break; }
+    case 0x3: { resultado = op2 - a; auto f = FlagsDaSubtracao(op2, a, 0, resultado); if (s) { c_ = f.c; v_ = f.v; } carry_ja_posto = true; break; }
+    case 0x4: { resultado = a + op2; auto f = FlagsDaSoma(a, op2, 0, resultado); if (s) { c_ = f.c; v_ = f.v; } carry_ja_posto = true; break; }
+    case 0x5: { const Reg cin = c_ ? 1 : 0; resultado = a + op2 + cin; auto f = FlagsDaSoma(a, op2, cin, resultado); if (s) { c_ = f.c; v_ = f.v; } carry_ja_posto = true; break; }
+    case 0x6: { const Reg b = op2 + (c_ ? 0 : 1); resultado = a - b; auto f = FlagsDaSubtracao(a, b, 0, resultado); if (s) { c_ = f.c; v_ = f.v; } carry_ja_posto = true; break; }
+    case 0x7: { const Reg b = op2 + (c_ ? 0 : 1); resultado = b - a; auto f = FlagsDaSubtracao(b, a, 0, resultado); if (s) { c_ = f.c; v_ = f.v; } carry_ja_posto = true; break; }
     case 0x8: resultado = a & op2; escreve = false; n_ = (resultado >> 31) != 0; z_ = resultado == 0; c_ = carry; break;
     case 0x9: resultado = a ^ op2; escreve = false; n_ = (resultado >> 31) != 0; z_ = resultado == 0; c_ = carry; break;
     case 0xA: { resultado = a - op2; auto f = FlagsDaSubtracao(a, op2, 0, resultado); c_ = f.c; v_ = f.v; n_ = (resultado >> 31) != 0; z_ = resultado == 0; } escreve = false; carry_ja_posto = true; break;
@@ -1293,8 +1293,25 @@ void ArmInterpreter::ExecutarArm(std::uint32_t instr, std::uint32_t pc) {
     // partilha estes bits 27-25 = 011. O bit 4 e o que separa -- ver
     // `EhMediaArmv6`. Medido no corpus: 17 295 `uxth` executados como `ldrb`.
     if (EhMediaArmv6(instr)) { MediaArmv6(instr, pc); Set(kPC, pc + 4); return; }
+    // O DESTINO DA TRANSFERENCIA PODE SER O PROPRIO PC (`ldr pc,[rn,#imm]`), e
+    // nesse caso escrever `pc + 4` por cima ANULA a chamada em silencio.
+    //
+    // MEDIDO: a familia do `emulator_neo` (10 titulos) chama o sistema SO assim
+    // -- `mov lr,pc` seguido de `ldr pc,[tabela,#slot]` -- com 5240 ocorrencias
+    // so no `karnovr.mod`. Com o PC sobreposto, o `malloc`, o `free` e o
+    // `ISHELL_CreateInstance(AEECLSID_DISPLAY)` nunca corriam; o `AEEApplet_New`
+    // via `m_pIDisplay = 0` e devolvia EFAILED. E como o PC nunca chegava a
+    // entrar na faixa de saida, NAO HAVIA FALTA PARA REGISTAR: o titulo morria
+    // sem deixar rasto, que e exactamente o defeito que o P2 existe para impedir.
+    //
+    // O `Bloco` (g == 4, `LDM`) ja tratava o PC por dentro; a transferencia
+    // simples e que nao. A guarda e a mesma ideia: se a instrucao escreveu o PC,
+    // quem manda e ela. Se a condicao falhou, o PC fica onde estava e avanca.
+    const bool destino_e_pc =
+        ((instr >> 20) & 1u) != 0 && ((instr >> 12) & 0xFu) == 15u;
+    Set(kPC, pc);
     TransferenciaSimples(instr, pc);
-    Set(kPC, pc + 4);
+    if (!destino_e_pc || Get(kPC) == pc) Set(kPC, pc + 4);
     return;
   }
   if (g == 4) { Bloco(instr, pc); return; }  // o PC e tratado dentro

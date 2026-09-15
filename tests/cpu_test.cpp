@@ -1388,3 +1388,85 @@ TEST(Cpu, ThumbFormato5ContinuaARecusarOQueNaoConhece) {
   EXPECT_EQ(b.Cpu().InstruscoesRecusadas(), antes + 1);
   EXPECT_EQ(b.Cpu().FamiliaDaUltima(), std::string("thumb:formato1_deslocamento_imediato"));
 }
+
+// ===========================================================================
+// OS DOIS DEFEITOS DO `emulator_neo`: ambos SILENCIOSOS, ambos com `recusadas = 0`
+// ===========================================================================
+
+TEST(Cpu, LdrParaOPcSaltaEODespachoNaoEscrevePcMaisQuatroPorCima) {
+  // `ldr pc,[rn,#imm]` -- a UNICA forma como a familia do `emulator_neo` chama o
+  // sistema (`mov lr,pc` + `ldr pc,[tabela,#slot]`), 5240 vezes so no
+  // `karnovr.mod`. O despacho escrevia `pc + 4` DEPOIS da transferencia e
+  // anulava o salto: o modulo seguia em frente como se a chamada nao existisse.
+  //
+  // NAO ERA UMA RECUSA: `InstruscoesRecusadas()` fica a ZERO nos dois casos.
+  // Era uma instrucao executada e desfeita -- por isso 10 titulos morriam sem
+  // deixar rasto nas faltas.
+  Bancada b;
+  constexpr std::uint32_t kTabela = 0x00120000u;
+  constexpr std::uint32_t kAlvo = 0x00130000u;
+  b.Mem().Escrever32(kTabela + 8, kAlvo);  // o slot 2 da tabela
+  b.R(4, kTabela);
+  const std::uint64_t recusadas_antes = b.Cpu().InstruscoesRecusadas();
+  b.Instrucao(LdrImediato(15, 4, 8));  // ldr pc,[r4,#8]
+  b.Terminar();
+  b.Correr(1);
+
+  EXPECT_EQ(b.R(15), kAlvo) << "o PC tem de ser o que a tabela diz";
+  EXPECT_NE(b.R(15), 0x00100004u) << "e NAO a instrucao seguinte";
+  EXPECT_EQ(b.Cpu().InstruscoesRecusadas(), recusadas_antes)
+      << "o defeito era silencioso: nada era recusado";
+}
+
+TEST(Cpu, LdrParaOPcComCondicaoFalsaAvancaComoQualquerOutra) {
+  // A outra metade da guarda: se a condicao NAO passa, a transferencia nao
+  // acontece e o PC tem de avancar normalmente. Sem esta metade, a correccao
+  // acima transformaria um `ldrne pc,...` nao tomado num laco parado.
+  Bancada b;
+  constexpr std::uint32_t kTabela = 0x00120000u;
+  b.Mem().Escrever32(kTabela + 8, 0x00130000u);
+  b.R(4, kTabela);
+  b.R(1, 5);
+  b.Instrucao(CmpImediato(1, 5));                        // Z = 1
+  b.Instrucao(LdrImediato(15, 4, 8) & ~(0xFu << 28) | (0x1u << 28));  // ldrNE pc,[r4,#8]
+  b.Terminar();
+  b.Correr(2);
+  EXPECT_EQ(b.R(15), 0x00100008u) << "condicao falsa: avanca para a seguinte";
+}
+
+TEST(Cpu, AritmeticaSemBitSNaoMexeEmCarryNemOverflow) {
+  // `add r0,r0,#16` SEM o bit S nao pode tocar no carry. As seis aritmeticas
+  // (SUB/RSB/ADD/ADC/SBC/RSC) escreviam C e V sempre; as de logica nao, e por
+  // isso o defeito passou despercebido durante toda a etapa 1.
+  //
+  // MEDIDO no laco de entrada do `emulator_neo`: o `add` apagava o carry do
+  // `cmp` anterior e o `bcc` ficava SEMPRE tomado -- laco infinito, ainda vivo
+  // aos 60 milhoes de passos. Um `add` que mexe em bandeiras nao da erro: da
+  // uma decisao errada muito mais tarde, noutro sitio.
+  Bancada b;
+  b.R(1, 0x00000020u);
+  b.Instrucao(CmpImediato(1, 0x10));      // 0x20 - 0x10: sem emprestimo -> C = 1
+  b.Instrucao(SomaImediata(0, 0, 0x10));  // add r0,r0,#16 -- SEM bit S
+  b.Terminar();
+  b.Correr(2);
+  EXPECT_TRUE(C(b)) << "o carry do `cmp` tem de sobreviver ao `add` sem S";
+
+  // E o mesmo com uma soma que TRANSBORDA: sem bit S, o transbordo nao se ve.
+  Bancada c;
+  c.R(1, 0u);
+  c.R(0, 0xFFFFFFFFu);
+  c.Instrucao(CmpImediato(1, 0x10));      // 0 - 0x10: com emprestimo -> C = 0
+  c.Instrucao(SomaImediata(0, 0, 1));     // 0xFFFFFFFF + 1 -- daria C = 1 com S
+  c.Terminar();
+  c.Correr(2);
+  EXPECT_FALSE(C(c)) << "sem bit S, o transbordo do `add` nao chega as bandeiras";
+
+  // A PROVA DE QUE A CORRECCAO NAO MATOU O CAMINHO NORMAL: com bit S, escreve.
+  Bancada d;
+  d.R(0, 0xFFFFFFFFu);
+  d.Instrucao(SomaImediata(0, 0, 1, true));  // adds r0,r0,#1
+  d.Terminar();
+  d.Correr(1);
+  EXPECT_TRUE(C(d)) << "com bit S, o carry TEM de ser escrito";
+  EXPECT_TRUE(Z(d)) << "0xFFFFFFFF + 1 = 0";
+}
