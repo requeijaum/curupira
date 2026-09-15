@@ -89,9 +89,9 @@ constexpr std::uint32_t kPreso = 0x00100280u;      // callback que NUNCA volta
 // bytes), e uma area sobreposta fazia o teste medir os proprios dados de apoio.
 constexpr std::uint32_t kBuffer = 0x00140000u;
 
-// As 8 palavras que o `pUser` do callback recebe:
+// As palavras que o `pUser` do callback recebe:
 //   0 = ultimo nCmd, 4 = ultimo nStatus, 8 = quantas vezes foi chamado,
-//   12 = ultimo pCmdData, 16 = ultimo dwSize
+//   12 = ultimo pCmdData, 16 = ultimo dwSize, 20 = ultimo pIMedia
 constexpr std::uint32_t kOffUserContador = 8;
 
 // A faixa de saida tem de estar CONFIGURADA antes de o `Media` nascer: o
@@ -135,6 +135,10 @@ class Bancada {
         LdrImediato(3, 0, 8),  SomaImediata(3, 3, 1), StrImediato(3, 0, 8),
         LdrImediato(3, 1, 20), StrImediato(3, 0, 12),   // pCmdData
         LdrImediato(3, 1, 24), StrImediato(3, 0, 16),   // dwSize
+        // E o `pIMedia`, que e por onde o jogo CORRELA o aviso com o objecto
+        // (`AEEIMedia.h`, "Callback Events"): sem o ler, um teste nao consegue
+        // distinguir um aviso do objecto certo de um aviso de outro.
+        LdrImediato(3, 1, 4),  StrImediato(3, 0, 20),   // pIMedia -> pUser+20
         Bx(14),
     };
     // O DESTRUIDOR: um callback que escreve valores em r0..r12 e mexe nas
@@ -220,12 +224,24 @@ class Bancada {
   }
   void Play() { Chamar(brew_slots::kMedia_Play, po_); }
   void Stop() { Chamar(brew_slots::kMedia_Stop, po_); }
+  // O `Release` do guest, que e o da IBase -- slot 1, do MOTOR --, SEM entregar
+  // os avisos na volta do laco. A bancada entrega os avisos em cada volta
+  // (`Correr`), e o teste do aviso nascido antes do `Release` precisa de ESCOLHER
+  // o momento da entrega; desligar a entrega e a unica maneira de o fazer sem
+  // fingir o resultado do `Release` (escrever a contagem a zero a mao).
+  void Soltar(std::uint32_t po) {
+    entregar_no_laco_ = false;
+    Chamar(1, po, 0, 0, 0);
+    entregar_no_laco_ = true;
+  }
   void Passo(std::uint32_t slots) { Chamar(brew_slots::kMedia_Seek, po_, slots, 0); }
   std::uint32_t Avisos() const { return mem_.Ler32(kDados + kOffUserContador); }
   std::uint32_t UltimoCmd() const { return mem_.Ler32(kDados + 0); }
   std::uint32_t UltimoStatus() const { return mem_.Ler32(kDados + 4); }
   std::uint32_t UltimoPcmdData() const { return mem_.Ler32(kDados + 12); }
   std::uint32_t UltimoDwSize() const { return mem_.Ler32(kDados + 16); }
+  // O `pIMedia` do ultimo aviso entregue: a IDENTIDADE que o jogo ve.
+  std::uint32_t UltimoPimidia() const { return mem_.Ler32(kDados + 20); }
 
   void ReporContador() { mem_.Escrever32(kDados + kOffUserContador, 0); }
   void ApontarParaObjeto(std::uint32_t po) { po_ = po; }
@@ -271,7 +287,7 @@ class Bancada {
               << "o indice de saida " << idx << " nao e do IMedia nem da IBase";
         }
         cpu_.Set(kPC, lr);
-        EntregarAvisos();
+        if (entregar_no_laco_) EntregarAvisos();
         continue;
       }
       cpu_.Passo();
@@ -311,6 +327,9 @@ class Bancada {
   std::uint32_t po_ = 0;
   std::uint32_t codigo_de_criar_ = 0;
   std::uint32_t avisos_entregues_ = 0;
+  // Ligado por omissao: a bancada entrega os avisos a cada volta do laco, como o
+  // motor. Ha UM teste (o do aviso nascido antes do `Release`) que o desliga.
+  bool entregar_no_laco_ = true;
 };
 
 std::vector<std::int16_t> Onda(std::size_t quantas, std::int16_t amplitude) {
@@ -692,6 +711,87 @@ TEST(Media, StopDuranteReproducaoAvisaDoneUmaVez) {
   b.Stop();
   EXPECT_EQ(b.Avisos(), 1u);
   EXPECT_EQ(b.OMedia().EstadoDe(po), kMmEstadoPronto);
+}
+
+TEST(Media, UmAvisoNuncaEEntregueComOEnderecoDeOutroObjeto) {
+  // O DEFEITO: o aviso leva o ENDERECO do objecto, e o endereco de um objecto
+  // soltado VOLTA a ser entregue a outro. O jogo correla o aviso pelo
+  // `IMedia *` que vem dentro dele -- e o que o SDK diz (`AEEIMedia.h`,
+  // "Callback Events": "You can correlate using either the IMedia pointer or
+  // class ID returned in the callback data") --, logo um aviso que chegue
+  // depois de o endereco mudar de dono e lido como sendo do objecto NOVO: o
+  // `DONE` de um som passava a ser o `DONE` de outro som.
+  //
+  // A arvore antiga ja validava isto por IDENTIDADE (`MediaHle::Tick` compara
+  // `generation`, `notify_fn` e `notify_user` antes de entregar, e descarta o
+  // aviso quando o objecto "sumiu/reutilizado"); aqui entregava-se sem olhar.
+  Bancada b;
+  std::uint32_t po = 0;
+  Preparar(b, &po);
+  b.Play();
+  b.AvancarSemEntregar(200);  // o DONE nasce e fica em fila
+  ASSERT_EQ(b.OMedia().AvisosPendentes(), 1u);
+  const std::uint32_t avisos_do_guest = b.Avisos();
+  const std::uint32_t emitidos = static_cast<std::uint32_t>(b.OMedia().AvisosEmitidos());
+
+  // O guest solta o objecto ANTES de o aviso ser entregue (slot 1 da IBase, que
+  // e do MOTOR), e cria outro logo a seguir.
+  b.Soltar(po);
+  const std::uint32_t outro = b.CriarMedia(kClasseMultimidia, kPponovo);
+  EXPECT_EQ(outro, po) << "o endereco volta a ser entregue (comportamento medido)";
+  b.ApontarParaObjeto(outro);
+
+  // A ENTREGA: o aviso e DESCARTADO, e o guest NAO e chamado.
+  EXPECT_TRUE(b.OMedia().EntregarAviso(b.Cpu(), kSentinela, 20000));
+  EXPECT_EQ(b.Avisos(), avisos_do_guest)
+      << "o guest recebeu um aviso com o endereco de OUTRO objecto";
+  EXPECT_EQ(b.OMedia().AvisosDescartados(), 1u);
+  EXPECT_EQ(b.OMedia().AvisosEntregues(), 0u);
+  EXPECT_EQ(b.OMedia().AvisosPendentes(), 0u) << "o aviso sai da fila de qualquer maneira";
+  // A CONTA FECHA: nenhum aviso desaparece sem ser contado.
+  EXPECT_EQ(b.OMedia().AvisosEmitidos(), emitidos);
+  EXPECT_EQ(b.OMedia().AvisosEmitidos(),
+            b.OMedia().AvisosEntregues() + b.OMedia().AvisosNaoEntregues() +
+                b.OMedia().AvisosDescartados());
+  // E a recusa tem NOME e motivo (P2): um aviso que desaparece em silencio e
+  // indistinguivel de um aviso que nunca nasceu.
+  EXPECT_GE(b.OTraco().ContagemFaltas().count("IMedia::EntregarAviso"), 1u);
+  EXPECT_NE(b.OMedia().UltimoMotivoDeRecusa().find("serie"), std::string::npos)
+      << b.OMedia().UltimoMotivoDeRecusa();
+  EXPECT_NE(b.OMedia().UltimoMotivoDeRecusa().find("descartado"), std::string::npos)
+      << b.OMedia().UltimoMotivoDeRecusa();
+}
+
+TEST(Media, OReleaseNaoApagaUmAvisoJaNascido) {
+  // A OUTRA METADE DA REGRA, e a que impede a correccao ingenua ("descartar todo
+  // o aviso cujo objecto foi soltado"). Medida no `zeebx`
+  // (`src/machine/media.rs:556`): "o aviso NAO some com o `Release`: o tratador e
+  // guardado quando o aviso nasce" -- o Zeebo F.C. Super League para o som, solta
+  // o objecto e ESPERA o `DONE` desse som; descartado junto com o objecto, a
+  // abertura parava na tela de aviso.
+  //
+  // Aqui o objecto e soltado e o endereco NAO tem outro dono, logo o aviso tem de
+  // chegar -- e com o `pIMedia` do objecto que o gerou.
+  Bancada b;
+  std::uint32_t po = 0;
+  Preparar(b, &po);
+  b.Play();
+  b.AvancarSemEntregar(200);
+  ASSERT_EQ(b.OMedia().AvisosPendentes(), 1u);
+  EXPECT_EQ(b.Avisos(), 0u);
+
+  b.Soltar(po);  // o guest solta o objecto antes da entrega
+  ASSERT_EQ(b.Mem().Ler32(po + kOffObjRefs), 0u);
+  ASSERT_EQ(b.OMedia().AvisosPendentes(), 1u);  // a entrega foi adiada, nao perdida
+
+  EXPECT_TRUE(b.OMedia().EntregarAviso(b.Cpu(), kSentinela, 20000));
+  EXPECT_EQ(b.Avisos(), 1u) << "o aviso nascido antes do `Release` tem de chegar";
+  EXPECT_EQ(b.UltimoCmd(), static_cast<std::uint32_t>(kMmCmdPlay));
+  EXPECT_EQ(b.UltimoStatus(), static_cast<std::uint32_t>(kMmStatusDone));
+  EXPECT_EQ(b.UltimoPimidia(), po) << "e com o ponteiro do objecto que o gerou";
+  EXPECT_EQ(b.OMedia().AvisosEntregues(), 1u);
+  EXPECT_EQ(b.OMedia().AvisosDescartados(), 0u);
+  EXPECT_EQ(b.OMedia().AvisosPendentes(), 0u);
 }
 
 TEST(Media, CadaPedidoAceiteDaExactamenteUmAviso) {

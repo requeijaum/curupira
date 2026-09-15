@@ -291,6 +291,10 @@ std::int32_t Media::Criar(std::uint32_t cls, std::uint32_t pponovo) {
   *livre = Objeto{};
   livre->endereco = endereco;
   livre->vivo = true;
+  // A IDENTIDADE: um numero novo por cada objecto criado, e nao o endereco --
+  // o endereco volta a ser entregue quando este objecto morre (o recolhedor
+  // abaixo), e um aviso guardado tem de poder distinguir os dois.
+  livre->serie = proxima_serie_++;
   livre->classe = cls;
   livre->estado = kMmEstadoOcioso;
   mem_.Escrever32(endereco + kOffObjVtable, saidas_.Endereco(kVtableDoMedia));
@@ -336,6 +340,7 @@ void Media::EmitirAviso(Objeto& o, std::int32_t comando, std::int32_t sub,
 
   Aviso a;
   a.objeto = o.endereco;
+  a.serie = o.serie;
   a.comando = comando;
   a.sub_comando = sub;
   a.status = status;
@@ -348,13 +353,41 @@ void Media::EmitirAviso(Objeto& o, std::int32_t comando, std::int32_t sub,
   ++avisos_emitidos_;
   traco_.Emitir(Area::Audio, Nivel::Informacao, "IMEDIA_AVISO",
                 std::string(NomeDoComandoDeMidia(comando)) + " " + NomeDoStatusDeMidia(status) +
-                    " obj=" + EmHex(o.endereco) + " fn=" + EmHex(o.fn) +
+                    " obj=" + EmHex(o.endereco) + " serie=" + std::to_string(o.serie) +
+                    " fn=" + EmHex(o.fn) +
                     " nCmd=" + std::to_string(comando) + " nStatus=" + std::to_string(status));
 }
 
 bool Media::EntregarAviso(ICpu& cpu, std::uint32_t sentinela, std::uint64_t limite_de_passos) {
   Aviso a;
   if (!RetirarAviso(&a)) return false;
+
+  // 0. A IDENTIDADE, QUE E A REGRA MAIS FACIL DE PERDER.
+  //
+  // O aviso nasceu com um objecto, e entre esse instante e este o GUEST CONTINUOU
+  // A CORRER: pode ter soltado esse objecto e ter criado outro, que ficou com o
+  // MESMO endereco -- o recolhedor entrega os enderecos outra vez, e isso e o
+  // comportamento medido (e o da arvore antiga, que reciclava por
+  // `free_object_addresses_`). O `pIMedia` do aviso e um ENDERECO, e o jogo
+  // correla o aviso por ele (`AEEIMedia.h`, "Callback Events"); entregar este
+  // aviso agora diria ao jogo que o `DONE` de um som era o `DONE` de outro.
+  //
+  // Os tres casos sao diferentes, e nenhum deles e "descartar sempre":
+  //   - mesmo objecto (serie igual)                  -> entregar;
+  //   - soltado, endereco ainda sem dono             -> ENTREGAR: o `fn` e o
+  //     `pUser` foram congelados no nascimento, e o `zeebx` mediu que um jogo
+  //     espera o `DONE` de um som que parou e soltou (ver `Aviso`);
+  //   - endereco ja de OUTRO objecto                 -> DESCARTAR e REGISTAR.
+  const Objeto* dono = PorEndereco(a.objeto);
+  if (dono != nullptr && dono->serie != a.serie) {
+    ++avisos_descartados_;
+    Recusar("IMedia::EntregarAviso",
+            "aviso da serie " + std::to_string(a.serie) + " (" + EmHex(a.objeto) + ", " +
+                NomeDoStatusDeMidia(a.status) + ") chegou quando o endereco ja era do objecto "
+                "serie " + std::to_string(dono->serie) + ": aviso descartado");
+    return true;
+  }
+
   if (a.fn == 0) {
     // Sem callback registado nao ha nada a chamar. Nao e um aviso perdido: e a
     // opcao que o SDK declara ("this step is optional"), e o `EmitirAviso` ja

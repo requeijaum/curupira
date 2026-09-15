@@ -348,8 +348,32 @@ class Media {
   // quadro dele ainda por fechar -- foi uma medicao da arvore antiga
   // (`MediaHle::Tick`, comentario do `pending_notifications_`), e a razao de a
   // entrega ser ADIADA para uma fila.
+  //
+  // ENTRE O NASCIMENTO E A ENTREGA O GUEST CONTINUA A CORRER, e por isso o aviso
+  // tem de levar a IDENTIDADE do objecto, e nao so o endereco. As duas metades da
+  // regra vem de FORA desta arvore, uma de cada vez:
+  //
+  // - O AVISO NAO SOME COM O `Release`. O `zeebx` mediu-o no Zeebo F.C. Super
+  //   League (`src/machine/media.rs:556`): o jogo para o som, solta o objecto e
+  //   espera o `DONE` desse som -- descartado junto com o objecto, a abertura
+  //   parava na tela de aviso. E a razao de o `fn` e o `pUser` serem congelados
+  //   no NASCIMENTO do aviso, e nao lidos do objecto na altura da entrega.
+  // - O AVISO NAO E ENTREGUE COM O ENDERECO DE OUTRO OBJECTO. O proprio SDK diz
+  //   que o jogo correla o aviso pelo `IMedia *` que vem dentro dele
+  //   (`AEEIMedia.h`, "Callback Events": "You can correlate using either the
+  //   IMedia pointer or class ID returned in the callback data"). O endereco de
+  //   um objecto soltado VOLTA a ser entregue (e o que o recolhedor faz aqui, e
+  //   o que a arvore antiga fazia com a `generation` do `MediaHle`), logo um
+  //   aviso que chegue depois disso faria o jogo ler o `DONE` de um som como se
+  //   fosse de outro. Nesse caso o aviso e DESCARTADO e a recusa fica REGISTADA
+  //   com o nome (P2) -- nunca entregue com a identidade errada.
   struct Aviso {
     std::uint32_t objeto = 0;   // IMedia *  (o `pIMedia` do aviso)
+    // A IDENTIDADE do objecto quando o aviso NASCEU. Nao e o endereco outra vez:
+    // o endereco diz ONDE o objecto esta, e a serie diz QUEM ele e -- e entre o
+    // nascimento e a entrega o endereco pode mudar de dono (ver a regra 4 da
+    // entrega, abaixo).
+    std::uint32_t serie = 0;
     std::int32_t comando = 0;
     std::int32_t sub_comando = 0;
     std::int32_t status = 0;
@@ -365,6 +389,11 @@ class Media {
   bool RetirarAviso(Aviso* saida);
   std::size_t AvisosPendentes() const { return fila_.size(); }
   std::uint64_t AvisosEmitidos() const { return avisos_emitidos_; }
+  // Os avisos que morreram na fila porque o endereco ja era de OUTRO objecto
+  // (regra 4 da entrega). Fecha a conta, e por isso um aviso que desaparece
+  // nunca se confunde com um aviso que nunca nasceu:
+  //   emitidos == entregues + nao entregues + descartados
+  std::uint64_t AvisosDescartados() const { return avisos_descartados_; }
 
   // --- a ENTREGA do aviso ao guest ---------------------------------------
   //
@@ -389,6 +418,17 @@ class Media {
   //    callback nao regressar dentro de `limite_de_passos`, fica a falta com o
   //    endereco do callback e o pedido que a provocou -- e o emulador CONTINUA,
   //    em vez de girar para sempre.
+  //
+  // 4. O AVISO LEVA A IDENTIDADE QUE TINHA QUANDO NASCEU (`Aviso::serie`), e a
+  //    entrega compara-a com o dono do endereco AGORA. Os tres casos, e os tres
+  //    sao diferentes:
+  //      - o objecto ainda e o mesmo                    -> ENTREGA;
+  //      - foi soltado e o endereco ainda nao tem dono   -> ENTREGA (ver a regra
+  //        do `zeebx` no comentario de `Aviso`: o jogo pode estar a espera deste
+  //        `DONE` depois de parar e soltar);
+  //      - o endereco JA E DE OUTRO objecto              -> DESCARTA e REGISTA o
+  //        motivo, com a serie dos dois. Entregar aqui seria dizer ao jogo que o
+  //        evento de um som era de outro.
   //
   // `sentinela` e o endereco de retorno do laco do motor (`Despacho`: 0xFFFFFFF0).
   // Devolve `true` se tirou um aviso da fila (mesmo que a entrega tenha falhado).
@@ -421,6 +461,11 @@ class Media {
   struct Objeto {
     bool vivo = false;
     std::uint32_t endereco = 0;
+    // A IDENTIDADE DO OBJECTO, e nao o endereco: um numero que so sobe, dado no
+    // `Criar`. Existe porque o endereco de um objecto soltado volta a ser
+    // entregue a outro, e um aviso guardado tem de poder ser validado contra o
+    // dono do endereco na altura da entrega (`Aviso::serie`).
+    std::uint32_t serie = 0;
     std::int32_t estado = kMmEstadoOcioso;
     std::uint32_t fn = 0;
     std::uint32_t usuario = 0;
@@ -469,6 +514,10 @@ class Media {
   std::uint64_t avisos_emitidos_ = 0;
   std::uint64_t avisos_entregues_ = 0;
   std::uint64_t avisos_nao_entregues_ = 0;
+  std::uint64_t avisos_descartados_ = 0;
+  // A serie do proximo objecto criado. Comeca em 1 para o ZERO significar
+  // "nenhum" -- um aviso com serie zero e um aviso que ninguem gerou.
+  std::uint32_t proxima_serie_ = 1;
   std::uint32_t pedidos_aceitos_ = 0;
   std::uint32_t pedidos_recusados_ = 0;
   std::string ultimo_motivo_;
