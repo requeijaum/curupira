@@ -69,6 +69,7 @@ constexpr std::uint32_t kSlotIdGetFontMetrics = 1530, kSlotIdMeasureText = 1531,
                        kSlotIdCreateDIBitmap = 1538, kSlotIdBacklight = 1542;
 constexpr std::uint32_t kSlotIdMkDir = 1544,
                        kSlotIdBitmapQI = 1565,
+                       kSlotIdRemove = 1509,
                        kSlotIdGetDest = 1545,
                        kSlotIdSetDest = 1546, kSlotIdRmDir = 1547, kSlotIdGetDeviceInfo = 1549,
                        kSlotIdGetDeviceBitmap = 1550, kSlotIdGetClipRect = 1551,
@@ -1219,6 +1220,15 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         char det[96];
         std::snprintf(det, sizeof(det), "MkDir %s", nome.c_str());
         traco_.RegistarFalta(Area::Brew, "IFileMgr::MkDir", det);
+        cpu.Set(kR0, kAeeUnsupported);
+      } else if (idx == kSlotIdRemove) {
+        // `int Remove(IFileMgr *po, const char *pszFile)` -- IFileMgr slot 4.
+        // Mesma decisao do RmDir/MkDir: VFS so de leitura, recusa em voz alta.
+        std::string nome;
+        mem_.LerCadeia(cpu.Get(kR1), &nome, 512);
+        char det[96];
+        std::snprintf(det, sizeof(det), "Remove %s", nome.c_str());
+        traco_.RegistarFalta(Area::Brew, "IFileMgr::Remove", det);
         cpu.Set(kR0, kAeeUnsupported);
       } else if (idx == kSlotIdRmDir) {
         // `int RmDir(IFileMgr *po, const char *pszDir)` -- IFileMgr slot 7.
