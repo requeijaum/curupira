@@ -242,6 +242,15 @@ TEST(ConfigDoEgl, OsValoresSaoOsDaTela) {
   // 16 e a profundidade do ecra do Zeebo (RGB565 + Z16), o mesmo que o zeebx
   // declara (`src/video/gles.rs:84`); o float do nosso buffer cobre essa precisao.
   EXPECT_EQ(valor(EGL_DEPTH_SIZE), 16u);
+  // 16, e nao 0: o buffer de profundidade existe desde
+  // `core/video/rasterizador.cpp:558`, e 16 e o Z do hardware
+  // (`ZeeboDeveloperGuide0.97.md:1460`).
+  EXPECT_EQ(valor(EGL_DEPTH_SIZE), 16u);
+  // O STENCIL continua a ZERO, e isso NAO e a mesma situacao: a maquina real
+  // tinha stencil de 4 bpp (guia :1422-1468), mas o nosso rasterizador nao tem
+  // buffer de stencil nenhum. O config tem de dizer o que este modulo FAZ, e
+  // nao o que o hardware fazia -- prometer stencil seria a promessa que o
+  // `eglCreateWindowSurface` nao cumpre.
   EXPECT_EQ(valor(EGL_STENCIL_SIZE), 0u);
   EXPECT_EQ(valor(EGL_SURFACE_TYPE),
               static_cast<std::uint32_t>(EGL_WINDOW_BIT | EGL_PIXMAP_BIT));
@@ -335,6 +344,46 @@ TEST(CicloDoEgl, OEscolheConfigRecusaUmPedidoMaiorDoQueATela) {
   EXPECT_EQ(b.mem.Ler32(pnum), 0u);
   ASSERT_FALSE(b.egl.Ultimas().empty());
   EXPECT_NE(b.egl.Ultimas().back().motivo.find("EGL_RED_SIZE"), std::string::npos);
+}
+
+TEST(CicloDoEgl, UmPedidoDeProfundidadeDe16CasaComOConfig) {
+  // O QUE ISTO MEDE: qualquer jogo 3D pede `EGL_DEPTH_SIZE 16`. Com o config a
+  // dizer 0 -- o que dizia desde antes de haver rasterizador -- a comparacao
+  // "o config tem PELO MENOS o pedido" falhava e o titulo recebia ZERO configs.
+  // O buffer de profundidade existe desde `core/video/rasterizador.cpp:558`.
+  Banco b;
+  std::vector<std::uint32_t> pedido = {EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_RED_SIZE, 5,
+                                       EGL_GREEN_SIZE,   6,              EGL_BLUE_SIZE, 5,
+                                       EGL_DEPTH_SIZE,   16};
+  const std::uint32_t lista = EscreverLista(b, pedido, 0x00090000u);
+  const std::uint32_t pnum = 0x00090410u, saida = 0x00090400u, pilha = 0x80080000u;
+  b.mem.Escrever32(pilha, pnum);
+  std::uint32_t r = 0;
+  EXPECT_EQ(b.egl.Executar(kIegl_ChooseConfig, Args(kDisplayUnico, lista, saida, 1, pilha), &r),
+            ResultadoGl::Feito);
+  EXPECT_EQ(b.mem.Ler32(pnum), 1u) << "um pedido de Z de 16 bits tem de casar";
+  EXPECT_EQ(b.mem.Ler32(saida), kConfigUnico);
+  // E o pedido que a maquina NAO servia continua a nao casar: 32 bits de Z.
+  const std::uint32_t lista2 = EscreverLista(b, {EGL_DEPTH_SIZE, 32}, 0x00090100u);
+  b.mem.Escrever32(pnum, 0xDEADBEEFu);
+  EXPECT_EQ(b.egl.Executar(kIegl_ChooseConfig, Args(kDisplayUnico, lista2, saida, 1, pilha), &r),
+            ResultadoGl::Feito);
+  EXPECT_EQ(b.mem.Ler32(pnum), 0u);
+}
+
+TEST(CicloDoEgl, OStencilContinuaAZeroEIssoEDeliberado) {
+  // A maquina real tinha stencil de 4 bpp (`ZeeboDeveloperGuide0.97.md:1422-1468`),
+  // e o nosso rasterizador NAO tem buffer de stencil. O config diz o que o modulo
+  // faz, e nao o que o hardware fazia: um pedido de stencil nao casa, e e essa a
+  // resposta honesta.
+  Banco b;
+  const std::uint32_t lista = EscreverLista(b, {EGL_STENCIL_SIZE, 1}, 0x00090000u);
+  const std::uint32_t pnum = 0x00090410u, pilha = 0x80080000u;
+  b.mem.Escrever32(pilha, pnum);
+  std::uint32_t r = 0;
+  EXPECT_EQ(b.egl.Executar(kIegl_ChooseConfig, Args(kDisplayUnico, lista, 0, 1, pilha), &r),
+            ResultadoGl::Feito);
+  EXPECT_EQ(b.mem.Ler32(pnum), 0u);
 }
 
 TEST(CicloDoEgl, OEscolheConfigRecusaUmaListaQueNaoSabeLer) {

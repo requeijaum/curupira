@@ -108,6 +108,24 @@ const AtributoDaConfig kConfigDoZeebulator[] = {
     // `pedido <= oferecido`, egl.cpp:560), o `eglCreateWindowSurface` recebe
     // config 0 e recusa, e o titulo desenha "InitGLSurface failed".
     {EGL_DEPTH_SIZE, 16, "rasterizador.h:210,243 tem buffer de profundidade; Z16 do ecra (zeebx src/video/gles.rs:84)"},
+    // O BUFFER DE PROFUNDIDADE EXISTE DESDE QUE O RASTERIZADOR NASCEU.
+    //
+    // Este zero envelheceu: era verdade quando so havia a `Tela`, e deixou de
+    // ser quando `core/video/rasterizador.cpp:558` passou a criar o buffer de
+    // profundidade a pedido do estado (`PrepararProfundidade`, com o teste em
+    // `:381-398`). Um valor que FOI medido e nao se reviu e uma mentira com
+    // data -- e esta tinha consequencia: o `eglChooseConfig` compara "o config
+    // tem PELO MENOS o pedido", logo um titulo que peca `EGL_DEPTH_SIZE 16`
+    // -- o que qualquer jogo 3D pede -- recebia ZERO configs.
+    //
+    // 16 e o numero do HARDWARE, e nao um palpite: o guia oficial diz que o GPU
+    // do Zeebo faz "Z buffer depth testing with 16-bit Z"
+    // (`ZeeboDeveloperGuide0.97.md:1460-1463`). O zeebx (`gles.rs:128-138`) e o
+    // zeebulator (`gl_hle.cpp:409-414`) dizem 16 tambem. O nosso buffer guarda
+    // `float` (`rasterizador.h:243`), logo tem pelo menos essa precisao.
+    {EGL_DEPTH_SIZE, 16,
+     "rasterizador.cpp:558 cria o buffer de profundidade; 16 bits e o Z do "
+     "hardware (ZeeboDeveloperGuide0.97.md:1460)"},
     {EGL_STENCIL_SIZE, 0, "nao ha buffer de stencil"},
     {EGL_LUMINANCE_SIZE, 0, "nao ha config de luminancia"},
     {EGL_ALPHA_MASK_SIZE, 0, "nao ha mascara de alfa"},
