@@ -1,5 +1,6 @@
 #include "core/memoria/memoria.h"
 
+#include <algorithm>
 #include <cstring>
 
 namespace zb2 {
@@ -43,6 +44,16 @@ std::uint16_t Memoria::Ler16(Endereco a) const {
 }
 
 std::uint32_t Memoria::Ler32(Endereco a) const {
+  // A SONDA DE LEITURA fica so aqui, no acesso de 32 bits: um ponteiro do guest
+  // (`pBmp`, `pPaletteMap`, uma vtable) le-se sempre com `ldr`. Por em `Ler8`
+  // custaria uma comparacao por byte em todo o emulador.
+  if (sonda_fim_ != 0 && a >= sonda_inicio_ && a < sonda_fim_) {
+    bool ja = false;
+    for (const auto& par : leituras_sondadas_) {
+      if (par.first == a && par.second == pc_) { ja = true; break; }
+    }
+    if (!ja) leituras_sondadas_.emplace_back(a, pc_);
+  }
   return static_cast<std::uint32_t>(Ler8(a)) |
          (static_cast<std::uint32_t>(Ler8(a + 1)) << 8) |
          (static_cast<std::uint32_t>(Ler8(a + 2)) << 16) |
@@ -83,6 +94,11 @@ void Memoria::Escrever8(Endereco a, std::uint8_t v) {
   std::uint8_t* p = Pagina(a, true);
   p[a & kMascaraPagina] = v;
 
+  if (faixa_fim_ != 0 && a >= faixa_inicio_ && a < faixa_fim_) {
+    if (a < sujo_min_) sujo_min_ = a;
+    if (a + 1 > sujo_max_) sujo_max_ = a + 1;
+  }
+
   for (const Vigia& g : vigias_) {
     if (a < g.inicio || a >= g.fim) continue;
     // Primeira escrita por endereco apenas: a vigia responde a pergunta
@@ -115,6 +131,16 @@ void Memoria::Escrever32(Endereco a, std::uint32_t v) {
 }
 
 void Memoria::EscreverBloco(Endereco a, const void* origem, std::uint32_t quantos) {
+  // A FAIXA SUJA MARCA-SE AQUI TAMBEM. Um `memcpy` do guest (o ajudante 0x06c e
+  // irmaos, `despacho.cpp`) copia sprites para o framebuffer por este caminho:
+  // se so `Escrever8` sujasse, uma linha inteira copiada de uma vez passaria por
+  // "o guest nao mexeu" e o desenho desaparecia em silencio.
+  if (faixa_fim_ != 0 && quantos != 0 && a < faixa_fim_ && a + quantos > faixa_inicio_) {
+    const Endereco i = a > faixa_inicio_ ? a : faixa_inicio_;
+    const Endereco f = (a + quantos) < faixa_fim_ ? (a + quantos) : faixa_fim_;
+    if (i < sujo_min_) sujo_min_ = i;
+    if (f > sujo_max_) sujo_max_ = f;
+  }
   const auto* o = static_cast<const std::uint8_t*>(origem);
   std::uint32_t feito = 0;
   while (feito < quantos) {
@@ -129,7 +155,21 @@ void Memoria::EscreverBloco(Endereco a, const void* origem, std::uint32_t quanto
 }
 
 void Memoria::EscreverBruto(Endereco a, const void* origem, std::uint32_t quantos) {
-  EscreverBloco(a, origem, quantos);
+  // SEM MARCAR A FAIXA SUJA: e o hospedeiro a escrever a sua propria copia (o
+  // carregador, a reposicao de estado, a exportacao da Tela para o ecra do
+  // guest). Marcar aqui faria o motor ler de volta o que ele proprio escreveu e
+  // contar isso como desenho do guest.
+  const auto* o = static_cast<const std::uint8_t*>(origem);
+  std::uint32_t feito = 0;
+  while (feito < quantos) {
+    const Endereco atual = a + feito;
+    const std::uint32_t n = atual >> kPaginaBits;
+    const std::uint32_t dentro = atual & kMascaraPagina;
+    const std::uint32_t neste = std::min(kPagina - dentro, quantos - feito);
+    std::uint8_t* p = Pagina(n << kPaginaBits, true);
+    std::memcpy(p + dentro, o + feito, neste);
+    feito += neste;
+  }
 }
 
 void Memoria::Vigiar(const Vigia& v) { vigias_.push_back(v); }

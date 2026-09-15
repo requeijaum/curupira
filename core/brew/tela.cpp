@@ -60,6 +60,28 @@ void Tela::ClipLimpo() {
   clip_[3] = kAltura;
 }
 
+void Tela::ExportarPara565(std::uint16_t* destino) const {
+  for (std::size_t i = 0; i < pixels_.size(); ++i) {
+    destino[i] = static_cast<std::uint16_t>(pixels_[i] & 0xFFFFu);
+  }
+}
+
+std::uint32_t Tela::AbsorverDe565(const std::uint16_t* origem, std::size_t primeiro,
+                                  std::size_t quantos) {
+  // SEM CLIP E SEM `Ponto`: o guest escreveu nos pixels DELE, sem passar pelo
+  // nosso clip. Aplicar o clip aqui apagaria desenho que existe de verdade.
+  std::uint32_t vindos = 0;
+  const std::size_t fim = std::min(pixels_.size(), primeiro + quantos);
+  for (std::size_t i = primeiro; i < fim; ++i) {
+    const std::uint32_t v = origem[i - primeiro];
+    if (v == pixels_[i]) continue;
+    pixels_[i] = v;
+    ++escritos_;
+    ++vindos;
+  }
+  return vindos;
+}
+
 std::uint32_t Tela::CoresDistintas() const {
   std::set<std::uint32_t> s(pixels_.begin(), pixels_.end());
   return static_cast<std::uint32_t>(s.size());

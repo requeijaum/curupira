@@ -1657,6 +1657,11 @@ std::uint64_t ArmInterpreter::Passo() {
   // `pc + 4` no fim e o PC voltava a instrucao de origem. O sintoma era o
   // programa preso no primeiro endereco, com os registradores a meio.
   const std::uint32_t pc = Get(kPC);
+  // O PC DECLARADO A MEMORIA. A vigia de escrita e a sonda de leitura guardam
+  // `pc_`, e ate aqui NADA o punha fora dos testes: toda a corrida real
+  // registava `pc=0x00000000`. Um instrumento que nao sabe quem mexeu na
+  // memoria e meio instrumento (P7).
+  mem_.PcAtual(pc);
   if ((Cpsr() & Cpsr::kT) != 0) {
     const std::uint16_t instr = static_cast<std::uint16_t>(Buscar16(pc));
     ExecutarThumb(instr, pc);

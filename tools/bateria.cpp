@@ -611,6 +611,25 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   vfs_do_titulo.Registar(dir + "/" + t.pasta);
   zb2::brew::Despacho despacho(mem, traco, al, vfs_do_titulo);
   despacho.InstalarAjudantes(s, kTabela);
+  // A SONDA DO `pBmp` DO ECRA (`ZB2_SONDA_PBMP=1`). Mede quem LE o campo, e nao
+  // quantas vezes o cabecalho foi escrito -- ver `Memoria::SondarLeitura`.
+  // `ZB2_SONDA_PBMP=1` sonda o cabecalho do IDIB do ecra; `ZB2_SONDA_PBMP=a:b`
+  // (hex) sonda a faixa pedida. Uma faixa de CODIGO tambem serve: a busca da
+  // instrucao passa por `Ler32`, logo um `b <proprio endereco>` aparece como
+  // leitura do proprio PC -- foi assim que se viu onde o `zenonia` fica preso.
+  if (const char* sp = std::getenv("ZB2_SONDA_PBMP")) {
+    const std::string pedido = sp;
+    const std::size_t dp = pedido.find(':');
+    if (dp != std::string::npos) {
+      const std::uint32_t i0 = static_cast<std::uint32_t>(std::strtoul(pedido.c_str(), nullptr, 16));
+      const std::uint32_t i1 =
+          static_cast<std::uint32_t>(std::strtoul(pedido.c_str() + dp + 1, nullptr, 16));
+      mem.SondarLeitura(i0, i1);
+    } else if (std::atoi(sp) != 0) {
+      const std::uint32_t obj = zb2::brew::kObjDibBase + 0x300;
+      mem.SondarLeitura(obj, obj + zb2::brew::CamposDoIdib::kTamanho);
+    }
+  }
   if (const char* qu = std::getenv("ZB2_QUADROS")) g_quadros = std::atoi(qu);
   if (const char* ev = std::getenv("ZB2_EVT_START")) g_eventos = std::atoi(ev);
   if (const char* tr = std::getenv("ZB2_TRACE")) g_trace = std::atoi(tr) != 0;
@@ -946,6 +965,18 @@ Estado Medir(const Titulo& t, const std::string& dir) {
     }
   }
 
+  // O ULTIMO ABSORVER. Um titulo pode escrever pixels no `pBmp` e nunca chamar
+  // `IDisplay::Update` -- no ecra fisico nao apareceria nada, mas a pergunta que
+  // a bateria faz e "este titulo DESENHA?", e a resposta seria falsa por um
+  // detalhe de apresentacao. Fica declarado aqui, e nao escondido no motor.
+  g_despacho->AbsorverEcraDoGuest();
+  if (!mem.LeiturasSondadas().empty()) {
+    std::fprintf(stderr, "SONDA %s:", t.mod.c_str());
+    for (const auto& par : mem.LeiturasSondadas()) {
+      std::fprintf(stderr, " 0x%08x@0x%08x", par.first, par.second);
+    }
+    std::fprintf(stderr, "\n");
+  }
   for (const auto& par : traco.ContagemFaltas()) e.faltas[par.first] = par.second;
   for (const auto& par : traco.ContagemPressupostos()) e.pressupostos[par.first] = par.second;
   e.pixels = g_despacho->TelaRef().Escritos();

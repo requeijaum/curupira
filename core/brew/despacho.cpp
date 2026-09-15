@@ -375,15 +375,70 @@ void Despacho::EscreverCabecalhoDeIdib(std::uint32_t obj, std::uint32_t pbmp,
 
 std::uint32_t Despacho::EscreverCabecalhoDoBitmapDoEcra() {
   const std::uint32_t obj = zb2::brew::kObjDibBase + 0x300;
-  // O ECRA NAO TEM BUFFER VISIVEL AO GUEST: a `Tela` vive no hospedeiro
-  // (`core/brew/tela.h`), e nao ha pagina do guest que a espelhe. O `pBmp` fica
-  // a ZERO, e isso e uma FALTA COM NOME -- nao um sucesso silencioso. Um titulo
-  // que escreva nesse ponteiro estaria a escrever no endereco 0, que nesta
-  // arvore e a base do modulo dele proprio.
-  EscreverCabecalhoDeIdib(obj, 0, zb2::brew::Tela::kLargura, zb2::brew::Tela::kAltura);
-  traco_.RegistarFalta(Area::Brew, "IDIB::pBmp do bitmap do ecra",
-                       "a Tela vive no hospedeiro; nao ha buffer de ecra visivel ao guest");
+  // O ECRA TEM AGORA UM BUFFER NO GUEST (`core/brew/ecra.h`,
+  // `kBaseDoEcraNoGuest`). A `Tela` continua a viver no hospedeiro e o guest ve
+  // uma COPIA sincronizada: `ExporEcraAoGuest` num sentido,
+  // `AbsorverEcraDoGuest` no outro, no `IDisplay::Update`.
+  //
+  // O QUE ISTO SUBSTITUI: o `pBmp` ficava a ZERO e registava-se a falta
+  // `IDIB::pBmp do bitmap do ecra`. A falta era HONESTA quanto ao buffer e
+  // MENTIROSA quanto a demanda -- era registada aqui, ao ESCREVER o cabecalho,
+  // e por isso acusava os 25 titulos que pedem o bitmap do ecra por qualquer
+  // motivo. Medido com a sonda de leitura (`Memoria::SondarLeitura`), so DOIS
+  // leem o campo: `tekken2` e `zenonia`. Ver `core/brew/ecra.h`.
+  EscreverCabecalhoDeIdib(obj, zb2::brew::kBaseDoEcraNoGuest, zb2::brew::Tela::kLargura,
+                          zb2::brew::Tela::kAltura);
+  if (!ecra_exposto_) {
+    ecra_exposto_ = true;
+    // A VIGIA DE SUJIDADE arma-se com o buffer: e ela que distingue "o guest
+    // escreveu pixels" de "nos desenhamos".
+    mem_.VigiarSujidade(zb2::brew::kBaseDoEcraNoGuest,
+                        zb2::brew::kBaseDoEcraNoGuest + zb2::brew::kBytesDoEcra);
+    traco_.RegistarPressuposto(Area::Brew, "ecra do guest sincronizado no Update",
+                               "pBmp=" + Hex(zb2::brew::kBaseDoEcraNoGuest) + " " +
+                                   std::to_string(zb2::brew::kBytesDoEcra) + " bytes");
+  }
+  // O CONTEUDO TEM DE ESTAR LA ANTES DE O PONTEIRO SAIR DAQUI: um titulo que
+  // leia o ecra para o compor (alpha, scroll) leria zeros sobre desenho nosso.
+  ExporEcraAoGuest();
   return obj;
+}
+
+void Despacho::ExporEcraAoGuest() {
+  if (!ecra_exposto_) return;
+  std::vector<std::uint16_t> quadro(static_cast<std::size_t>(zb2::brew::Tela::kLargura) *
+                                    zb2::brew::Tela::kAltura);
+  tela_.ExportarPara565(quadro.data());
+  // `EscreverBruto`, e nao `EscreverBloco`: e o hospedeiro a repor a SUA copia.
+  // Com `EscreverBloco` a faixa ficava suja por nossa causa e o `Absorver`
+  // seguinte lia de volta o que acabamos de escrever.
+  mem_.EscreverBruto(zb2::brew::kBaseDoEcraNoGuest, quadro.data(), zb2::brew::kBytesDoEcra);
+  mem_.LimparSujidade();
+}
+
+std::uint32_t Despacho::AbsorverEcraDoGuest() {
+  if (!ecra_exposto_) return 0;
+  if (!mem_.Sujo()) {
+    // O guest nao tocou no ecra. Mesmo assim EXPORTA-SE: o 2D que desenhamos
+    // desde a ultima vez tem de ficar visivel a quem le o buffer.
+    ExporEcraAoGuest();
+    return 0;
+  }
+  // SO A FAIXA QUE O GUEST SUJOU. Ler e comparar o ecra inteiro nao seria so
+  // lento: "diferente da Tela" nao e "escrito pelo guest" -- os pixels que NOS
+  // desenhamos desde a ultima exportacao tambem diferem, e absorve-los apagaria
+  // o nosso proprio desenho.
+  const std::uint32_t inicio_byte = mem_.SujoInicio() & ~1u;         // alinhado ao pixel
+  const std::uint32_t fim_byte = (mem_.SujoFim() + 1u) & ~1u;
+  const std::size_t primeiro = (inicio_byte - zb2::brew::kBaseDoEcraNoGuest) / 2u;
+  const std::size_t quantos = (fim_byte - inicio_byte) / 2u;
+  std::vector<std::uint16_t> buffer(quantos);
+  mem_.LerBloco(inicio_byte, buffer.data(), static_cast<std::uint32_t>(quantos * 2u));
+  const std::uint32_t vindos = tela_.AbsorverDe565(buffer.data(), primeiro, quantos);
+  pixels_do_guest_ += vindos;
+  // Os dois lados voltam a ser iguais, e a faixa suja recomeca vazia.
+  ExporEcraAoGuest();
+  return vindos;
 }
 
 void Despacho::InstalarAjudantes(const Saidas& saidas, Endereco tabela) {
@@ -1598,7 +1653,11 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         }
         cpu.Set(kR0, static_cast<std::uint32_t>(larg));
       } else if (idx == kSlotIdUpdate) {
+        // `void Update(IDisplay *po)`: e ESTE o instante em que o BREW mostra o
+        // que foi desenhado. E por isso e aqui que os pixels escritos
+        // directamente no `pBmp` entram na Tela.
         ++updates_;
+        AbsorverEcraDoGuest();
         cpu.Set(kR0, 0);
       } else if (idx == kSlotIdBacklight) {
         // `void Backlight(IDisplay *po, boolean bOn)`. Sem ecra fisico: conta.

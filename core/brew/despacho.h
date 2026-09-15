@@ -315,6 +315,25 @@ class Despacho {
   bool ClasseConhecida(std::uint32_t cls) const;
   // O IDIB do ECRA. Devolve o endereco do objecto.
   std::uint32_t EscreverCabecalhoDoBitmapDoEcra();
+  // A TELA -> O BUFFER DO GUEST. Depois disto, os dois lados sao iguais, e por
+  // isso qualquer diferenca futura e do guest.
+  void ExporEcraAoGuest();
+
+ public:
+  // O BUFFER DO GUEST -> A TELA. Corre no `IDisplay::Update` (que e quando o
+  // BREW mostra o que foi desenhado) e uma vez no fim da medicao, para o caso
+  // de um titulo que escreve pixels e nunca chama `Update`. Devolve quantos
+  // pixels vieram do guest.
+  std::uint32_t AbsorverEcraDoGuest();
+  bool EcraExpostoAoGuest() const { return ecra_exposto_; }
+  std::uint32_t PixelsVindosDoGuest() const { return pixels_do_guest_; }
+
+ private:
+  // O ecra so ganha pagina no guest quando ALGUEM pede o bitmap do ecra. Um
+  // titulo que nunca o peca nao paga os 614 400 bytes nem as copias.
+  bool ecra_exposto_ = false;
+  std::uint32_t pixels_do_guest_ = 0;
+
   // A faixa dos objectos de bitmap (a mesma que o `SetDestination` ja aceita).
   static bool EUmObjectoDeBitmap(std::uint32_t p) {
     return p >= zb2::brew::kObjDibBase && p < zb2::brew::kObjDibBase + 0x1000;

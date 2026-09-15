@@ -868,17 +868,19 @@ TEST(CreateDIBitmap, DoisBitmapsNaoPartilhamOMesmoBuffer) {
   EXPECT_NE(b.Mem().Ler32(da + 8), b.Mem().Ler32(db + 8));
 }
 
-TEST(BitmapDoEcra, OPBmpAZeroEUmaFALTAComNomeENaoUmSucessoCalado) {
-  // O ecra vive no hospedeiro (`core/brew/tela.h`): nao ha buffer do guest que o
-  // espelhe. O objecto continua a servir (o titulo le dele o TAMANHO do ecra),
-  // mas a capacidade que falta fica dita com nome, e nao por omissao.
+TEST(BitmapDoEcra, OPBmpApontaParaOEcraDoGuestEJaNaoEUmaFalta) {
+  // ESTE TESTE AFIRMAVA O CONTRARIO, e estava certo no dia em que foi escrito:
+  // o `pBmp` ficava a ZERO e isso era uma falta com nome. Passou a falso quando
+  // o ecra ganhou pagina no guest (`core/brew/ecra.h`, `kBaseDoEcraNoGuest`) --
+  // e a falta desapareceu porque a capacidade EXISTE, nao porque se calou. O
+  // comportamento novo tem testes proprios em `tests/ecra_guest_test.cpp`.
   Bancada b;
   const std::uint32_t saida = 0x80090100u;
   b.ChamaSaida(1550, kObjDisplay, saida);
   const std::uint32_t bmp = b.Mem().Ler32(saida);
   ASSERT_EQ(bmp, kObjDibBase + 0x300);
-  EXPECT_EQ(b.Mem().Ler32(bmp + 8), 0u) << "pBmp do ecra";
-  EXPECT_EQ(b.Faltas("IDIB::pBmp do bitmap do ecra"), 1u);
+  EXPECT_EQ(b.Mem().Ler32(bmp + 8), kBaseDoEcraNoGuest) << "pBmp do ecra";
+  EXPECT_EQ(b.Faltas("IDIB::pBmp do bitmap do ecra"), 0u);
   EXPECT_EQ(b.Mem().Ler16(bmp + 20), Tela::kLargura);
   EXPECT_EQ(b.Mem().Ler16(bmp + 22), Tela::kAltura);
   EXPECT_EQ(b.Mem().Ler8(bmp + 28), 16u);

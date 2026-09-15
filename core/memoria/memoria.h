@@ -85,6 +85,50 @@ class Memoria {
   // O chamador declara em que PC esta antes de escrever. A vigia guarda-o.
   void PcAtual(Endereco pc) { pc_ = pc; }
 
+  // --- faixa suja -------------------------------------------------------
+  // "O guest mexeu nestes bytes desde a ultima vez que eu limpei?" -- min e max,
+  // e nada mais. A `Vigia` guarda o PRIMEIRO escritor de CADA endereco e faz uma
+  // busca linear por escrita: com uma faixa de 614 400 bytes (o ecra) isso e
+  // quadratico e impagavel. Esta responde a pergunta que o ecra faz, em duas
+  // comparacoes por byte.
+  //
+  // QUEM SUJA: `Escrever*` e `EscreverBloco`, que sao o guest (ou um servico a
+  // pedido dele). `EscreverBruto` NAO suja -- e o hospedeiro a repor a sua
+  // propria copia, e marca-la levaria o motor a ler de volta o que acabou de
+  // escrever e a chamar-lhe desenho do guest.
+  void VigiarSujidade(Endereco inicio, Endereco fim) {
+    faixa_inicio_ = inicio;
+    faixa_fim_ = fim;
+    LimparSujidade();
+  }
+  void LimparSujidade() {
+    sujo_min_ = faixa_fim_;
+    sujo_max_ = faixa_inicio_;
+  }
+  bool Sujo() const { return sujo_min_ < sujo_max_; }
+  Endereco SujoInicio() const { return sujo_min_; }
+  Endereco SujoFim() const { return sujo_max_; }  // exclusivo
+
+  // --- sonda de LEITURA -------------------------------------------------
+  // A vigia responde "quem escreveu aqui?". Esta responde a pergunta simetrica,
+  // "quem LEU daqui?", e existe por uma medicao concreta: a falta
+  // `IDIB::pBmp do bitmap do ecra` era registada quando se CONSTRUIA o
+  // cabecalho do bitmap do ecra, nao quando o guest lia o campo. Sem saber quem
+  // le, nao se sabe quantos titulos a falta bloqueia mesmo.
+  //
+  // Faixa unica, e desligada por omissao (`fim == 0`): o custo no caminho
+  // quente e uma comparacao.
+  void SondarLeitura(Endereco inicio, Endereco fim) {
+    sonda_inicio_ = inicio;
+    sonda_fim_ = fim;
+    leituras_sondadas_.clear();
+  }
+  void PararDeSondar() { sonda_fim_ = 0; leituras_sondadas_.clear(); }
+  // Pares (endereco, pc de quem leu), por ordem de primeira leitura.
+  const std::vector<std::pair<Endereco, Endereco>>& LeiturasSondadas() const {
+    return leituras_sondadas_;
+  }
+
   // --- utilitarios ------------------------------------------------------
   std::uint32_t PaginasAlocadas() const { return static_cast<std::uint32_t>(paginas_.size()); }
   bool Existe(Endereco a) const;
@@ -102,6 +146,13 @@ class Memoria {
   std::vector<std::pair<Endereco, Endereco>> escritas_vigiadas_;
   std::uint64_t vigiados_ja_vistos_ = 0;
   Endereco pc_ = 0;
+  Endereco sonda_inicio_ = 0;
+  Endereco sonda_fim_ = 0;  // exclusivo; zero = sonda desligada
+  Endereco faixa_inicio_ = 0;
+  Endereco faixa_fim_ = 0;  // exclusivo; zero = sem faixa suja
+  Endereco sujo_min_ = 0;
+  Endereco sujo_max_ = 0;
+  mutable std::vector<std::pair<Endereco, Endereco>> leituras_sondadas_;
 };
 
 }  // namespace zb2

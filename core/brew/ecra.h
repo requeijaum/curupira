@@ -41,6 +41,28 @@ namespace zb2::brew {
 constexpr std::uint32_t kLarguraDoEcra = 640;
 constexpr std::uint32_t kAlturaDoEcra = 480;
 
+// O ECRA VISTO PELO GUEST: os mesmos pixels, com endereco no espaco do guest.
+//
+// PORQUE EXISTE: o IDIB do BREW e uma struct PUBLICA e o campo `pBmp`
+// (`AEEIDIB.h:45`) e o ponteiro para a primeira linha de pixels. Um titulo que
+// pede `IDisplay::GetDeviceBitmap` + `QueryInterface(AEEIID_DIB)` guarda esse
+// ponteiro e escreve pixels DIRECTAMENTE. Com o `pBmp` a zero -- que era o que
+// esta arvore fazia -- esse titulo escreve no endereco 0, que aqui e a BASE DO
+// MODULO dele proprio (`tools/bateria.cpp:55`): corrompe o seu proprio codigo.
+//
+// MEDIDO (sonda de leitura, corpus de 62): **DOIS** titulos leem o campo,
+// `tekken2` (0x34ad8, `ldr r0,[r0,#8]` -> guarda em `[r4,#0x98]`) e `zenonia`
+// (0xb644, `ldr r0,[r6,#8]` -> guarda em `[r5,#4]`). Os outros 23 que a falta
+// acusava leem so o offset 0 -- a vtable -- porque chamam metodos (GetInfo,
+// QueryInterface, Release) e nunca tocam nos pixels.
+//
+// ONDE: acima do heap (`0x80200000`+`0xC00000` = `0x80E00000`) e acima dos
+// objectos de widget (`0x81070000`). 0x82000000 esta livre.
+constexpr std::uint32_t kBaseDoEcraNoGuest = 0x82000000u;
+constexpr std::uint32_t kBytesPorPixelDoEcra = 2;  // RGB565
+constexpr std::uint32_t kBytesDoEcra =
+    kLarguraDoEcra * kAlturaDoEcra * kBytesPorPixelDoEcra;  // 614 400
+
 }  // namespace zb2::brew
 
 #endif  // ZB2_CORE_BREW_ECRA_H

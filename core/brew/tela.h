@@ -78,8 +78,34 @@ class Tela {
   const std::uint32_t* ClipAtual() const { return clip_; }
 
   std::uint32_t Escritos() const { return escritos_; }
+
+  // --- a tela vista pelo guest ------------------------------------------
+  //
+  // Duas metades de UMA decisao (ver `docs/LEDGER-CURUPIRA.md`, ruling do
+  // `pBmp`): a Tela continua a viver no hospedeiro, e o guest ve uma COPIA
+  // sincronizada nos dois sentidos. A Tela E a sombra: o que foi exportado da
+  // ultima vez e exactamente o que ela tem, logo qualquer pixel do buffer do
+  // guest que DIFIRA da Tela foi escrito pelo guest.
+  void ExportarPara565(std::uint16_t* destino) const;
+  // Devolve quantos pixels vieram do guest (os que diferiam). Cada um conta
+  // como escrito -- e desenho, e foi o guest que o fez.
+  //
+  // `primeiro`/`quantos` sao a FAIXA QUE O GUEST SUJOU, em pixels. Absorver o
+  // ecra inteiro apagaria o desenho 2D que o hospedeiro fez desde a ultima
+  // exportacao: o buffer do guest ainda tem o valor antigo nesses pixels, e
+  // "diferente" nao quer dizer "escrito pelo guest". Foi um teste vermelho
+  // (`ODesenhoNossoFicaVisivelAoGuest`) que mostrou isso.
+  std::uint32_t AbsorverDe565(const std::uint16_t* origem, std::size_t primeiro,
+                              std::size_t quantos);
   std::uint32_t CoresDistintas() const;
   std::uint32_t CoresEm(int x, int y, int w, int h) const;
+  // UM pixel, em RGB565. Existe para os testes poderem dizer QUAL a cor que
+  // chegou, e nao so quantas cores distintas ha -- a contagem passa verde com a
+  // cor errada no sitio errado.
+  std::uint32_t PixelEm(int x, int y) const {
+    if (x < 0 || y < 0 || x >= kLargura || y >= kAltura) return 0;
+    return pixels_[static_cast<std::size_t>(y) * kLargura + x];
+  }
 
  private:
   // `CLR_SYS_LAST` e 17 (`AEEIDisplay.h:156`); 32 da folga para um item fora da
