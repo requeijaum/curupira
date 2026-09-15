@@ -433,7 +433,8 @@ int main(int argc, char** argv) {
       case kIgl_AlphaFuncx: return {{GL_ALWAYS, Fixo(0.0f), 0, 0}, {}};
       case kIgl_Hint: return {{GL_DONT_CARE, GL_FASTEST, 0, 0}, {}};
       case kIgl_PixelStorei: return {{GL_UNPACK_ALIGNMENT, 1, 0, 0}, {}};
-      case kIgl_Viewport: return {{0, 0, 640, 480}, {}};
+      case kIgl_Viewport:
+        return {{0, 0, zb2::brew::kLarguraDoEcra, zb2::brew::kAlturaDoEcra}, {}};
       case kIgl_Enable: return {{GL_CULL_FACE, 0, 0, 0}, {}};
       case kIgl_Disable: return {{GL_DITHER, 0, 0, 0}, {}};
       case kIgl_EnableClientState: return {{GL_VERTEX_ARRAY, 0, 0, 0}, {}};

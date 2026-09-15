@@ -413,7 +413,9 @@ TEST(Rasterizador, OGlClearPintaATelaTodaEIgnoraOClip) {
   // essa diferenca no detalhe da chamada).
   b.tela.Clip(100, 100, 10, 10);
   EXPECT_EQ(b.Ch(kIgl_Clear, GL_COLOR_BUFFER_BIT), zb2::brew::ResultadoGl::Feito);
-  EXPECT_EQ(b.tela.Escritos(), static_cast<std::uint32_t>(640) * 480u);
+  EXPECT_EQ(b.tela.Escritos(),
+            static_cast<std::uint32_t>(zb2::brew::Tela::kLargura) *
+                static_cast<std::uint32_t>(zb2::brew::Tela::kAltura));
   EXPECT_EQ(b.tela.CoresDistintas(), 1u);
   // E O CLIP FICA COMO ESTAVA: o `glClear` poe-o de lado e repoe-o.
   const std::uint32_t* clip = b.tela.ClipAtual();

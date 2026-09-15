@@ -248,8 +248,8 @@ int main(int argc, char** argv) {
       mem.Escrever32(kAppStart + 4,
                      static_cast<std::uint32_t>(std::strtoul(t.clsid.c_str(), nullptr, 0)));
       mem.Escrever32(kAppStart + 8, zb2::brew::kObjDisplay);
-      mem.Escrever32(kAppStart + 20, 320);
-      mem.Escrever32(kAppStart + 24, 240);
+      mem.Escrever32(kAppStart + 20, zb2::brew::kLarguraDoEcra);
+      mem.Escrever32(kAppStart + 24, zb2::brew::kAlturaDoEcra);
       const std::uint32_t he = mem.Ler32(mem.Ler32(applet) + 8);
       cpu.Set(kR0, applet);
       cpu.Set(kR1, 0);           // EVT_APP_START

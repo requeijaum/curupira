@@ -331,12 +331,12 @@ TEST(Widget, OGetExtentEscreveUmaWidgetExtentDeOitoBytes) {
   Bancada b;
   const std::uint32_t widget = b.D().WidgetsRef().Widget(kWidgetDoTitulo);
   // O widget nasce com o rect do ecra inteiro (`widget.cpp`, `Construir`), e o
-  // `WidgetExtent` so tem width e height -- logo 320 e 240.
+  // `WidgetExtent` so tem width e height -- logo o tamanho do ecra (`ecra.h`).
   b.Mem().Escrever32(kArg0 + 8, kSentinelaA);
   b.Mem().Escrever32(kArg0 + 12, kSentinelaB);
   b.ChamaWidget(kWidgetDoTitulo, brew_slots::kIWidget_GetExtent, widget, kArg0);
-  EXPECT_EQ(b.Mem().Ler32(kArg0 + 0), 320u) << "width";
-  EXPECT_EQ(b.Mem().Ler32(kArg0 + 4), 240u) << "height";
+  EXPECT_EQ(b.Mem().Ler32(kArg0 + 0), kLarguraDoEcra) << "width";
+  EXPECT_EQ(b.Mem().Ler32(kArg0 + 4), kAlturaDoEcra) << "height";
   EXPECT_EQ(b.Mem().Ler32(kArg0 + 8), kSentinelaA)
       << "o `GetExtent` escreveu 16 bytes numa struct de 8";
   EXPECT_EQ(b.Mem().Ler32(kArg0 + 12), kSentinelaB)

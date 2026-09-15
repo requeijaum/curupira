@@ -38,6 +38,7 @@
 #include <string>
 #include <vector>
 
+#include "core/brew/ecra.h"       // kLarguraDoEcra, kAlturaDoEcra
 #include "core/brew/igl.h"        // ResultadoGl, ArgumentosGl, kVtableIegl, kObjIegl
 #include "core/cpu/cpu.h"
 #include "core/memoria/memoria.h"
@@ -99,12 +100,13 @@ constexpr std::uint32_t kZonaDeStrings = kObjIegl + 0x400u;
 constexpr std::uint32_t kPassoDeString = 0x40;
 constexpr std::uint32_t kQuantasStrings = 3;
 
-// O TAMANHO DA SUPERFICIE E O DA `Tela`, e a igualdade e PROVADA POR TESTE:
-// `egl_test.cpp` tem um `static_assert(kLarguraDaSuperficie == Tela::kLargura)`.
-// Um 640x480 escrito a mao aqui e o mesmo numero que o da tela -- mas so o
-// `static_assert` impede que os dois se separem numa edicao futura.
-constexpr std::uint32_t kLarguraDaSuperficie = 640;  // tela.h: Tela::kLargura
-constexpr std::uint32_t kAlturaDaSuperficie = 480;   // tela.h: Tela::kAltura
+// O TAMANHO DA SUPERFICIE E O DO ECRA (`core/brew/ecra.h`). Nao ha aqui numero
+// escrito a mao: um 640 copiado e uma segunda verdade a espera de divergir, e
+// foi exactamente assim que o `GetDeviceInfo` ficou a publicar 320x240 enquanto
+// o resto do emulador desenhava em 640x480. O `egl_test.cpp` mantem o
+// `static_assert(kLarguraDaSuperficie == Tela::kLargura)` como segunda guarda.
+constexpr std::uint32_t kLarguraDaSuperficie = kLarguraDoEcra;  // ecra.h
+constexpr std::uint32_t kAlturaDaSuperficie = kAlturaDoEcra;    // ecra.h
 
 // O NOME DOS ATRIBUTOS, para a recusa ser legivel. Um `EGL_BAD_ATTRIBUTE` com o
 // numero e uma recusa sem nome -- o defeito que a arvore antiga tinha em 71 dos

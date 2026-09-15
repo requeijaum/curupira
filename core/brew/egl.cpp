@@ -660,13 +660,15 @@ ResultadoEgl Egl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint3
       if (id == EGL_WIDTH) {
         mem_.Escrever32(pvalor, kLarguraDaSuperficie);
         return feito_com(4, EGL_TRUE,
-                         "EGL_WIDTH = 640, da Tela (tela.h: Tela::kLargura) -- sem rasterizador, "
-                         "esta e a largura do unico framebuffer que existe");
+                         "EGL_WIDTH = " + std::to_string(kLarguraDaSuperficie) +
+                             ", do ecra (ecra.h: kLarguraDoEcra) -- sem rasterizador, "
+                             "esta e a largura do unico framebuffer que existe");
       }
       if (id == EGL_HEIGHT) {
         mem_.Escrever32(pvalor, kAlturaDaSuperficie);
         return feito_com(4, EGL_TRUE,
-                         "EGL_HEIGHT = 480, da Tela (tela.h: Tela::kAltura) -- sem rasterizador");
+                         "EGL_HEIGHT = " + std::to_string(kAlturaDaSuperficie) +
+                             ", do ecra (ecra.h: kAlturaDoEcra) -- sem rasterizador");
       }
       if (id == EGL_CONFIG_ID) {
         mem_.Escrever32(pvalor, 1u);

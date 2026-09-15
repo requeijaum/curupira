@@ -152,7 +152,9 @@ struct EstadoDeRasterizacao {
   // (x, y); aqui (x, y) e o canto SUPERIOR esquerdo, porque a `Tela` cresce para
   // baixo. Sem medicao da orientacao do framebuffer do Zeebo, esta e uma escolha
   // DECLARADA, e o teste `Rasterizador.VerticesConhecidosDaoPixelsExactos` fixa-a.
-  std::uint32_t viewport[4] = {0, 0, 640, 480};
+  // O viewport omisso e o ECRA INTEIRO (`ecra.h`), como o GL manda: nao ha aqui
+  // um 640x480 escrito a mao.
+  std::uint32_t viewport[4] = {0, 0, zb2::brew::kLarguraDoEcra, zb2::brew::kAlturaDoEcra};
 
   Rgba cor = {255, 255, 255, 255};
   bool cor_por_vertice = false;

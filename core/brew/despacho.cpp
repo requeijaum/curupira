@@ -1473,18 +1473,30 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         cpu.Set(kR0, kAeeUnsupported);
       } else if (idx == kSlotIdGetDeviceInfo) {
         // `void GetDeviceInfo(IShell *po, AEEDeviceInfo *pi)` -- IShell slot 4,
-        // e a demanda MAIS ALTA do corpus: 18 titulos.
+        // e a demanda MAIS ALTA do corpus. MEDIDO com uma sonda temporaria no
+        // proprio handler (bateria com `ZB2_TRACE=1`, corpus62): **37 dos 62
+        // titulos chamam-no**, e sete deles duas vezes. O numero "18" que aqui
+        // estava era de uma contagem antiga e nao voltou a ser medido.
         //
         // O jogo le daqui o TAMANHO DO ECRA e a profundidade de cor, para calcular
         // posicoes e para decidir que superficies pode criar. Sem isto, 18 titulos
         // pediam-no e nao recebiam nada.
         //
-        // 320x240 e 16 bits: os valores do ZEEBO, DECLARADOS como tal.
+        // O TAMANHO VEM DE `core/brew/ecra.h`: 640x480 (VGA), 16 bits.
+        //
+        // AQUI DIZIA 320x240, E ERA A SEGUNDA RESOLUCAO DA ARVORE. A `Tela`, o
+        // EGL, o rasterizador e o `IBitmap` deste mesmo ficheiro (linhas 1028 e
+        // 1076) ja diziam 640x480. Um jogo que pergunta o tamanho aqui e depois
+        // desenha no bitmap do ecra desenhava num quarto da area. O guia oficial
+        // (`ZeeboDeveloperGuide0.97.md:490`) diz "Zeebo will only support VGA
+        // (640x480) display configuration".
         const std::uint32_t pi = cpu.Get(kR1);
         if (pi != 0) {
           AeeDeviceInfo di{};
-          di.cx_screen = 320; di.cy_screen = 240;
-          di.cx_alt_screen = 320; di.cy_alt_screen = 240;
+          di.cx_screen = static_cast<std::uint16_t>(zb2::brew::kLarguraDoEcra);
+          di.cy_screen = static_cast<std::uint16_t>(zb2::brew::kAlturaDoEcra);
+          di.cx_alt_screen = static_cast<std::uint16_t>(zb2::brew::kLarguraDoEcra);
+          di.cy_alt_screen = static_cast<std::uint16_t>(zb2::brew::kAlturaDoEcra);
           di.cx_scroll_bar = 10;
           di.w_encoding = 0;          // AEE_ENC_UNICODE
           di.w_menu_text_scroll = 30;

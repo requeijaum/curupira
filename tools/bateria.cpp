@@ -820,8 +820,8 @@ Estado Medir(const Titulo& t, const std::string& dir) {
       // vai a ZERO: um arranque normal nao tem nenhum desses bits.
       //
       // Os valores do `AEEAppStart` sao os DECLARADOS em todo o lado: `pDisplay` e o
-      // objecto do `IDisplay` e `rc` e 320x240, o que o `IShell::GetDeviceInfo`
-      // publica. Onde nao ha medicao, esta dito.
+      // objecto do `IDisplay` e `rc` e o ECRA INTEIRO (`core/brew/ecra.h`), o mesmo
+      // que o `IShell::GetDeviceInfo` publica. Onde nao ha medicao, esta dito.
       constexpr std::uint32_t kAppStart = 0x000A0000u + 0x1000u;
       for (std::uint32_t k = 0; k < 32; ++k) mem.Escrever8(kAppStart + k, 0);
       mem.Escrever32(kAppStart + 0, 0);  // error
@@ -829,8 +829,8 @@ Estado Medir(const Titulo& t, const std::string& dir) {
       mem.Escrever32(kAppStart + 8, zb2::brew::kObjDisplay);
       mem.Escrever32(kAppStart + 12, 0);
       mem.Escrever32(kAppStart + 16, 0);
-      mem.Escrever32(kAppStart + 20, 320);
-      mem.Escrever32(kAppStart + 24, 240);
+      mem.Escrever32(kAppStart + 20, zb2::brew::kLarguraDoEcra);
+      mem.Escrever32(kAppStart + 24, zb2::brew::kAlturaDoEcra);
       mem.Escrever32(kAppStart + 28, 0);  // pszArgs
       cpu.Set(kR0, g_applet);
       cpu.Set(kR1, 0);          // EVT_APP_START

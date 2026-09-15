@@ -62,6 +62,7 @@
 #include <string>
 #include <vector>
 
+#include "core/brew/ecra.h"
 #include "core/brew/interface.h"
 #include "core/cpu/cpu.h"
 #include "core/memoria/memoria.h"
@@ -140,11 +141,11 @@ constexpr std::uint32_t kW_Modelo = 36;
 constexpr std::uint32_t kW_Handler = 40;
 constexpr std::uint32_t kTamanhoDoObjetoDeWidget = 0x40;
 
-// A largura e a altura DECLARADAS do ecra. Sao as mesmas que o
-// `IShell::GetDeviceInfo` publica (320x240) -- uma so verdade para o tamanho do
-// ecra dentro do emulador.
-constexpr std::uint32_t kLarguraDoEcra = 320;
-constexpr std::uint32_t kAlturaDoEcra = 240;
+// A largura e a altura do ecra vem de `core/brew/ecra.h` -- `kLarguraDoEcra` e
+// `kAlturaDoEcra`. ESTAVAM AQUI, com 320x240, e eram uma SEGUNDA verdade: a
+// `Tela`, o EGL e o `IBitmap` do ecra ja diziam 640x480. O comentario antigo
+// chamava-lhes "uma so verdade" e nao era: o `GetDeviceInfo` copiava o 320
+// outra vez, a mao, em `despacho.cpp`.
 
 // ---------------------------------------------------------------------------
 // O resultado de um pedido

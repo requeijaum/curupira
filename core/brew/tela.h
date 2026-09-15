@@ -14,12 +14,17 @@
 #include <set>
 #include <vector>
 
+#include "core/brew/ecra.h"
+
 namespace zb2::brew {
 
 class Tela {
  public:
-  static constexpr int kLargura = 640;
-  static constexpr int kAltura = 480;
+  // O TAMANHO VEM DE `ecra.h`. Nao ha aqui um 640 escrito a mao: se houvesse,
+  // seria a segunda copia do numero, e foi assim que a arvore ficou com duas
+  // resolucoes ao mesmo tempo.
+  static constexpr int kLargura = static_cast<int>(kLarguraDoEcra);
+  static constexpr int kAltura = static_cast<int>(kAlturaDoEcra);
 
   Tela();
 
