@@ -107,7 +107,6 @@ const AtributoDaConfig kConfigDoZeebulator[] = {
     // `eglChooseConfig` devolve 0 configs (a comparacao de tamanhos e
     // `pedido <= oferecido`, egl.cpp:560), o `eglCreateWindowSurface` recebe
     // config 0 e recusa, e o titulo desenha "InitGLSurface failed".
-    {EGL_DEPTH_SIZE, 16, "rasterizador.h:210,243 tem buffer de profundidade; Z16 do ecra (zeebx src/video/gles.rs:84)"},
     // O BUFFER DE PROFUNDIDADE EXISTE DESDE QUE O RASTERIZADOR NASCEU.
     //
     // Este zero envelheceu: era verdade quando so havia a `Tela`, e deixou de

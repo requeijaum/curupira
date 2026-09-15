@@ -674,6 +674,7 @@ TEST(Qegl, ORetornoSaiPeloPonteiroFinalEOsArgumentosEstaoDeslocados) {
   EXPECT_EQ(b.Mem().Ler32(kSaida), 1u) << "EGL_TRUE tem de sair pelo ponteiro final";
   EXPECT_EQ(b.Mem().Ler32(kObjIegl), vtable_antes)
       << "o dpy no lugar do `major` escrevia por cima da vtable do IEGL";
+}
 // ===========================================================================
 // `GetAEEVersion`: a ASSINATURA e o VALOR.
 //

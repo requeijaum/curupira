@@ -159,19 +159,20 @@ TEST(Ecra, OBitmapDoEcraDizOMesmoQueOGetDeviceInfo) {
   const std::uint32_t cx = b.Mem().Ler16(kInfo + 0);
   const std::uint32_t cy = b.Mem().Ler16(kInfo + 2);
 
-  // `GetDeviceBitmap(IDisplay*, IBitmap**)` -- o objecto tem cx@+12 e cy@+16
-  // (`despacho.cpp`, o mesmo cabecalho que o `GetDestination` escreve).
+  // `GetDeviceBitmap(IDisplay*, IBitmap**)`. O objecto e um AEEIDIB e o cx/cy
+  // sao `uint16` em +20/+22 (`AEEIDIB.h:42-55`) -- este teste lia u32 em +12/+16,
+  // que eram os offsets da struct INVENTADA que o commit do IDIB corrigiu.
   b.ChamaPelaVtable(kObjDisplay, brew_slots::kDisplay_GetDeviceBitmap, kPp);
   const std::uint32_t bmp = b.Mem().Ler32(kPp);
   ASSERT_NE(bmp, 0u) << "o GetDeviceBitmap nao devolveu bitmap nenhum";
-  EXPECT_EQ(b.Mem().Ler32(bmp + 12), cx) << "o bitmap do ecra e o GetDeviceInfo discordam na largura";
-  EXPECT_EQ(b.Mem().Ler32(bmp + 16), cy) << "o bitmap do ecra e o GetDeviceInfo discordam na altura";
+  EXPECT_EQ(b.Mem().Ler16(bmp + 20), cx) << "o bitmap do ecra e o GetDeviceInfo discordam na largura";
+  EXPECT_EQ(b.Mem().Ler16(bmp + 22), cy) << "o bitmap do ecra e o GetDeviceInfo discordam na altura";
 
   // E o `GetDestination`, que e o outro caminho para o mesmo bitmap.
   const std::uint32_t dest = b.ChamaPelaVtable(kObjDisplay, brew_slots::kDisplay_GetDestination);
   ASSERT_NE(dest, 0u);
-  EXPECT_EQ(b.Mem().Ler32(dest + 12), cx) << "o GetDestination discorda do GetDeviceInfo";
-  EXPECT_EQ(b.Mem().Ler32(dest + 16), cy) << "o GetDestination discorda do GetDeviceInfo";
+  EXPECT_EQ(b.Mem().Ler16(dest + 20), cx) << "o GetDestination discorda do GetDeviceInfo";
+  EXPECT_EQ(b.Mem().Ler16(dest + 22), cy) << "o GetDestination discorda do GetDeviceInfo";
 }
 
 // ---------------------------------------------------------------------------
