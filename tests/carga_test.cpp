@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <string>
@@ -592,4 +593,199 @@ TEST(Carga, OImicro3dNaoTemAppletNoMif) {
   const ClsidDoMif r = LerClsidDoMifDados(bytes);
   EXPECT_FALSE(r.ok);
   EXPECT_FALSE(r.motivo.empty());
+}
+
+// ===========================================================================
+// A ROPI (Read-Only Position Independent) MEDIDA num modulo REAL -- frente ropi2
+//
+// A pergunta desta frente era: "o que uma thread le como lixo estatico (PC
+// 0x3f050 a ler 0x73252020 em `alice`, o slot 0x1e1ea4 em `cninja`) e um
+// PONTEIRO do modulo deslocado? Ha diferenca de BASE entre o que o jogo espera e
+// o que nos montamos?"
+//
+// A resposta medida, e ela esta nestes dois testes: o carregador esta CERTO (base
+// zero, tabela em `base-4`) e o lixo NAO e um ponteiro deslocado. O que existe e
+// uma lista de realocacao que o proprio modulo consome e ZERA no arranque, e um
+// segundo arranque do modulo (uma thread a chamar um objecto NULO) corre essa
+// lista ja zerada e escreve 185 vezes 0x9c por cima do proprio codigo de entrada.
+// ===========================================================================
+
+namespace {
+
+// O `cninja.mod` (pasta 278986) e o representante da familia A -- os 6 titulos
+// com a veneira de ROPI no inicio do ficheiro (`cninja`, `karnovr`, `spinmast`,
+// `strhoop`, `supbtime`, `wizdfire`, todos com mais de 2,8 MB).
+std::vector<std::uint8_t> LerCninja(bool* ok) {
+  const char* caminhos[] = {
+      "/media/rafaelfrequiao/8C5F-19E51/zeebo/ROMs/debug_nand/mod/278986/cninja.mod",
+      "/home/rafaelfrequiao/projects/zeebo-lab/games/brew/mod/278986/cninja.mod",
+  };
+  for (const char* c : caminhos) {
+    std::vector<std::uint8_t> v = LerBytes(c, ok);
+    if (*ok) return v;
+  }
+  return {};
+}
+
+std::uint32_t Palavra(const std::vector<std::uint8_t>& v, std::size_t off) {
+  return static_cast<std::uint32_t>(v[off]) | (static_cast<std::uint32_t>(v[off + 1]) << 8) |
+         (static_cast<std::uint32_t>(v[off + 2]) << 16) |
+         (static_cast<std::uint32_t>(v[off + 3]) << 24);
+}
+
+}  // namespace
+
+TEST(CargaRopi, ACabecaDoCninjaDeclaraAListaDeRealocacaoEOSitioDelaEBaseMais0x9c) {
+  bool ok = false;
+  const std::vector<std::uint8_t> imagem = LerCninja(&ok);
+  if (!ok) GTEST_SKIP() << "corpus de 62 titulos nao esta montado nesta maquina";
+  ASSERT_EQ(imagem.size(), 0x2b2dd8u) << "o tamanho do cninja medido";
+
+  // A CABECA, medida (`cninja.mod`, 4 palavras):
+  //   0x00 = 0xea000003  `b 0x14`      -- salta para a veneira
+  //   0x04 = 0x001d8c28  inicio da lista de realocacao, em unidades "offset"
+  //   0x08 = 0x002294d4  fim da lista
+  //   0x0c = 0x002b2d3c  fim da IMAGEM, tambem em unidades "offset"
+  //   0x10 = 0x00000000  ponto de entrada, tambem em unidades "offset"
+  EXPECT_EQ(Palavra(imagem, 0x00), 0xea000003u) << "b 0x14: a veneira da ROPI";
+  const std::uint32_t ini = Palavra(imagem, 0x04);
+  const std::uint32_t fim = Palavra(imagem, 0x08);
+  const std::uint32_t image_end = Palavra(imagem, 0x0c);
+  const std::uint32_t entrada = Palavra(imagem, 0x10);
+  EXPECT_LT(ini, fim);
+
+  // A RELACAO QUE FIXA A CONVENCAO: os tres numeros sao unidades "offset" e
+  // ganham 0x9c para virarem ENDERECOS -- com a base do modulo a ZERO (a base
+  // medida em `tests/mod_base_test.cpp`), endereco == offset do ficheiro. O
+  // terceiro tem de dar EXACTAMENTE o tamanho do ficheiro: e o fim da imagem.
+  EXPECT_EQ(0x9cu + image_end, imagem.size()) << "o terceiro campo e o fim da imagem";
+  EXPECT_EQ(0x9cu + entrada, 0x9cu) << "e o ponto de entrada e o codigo em 0x9c";
+  EXPECT_EQ(imagem[0x9c], 0x0du) << "`mov ip, sp` -- a primeira instrucao da entrada";
+
+  // O `0x9c` E O DESLOCAMENTO DA CONVENCAO, e ele esta MEDIDO na propria
+  // veneira: `sub r4, pc, #32` da a base, `add r5, r4, #0x9c` da o delta que a
+  // lista SOMA a cada ponteiro. Logo a lista comeca em `0x9c + [4]` e o primeiro
+  // sitio realocado e `0x9c + entrada_da_lista`.
+  const std::size_t lista_ini = 0x9cu + ini;
+  const std::size_t lista_fim = 0x9cu + fim;
+  ASSERT_LT(lista_fim, imagem.size());
+  const std::size_t quantos = (lista_fim - lista_ini) / 4u;
+  EXPECT_EQ(quantos, 82475u) << "a lista medida do cninja";
+
+  // A LISTA E UMA LISTA DE SITIOS A REALOCAR: alinhada, sem repeticoes, e todos
+  // os sitios caem DENTRO da imagem. Nao e uma tabela de ponteiros do jogo: e a
+  // mesma regiao que o `loop B` da veneira ZERA a seguir (ver o teste seguinte).
+  std::vector<std::uint32_t> sitios;
+  sitios.reserve(quantos);
+  for (std::size_t k = 0; k < quantos; ++k) {
+    const std::uint32_t s = Palavra(imagem, lista_ini + k * 4u);
+    ASSERT_EQ(s % 4u, 0u) << "sitio " << k << " desalinhado";
+    ASSERT_LT(0x9cu + static_cast<std::size_t>(s), imagem.size()) << "sitio " << k;
+    sitios.push_back(s);
+  }
+  std::sort(sitios.begin(), sitios.end());
+  EXPECT_EQ(std::adjacent_find(sitios.begin(), sitios.end()), sitios.end())
+      << "a lista tem sitios repetidos";
+  EXPECT_EQ(sitios.front(), 0x110u);
+  EXPECT_EQ(sitios.back(), 0x1d8c20u);
+
+  // O PONTEIRO CRU DE UM `.mod` NAO E O ENDERECO DO ALVO: e o endereco MENOS
+  // 0x9c. A prova com um alvo real: a cadeia de formato `%s\%s\%s` esta no
+  // ficheiro em 0x186f88, o unico sitio do ficheiro com o valor 0x186eec (=
+  // `0x186f88 - 0x9c`) e o pool em 0x8d8, e o valor CHEIO (0x186f88) NAO existe
+  // como palavra em sitio nenhum -- quem o produz e a veneira, ao somar 0x9c.
+  std::size_t alvo = std::string::npos;
+  static const char kFmt[] = "%s\\%s\\%s";
+  for (std::size_t k = 0; k + 8 <= imagem.size(); ++k) {
+    if (std::equal(kFmt, kFmt + 8, imagem.begin() + static_cast<std::ptrdiff_t>(k))) {
+      alvo = k;
+      break;
+    }
+  }
+  ASSERT_NE(alvo, std::string::npos) << "sem a cadeia `%s\\%s\\%s` no ficheiro";
+  EXPECT_EQ(alvo, 0x186f88u) << "o endereco do alvo, medido neste ficheiro";
+
+  std::size_t pool = std::string::npos;
+  std::size_t cheio = std::string::npos;
+  for (std::size_t k = 0; k + 4 <= imagem.size(); k += 4) {
+    if (pool == std::string::npos && Palavra(imagem, k) == static_cast<std::uint32_t>(alvo - 0x9cu)) {
+      pool = k;
+    }
+    if (cheio == std::string::npos && Palavra(imagem, k) == static_cast<std::uint32_t>(alvo)) {
+      cheio = k;
+    }
+  }
+  ASSERT_NE(pool, std::string::npos) << "nenhum sitio guarda o endereco MENOS 0x9c";
+  EXPECT_EQ(pool, 0x8d8u) << "o pool do `ldr` esta 0x9c depois do sitio da lista";
+  EXPECT_EQ(cheio, std::string::npos)
+      << "o endereco CHEIO nao existe como dado: e a veneira que o produz";
+
+  // E O SITIO DO POOL TEM DE ESTAR NA LISTA: e isso que faz o valor virar
+  // endereco. Com a lista a zero ele fica o que esta no ficheiro -- e e por isso
+  // que uma leitura de lixo estatico depois de um segundo arranque e um valor
+  // 0x9c ABAIXO do esperado.
+  EXPECT_NE(std::find(sitios.begin(), sitios.end(),
+                      static_cast<std::uint32_t>(pool - 0x9cu)),
+            sitios.end())
+      << "o sitio do pool tem de estar na lista de realocacao";
+}
+
+TEST(CargaRopi, ASegundaPassagemDaVeneiraDestroiAEntradaDoModulo) {
+  // O MECANISMO DA MORTE dos 6 titulos da familia A, medido no `cninja` real com
+  // o instrumento do despacho (o valor em 0x9c lido a cada passo):
+  //
+  //   1. a veneira corre UMA vez: realoca os 82 475 sitios e, no `loop B`
+  //      (0x58-0x80), ZERA a propria lista -- o linker poe a lista no inicio da
+  //      area ZI, e ela so serve durante o arranque;
+  //   2. uma THREAD chama um objecto NULO (o campo estatico que o `EVT_APP_START`
+  //      devia ter montado e nao montou): `ldr ip,[r3]` com r3=0 le a PRIMEIRA
+  //      palavra do modulo (0xea000003, o `b` da cabeca!) e o `ldr pc,[ip,#...]`
+  //      seguinte devolve 0 -- o PC vai para 0, ou seja PARA A ENTRADA DO MODULO;
+  //   3. a veneira corre OUTRA VEZ, agora sobre a lista ZERADA: cada entrada e 0,
+  //      logo cada iteracao do `loop A` faz `[0 + 0x9c] += 0x9c` -- 82 475 vezes
+  //      sobre a PRIMEIRA INSTRUCAO DO PROPRIO MODULO;
+  //   4. o `bx r3` final salta para 0x9c e executa lixo. Medido na bateria: o
+  //      valor final e 0x0a8ef06e = `beq 0xfe3bc1c0` (`arm-none-eabi-objdump`), e
+  //      o PC de saida do titulo e 0xfe3bc25c -- o alvo do ramo mais 0x9c.
+  //
+  // O teste fixa os passos 1 e 3, que sao os que uma correccao de carregador
+  // poderia querer mexer: **PRE-REALOCAR a lista no carregador NAO ajuda** -- com
+  // a lista ja zerada, o arranque legitimo faria exactamente esta destruicao.
+  bool ok = false;
+  const std::vector<std::uint8_t> imagem = LerCninja(&ok);
+  if (!ok) GTEST_SKIP() << "corpus de 62 titulos nao esta montado nesta maquina";
+
+  constexpr std::uint32_t kBase = 0x00000000u;
+  const std::uint32_t lista_ini = 0x9cu + Palavra(imagem, 0x04);
+  const std::uint32_t lista_fim = 0x9cu + Palavra(imagem, 0x08);
+  const std::uint32_t antes = Palavra(imagem, 0x9c);
+
+  Bancada b;
+  ASSERT_TRUE(CarregarMod(b.mem, imagem, kBase, kTabela, &b.traco).ok);
+  b.cpu.Repor(kBase, 0x80080000u);
+  b.cpu.Set(kLR, Bancada::kSentinela());
+
+  // PASSAGEM 1 -- ate a entrada, em 0x9c. Sai do laco pelo proprio `bx r3`.
+  std::uint64_t passos = 0;
+  while (b.cpu.Get(kPC) != 0x9cu && passos < 4000000u) {
+    b.cpu.Passo();
+    ++passos;
+  }
+  ASSERT_EQ(b.cpu.Get(kPC), 0x9cu) << "a veneira nao chegou a entrada";
+  EXPECT_EQ(b.mem.Ler32(0x9c), antes) << "a entrada sobrevive a passagem legitima";
+  EXPECT_EQ(b.mem.Ler32(lista_ini), 0u) << "o loop B zerou a lista, como o linker espera";
+  EXPECT_EQ(b.mem.Ler32(lista_fim - 4u), 0u);
+  EXPECT_LT(passos, 1000000u) << "e uma passagem so, nao duas";
+
+  // PASSAGEM 2 -- a RE-ENTRADA da thread (o PC a zero).
+  b.cpu.Set(kPC, 0);
+  std::uint64_t passos2 = 0;
+  while (b.cpu.Get(kPC) < 0x94u && passos2 < 4000000u) {
+    b.cpu.Passo();
+    ++passos2;
+  }
+  const std::uint32_t depois = b.mem.Ler32(0x9c);
+  EXPECT_NE(depois, antes) << "a segunda passagem NAO pode deixar a entrada intacta";
+  EXPECT_EQ((depois - antes) % 0x9cu, 0u)
+      << "o dano e a soma de 0x9c por entrada zerada, e nao um valor qualquer";
 }
