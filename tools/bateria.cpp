@@ -273,8 +273,17 @@ constexpr std::uint32_t kSlotIdBitmapQI = 1565;
 // aqui. A bateria passou a cablar o slot 12 do IBitmap para a implementacao do
 // `strcat`, e a medicao deu "10 regressoes, pixels 640 -> 0" -- um numero que
 // parecia legitimo e nao era. Duas copias do mesmo numero em ficheiros
-// diferentes nao se defendem com um comentario; defendem-se com a leitura de
-// volta que o `kWire` faz logo abaixo, e que aqui ainda nao cobre este slot.
+// diferentes nao se defendem com um comentario.
+//
+// E A LEITURA DE VOLTA DO `kWire` NAO APANHA ISTO, apesar de cobrir este slot
+// (`{kVtableBitmap, 12, kSlotIdBitmapGetInfo}`, logo abaixo). Ela confere
+// `mem.Ler32(Endereco(vt) + slot*4) == Endereco(saida)`, e os DOIS lados da
+// comparacao saem da MESMA constante desta ferramenta: confirma que a bateria
+// cablou o que a bateria queria, e nao que o `despacho.cpp` atende nesse
+// indice. Contra uma divergencia ENTRE OS DOIS FICHEIROS e cega.
+//
+// O que a apanharia e um `static_assert` partilhado -- e para isso o numero tem
+// de deixar de ter duas casas.
 constexpr std::uint32_t kSlotIdBitmapGetInfo = 1572;
 constexpr std::uint32_t kSlotIdGetDest = 1545;
 constexpr std::uint32_t kSlotIdSetDest = 1546;
