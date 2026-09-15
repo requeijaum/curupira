@@ -840,6 +840,7 @@ constexpr std::uint32_t kSemSlotNoIgl = 0xFFFFFFFFu;
 // cabecalhos do SDK -- e nao de uma copia de outro emulador.
 std::uint32_t SlotIglesNoIgl(std::uint32_t slot) {
   switch (slot) {
+    // --- os treze do glbloco (ja servidos) ---
     case igles_slots::kIgles_Clear: return gl_slots::kIgl_Clear;
     case igles_slots::kIgles_ClearColorx: return gl_slots::kIgl_ClearColorx;
     case igles_slots::kIgles_CullFace: return gl_slots::kIgl_CullFace;
@@ -854,16 +855,82 @@ std::uint32_t SlotIglesNoIgl(std::uint32_t slot) {
     case igles_slots::kIgles_TexParameterx: return gl_slots::kIgl_TexParameterx;
     case igles_slots::kIgles_TexEnvx: return gl_slots::kIgl_TexEnvx;
     case igles_slots::kIgles_Viewport: return gl_slots::kIgl_Viewport;
+    // --- os que faltavam, e cada um tem DEMANDA MEDIDA (frente igl2) ---
+    // O numero ao lado e o slot do IGLES11 em `tools/igles_slots.inc` (gerado
+    // de `AEEGLES10.h`/`AEEGLES11.h`); do lado direito esta o slot do IGL de
+    // `AEEGL.h` com o MESMO NOME -- a correspondencia e por nome, nunca por
+    // numero, porque as duas interfaces numeram os mesmos metodos em posicoes
+    // diferentes.
+    case igles_slots::kIgles_AlphaFuncx: return gl_slots::kIgl_AlphaFuncx;  // 32
+    case igles_slots::kIgles_BlendFunc: return gl_slots::kIgl_BlendFunc;  // 34
+    case igles_slots::kIgles_Color4x: return gl_slots::kIgl_Color4x;  // 40
+    case igles_slots::kIgles_CompressedTexImage2D:
+      return gl_slots::kIgl_CompressedTexImage2D;  // 43
+    case igles_slots::kIgles_DepthFunc: return gl_slots::kIgl_DepthFunc;  // 49
+    case igles_slots::kIgles_DepthMask: return gl_slots::kIgl_DepthMask;  // 50
+    case igles_slots::kIgles_DrawElements: return gl_slots::kIgl_DrawElements;  // 55
+    case igles_slots::kIgles_Finish: return gl_slots::kIgl_Finish;  // 58
+    case igles_slots::kIgles_GetError: return gl_slots::kIgl_GetError;  // 65
+    case igles_slots::kIgles_GetIntegerv: return gl_slots::kIgl_GetIntegerv;  // 66
+    case igles_slots::kIgles_LoadMatrixx: return gl_slots::kIgl_LoadMatrixx;  // 75
+    case igles_slots::kIgles_Orthox: return gl_slots::kIgl_Orthox;  // 84
+    case igles_slots::kIgles_PixelStorei: return gl_slots::kIgl_PixelStorei;  // 85
+    case igles_slots::kIgles_Scalex: return gl_slots::kIgl_Scalex;  // 94
+    case igles_slots::kIgles_Scissor: return gl_slots::kIgl_Scissor;  // 95
+    case igles_slots::kIgles_TexCoordPointer:
+      return gl_slots::kIgl_TexCoordPointer;  // 100
+    case igles_slots::kIgles_TexImage2D: return gl_slots::kIgl_TexImage2D;  // 103
+    case igles_slots::kIgles_TexSubImage2D: return gl_slots::kIgl_TexSubImage2D;  // 105
+    case igles_slots::kIgles_Translatex: return gl_slots::kIgl_Translatex;  // 106
+    case igles_slots::kIgles_VertexPointer: return gl_slots::kIgl_VertexPointer;  // 107
+    // OS TRES QUE NAO EXISTEM NO IGL DE 80 SLOTS. O `AEEGL.h` so declara as
+    // variantes `x` (16.16) do Light/Material/Ortho; o IGLES11 tem tambem as
+    // `f` (float), e sao essas que os titulos pedem -- MEDIDO: `Lightfv` 6x e
+    // `Materialfv` 8x em gof, pbc e rmp, e `Orthof` 1x em abd, peggle e
+    // torkandkral. O id devolvido e INTERNO ao motor (`igl.h`, acima dos 80
+    // slots): nao ha slot nenhum na vtable do IGL para estes tres, e escrever
+    // um numero a mao na tabela gerada era afirmar uma vtable que nao existe.
+    case igles_slots::kIgles_Lightfv: return kIgl_Lightfv;  // 14
+    case igles_slots::kIgles_Materialfv: return kIgl_Materialfv;  // 18
+    case igles_slots::kIgles_Orthof: return kIgl_Orthof;  // 22
     default: return kSemSlotNoIgl;
   }
 }
 
-// So DOIS dos doze tem QUATRO argumentos reais, com o quarto NA PILHA por
-// causa do `pMe` em r0: o `Viewport` (x, y, largura, altura) e o `ClearColorx`
-// (r, g, b, a). Nos outros dez o r3 e o terceiro argumento real e nao se le a
-// pilha.
+// QUAIS METODOS TEM O QUARTO ARGUMENTO NA PILHA. O IGLES11 leva `iname *pMe`
+// em r0, logo o primeiro argumento real esta em r1: os tres primeiros caem em
+// r1..r3 e o QUARTO vai para a pilha, em [sp]. O `AtenderClasse` le [sp] para
+// `av.reg[3]` e poe `av.sp = sp + 4`, o que faz o motor ler o quinto, o sexto e
+// o nono argumento nos lugares certos (`Arg(i) = mem[sp + 4*(i-3)]` para i >= 3).
+//
+// O NUMERO DE ARGUMENTOS DE CADA UM VEM DA ASSINATURA GERADA, e nao de
+// ouvido: `tools/igles_slots.inc` leva o texto de `AEEGLES10.h`/`AEEGLES11.h`
+// para cada slot (por exemplo o `Orthof`, `(iname *pMe, AEEGLfloat left, ...`
+// tem SEIS argumentos reais, e o `TexImage2D` tem NOVE). A lista abaixo e o
+// conjunto dos que TEM quatro ou mais:
+//   Color4x 4 (r,g,b,a) | DrawElements 4 (modo,quantos,tipo,indices) |
+//   Orthof 6 | Orthox 6 | Scissor 4 (x,y,largura,altura) | TexCoordPointer 4 |
+//   VertexPointer 4 | TexImage2D 9 | TexSubImage2D 9 |
+//   CompressedTexImage2D 8 | Viewport 4 | ClearColorx 4.
+// Sem esta lista, num metodo de quatro argumentos o `r3` seria o TERCEIRO
+// argumento real e o quarto nunca era lido -- e o `Viewport` servia 640 onde o
+// titulo pediu 480.
 bool SlotIglesTemQuartoNaPilha(std::uint32_t slot) {
-  return slot == igles_slots::kIgles_Viewport || slot == igles_slots::kIgles_ClearColorx;
+  switch (slot) {
+    case igles_slots::kIgles_ClearColorx:
+    case igles_slots::kIgles_CompressedTexImage2D:
+    case igles_slots::kIgles_Color4x:
+    case igles_slots::kIgles_DrawElements:
+    case igles_slots::kIgles_Orthof:
+    case igles_slots::kIgles_Orthox:
+    case igles_slots::kIgles_Scissor:
+    case igles_slots::kIgles_TexCoordPointer:
+    case igles_slots::kIgles_TexImage2D:
+    case igles_slots::kIgles_TexSubImage2D:
+    case igles_slots::kIgles_VertexPointer:
+    case igles_slots::kIgles_Viewport: return true;
+    default: return false;
+  }
 }
 
 }  // namespace

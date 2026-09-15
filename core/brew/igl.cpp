@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 
 #include "core/brew/interface.h"
 
@@ -88,6 +89,114 @@ float Apertar(float v, float minimo, float maximo) {
   return v < minimo ? minimo : (v > maximo ? maximo : v);
 }
 
+// AS DUAS CAPACIDADES QUE O `.inc` GERADO NAO TEM, e a razao e medida.
+//
+// `tools/gl_slots.inc` e GERADO de `AEEGL.h` e do cabecalho `gles/gl.h`, e e
+// conferido por `tools/verificar_slots_gl.sh`: uma linha escrita a mao la faz a
+// guarda DIVERGIR do cabecalho. Estas duas nao sao servidas por esse gerador, e
+// o valor e o do cabecalho do SDK, com a linha exacta:
+//
+//   BREW-4.0.2-SP19/sdk/inc/gles/gles_1_0/gl.h:180   GL_RESCALE_NORMAL 0x803A
+//   BREW-4.0.2-SP19/sdk/inc/gles/gles_1_0/gl.h:178   GL_COLOR_MATERIAL 0x0B57
+//
+// SAO AS UNICAS DUAS SEM NOME, e isso e medido, nao deduzido: no corpus de 62
+// titulos (`ZB2_TRACE=1`, capacidade contada por titulo) ha exactamente duas
+// capacidades recusadas por nao terem nome -- `glEnable 0x803A` em gof, rmp e
+// pbc, e `glDisable 0x0B57` em tekken2.
+//
+// A CONTRADICAO QUE ISTO CORRIGE. O relatorio da frente glbloco escreveu que o
+// `glDisable` do tekken2 era `GL_STENCIL_TEST` com o valor 0x0B57. Nao e:
+// 0x0B57 e GL_COLOR_MATERIAL, e GL_STENCIL_TEST vale 0x0B90 (gl.h:165). A troca
+// nao e cosmetica -- o nome errado manda quem o ler procurar um buffer de
+// stencil que ninguem pediu, quando o pedido e "a cor corrente alimenta o
+// material", que e o mesmo assunto dos dois `fv` desta frente. Nenhum dos 62
+// titulos medidos liga GL_STENCIL_TEST.
+constexpr std::uint32_t GL_RESCALE_NORMAL = 0x803Au;
+constexpr std::uint32_t GL_COLOR_MATERIAL = 0x0B57u;
+
+// OS `pname` DA LUZ E DO MATERIAL, com o numero de componentes de cada um.
+//
+// O `glLightfv`/`glMaterialfv` do GL ES 1.x leva um tanto de componentes que
+// DEPENDE do `pname`: GL_AMBIENT/GL_DIFFUSE/GL_SPECULAR sao 4, GL_SPOT_DIRECTION
+// e 3, GL_SHININESS e GL_SPOT_CUTOFF sao 1. Ler sempre quatro valores (que e o
+// que o `kIgl_Lightxv` desta casa faz hoje, e o que se poderia copiar) leria, no
+// `GL_SHININESS` do gof, 12 bytes a seguir ao escalar que o titulo escreveu em
+// 0x8007feec -- e acumularia lixo do quadro de pilha como se fosse estado. Os
+// valores e os numeros de componentes sao do cabecalho, com a linha:
+//
+//   gles_1_0/gl.h:259 GL_AMBIENT 0x1200 | :260 GL_DIFFUSE 0x1201
+//   :261 GL_SPECULAR 0x1202 | :262 GL_POSITION 0x1203
+//   :263 GL_SPOT_DIRECTION 0x1204 (3) | :264 GL_SPOT_EXPONENT 0x1205 (1)
+//   :265 GL_SPOT_CUTOFF 0x1206 (1) | :266 GL_CONSTANT_ATTENUATION 0x1207 (1)
+//   :267 GL_LINEAR_ATTENUATION 0x1208 (1) | :268 GL_QUADRATIC_ATTENUATION 0x1209 (1)
+//   :300 GL_EMISSION 0x1600 | :301 GL_SHININESS 0x1601 (1) | :302 GL_AMBIENT_AND_DIFFUSE 0x1602
+//
+// Um `pname` fora desta tabela RECUSA com o valor dele escrito (P2): nao ha
+// medida do que a maquina faria com um `pname` que o cabecalho do SDK nao tem.
+constexpr std::uint32_t GL_AMBIENT = 0x1200u;
+constexpr std::uint32_t GL_DIFFUSE = 0x1201u;
+constexpr std::uint32_t GL_SPECULAR = 0x1202u;
+constexpr std::uint32_t GL_POSITION = 0x1203u;
+constexpr std::uint32_t GL_SPOT_DIRECTION = 0x1204u;
+constexpr std::uint32_t GL_SPOT_EXPONENT = 0x1205u;
+constexpr std::uint32_t GL_SPOT_CUTOFF = 0x1206u;
+constexpr std::uint32_t GL_CONSTANT_ATTENUATION = 0x1207u;
+constexpr std::uint32_t GL_LINEAR_ATTENUATION = 0x1208u;
+constexpr std::uint32_t GL_QUADRATIC_ATTENUATION = 0x1209u;
+constexpr std::uint32_t GL_EMISSION = 0x1600u;
+constexpr std::uint32_t GL_SHININESS = 0x1601u;
+constexpr std::uint32_t GL_AMBIENT_AND_DIFFUSE = 0x1602u;
+constexpr std::uint32_t GL_LIGHT0 = 0x4000u;
+// O GL ES 1.x garante OITO luzes (`GL_MAX_LIGHTS`, gl.h:223, e 8). O valor da
+// MAQUINA nao foi medido: o limite aqui e o que a especificacao garante, e um
+// indice acima dele recusa com essa razao escrita, em vez de inventar um numero.
+constexpr std::uint32_t kLuzesDoGlEs = 8u;
+
+struct Pname {
+  std::uint32_t valor;
+  const char* nome;
+  int componentes;
+};
+const Pname kPnamesDeLuz[] = {
+    {GL_AMBIENT, "GL_AMBIENT", 4},
+    {GL_DIFFUSE, "GL_DIFFUSE", 4},
+    {GL_SPECULAR, "GL_SPECULAR", 4},
+    {GL_POSITION, "GL_POSITION", 4},
+    {GL_SPOT_DIRECTION, "GL_SPOT_DIRECTION", 3},
+    {GL_SPOT_EXPONENT, "GL_SPOT_EXPONENT", 1},
+    {GL_SPOT_CUTOFF, "GL_SPOT_CUTOFF", 1},
+    {GL_CONSTANT_ATTENUATION, "GL_CONSTANT_ATTENUATION", 1},
+    {GL_LINEAR_ATTENUATION, "GL_LINEAR_ATTENUATION", 1},
+    {GL_QUADRATIC_ATTENUATION, "GL_QUADRATIC_ATTENUATION", 1},
+};
+const Pname kPnamesDeMaterial[] = {
+    {GL_AMBIENT, "GL_AMBIENT", 4},
+    {GL_DIFFUSE, "GL_DIFFUSE", 4},
+    {GL_AMBIENT_AND_DIFFUSE, "GL_AMBIENT_AND_DIFFUSE", 4},
+    {GL_SPECULAR, "GL_SPECULAR", 4},
+    {GL_EMISSION, "GL_EMISSION", 4},
+    {GL_SHININESS, "GL_SHININESS", 1},
+};
+template <std::size_t N>
+const Pname* AcharPname(const Pname (&tabela)[N], std::uint32_t pname) {
+  for (const Pname& p : tabela) {
+    if (p.valor == pname) return &p;
+  }
+  return nullptr;
+}
+
+// A chave do estado de luz / material: (luz ou face) e o `pname`.
+std::uint64_t ChaveDoAlvo(std::uint32_t alvo, std::uint32_t pname) {
+  return (static_cast<std::uint64_t>(alvo) << 32) | pname;
+}
+
+// O NOME DE UM `pname` (o do cabecalho), ou nulo quando nao esta na tabela: e o
+// que falta para a recusa poder dizer QUAL `pname` nao foi servido.
+const char* NomeDoPname(std::uint32_t pname, bool e_luz) {
+  const Pname* p = e_luz ? AcharPname(kPnamesDeLuz, pname) : AcharPname(kPnamesDeMaterial, pname);
+  return p == nullptr ? nullptr : p->nome;
+}
+
 // As capacidades que o estado deste modulo sabe acumular, com o nome no SDK.
 struct Capacidade {
   std::uint32_t cap;
@@ -105,6 +214,9 @@ const Capacidade kCapacidades[] = {
     {GL_DEPTH_TEST, "GL_DEPTH_TEST"},
     {GL_SCISSOR_TEST, "GL_SCISSOR_TEST"},
     {GL_POLYGON_OFFSET_FILL, "GL_POLYGON_OFFSET_FILL"},
+    // As duas MEDIDAS no corpus (ver o bloco acima, com a linha do cabecalho).
+    {GL_RESCALE_NORMAL, "GL_RESCALE_NORMAL"},
+    {GL_COLOR_MATERIAL, "GL_COLOR_MATERIAL"},
 };
 const char* NomeDaCapacidade(std::uint32_t cap) {
   for (const auto& c : kCapacidades) {
@@ -144,6 +256,20 @@ bool TipoDeVerticeValido(std::uint32_t t, bool com_fixo) {
 
 std::uint64_t ChaveDeParametro(std::uint32_t slot, std::uint32_t pname) {
   return (static_cast<std::uint64_t>(slot) << 32) | pname;
+}
+
+// O NOME DE CADA SLOT DO MOTOR. Os 80 do `AEEGL.h` vem da tabela gerada; os tres
+// internos do IGLES11 (`kIgl_Lightfv`, `kIgl_Materialfv`, `kIgl_Orthof`) NAO
+// estao la -- e sem este mapa o traco escrevia `slot_fora_da_tabela`, que e uma
+// recusa que nao se pode ler. O nome e o do metodo do GL, porque e esse o metodo
+// que foi chamado.
+const char* NomeDoSlotDoMotor(std::uint32_t slot) {
+  switch (slot) {
+    case kIgl_Lightfv: return "glLightfv";
+    case kIgl_Materialfv: return "glMaterialfv";
+    case kIgl_Orthof: return "glOrthof";
+    default: return NomeIgl(slot);
+  }
 }
 
 }  // namespace
@@ -280,6 +406,13 @@ video::EstadoDeRasterizacao Igl::MontarEstado() const {
       {GL_POLYGON_OFFSET_FILL, "polygon_offset_sem_rasterizador"},
       {GL_SCISSOR_TEST, "scissor_sem_rasterizador"},
       {GL_DITHER, "dithering_sem_rasterizador"},
+      // AS DUAS QUE O TITULO LIGA E O RASTERIZADOR NAO FAZ (medidas: gof, rmp e
+      // pbc ligam GL_RESCALE_NORMAL; tekken2 DESLIGA GL_COLOR_MATERIAL). Ficam
+      // nomeadas como as outras: uma capacidade ligada que nao muda nenhum pixel
+      // tem de ficar dita, e nao em silencio -- foi o silencio do `glCullFace`
+      // que descartou 86 377 chamadas na arvore antiga.
+      {GL_RESCALE_NORMAL, "rescaling_de_normais_sem_iluminacao"},
+      {GL_COLOR_MATERIAL, "cor_do_material_sem_iluminacao"},
   };
   for (const auto& f : por_fazer) {
     if (InterruptorLigado(f.cap)) e.capacidades_por_fazer.push_back(f.nome);
@@ -319,6 +452,25 @@ std::uint32_t Igl::Arg(std::size_t i, const ArgumentosGl& a) const {
 float Igl::Fixo(std::size_t i, const ArgumentosGl& a) const {
   // GLfixed: 16 bits inteiros e 16 fraccionarios.
   return static_cast<float>(static_cast<std::int32_t>(Arg(i, a))) / 65536.0f;
+}
+
+float Igl::Real(std::size_t i, const ArgumentosGl& a) const {
+  // `AEEGLfloat` de 32 bits: a palavra que veio no registo (ou na pilha) E o
+  // `float`, e nao ha conversao nenhuma a fazer. Reinterpretar os bits com
+  // `memcpy` e o que evita o comportamento indefinido de um `*reinterpret_cast`
+  // num tipo alinhado a 4 que veio de um registo.
+  const std::uint32_t bits = Arg(i, a);
+  float v = 0.0f;
+  std::memcpy(&v, &bits, sizeof(v));
+  return v;
+}
+
+// O MESMO, mas lendo da MEMORIA DO GUEST: `const AEEGLfloat *params`.
+float Igl::RealDaMemoria(std::uint32_t endereco) const {
+  const std::uint32_t bits = mem_.Ler32(endereco);
+  float v = 0.0f;
+  std::memcpy(&v, &bits, sizeof(v));
+  return v;
 }
 
 void Igl::LerMatriz(std::size_t i, const ArgumentosGl& a, float* saida) const {
@@ -381,6 +533,16 @@ const std::vector<std::uint32_t>* Igl::Parametro(std::uint32_t slot, std::uint32
   return it == parametros_.end() ? nullptr : &it->second;
 }
 
+const std::vector<float>* Igl::ParametroDeLuz(std::uint32_t luz, std::uint32_t pname) const {
+  const auto it = luzes_.find(ChaveDoAlvo(luz, pname));
+  return it == luzes_.end() ? nullptr : &it->second;
+}
+
+const std::vector<float>* Igl::ParametroDeMaterial(std::uint32_t face, std::uint32_t pname) const {
+  const auto it = materiais_.find(ChaveDoAlvo(face, pname));
+  return it == materiais_.end() ? nullptr : &it->second;
+}
+
 std::uint64_t Igl::ChamadasDoSlot(std::uint32_t slot) const {
   const auto it = por_slot_.find(slot);
   return it == por_slot_.end() ? 0 : it->second;
@@ -428,7 +590,7 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
   ++por_slot_[slot];
   ChamadaGl c;
   c.slot = slot;
-  c.nome = NomeIgl(slot);
+  c.nome = NomeDoSlotDoMotor(slot);
   c.lr = a.lr;
   c.n_args = 4;
   for (int i = 0; i < 4; ++i) c.args[i] = a.reg[i];
@@ -587,6 +749,41 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
       m[15] = 1.0f;
       Multiplicar(PilhaDoModo().m[PilhaDoModo().topo], PilhaDoModo().m[PilhaDoModo().topo], m);
       return feito(6);
+    }
+    case kIgl_Orthof: {
+      // O `Orthof` DO IGLES11 (slot 22 de `AEEGLES10.h`), que o IGL de
+      // `AEEGL.h` NAO tem: la so existe o `glOrthox` de 16.16, logo este id e
+      // interno do motor (ver `igl.h`). A CONTA E A MESMA do `kIgl_Orthox`
+      // acima e o pedido e o mesmo -- o que muda e a entrada: seis `float`
+      // (`AEEGLfloat`), e nao seis GLfixed. A escrita e na matriz CORRENTE,
+      // como no `x`: o GL define `glOrtho` como `M := M * O` e o uso normal e o
+      // PROJECTION, mas quem escolhe o modo e o titulo (`glMatrixMode`), e o
+      // motor nao o muda por conta propria.
+      if (!esp(6)) return recusa("argumentos na pilha sem sp valido");
+      const float l = Real(0, a), r = Real(1, a), b2 = Real(2, a), t2 = Real(3, a);
+      const float n = Real(4, a), f = Real(5, a);
+      if (r - l == 0.0f || t2 - b2 == 0.0f || f - n == 0.0f) return recusa("ortho degenerado");
+      float m[16];
+      for (int i = 0; i < 16; ++i) m[i] = 0.0f;
+      m[0] = 2.0f / (r - l);
+      m[4 * 1 + 1] = 2.0f / (t2 - b2);
+      m[4 * 2 + 2] = -2.0f / (f - n);
+      m[4 * 3 + 0] = -(r + l) / (r - l);
+      m[4 * 3 + 1] = -(t2 + b2) / (t2 - b2);
+      m[4 * 3 + 2] = -(f + n) / (f - n);
+      m[15] = 1.0f;
+      Multiplicar(PilhaDoModo().m[PilhaDoModo().topo], PilhaDoModo().m[PilhaDoModo().topo], m);
+      // OS SEIS VALORES VAO NO DETALHE, e nao e enfeite: e a unica forma de VER
+      // no traco que a moldura de chamada do IGLES11 foi lida no sitio certo (os
+      // tres primeiros nos registos r1..r3, os outros tres NA PILHA, depois do
+      // `pMe`). Uma moldura errada daria uma matriz plausivel e um desenho
+      // errado sem sintoma.
+      char det[192];
+      std::snprintf(det, sizeof(det),
+                    "ortho(%g, %g, %g, %g, %g, %g) [l,r,b,t,n,f] aplicado a matriz corrente "
+                    "(modo %u)",
+                    l, r, b2, t2, n, f, modo_);
+      return feito_com(6, det);
     }
 
     // --- cor e limpeza ------------------------------------------------------
@@ -891,6 +1088,69 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
       for (int k = 0; k < 4; ++k) valores.push_back(mem_.Ler32(p + 4u * k));
       parametros_[ChaveDeParametro(slot, pname)] = valores;
       return feito_com(2, "parametro acumulado (4 valores lidos do guest); sem rasterizador");
+    }
+    // --- luz e material na forma `fv` do IGLES11 -----------------------------
+    //
+    // OS DOIS UNICOS METODOS DESTA FAMILIA QUE O IGL DE `AEEGL.h` NAO TEM. O
+    // pedido e medido: 6 `Lightfv` e 8 `Materialfv` em gof, pbc e rmp, sempre
+    // com light=GL_LIGHT0 / face=GL_FRONT_AND_BACK e os `pname` de
+    // AMBIENT/DIFFUSE/SPECULAR (+ SHININESS no material).
+    case kIgl_Lightfv:
+    case kIgl_Materialfv: {
+      // A MOLDURA DE CHAMADA DO IGLES11: `iname *pMe` em r0, logo o alvo (a luz
+      // ou a face) esta em r1, o `pname` em r2 e o vector de `params` em r3. Os
+      // tres valores caem em `a.reg[0..2]` porque o `classes.cpp` desloca os
+      // registos antes de chamar este motor.
+      const bool e_luz = (slot == kIgl_Lightfv);
+      const std::uint32_t alvo = a.reg[0];
+      const std::uint32_t pname = a.reg[1];
+      const std::uint32_t params = a.reg[2];
+      if (e_luz && (alvo < GL_LIGHT0 || alvo >= GL_LIGHT0 + kLuzesDoGlEs)) {
+        char det[128];
+        std::snprintf(det, sizeof(det),
+                      "indice de luz 0x%08x fora das %u luzes que o GL ES 1.x garante "
+                      "(GL_MAX_LIGHTS, gl.h:223); o valor da maquina nao foi medido",
+                      alvo, kLuzesDoGlEs);
+        return recusa(det);
+      }
+      if (!e_luz && alvo != GL_FRONT && alvo != GL_BACK && alvo != GL_FRONT_AND_BACK) {
+        return recusa("face desconhecida (nem GL_FRONT, nem GL_BACK, nem GL_FRONT_AND_BACK)");
+      }
+      const Pname* pn =
+          e_luz ? AcharPname(kPnamesDeLuz, pname) : AcharPname(kPnamesDeMaterial, pname);
+      if (pn == nullptr) {
+        // NAO SE ADIVINHA O TANTO DE COMPONENTES de um `pname` desconhecido: ler
+        // quatro valores seria ler memoria que o titulo nao escreveu. RECUSA com
+        // o valor, que e a informacao que falta para o servir.
+        char det[160];
+        std::snprintf(det, sizeof(det),
+                      "%s com pname 0x%08x, que nao esta na tabela deste modulo",
+                      e_luz ? "glLightfv" : "glMaterialfv", pname);
+        return recusa(det);
+      }
+      if (params == 0) return recusa("vector de parametros nulo");
+      // O TANTO DE COMPONENTES E O DO `pname` (ver `kPnamesDeLuz`): quatro para
+      // AMBIENT/DIFFUSE/SPECULAR, UM para o GL_SHININESS -- que e o caso MEDIDO
+      // em gof e pbc, com o escalar em 0x8007feec e 0x8007fecc.
+      std::vector<float> valores;
+      valores.reserve(static_cast<std::size_t>(pn->componentes));
+      for (int k = 0; k < pn->componentes; ++k) {
+        valores.push_back(RealDaMemoria(params + 4u * static_cast<std::uint32_t>(k)));
+      }
+      (e_luz ? luzes_ : materiais_)[ChaveDoAlvo(alvo, pname)] = valores;
+      std::string texto;
+      for (std::size_t k = 0; k < valores.size(); ++k) {
+        char v[32];
+        std::snprintf(v, sizeof(v), "%s%g", k == 0 ? "" : ", ",
+                      static_cast<double>(valores[k]));
+        texto += v;
+      }
+      char det[256];
+      std::snprintf(det, sizeof(det),
+                    "%s 0x%08x = (%s) acumulado como estado; o rasterizador NAO faz iluminacao "
+                    "(core/video/rasterizador.h, ponto 4)",
+                    pn->nome, alvo, texto.c_str());
+      return feito_com(3, det);
     }
     case kIgl_Normal3x:
     case kIgl_MultiTexCoord4x: {

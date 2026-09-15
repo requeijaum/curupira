@@ -109,6 +109,32 @@ constexpr std::uint32_t kVtableIegl = 31000;  // 28 slots (AEEGL.h)
 constexpr std::uint32_t kObjIgl = 0x800B0000u;
 constexpr std::uint32_t kObjIegl = 0x800B1000u;
 
+// --- OS TRES METODOS QUE SO O IGLES11 TEM ------------------------------------
+//
+// O `AEEGL.h` (a vtable de 80 slots do IGL) so declara as variantes `x` -- 16.16
+// -- destes tres: `glLightxv` (slot 44), `glMaterialxv` (slot 50) e `glOrthox`
+// (slot 57).  O `IGLES11` (`AEEGLES10.h`/`AEEGLES11.h`, a tabela de
+// `tools/igles_slots.inc`) declara TAMBEM as variantes `f` -- float -- e sao
+// essas que os titulos pedem, MEDIDO nos tres 3D do corpus:
+//
+//     IGLES11::Lightfv     6x em gof, pbc e rmp (light=0x4000, pname)
+//     IGLES11::Materialfv  8x em gof, pbc e rmp (face=0x0408, pname)
+//     IGLES11::Orthof      1x em abd, peggle e torkandkral
+//
+// ESTES IDS NAO ENTRAM EM `tools/gl_slots.inc`, E A RAZAO E MEDIDA: esse
+// ficheiro e GERADO de `AEEGL.h` por `tools/gerar_slots.py` e conferido por
+// `tools/verificar_slots_gl.sh`; uma linha escrita a mao la faz a guarda
+// DIVERGIR do cabecalho -- e um numero de slot escrito a mao ja divergiu uma vez
+// neste trabalho.  E o mais importante: o IGL de `AEEGL.h` NAO TEM estes slots,
+// logo escreve-los na tabela de 80 seria uma afirmacao falsa sobre a vtable.
+//
+// Sao portanto identificadores INTERNOS do MOTOR, acima dos 80 da vtable, e so
+// o `classes.cpp` os usa -- no mapa `SlotIglesNoIgl`.  `Igl::Instalar` continua a
+// cablar 80 slots (`kIglSlots`): nenhum destes chega a memoria do guest.
+constexpr std::uint32_t kIgl_Lightfv = gl_slots::kIglSlots + 0u;     // = 80
+constexpr std::uint32_t kIgl_Materialfv = gl_slots::kIglSlots + 1u;  // = 81
+constexpr std::uint32_t kIgl_Orthof = gl_slots::kIglSlots + 2u;      // = 82
+
 // O resultado de UM slot, com os tres valores que o desenho exige:
 //   Feito           -- entendido, e o efeito de ESTADO aconteceu;
 //   Recusado        -- o metodo existe, e o pedido nao pode ser servido (o
@@ -249,6 +275,15 @@ class Igl {
   // argumentos que chegaram: acumular e o que impede "devolver sucesso e nao
   // fazer nada", e e observavel pelo teste.
   const std::vector<std::uint32_t>* Parametro(std::uint32_t slot, std::uint32_t pname) const;
+  // O ESTADO DE LUZ E DE MATERIAL, em float. Estes dois acumulam por
+  // (luz / face, pname), e nao por slot como o `Parametro` acima: a chave de um
+  // `glLightfv(GL_LIGHT0, GL_AMBIENT, ...)` e o INDICE DA LUZ, e o mesmo slot
+  // serve as oito luzes do GL -- uma chave so por slot guardaria a ultima luz e
+  // perderia as outras sete em silencio. Os valores ficam em `float`, tal como o
+  // SDK os entrega: converter para 16.16 era inventar precisao que o pedido nao
+  // tem (o `Fixo` faz o contrario, e por isso nao se usa aqui).
+  const std::vector<float>* ParametroDeLuz(std::uint32_t luz, std::uint32_t pname) const;
+  const std::vector<float>* ParametroDeMaterial(std::uint32_t face, std::uint32_t pname) const;
   std::uint64_t Limpezas() const { return limpezas_; }
   std::uint64_t Desenhos() const { return desenhos_; }
   std::uint64_t Vertices() const { return vertices_; }
@@ -273,6 +308,8 @@ class Igl {
   void Registar(const ChamadaGl& c);
   std::uint32_t Arg(std::size_t i, const ArgumentosGl& a) const;
   float Fixo(std::size_t i, const ArgumentosGl& a) const;   // GLfixed 16.16
+  float Real(std::size_t i, const ArgumentosGl& a) const;   // AEEGLfloat (32 bits)
+  float RealDaMemoria(std::uint32_t endereco) const;        // idem, lido do guest
   void LerMatriz(std::size_t i, const ArgumentosGl& a, float* saida) const;
   PilhaDeMatrizes& PilhaDoModo();
 
@@ -305,6 +342,10 @@ class Igl {
   std::uint64_t texturas_geradas_ = 0;
   std::map<std::uint32_t, EstadoDaTextura> texturas_;
   std::map<std::uint64_t, std::vector<std::uint32_t>> parametros_;
+  // (luz << 32) | pname e (face << 32) | pname. A chave e de 64 bits porque as
+  // duas grandezas sao `AEEGLenum` de 32.
+  std::map<std::uint64_t, std::vector<float>> luzes_;
+  std::map<std::uint64_t, std::vector<float>> materiais_;
   std::uint64_t limpezas_ = 0, desenhos_ = 0, vertices_ = 0;
   std::uint64_t chamadas_ = 0;
   std::map<std::uint32_t, std::uint64_t> por_slot_;

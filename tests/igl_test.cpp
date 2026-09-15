@@ -18,6 +18,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -1028,6 +1029,282 @@ TEST(FrenteTela, OClearDoIgles11EscreveNaTelaDepoisDeDefinirTela) {
   EXPECT_EQ(b.Faltas("IGLES11::Clear"), 0u);
   EXPECT_EQ(tela.Escritos(), static_cast<std::uint32_t>(Tela::kLargura * Tela::kAltura));
   EXPECT_EQ(tela.CoresDistintas(), 1u);
+}
+
+
+// ---------------------------------------------------------------------------
+// 6. A FRENTE IGL2: OS `fv` DO IGLES11, O `Orthof` E AS CAPACIDADES SEM NOME
+// ---------------------------------------------------------------------------
+//
+// O QUE FALTAVA, e isto e a corrida de referencia lida titulo a titulo
+// (`/tmp/corrida_egl2.json`, `ZB2_QUADROS=300 ZB2_EVT_START=1`, 62 titulos):
+//
+//   IGLES11::Lightfv     6x em gof, pbc e rmp (light=GL_LIGHT0)
+//   IGLES11::Materialfv  8x em gof, pbc e rmp (face=GL_FRONT_AND_BACK)
+//   IGLES11::Orthof      1x em abd, peggle e torkandkral
+//   glEnable 0x803A      1x em gof, rmp e pbc  -> GL_RESCALE_NORMAL
+//   glDisable 0x0B57     1x em tekken2         -> GL_COLOR_MATERIAL
+//
+// Os dois ultimos sao as UNICAS capacidades sem nome de todo o corpus, e o
+// segundo CORRIGE o relatorio da frente glbloco, que o chamou GL_STENCIL_TEST
+// (`GL_STENCIL_TEST` vale 0x0B90, `gles_1_0/gl.h:165`; 0x0B57 e
+// `GL_COLOR_MATERIAL`, `:178`).
+//
+// COMO ESTES TESTES ENTRAM: pela TABELA (`kVtableIgles + slot`), e nao por
+// `ChamaSaida`. Um teste que chamasse o metodo interno diria que a funcao serve
+// e nao diria que a chamada CHEGA -- a armadilha 3 desta casa. E todos conferem
+// o ESTADO, porque "nao ha falta" tambem e o que se le de uma recusa nomeada.
+
+// Os valores que o `.inc` gerado NAO tem, com a linha do cabecalho do SDK (o
+// bloco que os justifica esta em `core/brew/igl.cpp`):
+//   gles_1_0/gl.h:180 GL_RESCALE_NORMAL 0x803A | :178 GL_COLOR_MATERIAL 0x0B57
+//   :259 GL_AMBIENT 0x1200 | :260 GL_DIFFUSE 0x1201 | :261 GL_SPECULAR 0x1202
+//   :301 GL_SHININESS 0x1601 | :302 GL_AMBIENT_AND_DIFFUSE 0x1602
+//   :461 GL_LIGHT0 0x4000
+constexpr std::uint32_t kGlRescaleNormal = 0x803Au;
+constexpr std::uint32_t kGlColorMaterial = 0x0B57u;
+constexpr std::uint32_t kGlAmbient = 0x1200u;
+constexpr std::uint32_t kGlDiffuse = 0x1201u;
+constexpr std::uint32_t kGlShininess = 0x1601u;
+constexpr std::uint32_t kGlLight0 = 0x4000u;
+
+// `AEEGLfloat` (32 bits): os bits da palavra SAO o `float`.
+std::uint32_t Real(float v) {
+  std::uint32_t u = 0;
+  std::memcpy(&u, &v, sizeof(u));
+  return u;
+}
+
+TEST(FrenteIgl2, OsTresFvDoIgles11RespondemPelaTabelaEChegamAoMotor) {
+  BancoClasses b;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+  const std::uint32_t vector = 0x0002E100u;
+  for (int k = 0; k < 4; ++k) b.mem.Escrever32(vector + 4u * k, Real(0.25f * (k + 1)));
+
+  // Lightfv(GL_LIGHT0, GL_AMBIENT, vector) -- tres argumentos reais em r1..r3.
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, kGlLight0);
+  b.cpu.Set(kR2, kGlAmbient);
+  b.cpu.Set(kR3, vector);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Lightfv, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  EXPECT_EQ(b.Faltas("IGLES11::Lightfv"), 0u);
+  const auto* luz = EstadoDoIgles11()->ParametroDeLuz(kGlLight0, kGlAmbient);
+  ASSERT_NE(luz, nullptr);
+  ASSERT_EQ(luz->size(), 4u);
+  EXPECT_FLOAT_EQ((*luz)[0], 0.25f);
+  EXPECT_FLOAT_EQ((*luz)[3], 1.0f);
+
+  // Materialfv(GL_FRONT_AND_BACK, GL_DIFFUSE, vector): quatro componentes.
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, GL_FRONT_AND_BACK);
+  b.cpu.Set(kR2, kGlDiffuse);
+  b.cpu.Set(kR3, vector);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Materialfv, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  EXPECT_EQ(b.Faltas("IGLES11::Materialfv"), 0u);
+  const auto* material =
+      EstadoDoIgles11()->ParametroDeMaterial(GL_FRONT_AND_BACK, kGlDiffuse);
+  ASSERT_NE(material, nullptr);
+  EXPECT_EQ(material->size(), 4u);
+  EXPECT_FLOAT_EQ((*material)[1], 0.5f);
+}
+
+TEST(FrenteIgl2, OShininessLeUMValorENaoQuatro) {
+  // O TANTO DE COMPONENTES VEM DO `pname`: o `GL_SHININESS` e UM escalar, e o
+  // gof/pbc pedem-no com o escalar em 0x8007fefc-0x8007feec. Ler sempre quatro
+  // valores (o que o `kIgl_Lightxv` faz hoje) lia 12 bytes que o titulo nunca
+  // escreveu. O teste poe um valor no primeiro lugar e um VENENO nos tres
+  // seguintes: se o motor lesse quatro, o veneno aparecia no estado.
+  BancoClasses b;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+  const std::uint32_t escalar = 0x0002E200u;
+  b.mem.Escrever32(escalar, Real(12.0f));
+  for (int k = 1; k < 4; ++k) b.mem.Escrever32(escalar + 4u * k, Real(999.0f));
+
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, GL_FRONT_AND_BACK);
+  b.cpu.Set(kR2, kGlShininess);
+  b.cpu.Set(kR3, escalar);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Materialfv, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  const auto* sh = EstadoDoIgles11()->ParametroDeMaterial(GL_FRONT_AND_BACK, kGlShininess);
+  ASSERT_NE(sh, nullptr);
+  ASSERT_EQ(sh->size(), 1u);
+  EXPECT_FLOAT_EQ((*sh)[0], 12.0f);
+}
+
+TEST(FrenteIgl2, OOrthofLeOsTresUltimosNaPilhaDoIgles11) {
+  // A MOLDURA: `Orthof(iname *pMe, l, r, b, t, n, f)`. O `pMe` em r0 desloca
+  // tudo: l, r, b em r1..r3 e t, n, f em [sp], [sp+4], [sp+8]. Uma moldura
+  // errada daria uma matriz PLAUSIVEL e um desenho errado sem sintoma, por isso
+  // o teste fixa os seis numeros e a matriz que eles produzem.
+  BancoClasses b;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, GL_PROJECTION);
+  AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_MatrixMode, b.traco);
+  AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_LoadIdentity, b.traco);
+  EXPECT_EQ(EstadoDoIgles11()->ModoDeMatriz(), kModoProjection);
+
+  b.mem.Escrever32(kPilhaDoTeste, Real(240.0f));      // top
+  b.mem.Escrever32(kPilhaDoTeste + 4u, Real(0.0f));   // near
+  b.mem.Escrever32(kPilhaDoTeste + 8u, Real(1.0f));   // far
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, Real(0.0f));    // left
+  b.cpu.Set(kR2, Real(320.0f));  // right
+  b.cpu.Set(kR3, Real(0.0f));    // bottom
+  b.cpu.Set(kSP, kPilhaDoTeste);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Orthof, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  EXPECT_EQ(b.Faltas("IGLES11::Orthof"), 0u);
+
+  // A matriz do `glOrtho(0, 320, 0, 240, 0, 1)`, column-major, na conta do GL:
+  //   2/(r-l) = 2/320 | 2/(t-b) = 2/240 | -2/(f-n) = -2
+  //   -(r+l)/(r-l) = -1 | -(t+b)/(t-b) = -1 | -(f+n)/(f-n) = -1
+  const float* m = EstadoDoIgles11()->MatrizCorrente();
+  EXPECT_FLOAT_EQ(m[0], 2.0f / 320.0f);
+  EXPECT_FLOAT_EQ(m[5], 2.0f / 240.0f);
+  EXPECT_FLOAT_EQ(m[10], -2.0f);
+  EXPECT_FLOAT_EQ(m[12], -1.0f);
+  EXPECT_FLOAT_EQ(m[13], -1.0f);
+  EXPECT_FLOAT_EQ(m[14], -1.0f);
+  EXPECT_FLOAT_EQ(m[15], 1.0f);
+  // E o resto e zero: uma matriz plausivel com lixo nas outras celulas tambem
+  // desenharia "quase" bem.
+  EXPECT_FLOAT_EQ(m[1], 0.0f);
+  EXPECT_FLOAT_EQ(m[4], 0.0f);
+  EXPECT_FLOAT_EQ(m[11], 0.0f);
+}
+
+TEST(FrenteIgl2, UmPnameForaDaTabelaRecusaComOValorDeleERecusaEscrever) {
+  BancoClasses b;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, kGlLight0);
+  b.cpu.Set(kR2, 0x00007777u);  // nao esta no cabecalho do SDK
+  b.cpu.Set(kR3, 0x0002E100u);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Lightfv, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("IGLES11::Lightfv"), 1u);
+  // A recusa DIZ o valor que nao soube servir: sem isso nao se sabe o que fazer.
+  EXPECT_NE(b.Detalhe("IGLES11::Lightfv").find("0x00007777"), std::string::npos);
+  // E nao escreveu estado nenhum (um "quase" seria pior do que a recusa).
+  EXPECT_EQ(EstadoDoIgles11()->ParametroDeLuz(kGlLight0, 0x00007777u), nullptr);
+
+  // O vector de parametros nulo tambem recusa (e nao le a memoria do endereco 0).
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, kGlLight0);
+  b.cpu.Set(kR2, kGlAmbient);
+  b.cpu.Set(kR3, 0u);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Lightfv, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("IGLES11::Lightfv"), 2u);
+}
+
+TEST(FrenteIgl2, AsDuasCapacidadesSemNomePassamATerNome) {
+  BancoClasses b;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, kGlRescaleNormal);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Enable, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  EXPECT_EQ(b.Faltas("IGLES11::Enable"), 0u);
+  EXPECT_TRUE(EstadoDoIgles11()->InterruptorLigado(kGlRescaleNormal));
+
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, kGlColorMaterial);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Disable, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  EXPECT_EQ(b.Faltas("IGLES11::Disable"), 0u);
+  EXPECT_FALSE(EstadoDoIgles11()->InterruptorLigado(kGlColorMaterial));
+
+  // A TABELA NAO VIROU UM "ACEITA TUDO": o que nao tem nome continua a recusar,
+  // e a recusa tem nome de metodo.
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, 0x00001234u);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Enable, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("IGLES11::Enable"), 1u);
+}
+
+TEST(FrenteIgl2, OMapaNovoServeOsSlotsQueFaltavamEOLerDaPilhaContinuaCerto) {
+  // A OUTRA METADE da frente: os slots do IGLES11 que faltavam no mapa e que o
+  // motor JA servia. Sem eles a recusa era `IGLES11::Scalex` / `Scissor` /
+  // `GetIntegerv` / `BlendFunc` / `Color4x` -- os pedidos MEDIDOS em gof, pbc,
+  // rmp, pacmania, ridgeracer e peggle.
+  BancoClasses b;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+
+  // Scalex(1, 1, 1) em GLfixed, depois da identidade: a diagonal fica em 1.
+  b.cpu.Set(kR0, kObjetoIgles);
+  AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_LoadIdentity, b.traco);
+  b.cpu.Set(kR1, Fixo(1.0f));
+  b.cpu.Set(kR2, Fixo(1.0f));
+  b.cpu.Set(kR3, Fixo(1.0f));
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Scalex, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  EXPECT_EQ(b.Faltas("IGLES11::Scalex"), 0u);
+  EXPECT_FLOAT_EQ(EstadoDoIgles11()->MatrizCorrente()[0], 1.0f);
+
+  // Scissor(1, 2, 3, 4): o QUARTO argumento real vem da pilha.
+  b.mem.Escrever32(kPilhaDoTeste, 4u);
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, 1u);
+  b.cpu.Set(kR2, 2u);
+  b.cpu.Set(kR3, 3u);
+  b.cpu.Set(kSP, kPilhaDoTeste);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Scissor, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  EXPECT_EQ(b.Faltas("IGLES11::Scissor"), 0u);
+  const auto* scissor = EstadoDoIgles11()->Parametro(kIgl_Scissor, 0u);
+  ASSERT_NE(scissor, nullptr);
+  ASSERT_EQ(scissor->size(), 4u);
+  EXPECT_EQ((*scissor)[3], 4u);
+
+  // Color4x(1, 0, 0, 1): tambem quatro argumentos reais, o quarto na pilha.
+  b.mem.Escrever32(kPilhaDoTeste, Fixo(1.0f));
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, Fixo(1.0f));
+  b.cpu.Set(kR2, Fixo(0.0f));
+  b.cpu.Set(kR3, Fixo(0.0f));
+  b.cpu.Set(kSP, kPilhaDoTeste);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Color4x, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  EXPECT_EQ(EstadoDoIgles11()->Cor(), 0xFF0000FFu);  // RGBA8: R=FF A=FF
+
+  // VertexPointer(3, GL_FIXED, 0, ponteiro): o quarto (o ponteiro) na pilha.
+  b.mem.Escrever32(kPilhaDoTeste, 0x0002F000u);
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, 3u);
+  b.cpu.Set(kR2, GL_FIXED);
+  b.cpu.Set(kR3, 0u);
+  b.cpu.Set(kSP, kPilhaDoTeste);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_VertexPointer, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  const ArrayDeVertices* a = EstadoDoIgles11()->Array(GL_VERTEX_ARRAY);
+  ASSERT_NE(a, nullptr);
+  EXPECT_EQ(a->ponteiro, 0x0002F000u);
+
+  // GetIntegerv(GL_MAX_MODELVIEW_STACK_DEPTH) e BlendFunc: dois argumentos.
+  const std::uint32_t destino = 0x0002E300u;
+  b.mem.Escrever32(destino, 0u);
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, GL_MAX_MODELVIEW_STACK_DEPTH);
+  b.cpu.Set(kR2, destino);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_GetIntegerv, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  EXPECT_EQ(b.mem.Ler32(destino), kFundoModelView);
+
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, GL_SRC_ALPHA);
+  b.cpu.Set(kR2, GL_ONE_MINUS_SRC_ALPHA);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_BlendFunc, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  const auto* bf = EstadoDoIgles11()->Parametro(kIgl_BlendFunc, 0u);
+  ASSERT_NE(bf, nullptr);
+  EXPECT_EQ((*bf)[0], GL_SRC_ALPHA);
 }
 
 }  // namespace
