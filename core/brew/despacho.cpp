@@ -56,6 +56,11 @@ constexpr int kOrcamentoSegundos = 25;
 // alguem ler isto.
 constexpr std::uint32_t kAmostrasDeMidiaPorMs = zb2::brew::Media::kAmostrasPorMs;
 constexpr std::uint32_t kSlotIdStrlen = 1503, kSlotIdMemset = 1504, kSlotIdStrcpy = 1505;
+// `strcat` (0x00C) e `sleep` (0x184) da `AEEHelperFuncs`. Sao as duas ajudantes
+// que MAIS TITULOS pediam depois desta ronda: `strcat` em 10 dos 62 e `sleep` em
+// 9. A medida que conta e TITULOS AFECTADOS, e nao pedidos -- o `IFile::Read`
+// tinha 70 pedidos e era UM titulo so (`allstarcards`).
+constexpr std::uint32_t kSlotIdStrcat = 1568, kSlotIdSleep = 1569;
 constexpr std::uint32_t kSlotIdMemmove = 1506, kSlotIdStrcmp = 1507, kSlotIdStrchr = 1508;
 constexpr std::uint32_t kSlotIdStrtowstr = 1500, kSlotIdGetAeeVersion = 1501,
                        kSlotIdAeeGetRand = 1502;
@@ -98,6 +103,8 @@ constexpr std::uint32_t kSlotDbgPrintf = brew_ajudantes::kAjudante_dbgprintf;
 constexpr std::uint32_t kSlotStrlen = brew_ajudantes::kAjudante_strlen;
 constexpr std::uint32_t kSlotMemset = brew_ajudantes::kAjudante_memset;
 constexpr std::uint32_t kSlotStrcpy = brew_ajudantes::kAjudante_strcpy;
+constexpr std::uint32_t kSlotStrcat = brew_ajudantes::kAjudante_strcat;
+constexpr std::uint32_t kSlotSleep = brew_ajudantes::kAjudante_sleep;
 constexpr std::uint32_t kSlotStrcmp = brew_ajudantes::kAjudante_strcmp;
 constexpr std::uint32_t kSlotStrchr = brew_ajudantes::kAjudante_strchr;
 constexpr std::uint32_t kSlotMemmove = brew_ajudantes::kAjudante_memmove;
@@ -292,6 +299,8 @@ void Despacho::InstalarAjudantes(const Saidas& saidas, Endereco tabela) {
       {kSlotStrlen, kSlotIdStrlen},
       {kSlotMemset, kSlotIdMemset},
       {kSlotStrcpy, kSlotIdStrcpy},
+      {kSlotStrcat, kSlotIdStrcat},
+      {kSlotSleep, kSlotIdSleep},
       {kSlotStrcmp, kSlotIdStrcmp},
       {kSlotStrchr, kSlotIdStrchr},
       {kSlotMemmove, kSlotIdMemmove},
@@ -762,6 +771,42 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           ++i;
         }
         cpu.Set(kR0, r0);
+      } else if (idx == kSlotIdStrcat) {
+        // `char *strcat(char *dst, const char *src)` -- AEEHelperFuncs 0x00C
+        // (`tools/ajudantes_slots.inc:157`). Devolve o `dst`, como a libc.
+        //
+        // Pedido por DEZ dos 62 titulos -- a ajudante em falta que mais titulos
+        // afectava. Nao e uma funcao "avancada": e `strcat`, e faltava.
+        const std::uint32_t src = cpu.Get(kR1);
+        std::uint32_t fim = 0;
+        while (mem_.Ler8(r0 + fim) != 0) ++fim;  // o NUL do destino
+        std::uint32_t i = 0;
+        for (;;) {
+          const std::uint8_t b = mem_.Ler8(src + i);
+          mem_.Escrever8(r0 + fim + i, b);
+          if (b == 0) break;
+          ++i;
+        }
+        cpu.Set(kR0, r0);
+      } else if (idx == kSlotIdSleep) {
+        // `void sleep(uint32 msecs)` -- AEEHelperFuncs 0x184
+        // (`tools/ajudantes_slots.inc:251`). Pedido por NOVE dos 62.
+        //
+        // NAO DORME, E ISSO E DE PROPOSITO. Dormir de verdade seria parar o
+        // relogio do anfitriao dentro de uma medicao -- viola o P4 pelo mesmo
+        // motivo que o orcamento por relogio violava (ver `despacho.cpp` no
+        // `Correr`, e o `kOrcamentoSegundos` que foi apagado). O tempo do
+        // emulador e o VIRTUAL, e quem o avanca e o laco de eventos.
+        //
+        // O que se faz e AVANCAR O RELOGIO VIRTUAL pelos milissegundos pedidos,
+        // que e o que o guest observa a seguir se chamar `GetUpTimeMS`. Assim um
+        // `sleep(100)` num laco de espera termina, em vez de rodar para sempre.
+        // Um tecto para o avanco: um `sleep` com um valor absurdo (lixo num
+        // registador) nao pode empurrar o relogio virtual para o fim do mundo e
+        // fazer vencer todos os temporizadores de uma vez.
+        constexpr std::uint32_t kTectoMs = 60000;  // um minuto virtual
+        agora_ms_ += (r0 > kTectoMs) ? kTectoMs : r0;
+        cpu.Set(kR0, 0);
       } else if (idx == kSlotIdStrcmp) {
         const std::uint32_t a2 = r0, b2 = cpu.Get(kR1);
         std::uint32_t i = 0;

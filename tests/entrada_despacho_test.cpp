@@ -426,4 +426,68 @@ TEST(SetColor, BrancoEVermelhoNaoDaoOMesmoPixel) {
   EXPECT_EQ(Tela::RgbvalPara565(0x00000000u), 0x0000u);  // preto
 }
 
+TEST(Ajudantes, OStrcatJuntaNoFimEDevolveODestino) {
+  // `char *strcat(char *dst, const char *src)` -- AEEHelperFuncs 0x00C.
+  // Faltava, e era a ajudante que MAIS TITULOS pediam: 10 dos 62.
+  Bancada b;
+  constexpr std::uint32_t kDst = 0x80210000u, kSrc = 0x80210100u;
+  const char* a = "abc";
+  const char* c = "de";
+  for (std::uint32_t i = 0; i <= 3; ++i) b.Mem().Escrever8(kDst + i, static_cast<std::uint8_t>(a[i]));
+  for (std::uint32_t i = 0; i <= 2; ++i) b.Mem().Escrever8(kSrc + i, static_cast<std::uint8_t>(c[i]));
+  // Uma sentinela logo a seguir ao que devia ser escrito: "abcde" + NUL = 6 bytes.
+  b.Mem().Escrever8(kDst + 6, 0x7Eu);
+
+  EXPECT_EQ(b.ChamaSaida(1568, kDst, kSrc), kDst) << "strcat devolve o destino";
+  std::string saiu;
+  for (std::uint32_t i = 0; i < 6; ++i) {
+    const std::uint8_t ch = b.Mem().Ler8(kDst + i);
+    if (ch == 0) break;
+    saiu.push_back(static_cast<char>(ch));
+  }
+  EXPECT_EQ(saiu, "abcde");
+  EXPECT_EQ(b.Mem().Ler8(kDst + 5), 0u) << "tem de terminar em NUL";
+  EXPECT_EQ(b.Mem().Ler8(kDst + 6), 0x7Eu) << "e nao escrever para la do NUL";
+}
+
+TEST(Ajudantes, OSleepAvancaORelogioVirtualENaoDormeDeVerdade) {
+  // `void sleep(uint32 msecs)` -- AEEHelperFuncs 0x184, pedido por 9 dos 62.
+  //
+  // NAO pode dormir: parar o relogio do anfitriao dentro de uma medicao viola o
+  // P4, pelo mesmo motivo que o orcamento por relogio violava. O que avanca e o
+  // tempo VIRTUAL -- o mesmo que o `aee_GetUpTimeMS` devolve.
+  Bancada b;
+  const std::uint32_t antes = b.ChamaSaida(1540, 0);  // kSlotIdGetUpTime
+  b.ChamaSaida(1569, 250);                            // sleep(250)
+  EXPECT_EQ(b.ChamaSaida(1540, 0), antes + 250) << "o relogio virtual tem de andar";
+
+  // O TECTO: um valor absurdo nao pode empurrar o relogio para o fim do mundo e
+  // fazer vencer todos os temporizadores de uma vez.
+  const std::uint32_t meio = b.ChamaSaida(1540, 0);
+  b.ChamaSaida(1569, 0xFFFFFFFFu);
+  EXPECT_EQ(b.ChamaSaida(1540, 0), meio + 60000u) << "um minuto virtual e o tecto";
+}
+
+TEST(Ajudantes, OStrcatEOSleepESTAOCABLADOSNaTabelaDoModulo) {
+  // O TESTE ANTERIOR NAO CHEGAVA, e isso ficou provado: `ChamaSaida(1568, ...)`
+  // entra no ramo do despacho DIRECTAMENTE e nunca passa pela tabela
+  // `AEEHelperFuncs`. Arranquei a ligacao e os dois testes continuaram VERDES --
+  // testavam a implementacao, e o que faltava era a CABLAGEM.
+  //
+  // O modulo nao chama 1568: chama o endereco que esta em `tabela + 0x00C`. Se
+  // esse endereco for o do stub que recusa, a implementacao existe e nao serve
+  // para nada -- que e exactamente o sintoma que o projecto ja apanhou uma vez
+  // ("falta SetTimer" com o SetTimer escrito e a funcionar).
+  Bancada b;
+  EXPECT_EQ(b.Mem().Ler32(kTabela + 0x00C), b.S().Endereco(1568))
+      << "AEEHelperFuncs[0x00C] (strcat) nao aponta para a implementacao";
+  EXPECT_EQ(b.Mem().Ler32(kTabela + 0x184), b.S().Endereco(1569))
+      << "AEEHelperFuncs[0x184] (sleep) nao aponta para a implementacao";
+
+  // E a prova de que a tabela e mesmo a que o guest le: um ajudante que JA estava
+  // cablado antes desta mudanca continua cablado (nao partimos nada ao lado).
+  EXPECT_EQ(b.Mem().Ler32(kTabela + 0x008), b.S().Endereco(1505))
+      << "strcpy (0x008) perdeu a cablagem";
+}
+
 }  // namespace zb2::brew
