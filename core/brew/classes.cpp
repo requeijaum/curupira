@@ -890,6 +890,12 @@ std::uint32_t SlotIglesNoIgl(std::uint32_t slot) {
     // torkandkral. O id devolvido e INTERNO ao motor (`igl.h`, acima dos 80
     // slots): nao ha slot nenhum na vtable do IGL para estes tres, e escrever
     // um numero a mao na tabela gerada era afirmar uma vtable que nao existe.
+    // O `DrawArrays` (54) e a MESMA falta de mapa do `AlphaFunc`: o motor do IGL
+    // de 80 slots ja o tem (`kIgl_DrawArrays`, 26) e o IGLES11 nao tinha
+    // caminho nenhum para ele. MEDIDO: 3914 pedidos no `abd` e 2117 no
+    // `torkandkral`, e os dois titulos com ZERO pixels na corrida inteira; com
+    // esta linha, 107 750 948 e 107 740 737 pixels, 0 regressoes.
+    case igles_slots::kIgles_DrawArrays: return gl_slots::kIgl_DrawArrays;  // 54
     case igles_slots::kIgles_Lightfv: return kIgl_Lightfv;  // 14
     case igles_slots::kIgles_Materialfv: return kIgl_Materialfv;  // 18
     case igles_slots::kIgles_Orthof: return kIgl_Orthof;  // 22

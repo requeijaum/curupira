@@ -1309,6 +1309,91 @@ TEST(FrenteIgl2, OMapaNovoServeOsSlotsQueFaltavamEOLerDaPilhaContinuaCerto) {
   EXPECT_EQ(EstadoDoIgles11()->MisturaFonte(), GL_SRC_ALPHA);
   EXPECT_EQ(EstadoDoIgles11()->MisturaDestino(), GL_ONE_MINUS_SRC_ALPHA);
 }
+// ---------------------------------------------------------------------------
+// 8. O `IGLES11::DrawArrays` -- a mesma falta de mapa, e a que DESENHA
+// ---------------------------------------------------------------------------
+//
+// MEDIDO na corrida de referencia (`ZB2_QUADROS=300 ZB2_EVT_START=1`, 62
+// titulos): o `IGLES11::DrawArrays` (slot 54 de `tools/igles_slots.inc`) e
+// pedido 3914x pelo `abd` e 2117x pelo `torkandkral`, e nos DOIS ele e recusado
+// pelo mapa (`SlotIglesNoIgl` nao tem a entrada). Os dois titulos ficam com
+// ZERO pixels em toda a corrida. E exactamente o mesmo defeito do `AlphaFunc`:
+// um metodo que existe no motor do IGL de 80 slots (`kIgl_DrawArrays`, 26) e
+// que nao tem caminho nenhum a partir do IGLES11.
+//
+// MEDICAO ISOLADA, so com esta linha do mapa (1 linha + este teste):
+//
+//     REGRESSOES 0 | abd pixels 0 -> 107 750 948 | torkandkral 0 -> 107 740 737
+//     faltas IGLES11::DrawArrays 3914 -> 0 e 2117 -> 0, e NADA mais mudou
+//
+// O TESTE ENTRA PELA TABELA (o endereco do slot 54 lido da vtable escrita na
+// memoria do guest), e exige as duas metades: o metodo SERVIDO e os seis pixels
+// na Tela -- "nao ha falta" tambem e o que se le de uma recusa por outro motivo.
+
+TEST(FrenteMapaDoIgles, ODrawArraysDoIglesServeEDesenhaPelaTabela) {
+  BancoClasses b;
+  Tela tela;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+  const_cast<Igl*>(EstadoDoIgles11())->DefinirTela(&tela);
+
+  const std::uint32_t entrada =
+      b.saidas.Endereco(kVtableIgles) + 4u * igles_slots::kIgles_DrawArrays;
+  const std::uint32_t alvo = b.mem.Ler32(entrada);
+  std::uint32_t indice = 0;
+  ASSERT_TRUE(b.saidas.Contem(alvo, &indice)) << "entrada 0x" << std::hex << entrada;
+  EXPECT_EQ(indice, kVtableIgles + igles_slots::kIgles_DrawArrays);
+
+  constexpr std::uint32_t kV = 0x0002F100u;
+  b.mem.Escrever32(kPilhaDoTeste, 8u);  // Viewport(0, 0, 8, 8): a altura na pilha
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, 0u);
+  b.cpu.Set(kR2, 0u);
+  b.cpu.Set(kR3, 8u);
+  b.cpu.Set(kSP, kPilhaDoTeste);
+  ASSERT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Viewport, b.traco));
+
+  const float v[3][2] = {{-1.0f, 0.75f}, {-1.0f, 0.0f}, {0.0f, 0.0f}};
+  for (std::uint32_t k = 0; k < 3u; ++k) {
+    b.mem.Escrever32(kV + 8u * k, Real(v[k][0]));
+    b.mem.Escrever32(kV + 8u * k + 4u, Real(v[k][1]));
+  }
+  b.mem.Escrever32(kPilhaDoTeste, kV);
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, 2u);
+  b.cpu.Set(kR2, GL_FLOAT);
+  b.cpu.Set(kR3, 8u);
+  b.cpu.Set(kSP, kPilhaDoTeste);
+  ASSERT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_VertexPointer, b.traco));
+  ASSERT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, GL_VERTEX_ARRAY);
+  ASSERT_TRUE(
+      AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_EnableClientState, b.traco));
+  ASSERT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+
+  b.mem.Escrever32(kPilhaDoTeste, Fixo(1.0f));
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, Fixo(1.0f));
+  b.cpu.Set(kR2, Fixo(0.0f));
+  b.cpu.Set(kR3, Fixo(0.0f));
+  b.cpu.Set(kSP, kPilhaDoTeste);
+  ASSERT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Color4x, b.traco));
+  ASSERT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+
+  // DrawArrays(GL_TRIANGLES, 0, 3): TRES argumentos reais, nenhum na pilha.
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, GL_TRIANGLES);
+  b.cpu.Set(kR2, 0u);
+  b.cpu.Set(kR3, 3u);
+  ASSERT_TRUE(AtenderClasse(b.cpu, indice, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess) << b.Detalhe("IGLES11::DrawArrays");
+  EXPECT_EQ(b.Faltas("IGLES11::DrawArrays"), 0u) << b.Detalhe("IGLES11::DrawArrays");
+  EXPECT_EQ(EstadoDoIgles11()->Desenhos(), 1u);
+  EXPECT_EQ(EstadoDoIgles11()->Vertices(), 3u);
+  EXPECT_EQ(tela.Escritos(), 6u) << "os seis fragmentos do triangulo foram escritos";
+  EXPECT_EQ(EstadoDoIgles11()->RasterizadorRef().FragmentosDescartados(), 0u);
+}
 
 // ---------------------------------------------------------------------------
 // 7. A FRENTE alphafunc: o `IGLES11::AlphaFunc`, a variante `float`
