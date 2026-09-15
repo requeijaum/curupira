@@ -93,7 +93,16 @@ constexpr std::uint32_t kSentinela = 0xFFFFFFF0u;
 // caber em `Saidas::quantos` (100000, acima): um endereco de saida fora da faixa
 // nunca e reconhecido, e o modulo atenderia zero chamadas em silencio.
 constexpr std::uint32_t kBaseDasEntradas = 20000;
-constexpr std::uint64_t kLimite = 4000000ull;
+// O TECTO PREDEFINIDO, quando o corpus nao declara `max_steps` para o titulo.
+//
+// MEDIDO porque 4 000 000 nao chegavam: o `quake2brew` precisa de 5 932 075 passos
+// so para a CARGA (a zeragem da ZI/BSS do proprio modulo sao 1 947 556 iteracoes
+// de tres instrucoes, campo +0x24 do cabecalho = 0x0076de90 bytes). Com 4M ficava
+// `vtable: false` e parecia um defeito de carregador -- e era orcamento curto.
+// Comprovado por segunda ferramenta: `zb2_sonda_mod <mod> 50000000` diz
+// "MALLOC(36) apos 5932046 instrucoes". As referencias dao muito mais folga
+// (zeebulator 64M em `game_probe.cpp:418`, zeemu 500M).
+constexpr std::uint64_t kLimite = 8000000ull;
 
 // QUANTOS QUADROS DO LACO DE EVENTO CORRER DEPOIS DO `CreateInstance`.
 //
@@ -139,7 +148,12 @@ constexpr int kEventosPorOmissao = 1;
 // do titulo. Sem isto, um titulo que acorda faz a bateria deixar de servir para
 // medir os outros 61 -- e um instrumento que deixa de se poder correr e um
 // instrumento morto.
-constexpr int kOrcamentoSegundos = 25;
+// NAO HA ORCAMENTO POR RELOGIO, de proposito. A constante que aqui estava
+// (`kOrcamentoSegundos = 25`) nunca foi usada -- `grep` so a encontrava a si
+// propria. Reintroduzi-la seria violar o P4 (determinismo por construcao): o
+// mesmo binario com a mesma entrada tem de dar o mesmo resultado numa maquina
+// carregada e numa maquina vazia. O orcamento e em PASSOS, por titulo
+// (`Titulo::max_steps`) ou pelo `kLimite` acima. Ver `despacho.cpp:393`.
 // Os slots da tabela comecam neste indice da faixa de saida. Abaixo dele ficam
 // os servicos tratados (malloc, free, AddRef, Release).
 constexpr std::uint32_t kBaseDoSlot = 1000;
@@ -375,6 +389,14 @@ struct Titulo {
   std::string pasta;
   std::string mod;
   std::string clsid;
+  // O TECTO DE PASSOS QUE O CORPUS DECLARA PARA ESTE TITULO, quando o declara.
+  //
+  // Zero = usar o `kLimite` da bateria. O campo existia no `corpus62.json` desde
+  // sempre (o `cnk2` pede 186 486 543 e o `fifa09` 483 295 456) e a ferramenta
+  // IGNORAVA-O: o `cnk2` recebia 2,1% do que pedia. Um tecto por titulo mantem o
+  // determinismo (e passos, nao relogio -- ver o P4 em `despacho.cpp:393`) e
+  // deixa de fazer a carga de um titulo grande parecer um defeito de carregador.
+  std::uint64_t max_steps = 0;
 };
 
 std::vector<Evento> dm_eventos;  // eventos do ultimo titulo, para os detalhes
@@ -430,6 +452,17 @@ std::vector<Titulo> LerCorpus(const std::string& caminho) {
     t.pasta = valor("\"folder\"", p);
     t.mod = valor("\"mod\"", p);
     t.clsid = valor("\"clsid_hex\"", p);
+    // `max_steps` e um NUMERO, e nao uma cadeia: nao passa pelo `valor` acima,
+    // que procura aspas. Le-se so dentro deste objecto -- o `fim` e a chaveta
+    // que fecha, senao um titulo sem campo apanhava o do titulo seguinte.
+    {
+      const size_t fim = s.find('}', p);
+      const size_t k = s.find("\"max_steps\"", p);
+      if (k != std::string::npos && (fim == std::string::npos || k < fim)) {
+        const size_t d = s.find(':', k);
+        if (d != std::string::npos) t.max_steps = std::strtoull(s.c_str() + d + 1, nullptr, 10);
+      }
+    }
     if (!t.pasta.empty() && !t.mod.empty()) out.push_back(t);
     p += 8;
   }
@@ -456,6 +489,11 @@ int g_eventos = kEventosPorOmissao;
 bool g_trace = false;
 
 Estado Medir(const Titulo& t, const std::string& dir) {
+  // O TECTO DESTE TITULO: o que o corpus declara, ou o predefinido. Uma so
+  // variavel para as quatro fases (carga, create, evento, quadros), porque um
+  // tecto diferente por fase faria o mesmo titulo ter dois orcamentos e ninguem
+  // saberia qual deles esgotou.
+  const std::uint64_t limite = (t.max_steps > 0) ? t.max_steps : kLimite;
   Estado e;
   bool ok = false;
   const std::vector<std::uint8_t> imagem = Ler(dir + "/" + t.pasta + "/" + t.mod + ".mod", &ok);
@@ -685,7 +723,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   cpu.Set(kR2, kPPMod);
   cpu.Set(kLR, kSentinela);
   {
-    const zb2::brew::ResultadoFase r = g_despacho->Correr(cpu, kLimite, kPPMod);
+    const zb2::brew::ResultadoFase r = g_despacho->Correr(cpu, limite, kPPMod);
     e.passos_carga = r.passos;
     e.motivo = r.motivo;
   }
@@ -738,7 +776,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   cpu.Set(kLR, kSentinela);
   std::string motivo_create;
   {
-    const zb2::brew::ResultadoFase r = g_despacho->Correr(cpu, kLimite, kPPObj);
+    const zb2::brew::ResultadoFase r = g_despacho->Correr(cpu, limite, kPPObj);
     e.passos_create = r.passos;
     motivo_create = r.motivo;
   }
@@ -800,7 +838,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
       cpu.Set(kR3, kAppStart);  // dwp = AEEAppStart*
       cpu.Set(kLR, kSentinela);
       cpu.Set(kPC, handle_event);
-      const zb2::brew::ResultadoFase re = g_despacho->Correr(cpu, kLimite, kPPObj);
+      const zb2::brew::ResultadoFase re = g_despacho->Correr(cpu, limite, kPPObj);
       e.passos_start = re.passos;  // a fase do arranque, contada
       e.motivo += " | start:" + re.motivo;
       ++eventos_dados;
@@ -816,7 +854,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   int quadros_corridos = 0;
   for (int q = 0; q < g_quadros; ++q) {
     if (!g_despacho->PrepararCallbackDoTemporizador(cpu)) break;  // o laco acabou
-    const zb2::brew::ResultadoFase rq = g_despacho->Correr(cpu, kLimite, kPPObj);
+    const zb2::brew::ResultadoFase rq = g_despacho->Correr(cpu, limite, kPPObj);
     ++quadros_corridos;
     if (rq.motivo != "retornou") {
       e.motivo += " | quadro:" + rq.motivo;
