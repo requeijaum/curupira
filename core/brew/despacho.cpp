@@ -1053,6 +1053,22 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
   std::uint32_t recusas_seguidas = 0;
   std::uint32_t saidas = 0;
   bool continuar_no_laco = false;
+  // A THREAD COOPERATIVA (frente thrd), corrida POR ESTA INVOCACAO:
+  //
+  //   `tinha_pendente`  -- uma thread JA estava pendente antes da chamada de
+  //                        API que esta a ser servida? (a fronteira posterior
+  //                        ao Start e a segunda regra de retomada; a primeira,
+  //                        para a thread recem-criada, usa o pfn capturado)
+  //   `thread_a_correr` -- esta invocacao retomou uma thread; quando o pc cair
+  //                        na sentinela, e ela que voltou, e nao o guest
+  //   `hospedeiro`      -- o contexto do guest (r0..r15) salvo no retomar, para
+  //                        repor quando a thread ceder ou terminar
+  bool tinha_pendente = TemThreadPendente();
+  bool thread_a_correr = false;
+  // O pfn do `Start` acabado de despachar nesta mesma iteracao (0 = nenhum).
+  // Capturado no ramo do despacho, lido e reposto no epilogo.
+  std::uint32_t pfn_do_ultimo_start = 0;
+  std::uint32_t hospedeiro[16] = {};
   while (resultado.passos < limite) {
     // O ORCAMENTO DE TEMPO, verificado a cada 65536 passos.
     //
@@ -1078,6 +1094,19 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
       // o retorno de um callback de temporizador. Distinguir os dois e o que
       // permite o laco de eventos -- sem isto, o primeiro callback do jogo
       // seria lido como "o modulo retornou".
+      //
+      // TEM UM TERCEIRO, desta frente (thrd): a THREAD que esta invocacao
+      // retomou voltou a sentinela -- por `Suspend` (cede a vez), por `Exit`
+      // (encerra) ou porque a funcao de entrada voltou sem passar por nenhum
+      // (e o rv e o r0; quem o decide e o `ConcluirRetomadaDeThread`). Fecha a
+      // corrida e REPOE O GUEST onde ficou, a meio da fronteira entre chamadas
+      // de API.
+      if (thread_a_correr) {
+        ConcluirRetomadaDeThread(cpu, traco_);
+        thread_a_correr = false;
+        for (std::uint32_t k = 0; k <= kPC; ++k) cpu.Set(k, hospedeiro[k]);
+        continue;
+      }
       if (continuar_no_laco) { continuar_no_laco = false; continue; }
       resultado.motivo = "retornou";
       return resultado;
@@ -1089,6 +1118,16 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
       // Esta saida RECUSOU? Os ramos de recusa marcam-no; o epilogo do bloco
       // usa-o para decidir se a sequencia de recusas recomeca.
       bool recusou_agora = false;
+      // FRENTE thrd: captura o pfn ANTES de o `AtenderClasse` servir o Start
+      // (r2 ainda e o terceiro argumento). E o que permite a fronteira decidir
+      // se a thread recem-criada corre ali mesmo, sem desenhar o interior da
+      // classe neste ficheiro. Um pfn fora da faixa do modulo nao e uma thread
+      // do titulo (os testes do contrato passam `Start` com pfn de LIXO, de
+      // proposito) -- essa fica pendente como dantes.
+      if (idx == VtClasse(static_cast<std::uint32_t>(Classe::kThread)) +
+                  brew_slots::kThread_Start) {
+        pfn_do_ultimo_start = cpu.Get(kR2);
+      }
       if (idx == 0) {
         cpu.Set(kR0, al_.Malloc(r0));
       } else if (idx == 1) {
@@ -1480,6 +1519,31 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           std::snprintf(det, sizeof(det), "%s cabem=%u -> %u", item_servido->nome, cabem,
                         item_servido->bytes);
           traco_.Emitir(Area::Brew, Nivel::Depuracao, "ISHELL_GETDEVICEINFOEX", det);
+        }
+      } else if (idx == kBaseDoShell + brew_slots::kShell_Resume) {
+        // ISHELL_Resume -- IShell slot 36. `int Resume(IShell*, AEECallback* pcb)`
+        // (AEEIShell.h, INHERIT_IShell). E O MECANISMO das threads cooperativas:
+        // o jogo pede a retomada por aqui, e so entao a thread suspensa tem como
+        // voltar (`classes.h`, `EnfileirarThreadPeloCallbackDeRetomada`; zeebx
+        // `shell_resume`). Quando o `pcb` e o `GetResumeCBK` de uma thread, a
+        // thread e ENFILEIRADA e o despacho retoma-a na proxima fronteira entre
+        // chamadas de API. Um `pcb` que nao seja de thread nao tem fila de
+        // callbacks genericos neste despacho -- RECUSA COM NOME, em vez de
+        // prometer um callback que nunca corre (P2).
+        //
+        // O VALOR devolvido ao guest e SUCCESS (o zeebx devolve-o); o cabecalho
+        // nao documenta outro.
+        const std::uint32_t pcb = cpu.Get(kR1);
+        if (EnfileirarThreadPeloCallbackDeRetomada(pcb)) {
+          cpu.Set(kR0, kAeeSuccess);
+          char det[64];
+          std::snprintf(det, sizeof(det), "pcb=0x%08x enfileirada", pcb);
+          traco_.Emitir(Area::Brew, Nivel::Depuracao, "ISHELL_RESUME", det);
+        } else {
+          char det[64];
+          std::snprintf(det, sizeof(det), "pcb=0x%08x nao e de thread", pcb);
+          traco_.RegistarFalta(Area::Brew, "IShell::Resume", det);
+          cpu.Set(kR0, kAeeUnsupported);
         }
       } else if (idx == kBaseDoShell + brew_slots::kShell_SendEvent) {
         // ISHELL_SendEvent -- IShell slot 21. ESTE RAMO VEM ANTES DO
@@ -2845,6 +2909,36 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
       // instrucoes do proprio laco, e o detector morreria em silencio.
       if (!recusou_agora) recusas_seguidas = 0;
       if (++saidas > 20000) { resultado.motivo = "laco_de_saidas"; return resultado; }
+      // A FRONTEIRA ENTRE CHAMADAS DE API, e a THREAD COOPERATIVA (frente
+      // thrd). E aqui -- com o guest num ponto onde o estado vivo cabe nos
+      // registadores mais o pc de retorno -- que a thread pendente volta a
+      // correr o seu pfn (`PrepararRetomadaDeThread`, o `run_pending_threads`
+      // do zeebx). O `tinha_pendente` e a regra de fronteira: a chamada que
+      // CRIOU a thread nao e a fronteira onde ela corre, a PROXIMA e.
+      //
+      // FORA DO DESPACHO DE UM EVENTO (`profundidade_de_evento_ == 0`): dentro
+      // de um `SendEvent` o guest esta no meio de um tratador, e retomar a
+      // thread ai era reentrancia -- o problema que este laco evita noutros
+      // sitios (o relogio virtual parado durante a entrega).
+      const bool criou_agora = (pfn_do_ultimo_start != 0);
+      const bool lr_real = cpu.Get(kLR) != kSentinela;
+      bool pode_retomar = false;
+      if (!thread_a_correr && profundidade_de_evento_ == 0 && TemThreadPendente()) {
+        if (criou_agora) {
+          const std::uint32_t fim = (faixa_fim_ > faixa_base_) ? faixa_fim_
+                                                               : (kBase + 0x01000000u);
+          pode_retomar = pfn_do_ultimo_start >= kBase && pfn_do_ultimo_start < fim &&
+                         lr_real;
+        } else {
+          pode_retomar = tinha_pendente && lr_real;
+        }
+      }
+      if (pode_retomar) {
+        for (std::uint32_t k = 0; k <= kPC; ++k) hospedeiro[k] = cpu.Get(k);
+        if (PrepararRetomadaDeThread(cpu, traco_)) thread_a_correr = true;
+      }
+      pfn_do_ultimo_start = 0;
+      tinha_pendente = TemThreadPendente();
       continue;
     }
     // O LIMITE E O TAMANHO DA IMAGEM, quando ele e conhecido. Sem ele, cai-se no
@@ -2903,7 +2997,11 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
     //
     // O `agora_ms_` tambem nao avanca: a entrega e instantanea para o guest
     // (o chamador le a resposta na instrucao seguinte, `tectoy.mod:0x6a3a0`).
-    if (profundidade_de_evento_ == 0) {
+    // A VOLTA DA THREAD E ATOMICA PARA OS EVENTOS (frente thrd): enquanto uma
+    // thread retomada corre, o relogio virtual e os callbacks ficam parados,
+    // como durante a entrega de um evento. Um temporizador a disparar no MEIO
+    // do turno da thread poria o callback a partilhar registadores com ela.
+    if (profundidade_de_evento_ == 0 && !thread_a_correr) {
       ++agora_ms_;
       // O RELOGIO VIRTUAL E UM SO, e a entrada le-o daqui.
       //

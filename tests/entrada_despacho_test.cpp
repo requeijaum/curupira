@@ -1243,4 +1243,124 @@ TEST(UnzipStream, ReadSemOrigemDevolveFimDoStreamERegistaAFalta) {
 }
 
 
+
+// ===========================================================================
+// 12. A THREAD COOPERATIVA, PELO DESPACHO (frente thrd).
+//
+// Os testes de `classes_test.cpp` provam o CONTRATO (`PrepararRetomadaDeThread`
+// etc.) chamado a mao. Estes provam a CABLAGEM: que o `Despacho::Correr`
+// retoma uma thread pendente numa fronteira entre chamadas de API, que o
+// `IThread_Suspend` devolve o controlo ao hospedeiro sem perder o sitio, e que
+// o `ISHELL_Resume` (slot 36) enfileira a thread pelo callback de retomada --
+// o ciclo completo que os 22 titulos da bateria pedem (`Start`).
+//
+// Hoje (antes desta frente) o teste e VERMELHO: a thread fica pendente e o pfn
+// nunca corre; os marcadores ficam com o valor de partida.
+// ===========================================================================
+TEST(EntradaNoDespacho, UmaThreadAgendadaVoltaACorrerOPfnNasFronteirasDeApi) {
+  Bancada b;
+  const std::uint32_t th = static_cast<std::uint32_t>(Classe::kThread);
+  const std::uint32_t kPpObj = 0x80091000u;
+  const std::uint32_t kM1 = 0x80092000u;  // prova da 1a corrida (pos-Suspend)
+  const std::uint32_t kM2 = 0x80093000u;  // prova da 2a corrida (pos-Resume)
+  const std::uint32_t kRotinaDaThread = 0x00000600u;
+  const std::uint32_t kR1Inicial = 0x4000;  // 16 KiB, o pedido mais medido
+
+  // 1. O objecto do IThread pelo caminho do titulo: CreateInstance (slot 2 do
+  //    IShell) com o AEECLSID_THREAD (0x01001017).
+  ASSERT_EQ(b.ChamaSaida(kBaseDoShell + 2, kObjShell, 0x01001017u, kPpObj), kAeeSuccess);
+  const std::uint32_t obj = b.Mem().Ler32(kPpObj);
+  ASSERT_NE(obj, 0u) << "o CreateInstance tem de devolver o objecto do IThread";
+  // A CABLAGEM, lida da TABELA (armadilha 3): o slot 7 aponta para o ramo do
+  // Start do despacho.
+  const std::uint32_t vt = b.Mem().Ler32(obj);
+  EXPECT_EQ(b.Mem().Ler32(vt + brew_slots::kThread_Start * 4),
+            b.S().Endereco(VtClasse(th) + brew_slots::kThread_Start));
+
+  // 2. A FUNCAO DA THREAD, ARM, em kRotinaDaThread: suspende-se na 1a corrida e,
+  //    na retomada (pelo Resume), continua apos o Suspend, grava os dois
+  //    marcadores e volta -- e a funcao de entrada que volta TERMINA a thread.
+  //      600 e5901000  ldr r1, [r0]         ; r1 = vtable
+  //      604 e591c028  ldr ip, [r1, #0x28]  ; slot 10 = Suspend
+  //      608 e1a0e00f  mov lr, pc
+  //      60c e12fff1c  bx ip                ; Suspend(this): cede a vez
+  //      610 e59f201c  ldr r2, [pc, #0x1c]  ; &m1 (0x634)
+  //      614 e59f301c  ldr r3, [pc, #0x1c]  ; 0x11111111 (0x638)
+  //      618 e5823000  str r3, [r2]         ; m1 = 0x11111111 (2a corrida)
+  //      61c e59f2018  ldr r2, [pc, #0x18]  ; &m2 (0x63c)
+  //      620 e59f3018  ldr r3, [pc, #0x18]  ; 0x22222222 (0x640)
+  //      624 e5823000  str r3, [r2]         ; m2 = 0x22222222
+  //      628 e12fff1e  bx lr                ; lr = sentinela: a thread termina
+  const std::uint32_t pfn[] = {
+      0xe5901000u, 0xe591c028u, 0xe1a0e00fu, 0xe12fff1cu,
+      0xe59f201cu, 0xe59f301cu, 0xe5823000u,
+      0xe59f2018u, 0xe59f3018u, 0xe5823000u,
+      0xe12fff1eu,  // bx lr -- a funcao de entrada volta; a thread TERMINA
+      0xe1a00000u, 0xe1a00000u,
+      kM1, 0x11111111u, kM2, 0x22222222u,
+  };
+  for (std::size_t k = 0; k < sizeof(pfn) / sizeof(pfn[0]); ++k) {
+    b.Mem().Escrever32(kRotinaDaThread + static_cast<std::uint32_t>(k * 4), pfn[k]);
+  }
+
+  // 3. O GUEST, ARM, em kRotina (0x200): Start; GetResumeCBK; Resume pelo slot
+  //    36; GetResumeCBK de novo (a "proxima fronteira"); volta a sentinela.
+  //      200 e5904000  ldr r4, [r0]         ; r4 = vtable do IThread
+  //      204 e594c01c  ldr ip, [r4, #0x1c]  ; slot 7 = Start
+  //      208 e1a0e00f  mov lr, pc
+  //      20c e12fff1c  bx ip                ; Start(this,0x4000,pfn,arg)
+  //      210 e594c02c  ldr ip, [r4, #0x2c]  ; slot 11 = GetResumeCBK
+  //      214 e1a0e00f  mov lr, pc
+  //      218 e12fff1c  bx ip                ; r0 = cbk -- a 1a retomada corre AQUI
+  //      21c e1a01000  mov r1, r0           ; r1 = pcb
+  //      220 e59f002c  ldr r0, [pc, #0x2c]  ; r0 = po (0x254)
+  //      224 e59fc02c  ldr ip, [pc, #0x2c]  ; ip = saida do slot 36 (0x258)
+  //      228 e1a0e00f  mov lr, pc
+  //      22c e12fff1c  bx ip                ; ISHELL_Resume(po, cbk): enfileira
+  //      230 e594c02c  ldr ip, [r4, #0x2c]  ; GetResumeCBK de novo
+  //      234 e1a0e00f  mov lr, pc
+  //      238 e12fff1c  bx ip                ; a 2a retomada corre AQUI
+  //      23c e3a00000  mov r0, #0
+  //      240 e59fe018  ldr lr, [pc, #0x18]  ; lr = [0x260] = sentinela
+  //      244 e12fff1e  bx lr
+  const std::uint32_t saida_resume = b.S().Endereco(kBaseDoShell + brew_slots::kShell_Resume);
+  const std::uint32_t principal[] = {
+      0xe5904000u, 0xe594c01cu, 0xe1a0e00fu, 0xe12fff1cu,
+      0xe594c02cu, 0xe1a0e00fu, 0xe12fff1cu,
+      0xe1a01000u,
+      0xe59f002cu, 0xe59fc02cu, 0xe1a0e00fu, 0xe12fff1cu,
+      0xe594c02cu, 0xe1a0e00fu, 0xe12fff1cu,
+      0xe3a00000u, 0xe59fe018u, 0xe12fff1eu,
+      0xe1a00000u, 0xe1a00000u, 0xe1a00000u,
+      kObjShell,        // 0x254
+      saida_resume,     // 0x258
+      0xe1a00000u,      // 0x25c
+      kSentinela,       // 0x260
+  };
+  for (std::size_t k = 0; k < sizeof(principal) / sizeof(principal[0]); ++k) {
+    b.Mem().Escrever32(kRotina + static_cast<std::uint32_t>(k * 4), principal[k]);
+  }
+
+  // 4. O CICLO COMPLETO por DENTRO de `Despacho::Correr`, de uma so vez.
+  b.Mem().Escrever32(kM1, 0xDEADBEEFu);
+  b.Mem().Escrever32(kM2, 0xDEADBEEFu);
+  b.Cpu().Set(kR0, obj);
+  b.Cpu().Set(kR1, kR1Inicial);         // nStackSz
+  b.Cpu().Set(kR2, kRotinaDaThread);    // pfStart
+  b.Cpu().Set(kR3, 0x80200048u);        // pvStart (o valor MEDIDO no zeeboids)
+  b.Cpu().Set(kLR, kSentinela);
+  b.Cpu().Set(kPC, kRotina);
+  const ResultadoFase r = b.D().Correr(b.Cpu(), 100000, kArg0);
+  EXPECT_EQ(r.motivo, "retornou");
+  // O Pfn TEM DE TER CORRIDO: m1 e m2 mudaram. Hoje (sem a cablagem) a thread
+  // fica pendente, os marcadores ficam com o valor de partida -- VERMELHO.
+  EXPECT_EQ(b.Mem().Ler32(kM1), 0x11111111u)
+      << "a thread tem de CORRER o pfn na fronteira entre chamadas de API";
+  EXPECT_EQ(b.Mem().Ler32(kM2), 0x22222222u)
+      << "a 2a corrida (ISHELL_Resume) tem de continuar apos o Suspend";
+  EXPECT_EQ(b.Faltas("IThread::Start"), 0u);
+  EXPECT_EQ(b.Faltas("IShell::Resume"), 0u);
+}
+
+
 }  // namespace zb2::brew
