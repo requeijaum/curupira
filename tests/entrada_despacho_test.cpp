@@ -9,6 +9,12 @@
 #include "core/brew/ajudantes.h"
 #include "core/brew/classes.h"
 #include "core/brew/despacho.h"
+// O PNG e o adler do teste da frente ishell2: um PNG de 2x2 e um contentor
+// `.bar`/`.pod` sinteticos, montados com as funcoes do proprio motor
+// (`Crc32DePng`, `Adler32`) -- nao ha codificador nesta arvore, e nao passa a
+// haver.
+#include "core/carga/inflate.h"
+#include "core/carga/png.h"
 #include "core/brew/ihiddevice.h"
 #include "core/cpu/arm_interpreter.h"
 #include "core/memoria/memoria.h"
@@ -1568,6 +1574,311 @@ TEST(FrenteTela, AAssembleiaLigaATelaAoMotorDoIgles11) {
             static_cast<std::uint32_t>(Tela::kLargura * Tela::kAltura))
       << "o Clear do IGLES11 tem de escrever na TELA DO DESPACHO, e nao recusar";
   EXPECT_EQ(b.D().TelaRef().CoresDistintas(), 1u);
+}
+
+// ===========================================================================
+// A FRENTE ishell2: `IShell::DetectType` (slot 43) e `IShell::LoadResObject`
+// (slot 19) -- os dois servidos pelo despacho, e nao pelo ramo generico.
+// ===========================================================================
+//
+// A ARMADILHA 3 desta casa esta aqui tratada: os testes NAO chamam um id
+// interno. Leem o SLOT da vtable do objecto do shell (que e o que o guest le) e
+// entram no despacho PELO ENDERECO que la estiver -- se a cablagem desaparecer,
+// o teste entra no stub que recusa e fica vermelho no `Faltas(...)`.
+namespace {
+
+constexpr std::uint32_t kNomeNoGuest = 0x80091000u;    // uma cadeia escrita pelo teste
+constexpr std::uint32_t kBytesNoGuest = 0x80092000u;   // o buffer do `cpBuf`
+constexpr std::uint32_t kPalavraNoGuest = 0x80093000u;  // o `pdwSize`/`pnBufSize`
+constexpr std::uint32_t kPpNoGuest = 0x80093010u;       // o `pcpszMIME`
+
+void EscreverCadeia(Memoria& m, std::uint32_t p, const std::string& s) {
+  for (std::size_t k = 0; k < s.size(); ++k) {
+    m.Escrever8(p + static_cast<std::uint32_t>(k), static_cast<std::uint8_t>(s[k]));
+  }
+  m.Escrever8(p + static_cast<std::uint32_t>(s.size()), 0);
+}
+
+std::string LerCadeia(Memoria& m, std::uint32_t p) {
+  std::string s;
+  for (std::uint32_t k = 0; k < 64; ++k) {
+    const char c = static_cast<char>(m.Ler8(p + k));
+    if (c == 0) break;
+    s.push_back(c);
+  }
+  return s;
+}
+
+// UM PNG DE 2x2 RGBA, com as regras do formato e um bloco deflate STORED: as
+// mesmas funcoes do motor escrevem o CRC e o adler (`tests/classes_test.cpp`,
+// `PngDoTeste`). O canto superior esquerdo e VERMELHO puro (RGB565 = 0xF800) e o
+// ultimo pixel e transparente -- ha um pixel e um `tem_alpha` para conferir.
+std::vector<std::uint8_t> PngDoIshell2() {
+  const std::vector<std::uint8_t> cru = {0,   255, 0, 0,   255, 0, 255, 0,
+                                         255, 0,   0, 0,   255, 255, 0, 0, 0, 0};
+  std::vector<std::uint8_t> zlib_stream = {0x78u, 0x01u, 0x01u};
+  const std::uint16_t n = static_cast<std::uint16_t>(cru.size());
+  zlib_stream.push_back(static_cast<std::uint8_t>(n & 0xffu));
+  zlib_stream.push_back(static_cast<std::uint8_t>((n >> 8) & 0xffu));
+  zlib_stream.push_back(static_cast<std::uint8_t>((~n) & 0xffu));
+  zlib_stream.push_back(static_cast<std::uint8_t>(((~n) >> 8) & 0xffu));
+  zlib_stream.insert(zlib_stream.end(), cru.begin(), cru.end());
+  const std::uint32_t adler = Adler32(cru.data(), cru.size());
+  for (int i = 3; i >= 0; --i) {
+    zlib_stream.push_back(static_cast<std::uint8_t>((adler >> (8 * i)) & 0xffu));
+  }
+
+  std::vector<std::uint8_t> v = {0x89u, 0x50u, 0x4eu, 0x47u, 0x0du, 0x0au, 0x1au, 0x0au};
+  auto chunk = [&](const char* tipo, const std::vector<std::uint8_t>& dados) {
+    const std::uint32_t tam = static_cast<std::uint32_t>(dados.size());
+    for (int i = 3; i >= 0; --i) {
+      v.push_back(static_cast<std::uint8_t>((tam >> (8 * i)) & 0xffu));
+    }
+    std::vector<std::uint8_t> com_tipo(tipo, tipo + 4);
+    com_tipo.insert(com_tipo.end(), dados.begin(), dados.end());
+    v.insert(v.end(), com_tipo.begin(), com_tipo.end());
+    const std::uint32_t crc = Crc32DePng(com_tipo.data(), com_tipo.size());
+    for (int i = 3; i >= 0; --i) {
+      v.push_back(static_cast<std::uint8_t>((crc >> (8 * i)) & 0xffu));
+    }
+  };
+  const std::vector<std::uint8_t> ihdr = {0, 0, 0, 2, 0, 0, 0, 2, 8, 6, 0, 0, 0};
+  chunk("IHDR", ihdr);
+  chunk("IDAT", zlib_stream);
+  chunk("IEND", {});
+  return v;
+}
+
+// O CONTENTOR DO `.bar`/`.pod`, montado com as regras medidas (`tests/bar_test.cpp`:
+// cabecalho de 32 bytes, registos de 8 e a tabela de deslocamentos; o ultimo
+// deslocamento E o tamanho do ficheiro).
+struct RegistoDoContentor {
+  std::uint16_t tipo, primeiro_id, delta, primeiro_indice;
+};
+
+void Escrever16Em(std::vector<std::uint8_t>* b, std::size_t pos, std::uint16_t v) {
+  (*b)[pos] = static_cast<std::uint8_t>(v & 0xff);
+  (*b)[pos + 1] = static_cast<std::uint8_t>((v >> 8) & 0xff);
+}
+
+void Escrever32Em(std::vector<std::uint8_t>* b, std::size_t pos, std::uint32_t v) {
+  for (int k = 0; k < 4; ++k) {
+    (*b)[pos + static_cast<std::size_t>(k)] =
+        static_cast<std::uint8_t>((v >> (8 * k)) & 0xffu);
+  }
+}
+
+// O `AEEResBlob` do tipo 6: deslocamento, zero, mime terminado em NUL, e o dado.
+std::vector<std::uint8_t> BlobDoIshell2(std::uint8_t deslocamento, const std::string& mime,
+                                        const std::vector<std::uint8_t>& dado) {
+  std::vector<std::uint8_t> b;
+  b.push_back(deslocamento);
+  b.push_back(0);
+  b.insert(b.end(), mime.begin(), mime.end());
+  b.push_back(0);
+  while (b.size() < deslocamento) b.push_back(0);
+  b.insert(b.end(), dado.begin(), dado.end());
+  return b;
+}
+
+std::vector<std::uint8_t> ContentorDoIshell2(const std::vector<RegistoDoContentor>& registos,
+                                             const std::vector<std::vector<std::uint8_t>>& recursos) {
+  std::uint32_t num_ids = 0;
+  for (const RegistoDoContentor& r : registos) num_ids += static_cast<std::uint32_t>(r.delta) + 1u;
+  const std::uint32_t n_registos = static_cast<std::uint32_t>(registos.size());
+  const std::uint32_t off_registos = 32;
+  const std::uint32_t tam_registos = 8 * n_registos;
+  const std::uint32_t off_indices = off_registos + tam_registos;
+  const std::uint32_t off_dados = off_indices + 4 * (num_ids + 1);
+
+  std::vector<std::uint8_t> dados;
+  std::vector<std::uint32_t> indices;
+  indices.push_back(off_dados);
+  for (const std::vector<std::uint8_t>& r : recursos) {
+    dados.insert(dados.end(), r.begin(), r.end());
+    indices.push_back(off_dados + static_cast<std::uint32_t>(dados.size()));
+  }
+  while (indices.size() < num_ids + 1) indices.push_back(indices.back());
+
+  std::vector<std::uint8_t> b(off_dados + dados.size(), 0);
+  Escrever16Em(&b, 0, 0x0011);
+  Escrever16Em(&b, 2, 1);
+  Escrever16Em(&b, 4, 1);
+  Escrever16Em(&b, 6, static_cast<std::uint16_t>(n_registos));
+  Escrever32Em(&b, 8, off_registos);
+  Escrever32Em(&b, 12, tam_registos);
+  Escrever32Em(&b, 16, off_indices);
+  Escrever32Em(&b, 20, num_ids);
+  Escrever32Em(&b, 24, off_dados);
+  Escrever32Em(&b, 28, static_cast<std::uint32_t>(dados.size()));
+  for (std::uint32_t k = 0; k < n_registos; ++k) {
+    Escrever16Em(&b, off_registos + 8 * k + 0, registos[k].tipo);
+    Escrever16Em(&b, off_registos + 8 * k + 2, registos[k].primeiro_id);
+    Escrever16Em(&b, off_registos + 8 * k + 4, registos[k].delta);
+    Escrever16Em(&b, off_registos + 8 * k + 6, registos[k].primeiro_indice);
+  }
+  for (std::size_t k = 0; k < indices.size(); ++k) Escrever32Em(&b, off_indices + 4 * k, indices[k]);
+  for (std::size_t k = 0; k < dados.size(); ++k) b[off_dados + k] = dados[k];
+  return b;
+}
+
+// A PASTA DO TITULO: `<tmp>/zb2_ishell2_pasta/<titulo>/`, com o que cada teste
+// la escrever. A VFS e registada DEPOIS de os ficheiros existirem (o `Registar`
+// enumera a pasta), como a bateria faz.
+class PastaDoTitulo {
+ public:
+  PastaDoTitulo() {
+    raiz_ = std::filesystem::temp_directory_path() / "zb2_ishell2_pasta";
+    pasta_ = raiz_ / "titulo";
+    std::error_code ec;
+    std::filesystem::remove_all(raiz_, ec);
+    std::filesystem::create_directories(pasta_);
+  }
+  ~PastaDoTitulo() {
+    std::error_code ec;
+    std::filesystem::remove_all(raiz_, ec);
+  }
+  std::string Raiz() const { return raiz_.string(); }
+  std::string Nome() const { return pasta_.filename().string(); }
+  std::string Caminho() const { return pasta_.string(); }
+  void Escrever(const std::string& nome, const std::vector<std::uint8_t>& bytes) const {
+    std::ofstream f(pasta_ / nome, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(bytes.data()),
+            static_cast<std::streamsize>(bytes.size()));
+  }
+
+ private:
+  std::filesystem::path raiz_, pasta_;
+};
+
+// A MESMA ASSEMBLEIA DA BATERIA para o objecto do shell: e dele que sai a
+// vtable que o guest le.
+void ConstruirOShell(Bancada& b) {
+  ConstruirObjeto(b.Mem(), b.S(), kObjShell, b.S().Endereco(kVtableShell), kSlotsPorVtable,
+                  kBaseDoShell);
+}
+
+}  // namespace
+
+// O CONTRATO DO SLOT 43, medido no `abd.mod` (35 chamadas identicas, todas do
+// mesmo `lr`, com `cpBuf=0`, `cpszName=0` e `pcpszMIME=0`):
+//
+//   0x1360  cmp  r0, #0x23   ; 0x23 = 35 = AEE_ENEEDMORE
+//   0x1364  bne  #0x1374     ; != 35 -> desiste
+//   0x1368  ldr  r1, [sp,#0x30]
+//   0x136c  cmp  r1, #0
+//   0x1370  bne  #0x1380     ; *pdwSize != 0 -> segue
+//
+// A segunda chamada e IDENTICA e tem de responder 35 TAMBEM: o `abd` faz 35
+// sequencias de init e um alternador por paridade deixaria metade dos objectos
+// por inicializar (o zeebulator responde 0 na 2a -- ver a contradicao escrita em
+// `core/brew/despacho.cpp`).
+TEST(FrenteIshell2, OSlot43DaVtableRespondeENEEDMOREComOTamanhoNaoNulo) {
+  Bancada b;
+  ConstruirOShell(b);
+  const std::uint32_t vtable = b.Mem().Ler32(kObjShell);
+  ASSERT_EQ(vtable, b.S().Endereco(kVtableShell));
+  EXPECT_EQ(b.Mem().Ler32(vtable + 4u * brew_slots::kShell_DetectType),
+            b.S().Endereco(kBaseDoShell + brew_slots::kShell_DetectType))
+      << "o slot 43 da vtable do shell tem de apontar para o detector";
+
+  for (int chamada = 0; chamada < 2; ++chamada) {
+    b.Mem().Escrever32(kPalavraNoGuest, 0);
+    const std::uint32_t r = b.ChamaSaida(kBaseDoShell + brew_slots::kShell_DetectType, kObjShell,
+                                         0, kPalavraNoGuest, 0, 0);
+    EXPECT_EQ(r, 35u) << "chamada " << chamada << ": tem de ser AEE_ENEEDMORE";
+    EXPECT_NE(b.Mem().Ler32(kPalavraNoGuest), 0u)
+        << "chamada " << chamada << ": a 2a condicao do `abd` e *pdwSize != 0";
+  }
+  EXPECT_EQ(b.Faltas("IShell::slot43"), 0u) << "o slot deixou de ser servido pelo ramo generico";
+}
+
+// O `DetectType` com bytes OU com um nome: o MIME sai e vai para a memoria DO
+// GUEST (`const char **`), e o que nao se sabe e `AEE_ENOTYPE` (34) -- nao um
+// `SUCCESS` a fingir.
+TEST(FrenteIshell2, ODetectTypeRespondeOMimeEOMimeVaiParaAMemoriaDoGuest) {
+  Bancada b;
+  ConstruirOShell(b);
+  const std::vector<std::uint8_t> png = PngDoIshell2();
+  for (std::size_t k = 0; k < png.size() && k < 32; ++k) {
+    b.Mem().Escrever8(kBytesNoGuest + static_cast<std::uint32_t>(k), png[k]);
+  }
+
+  b.Mem().Escrever32(kPalavraNoGuest, 16);
+  b.Mem().Escrever32(kPpNoGuest, 0);
+  std::uint32_t r = b.ChamaSaida(kBaseDoShell + brew_slots::kShell_DetectType, kObjShell,
+                                 kBytesNoGuest, kPalavraNoGuest, 0, kPpNoGuest);
+  EXPECT_EQ(r, 0u) << "image/png pelo conteudo tem de ser SUCCESS";
+  const std::uint32_t p = b.Mem().Ler32(kPpNoGuest);
+  EXPECT_EQ(p, kZonaDeMimesDoShell) << "o mime tem de estar na zona do shell";
+  EXPECT_EQ(LerCadeia(b.Mem(), p), "image/png");
+
+  // PELO NOME, e em MAIUSCULAS: o cartao do Zeebo tem nomes assim.
+  EscreverCadeia(b.Mem(), kNomeNoGuest, "MATERIAL.MID");
+  b.Mem().Escrever32(kPalavraNoGuest, 0);
+  r = b.ChamaSaida(kBaseDoShell + brew_slots::kShell_DetectType, kObjShell, 0, kPalavraNoGuest,
+                   kNomeNoGuest, kPpNoGuest);
+  EXPECT_EQ(r, 0u);
+  EXPECT_EQ(LerCadeia(b.Mem(), b.Mem().Ler32(kPpNoGuest)), "audio/mid");
+
+  // O QUE NAO SE SABE DIZ-SE: bytes irreconheciveis e sem nome.
+  for (std::uint32_t k = 0; k < 16; ++k) b.Mem().Escrever8(kBytesNoGuest + k, 0x11u);
+  b.Mem().Escrever32(kPalavraNoGuest, 16);
+  r = b.ChamaSaida(kBaseDoShell + brew_slots::kShell_DetectType, kObjShell, kBytesNoGuest,
+                   kPalavraNoGuest, 0, kPpNoGuest);
+  EXPECT_EQ(r, 34u) << "AEE_ENOTYPE, e nao um mime inventado";
+  EXPECT_EQ(b.Faltas("IShell::DetectType"), 0u);
+}
+
+// O SLOT 19: o ficheiro INTEIRO e o recurso quando `nResID == 0` (o caso do
+// quake), e o `.bar`/`.pod` com a entrada `nResID` quando nao e (o caso do
+// toyraidzeebo, cujo `.pod` foi medido com o formato do `.bar`). O que sai e um
+// IDIB -- um bitmap, que e o que o `cls = 0x01001021` (AEECLSID_BITMAP) pede.
+TEST(FrenteIshell2, OLoadResObjectServeUmIdibDoFicheiroEDoContentor) {
+  PastaDoTitulo pasta;
+  pasta.Escrever("splash.png", PngDoIshell2());
+  pasta.Escrever("jogo.pod", ContentorDoIshell2(
+                                 {{6, 1, 0, 0}},
+                                 {BlobDoIshell2(12, "image/png", PngDoIshell2())}));
+  Bancada b;
+  b.AcessoAVfs().Registar(pasta.Caminho());
+  b.D().SituarTitulo(pasta.Raiz(), pasta.Nome());
+  ConstruirOShell(b);
+  const std::uint32_t vtable = b.Mem().Ler32(kObjShell);
+  EXPECT_EQ(b.Mem().Ler32(vtable + 4u * brew_slots::kShell_LoadResObject),
+            b.S().Endereco(kBaseDoShell + brew_slots::kShell_LoadResObject))
+      << "o slot 19 da vtable do shell tem de apontar para o LoadResObject";
+
+  // 1. O FICHEIRO INTEIRO (`nResID = 0`, como o quake).
+  EscreverCadeia(b.Mem(), kNomeNoGuest, "splash.png");
+  const std::uint32_t obj = b.ChamaSaida(kBaseDoShell + brew_slots::kShell_LoadResObject, kObjShell,
+                                         kNomeNoGuest, 0, 0);
+  ASSERT_NE(obj, 0u) << "o PNG esta la: tem de sair um objecto";
+  EXPECT_EQ(b.Mem().Ler32(obj), b.S().Endereco(kVtableBitmap))
+      << "o objecto devolvido tem de ser um bitmap com vtable";
+  EXPECT_EQ(b.Mem().Ler16(obj + CamposDoIdib::kCx), 2u);
+  EXPECT_EQ(b.Mem().Ler16(obj + CamposDoIdib::kCy), 2u);
+  const std::uint32_t pbmp = b.Mem().Ler32(obj + CamposDoIdib::kPBmp);
+  ASSERT_NE(pbmp, 0u);
+  EXPECT_EQ(b.Mem().Ler16(pbmp), 0xF800u) << "o canto superior esquerdo e vermelho puro (565)";
+  EXPECT_EQ(b.Faltas("IShell::LoadResObject"), 0u);
+
+  // 2. A ENTRADA DO CONTENTOR (`nResID = 1`, como o toyraidzeebo): o blob do
+  //    tipo 6 e saltado (o mime fica para nos, o dado e do PNG).
+  EscreverCadeia(b.Mem(), kNomeNoGuest, "jogo.pod");
+  const std::uint32_t obj2 = b.ChamaSaida(kBaseDoShell + brew_slots::kShell_LoadResObject, kObjShell,
+                                          kNomeNoGuest, 1, 0x01001021u);
+  ASSERT_NE(obj2, 0u) << "a entrada 1 do contentor tem de ser servida";
+  EXPECT_NE(obj2, obj) << "e um objecto NOVO, e nao o mesmo";
+  EXPECT_EQ(b.Mem().Ler32(obj2), b.S().Endereco(kVtableBitmap));
+  EXPECT_EQ(b.Mem().Ler16(obj2 + CamposDoIdib::kCx), 2u);
+
+  // 3. O QUE NAO EXISTE: `NULL`, e a falta com o NOME do que se procurou.
+  EscreverCadeia(b.Mem(), kNomeNoGuest, "nao_existe.png");
+  const std::uint32_t nulo = b.ChamaSaida(kBaseDoShell + brew_slots::kShell_LoadResObject,
+                                          kObjShell, kNomeNoGuest, 0, 0);
+  EXPECT_EQ(nulo, 0u);
+  EXPECT_EQ(b.Faltas("IShell::LoadResObject"), 1u);
 }
 
 }  // namespace zb2::brew

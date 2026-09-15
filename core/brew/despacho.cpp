@@ -15,6 +15,12 @@
 // outro agente, e so se le daqui. O gzip (RFC1952) dos `.bar` e tratado neste
 // ficheiro, por cima dele.
 #include "core/carga/inflate.h"
+// O DESCODIFICADOR DE PNG (`DescodificarPng`), para o `LoadResObject`: o
+// `LoadResDataEx` entrega o bloco CRU e o `LoadResObject` entrega um OBJECTO
+// desenhavel, e o unico formato de imagem que esta arvore sabe virar pixels e
+// este (`core/carga/png.h`). Nao se acrescenta descodificador nenhum a
+// `core/carga`: quem nao for PNG e recusado COM O NOME.
+#include "core/carga/png.h"
 
 namespace zb2::brew {
 
@@ -329,6 +335,182 @@ std::string LerTextoDe(const Memoria& mem, std::uint32_t p, std::size_t maximo) 
 // indice `n` vive em `kObjFileBase + n*0x40`.
 std::uint32_t IdentificadorDeFicheiro(std::uint32_t obj) {
   return (obj >= kObjFileBase) ? (obj - kObjFileBase) / 0x40 : 0;
+}
+
+// ---------------------------------------------------------------------------
+// O DETECTOR DE TIPO (`IShell::DetectType`, slot 43).
+//
+// ===========================================================================
+// 1) O CONTRATO, do cabecalho do SDK -- e nao adivinhado
+// ===========================================================================
+//
+// `platform/system/inc/AEEIShell.h:275` e a macro em `:568`:
+//
+//   int (*DetectType)(iname *po, const void *cpBuf, uint32 *pdwSize,
+//                     const char *cpszName, const char **pcpszMIME);
+//
+// Em AAPCS: `r0=po, r1=cpBuf, r2=pdwSize, r3=cpszName`, e `[sp+0]=pcpszMIME`.
+// O SLOT E O 43: `AEEIShell.h:288` (`INHERIT_IShell`) conta 43 entradas antes
+// dele, e o `tools/gerar_slots.py` gerou `kShell_DetectType = 43` em
+// `tools/brew_slots.inc:43`. As duas contagens (a do cabecalho e a do gerador)
+// concordam.
+//
+// O bloco de documentacao (`:4515-4570`) diz o que cada resposta significa:
+//
+//   pdwSize : [in/out] On input, the size of the data in pBuf; if cpBuf is
+//             NULL, then this is ignored. On output, the number of additional
+//             data bytes needed to perform type detection.
+//   Return  : AEE_SUCCESS ... AEE_ENOTYPE ... AEE_ENEEDMORE  (need more data;
+//             *pdwSize contains the required number of additional bytes)
+//
+// e traz o caso de uso ESCRITO no proprio cabecalho, que e o unico que o corpus
+// faz:
+//
+//   if (ENEEDMORE == ISHELL_DetectType(ps, NULL, &dwReqSize, NULL, NULL))
+//       // dwReqSize contains the max bytes needed for type detection.
+//
+// ===========================================================================
+// 2) O QUE OS TITULOS PEDEM, medido no proprio guest
+// ===========================================================================
+//
+// MEDIDO (`ZB2_TRACE=1`, corpus de 62 titulos, 46 chamadas em 4 titulos):
+// TODAS as 46 chamadas tem `r1 = 0` (`cpBuf`), `r3 = 0` (`cpszName`) e
+// `[sp+0] = 0` (`pcpszMIME`); so o `r2` muda. Sao a SONDA DE TAMANHO, e o
+// `lr` diz de onde vem:
+//
+//   abd 35x lr=0x00001360  pacmania 3x lr=0x00000e9c
+//   ridgeracer 25x lr=0x0000174c  torkandkral 18x lr=0x000014ac
+//
+// E o desmonte do `abd.mod` (base ZERO, ver `tests/mod_base_test.cpp`) fecha a
+// questao -- o que o jogo faz com a resposta, instrucao a instrucao:
+//
+//   0000133c  ldr  r0, [r0]        ; r0 = o objecto IShell
+//   00001348  mov  r3, r6          ; r3 = 0        (cpszName)
+//   0000134c  ldr  ip, [r0, #0xac] ; 0xac = 43*4 -> slot 43
+//   00001350  add  r2, sp, #0x30   ; r2 = &dwSize
+//   00001354  mov  r1, r6          ; r1 = 0        (cpBuf)
+//   00001358  mov  r0, r5          ; r0 = o shell
+//   0000135c  blx  ip
+//   00001360  cmp  r0, #0x23       ; 0x23 = 35 = AEE_ENEEDMORE
+//   00001364  bne  #0x1374         ; != 35 -> desiste do objecto
+//   00001368  ldr  r1, [sp, #0x30] ; *pdwSize
+//   0000136c  cmp  r1, #0
+//   00001370  bne  #0x1380         ; != 0 -> SEGUE
+//   00001374  mov  r0, #1          ; desistiu: devolve 1 (objecto nao pronto)
+//
+// Ou seja: a condicao e LITERALMENTE `ret == AEE_ENEEDMORE && *pdwSize != 0`,
+// e nao "nao-zero". **E o `35` nao e um numero magico: e o `ENEEDMORE` do
+// SDK** -- o zeebulator mediu o mesmo `cmp r0, #35` (`core/brew/ishell.cpp`,
+// o ramo do slot 43) e chamou-lhe um "contrato de estado" porque nao tinha o
+// cabecalho `AEEStdErr.h` a mao: `AEE_ENEEDMORE = 35` (`AEEStdErr.h:51`; o
+// `AEE_ENOTYPE` e o 34).
+//
+// A CONTRADICAO COM A REFERENCIA, e fica escrita: o zeebulator responde `35` na
+// 1a chamada e `0` na 2a (um alternador por paridade de chamadas) porque
+// observou um segundo sitio de chamada a esperar `0`. O `abd` faz 35 chamadas
+// IDENTICAS (mesmo `lr`, mesmos argumentos, o mesmo `r2`) e o `0` na 2a
+// deixaria 17 dos 35 objectos por inicializar. O que a 2a chamada do zeebulator
+// descreve e OUTRO sitio (`abd.mod` 0x16a0, = o 0x1016a0 deles), que pede o
+// MIME com `[sp] = &cpszMIME` -- e esse sitio le `AEE_SUCCESS`. Os dois sitios
+// sao servidos pelo MESMO contrato do SDK: sonda -> `ENEEDMORE` + tamanho;
+// dado -> `SUCCESS` + mime. Nao ha estado a manter, e nao ha alternador.
+// ---------------------------------------------------------------------------
+
+// `AEE_ENOTYPE` (34) e `AEE_ENEEDMORE` (35), de `AEEStdErr.h:50-51`. Ficam
+// aqui, junto do contrato que os usa, e nao no `kAee*` de `ajudantes.h`: aquele
+// enum tem os codigos que o despacho ja usava, e o nome do erro e do sitio que
+// o devolve.
+constexpr std::uint32_t kAeeNoType = 34;
+constexpr std::uint32_t kAeeNeedMore = 35;
+
+// DE QUANTOS BYTES PRECISA ESTE DETECTOR. A assinatura mais comprida da tabela
+// abaixo tem 12 bytes (o `RIFF` + tamanho + `WAVE`), e o numero e o mesmo do
+// zeebx (`src/machine/mod.rs:832`, `DETECT_TYPE_BYTES = 16`): cabe a mais
+// comprida com folga, e um numero so serve para a resposta ao guest E para o
+// corte da leitura.
+constexpr std::uint32_t kBytesDoDetector = 16;
+
+// AS CADEIAS DE MIME, NUMA LISTA SO. O indice devolvido pelo detector e o mesmo
+// que endereça a cadeia na memoria do guest (`EscreverMimeNoGuest`): duas
+// listas que tem de concordar sao zero listas.
+const char* const kMimes[] = {
+    "image/png", "image/jpeg", "image/gif", "image/bmp", "audio/mid",
+    "audio/mpeg", "audio/wav", "audio/amr", "text/plain",
+};
+constexpr std::uint32_t kQuantosMimes = sizeof(kMimes) / sizeof(kMimes[0]);
+static_assert(kQuantosMimes <= kMaximoDeMimes,
+              "a zona de mimes do shell tem de ter espaco para a lista toda");
+enum MimeConhecido : std::uint32_t {
+  kMimePng = 0,
+  kMimeJpeg,
+  kMimeGif,
+  kMimeBmp,
+  kMimeMid,
+  kMimeMpeg,
+  kMimeWav,
+  kMimeAmr,
+  kMimeTexto,
+  kMimeNenhum,  // a resposta "nao sei" -- nunca indexa a lista
+};
+
+// A ASSINATURA -> O MIME. As assinaturas sao as do zeebx (`src/machine/mod.rs`,
+// `detect_mime`) e as que os recursos do corpus usam. Um ficheiro com menos
+// bytes do que a assinatura nao a pode ter: e o `n`.
+std::uint32_t MimeDaMagia(const std::uint8_t* b, std::size_t n) {
+  if (b == nullptr) return kMimeNenhum;
+  const auto comeca = [&](const char* magia, std::size_t k) {
+    if (n < k) return false;
+    for (std::size_t i = 0; i < k; ++i) {
+      if (b[i] != static_cast<std::uint8_t>(magia[i])) return false;
+    }
+    return true;
+  };
+  // A assinatura do PNG sao OITO bytes (ISO/IEC 15948, 5.2), e nao quatro: o
+  // `\r\n` no fim e o que distingue um PNG de um ficheiro que so comeca por
+  // `89 50 4E 47`.
+  if (comeca("\x89PNG\r\n\x1a\n", 8)) return kMimePng;
+  if (comeca("\xff\xd8\xff", 3)) return kMimeJpeg;  // SOI + o primeiro marcador
+  if (comeca("GIF87a", 6) || comeca("GIF89a", 6)) return kMimeGif;
+  if (comeca("BM", 2)) return kMimeBmp;
+  if (comeca("MThd", 4)) return kMimeMid;
+  // O MP3 tem DUAS formas: com a etiqueta `ID3` a frente, ou com o
+  // sincronismo `FF Ex` (o primeiro byte todo a um, os tres bits de cima do
+  // segundo tambem).
+  if (comeca("ID3", 3)) return kMimeMpeg;
+  if (n >= 2 && b[0] == 0xFFu && (b[1] & 0xE0u) == 0xE0u) return kMimeMpeg;
+  // O WAV e um `RIFF` com o tamanho a seguir e a marca `WAVE` no +8: o `RIFF`
+  // sozinho tambem abre AVI e WebP, e o que decide e o `WAVE`.
+  if (comeca("RIFF", 4) && n >= 12 && b[8] == 'W' && b[9] == 'A' && b[10] == 'V' && b[11] == 'E') {
+    return kMimeWav;
+  }
+  if (comeca("#!AMR", 5)) return kMimeAmr;
+  return kMimeNenhum;
+}
+
+// A EXTENSAO -> O MIME, para o caso em que o chamador da o NOME e nao os bytes.
+// A extensao e a ultima depois do ultimo ponto DA ULTIMA COMPONENTE do caminho
+// (um directoria com um ponto no nome nao conta). Tudo em minusculas: o cartao
+// do Zeebo tem nomes em maiusculas (`MATERIAL.BAR`) e uma comparacao sensivel
+// ao caso seria uma recusa dependente da ROM.
+std::uint32_t MimeDaExtensao(const std::string& nome) {
+  const std::size_t barra = nome.find_last_of("/\\");
+  const std::string ficheiro = (barra == std::string::npos) ? nome : nome.substr(barra + 1);
+  const std::size_t ponto = ficheiro.find_last_of('.');
+  if (ponto == std::string::npos) return kMimeNenhum;
+  std::string ext = ficheiro.substr(ponto + 1);
+  for (char& c : ext) {
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+  }
+  if (ext == "png") return kMimePng;
+  if (ext == "jpg" || ext == "jpeg") return kMimeJpeg;
+  if (ext == "gif") return kMimeGif;
+  if (ext == "bmp") return kMimeBmp;
+  if (ext == "mid" || ext == "midi") return kMimeMid;
+  if (ext == "mp3") return kMimeMpeg;
+  if (ext == "wav") return kMimeWav;
+  if (ext == "amr") return kMimeAmr;
+  if (ext == "txt") return kMimeTexto;
+  return kMimeNenhum;
 }
 
 // ---------------------------------------------------------------------------
@@ -671,6 +853,238 @@ std::uint32_t Despacho::EscreverCabecalhoDoBitmapDoEcra() {
   // leia o ecra para o compor (alpha, scroll) leria zeros sobre desenho nosso.
   ExporEcraAoGuest();
   return obj;
+}
+
+// ---------------------------------------------------------------------------
+// `IShell::DetectType` (slot 43). O contrato esta medido no comentario da tabela
+// de mimes, acima; aqui esta so a traducao dele para a ABI.
+// ---------------------------------------------------------------------------
+bool Despacho::AtenderDetectType(ICpu& cpu) {
+  const std::uint32_t sp = cpu.Get(kSP);
+  const std::uint32_t cp_buf = cpu.Get(kR1);
+  const std::uint32_t p_tamanho = cpu.Get(kR2);
+  const std::uint32_t p_nome = cpu.Get(kR3);
+  const std::uint32_t pp_mime = mem_.Ler32(sp);
+
+  // 1. SEM DADOS E SEM NOME: "de quantos bytes precisas?". E o caso das 46
+  //    chamadas medidas, e a resposta e a documentada -- `ENEEDMORE` com o
+  //    numero de bytes que este detector precisa de ver para decidir.
+  //
+  //    O `pdwSize` NAO pode ser nulo aqui: sem sitio para escrever o numero, o
+  //    `ENEEDMORE` seria um pedido que o chamador nao consegue cumprir (ele
+  //    repetiria `NULL` para sempre). Nesse caso a resposta honesta e
+  //    "nao sei o tipo", e a falta fica com o nome.
+  if (cp_buf == 0 && p_nome == 0) {
+    if (p_tamanho == 0) {
+      traco_.RegistarFalta(Area::Brew, "IShell::DetectType",
+                           "sem cpBuf, sem cpszName e com pdwSize nulo: nao ha resposta possivel");
+      cpu.Set(kR0, kAeeNoType);
+      return true;
+    }
+    mem_.Escrever32(p_tamanho, kBytesDoDetector);
+    cpu.Set(kR0, kAeeNeedMore);
+    traco_.Emitir(Area::Brew, Nivel::Depuracao, "ISHELL_DETECTTYPE",
+                  "so-tamanho -> " + std::to_string(kBytesDoDetector) + " bytes (ENEEDMORE) lr=0x" + Hex(cpu.Get(kLR)));
+    return true;
+  }
+
+  // 2. HA DADOS OU UM NOME: le-se o que ha e responde-se o MIME. O `*pdwSize` e
+  //    a ENTRADA (quantos bytes o chamador tem) e o corte e o que o detector
+  //    precisa -- nunca se le mais do que o chamador diz ter.
+  const std::uint32_t disponiveis = (p_tamanho != 0) ? mem_.Ler32(p_tamanho) : 0;
+  std::vector<std::uint8_t> bytes;
+  if (cp_buf != 0) {
+    const std::uint32_t quantos = std::min(disponiveis, kBytesDoDetector);
+    bytes.reserve(quantos);
+    for (std::uint32_t k = 0; k < quantos; ++k) {
+      bytes.push_back(mem_.Ler8(cp_buf + k));
+    }
+  }
+  const std::string nome = LerTextoDe(mem_, p_nome, 512);
+  std::uint32_t mime = MimeDaMagia(bytes.empty() ? nullptr : bytes.data(), bytes.size());
+  if (mime == kMimeNenhum) mime = MimeDaExtensao(nome);
+  if (mime == kMimeNenhum) {
+    // O QUE NAO SE SABE DIZ-SE. Nao se inventa um mime, e nao se devolve
+    // sucesso: o contrato tem resposta para isto (`AEE_ENOTYPE`).
+    cpu.Set(kR0, kAeeNoType);
+    char det_sem_tipo[192];
+    std::snprintf(det_sem_tipo, sizeof(det_sem_tipo),
+                  "sem tipo: %u bytes de %u no cpBuf, cpszName=%s, cpBuf=0x%08x lr=0x%08x",
+                  static_cast<unsigned>(bytes.size()), static_cast<unsigned>(disponiveis),
+                  nome.empty() ? "-" : nome.c_str(), cp_buf, cpu.Get(kLR));
+    traco_.Emitir(Area::Brew, Nivel::Depuracao, "ISHELL_DETECTTYPE", det_sem_tipo);
+    return true;
+  }
+  const std::uint32_t endereco = EscreverMimeNoGuest(mime);
+  if (pp_mime != 0) mem_.Escrever32(pp_mime, endereco);
+  // Nenhum byte ADICIONAL faz falta depois de o tipo estar identificado.
+  if (p_tamanho != 0) mem_.Escrever32(p_tamanho, 0);
+  cpu.Set(kR0, kAeeSuccess);
+  traco_.Emitir(Area::Brew, Nivel::Depuracao, "ISHELL_DETECTTYPE",
+                std::string(kMimes[mime]) + " (SUCCESS, " + std::to_string(bytes.size()) +
+                    " bytes lidos" + (pp_mime == 0 ? ", pcpszMIME nulo" : "") + ", lr=0x" +
+                    Hex(cpu.Get(kLR)) + ")");
+  return true;
+}
+
+std::uint32_t Despacho::EscreverMimeNoGuest(std::uint32_t indice) {
+  const std::uint32_t p = kZonaDeMimesDoShell + indice * kPassoDeMime;
+  const std::string texto = kMimes[indice];
+  for (std::size_t k = 0; k < texto.size(); ++k) {
+    mem_.Escrever8(p + static_cast<std::uint32_t>(k), static_cast<std::uint8_t>(texto[k]));
+  }
+  mem_.Escrever8(p + static_cast<std::uint32_t>(texto.size()), 0);
+  return p;
+}
+
+// ---------------------------------------------------------------------------
+// `IShell::LoadResObject` (slot 19). O irmao do `LoadResDataEx` (slot 41): le o
+// MESMO contentor, com a diferenca de devolver um objecto em vez do bloco cru.
+// ---------------------------------------------------------------------------
+//
+// A ASSINATURA, de `AEEIShell.h:251` e da macro em `:433`:
+//
+//   IBase *(*LoadResObject)(iname *po, const char *pszResFile, uint16 nResID,
+//                           AEECLSID cls);
+//
+// O 4o argumento esta DOCUMENTADO como `AEEHandlerType hType` (`:2315`) e os
+// valores do SDK sao `HTYPE_VIEWER = AEECLSID_VIEW = 0x01004000` e
+// `HTYPE_SOUND = AEECLSID_SOUNDPLAYER = 0x01002000` (`AEEClassIDs.h:28` e `:157`,
+// citados em `AEEIShell.h:3720`). E a documentacao do `IResFile` diz o que a
+// variante deste SDK aceita no mesmo lugar (`AEEIResFile.h:750`): "clsid: Class
+// ID of the handler ... Or IID of the interface to be retrieved".
+//
+// MEDIDO (2 titulos, 3 chamadas, `ZB2_TRACE=1`):
+//
+//   quake       r1=0x0000a0c0 ("fs:/~/../id1/splash_title.png") id=0 cls=0
+//   toyraidzeebo r1=0x00039984 ("toyraidzeebo.pod")             id=1   cls=0x01001021
+//   toyraidzeebo o mesmo nome                                   id=0x20 cls=0x01001021
+//
+// Os dois casos sao os DOIS ramos que o zeebx documenta (`src/machine/shell.rs`,
+// `shell_load_res_object`): com `nResID == 0` o ficheiro inteiro E o recurso
+// (o caso do quake), e com `nResID != 0` o que o nome indica e um contentor e a
+// entrada e a daquele id. O `cls = 0x01001021` e o `AEECLSID_BITMAP`
+// (`AEEClassIDs.h:94`, o mesmo valor do `AEEIID_IBitmap`): o que se pede e um
+// BITMAP, e nao um `IImage`.
+//
+// O NOME E UM CAMINHO, e nao o nome de um ficheiro da pasta: o `fs:/~/../id1/`
+// do quake e resolvido pela MESMA VFS que serve o `OpenFile` (uma so regra
+// sobre o que existe).
+bool Despacho::AtenderLoadResObject(ICpu& cpu) {
+  const std::uint32_t p_nome = cpu.Get(kR1);
+  const std::uint16_t id = static_cast<std::uint16_t>(cpu.Get(kR2));
+  const std::uint32_t cls = cpu.Get(kR3);
+  const std::string nome = LerTextoDe(mem_, p_nome, 512);
+  // O CONTRATO DE FALHA E `NULL`, e escreve-se ANTES de qualquer trabalho: um
+  // caminho de recusa que deixe o r0 com o valor do guest entregava-lhe um
+  // ponteiro que ele acredita ser um objecto.
+  cpu.Set(kR0, 0);
+  if (nome.empty()) {
+    traco_.RegistarFalta(Area::Brew, "IShell::LoadResObject", "pszResFile nulo ou vazio");
+    return true;
+  }
+
+  // 1. OS BYTES. O leitor e o MESMO do `LoadResDataEx` (a pasta do titulo pela
+  //    VFS), para nao haver duas regras sobre que ficheiro existe.
+  std::vector<std::uint8_t> bytes;
+  std::string motivo;
+  const LeitorDeRecursos leitor = LeitorDaPasta(dir_ + "/" + pasta_, &vfs_);
+  if (!leitor(nome, &bytes, &motivo)) {
+    traco_.RegistarFalta(Area::Brew, "IShell::LoadResObject",
+                         nome + " id=" + std::to_string(id) + ": " + motivo);
+    return true;
+  }
+
+  const std::uint8_t* dados = bytes.data();
+  std::size_t n = bytes.size();
+  std::string mime;
+  if (id != 0) {
+    // 1b. O `pszResFile` e um CONTENTOR e o id escolhe a entrada. O `.pod` do
+    //     `toyraidzeebo` foi medido com o MESMO formato do `.bar` (`0x11 0x00`,
+    //     registos de 8 bytes, tabela de deslocamentos: `tools/medir_bar.py
+    //     censo` diz "1 de 1 ficheiros com o formato medido"), logo o leitor e o
+    //     mesmo -- e nao um segundo leitor a espera de divergir.
+    ArquivoBar contentor = ArquivoBar::AbrirDados(bytes, &motivo);
+    if (!contentor.Valido()) {
+      traco_.RegistarFalta(Area::Brew, "IShell::LoadResObject",
+                           nome + " id=" + std::to_string(id) + ": " + motivo);
+      return true;
+    }
+    const RecursoDoBar recurso = contentor.Ler(id, kTipoImagem);
+    if (!recurso.ok) {
+      traco_.RegistarFalta(Area::Brew, "IShell::LoadResObject",
+                           nome + " id=" + std::to_string(id) + " tipo=" +
+                               std::to_string(kTipoImagem) + ": " + recurso.motivo);
+      return true;
+    }
+    // O `AEEResBlob` E NOSSO PARA SALTAR: quem pediu foi um OBJECT de imagem, e
+    // nao o bloco cru com o mime impresso que o `LoadResDataEx` entrega. Se o
+    // recurso nao tiver a forma de blob, os bytes do recurso sao o dado.
+    const BlobDoBar blob = ArquivoBar::LerBlob(recurso);
+    dados = blob.ok ? blob.dados : recurso.dados;
+    n = blob.ok ? blob.tamanho : recurso.tamanho;
+    if (blob.ok) mime = blob.mime;
+  }
+
+  // 2. A IMAGEM. So o PNG tem descodificador nesta arvore (`core/carga/png.h`);
+  //    o resto e recusado COM O NOME do que se viu, e nao com um "falhou".
+  zb2::ImagemPng img;
+  std::string porque;
+  if (!zb2::DescodificarPng(dados, n, &img, &porque)) {
+    traco_.RegistarFalta(Area::Brew, "IShell::LoadResObject",
+                         nome + " id=" + std::to_string(id) + " (" +
+                             std::to_string(n) + " bytes" +
+                             (mime.empty() ? "" : ", mime=" + mime) +
+                             "): nao descodifica como PNG: " + porque);
+    return true;
+  }
+
+  // 3. O OBJECT. Os pixels vivem no heap do GUEST (e o jogo que os le), e o
+  //    cabecalho publico do IDIB e escrito pela MESMA funcao que o escreve para
+  //    o ecra e para os `IDisplay::CreateDIBitmap`.
+  const std::uint32_t obj = IdibLivre();
+  if (obj == 0) {
+    traco_.RegistarFalta(Area::Brew, "IShell::LoadResObject",
+                         nome + " id=" + std::to_string(id) +
+                             ": a banda dos bitmaps compativeis esta cheia");
+    return true;
+  }
+  const std::uint32_t bytes_dos_pixels = img.largura * 2u * img.altura;
+  const std::uint32_t pixels = al_.Malloc(bytes_dos_pixels);
+  if (pixels == 0) {
+    char det[96];
+    std::snprintf(det, sizeof(det), "%ux%u pede %u bytes e o heap do guest nao os deu",
+                  static_cast<unsigned>(img.largura), static_cast<unsigned>(img.altura),
+                  static_cast<unsigned>(bytes_dos_pixels));
+    traco_.RegistarFalta(Area::Brew, "IShell::LoadResObject", det);
+    return true;
+  }
+  for (std::uint32_t k = 0; k < img.pixels.size(); ++k) {
+    mem_.Escrever16(pixels + k * 2u, img.pixels[k]);
+  }
+  EscreverCabecalhoDeIdib(obj, pixels, img.largura, img.altura);
+  // A LEITURA DE VOLTA, e a mesma guarda do `CriarDibDoPng`: um objecto com o
+  // `+0` a zero e um `blx 0` no primeiro metodo que o jogo lhe chamar.
+  if (mem_.Ler32(obj + zb2::brew::CamposDoIdib::kPvt) != vtable_bitmap_ ||
+      mem_.Ler32(obj + zb2::brew::CamposDoIdib::kPBmp) != pixels) {
+    traco_.RegistarFalta(Area::Brew, "IShell::LoadResObject",
+                         "o cabecalho do IDIB novo nao ficou escrito em " + Hex(obj));
+    return true;
+  }
+  cpu.Set(kR0, obj);
+  traco_.Emitir(Area::Brew, Nivel::Depuracao, "ISHELL_LOADRESOBJECT",
+                nome + " id=" + std::to_string(id) + " cls=" + Hex(cls) + " -> IBitmap " +
+                    Hex(obj) + " " + std::to_string(img.largura) + "x" +
+                    std::to_string(img.altura) + (img.tem_alpha ? " com alfa" : ""));
+  return true;
+}
+
+std::uint32_t Despacho::IdibLivre() const {
+  for (std::uint32_t obj = zb2::brew::kObjDibBase + 0x340u;
+       obj < zb2::brew::kFimDosDibCompativeis; obj += 0x40u) {
+    if (mem_.Ler32(obj) != vtable_bitmap_) return obj;
+  }
+  return 0;
 }
 
 void Despacho::ExporEcraAoGuest() {
@@ -1429,6 +1843,18 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         std::uint32_t retorno = 0;
         egl_.Executar(idx - kVtableIegl, av, &retorno);
         cpu.Set(kR0, retorno);
+      } else if (idx == kBaseDoShell + brew_slots::kShell_DetectType) {
+        // `int DetectType(IShell*, const void *cpBuf, uint32 *pdwSize,
+        //                 const char *cpszName, const char **pcpszMIME)` -- o
+        // slot 43, que estava no ramo generico (recusava e dizia
+        // `IShell::slot43`). O contrato MEDIDO e a implementacao estao no
+        // comentario do detector, acima.
+        (void)AtenderDetectType(cpu);
+      } else if (idx == kBaseDoShell + brew_slots::kShell_LoadResObject) {
+        // `IBase *LoadResObject(IShell*, const char*, uint16 nResID, AEECLSID)`
+        // -- o slot 19, que estava no ramo generico. O comentario da
+        // implementacao tem os tres casos medidos.
+        (void)AtenderLoadResObject(cpu);
       } else if (idx == kBaseDoShell + brew_slots::kShell_LoadResDataEx) {
         // `void *LoadResDataEx(IShell*, const char *pszResFile, uint16 id,
         //                      ResType type, void *pBuf, uint32 *pnBufSize)`.
@@ -1442,6 +1868,27 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         pedido.tipo = static_cast<std::uint16_t>(cpu.Get(kR3));
         pedido.buffer = mem_.Ler32(sp);
         pedido.pn_tamanho = mem_.Ler32(sp + 4);
+        // A ABI CRUA NO TRACO, e nao so o motivo da recusa: a recusa diz o
+        // `id`/`tipo` que se resolveram, mas nao diz QUEM chamou nem com que
+        // `pBuf`. Sem o `lr` e sem os dois argumentos da pilha, a pergunta
+        // "porque e que este titulo traz um buffer de 131 bytes" nao tem
+        // resposta -- e foi essa a pergunta que custou a sonda da frente
+        // `ishell2`. (So com `ZB2_TRACE=1`; nao mexe em contagem nenhuma.)
+        // O `*pnBufSize` SO SE LE NA FORMA COPIAR, que e a unica que o le: uma
+        // leitura a mais num endereco que o guest nao mapeou ficaria registada
+        // como leitura nao mapeada e seria atribuida a instrucao seguinte (ver
+        // a memoria `a_leitura_de_dados_em_endereco_nao_mapeado_do_curupira`).
+        // Uma sonda que muda o que mede nao e uma sonda.
+        const bool forma_copiar = (pedido.buffer != 0 && pedido.buffer != kSoOTamanho);
+        char abi[192];
+        std::snprintf(abi, sizeof(abi),
+                      "ficheiro=%s id=%u tipo=%u pBuf=0x%08x %s lr=0x%08x",
+                      pedido.ficheiro.c_str(), static_cast<unsigned>(pedido.id),
+                      static_cast<unsigned>(pedido.tipo), pedido.buffer,
+                      forma_copiar ? ("*pnBufSize=" + Hex(mem_.Ler32(pedido.pn_tamanho))).c_str()
+                                   : (pedido.buffer == 0 ? "alocacao" : "so-tamanho"),
+                      cpu.Get(kLR));
+        traco_.Emitir(Area::Brew, Nivel::Depuracao, "ISHELL_LOADRESDATAEX_ABI", abi);
         const ResultadoDoRecurso r = recursos_.Atender(pedido);
         cpu.Set(kR0, r.ponteiro);  // 0 em recusa, como o SDK exige.
       } else if (idx == kBaseDoShell + brew_slots::kShell_LoadResString) {

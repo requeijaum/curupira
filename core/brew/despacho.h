@@ -54,6 +54,20 @@
 
 namespace zb2::brew {
 
+// --- IShell::DetectType (slot 43): A ZONA DAS CADEIAS DE MIME ----------------
+//
+// O `DetectType` recebe um `const char **pcpszMIME` -- ou seja, DEVOLVE UM
+// ENDERECO DE MEMORIA DO GUEST com a cadeia. A zona vive na pagina do objecto
+// do shell, pela mesma razao e com a mesma forma do `Egl`
+// (`core/brew/egl.h:99`, `kZonaDeStrings = kObjIegl + 0x400`): a pagina de um
+// objecto nosso e nossa, e uma cadeia constante tem de estar num sitio que o
+// guest possa ler. 32 bytes por cadeia, e o `+0x800` fica guardado para o
+// rascunho do `pp` (4 bytes) que o `LoadResObject` precisa.
+constexpr std::uint32_t kZonaDeMimesDoShell = kObjShell + 0x400u;
+constexpr std::uint32_t kPassoDeMime = 0x20;
+constexpr std::uint32_t kMaximoDeMimes = 16;
+constexpr std::uint32_t kRascunhoDoShell = kObjShell + 0x800u;
+
 // Um temporizador pedido pelo guest. UM so, porque e o que os titulos pedem: o
 // laco de quadro, re-armado pelo proprio callback.
 //
@@ -358,6 +372,36 @@ class Despacho {
   // modo. Tres copias de um layout medido sao tres chances de ele divergir.
   void EscreverCabecalhoDeIdib(std::uint32_t obj, std::uint32_t pbmp, std::uint32_t largura,
                                std::uint32_t altura);
+
+  // --- IShell::DetectType (slot 43) e IShell::LoadResObject (slot 19) --------
+  //
+  // Os dois servidos AQUI, e nao em `classes.*`: nenhum deles e uma classe. O
+  // `DetectType` e um metodo do IShell cujo contrato foi MEDIDO (ver o
+  // comentario do ramo, em `despacho.cpp`), e o `LoadResObject` e o irmao do
+  // `LoadResDataEx` -- le o mesmo `.bar`, com a diferenca de devolver um
+  // OBJECT desenhável em vez do bloco cru.
+  //
+  // `int DetectType(IShell*, const void *cpBuf, uint32 *pdwSize,
+  //                 const char *cpszName, const char **pcpszMIME)`
+  //   -> r0=po  r1=cpBuf  r2=pdwSize  r3=cpszName  [sp+0]=pcpszMIME
+  //      (`AEEIShell.h:275`, `IShell_DetectType` `:568`)
+  // `false` = o contrato nao pode ser cumprido (falta registada com o nome);
+  // `true` = respondido, com sucesso ou com a recusa que o SDK preve.
+  bool AtenderDetectType(ICpu& cpu);
+  // Escreve a cadeia de mime numero `indice` na zona acima e devolve o endereco
+  // dela na memoria do GUEST. Idempotente: escrever a mesma cadeia duas vezes
+  // deixa-a igual.
+  std::uint32_t EscreverMimeNoGuest(std::uint32_t indice);
+
+  // `IBase *LoadResObject(IShell*, const char *pszResFile, uint16 nResID,
+  //                       AEECLSID cls)`
+  //   -> r0=po  r1=pszResFile  r2=nResID  r3=cls (`AEEIShell.h:251`)
+  bool AtenderLoadResObject(ICpu& cpu);
+  // O primeiro IDIB LIVRE da banda dos bitmaps compativeis, ACIMA do ecra
+  // (`kObjDibBase + 0x300`), que e a mesma escolha do servico da familia
+  // (`core/brew/interface.cpp`, `ProcurarObjectoLivre`) e a razao que la esta
+  // escrita: abaixo do ecra estao os DIBs do `CreateDIBitmap`. 0 = banda cheia.
+  std::uint32_t IdibLivre() const;
   // Para os testes poderem ver a contagem que saiu do `+4` do objecto.
  public:
   std::uint32_t ReferenciasDoBitmap(std::uint32_t obj) const {
