@@ -1,6 +1,7 @@
 #include "core/brew/classes.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -8,6 +9,7 @@
 #include <vector>
 
 #include "core/brew/clsids.h"
+#include "core/brew/ecra.h"
 #include "tools/brew_slots.inc"
 // A CONTAGEM DO QEGL prende-se ao IEGL gerado: o QEGL e o IEGL sem o
 // `GetProcAddress` (slot 8). Ver o `static_assert` no fim das tabelas abaixo --
@@ -654,17 +656,21 @@ std::uint32_t EscreverStringIgles(Memoria& mem, std::uint32_t indice, const char
   return p;
 }
 
-// A LISTA DE EXTENSOES ANUNCIADA. **VAZIA, e de proposito.**
+// A LISTA DE EXTENSOES ANUNCIADA. **SO O QUE ESTE FICHEIRO SERVE.**
 //
-// ANUNCIAR UMA EXTENSAO E PROMETER SERVI-LA: o titulo que le
-// `GL_OES_draw_texture` vai buscar o `glDrawTexivOES` ao `eglGetProcAddress` e
-// saltar para o que vier de la. Anunciar sem servir e PIOR do que nao anunciar
-// -- salta para uma funcao que nao existe.
+// A regra, medida (relatorio 12-gl.md, parte C.4): anunciar uma extensao e
+// PROMETER servi-la. Anunciar sem servir da **10 regressoes** -- os dez titulos
+// `emulator_neo` passam o `InitGLExtensions`, saltam para o `glDrawTexivOES`
+// prometido e morrem com zero pixels. O anuncio so pode entrar no MESMO commit
+// em que o `glDrawTexivOES` (e as outras sete variantes) passa a ser servido no
+// ramo `IGLES11Ext` deste ficheiro -- e foi o que este commit fez.
 //
-// Esta string vazia e um TESTE, e nao uma resposta final: serve para medir se o
-// que prende os dez titulos e mesmo a extensao que procuram. O resultado esta
-// no relatorio.
-constexpr const char* kExtensoesIgles = "";
+// SO `GL_OES_draw_texture`: e o unico nome cuja funcao existe aqui. Os nomes do
+// zeebx (`GL_ATI_imageon_misc`, `GL_ATI_texture_compression_atitc`,
+// `GL_ARB_vertex_buffer_object`) NAO entram: nao ha descodificador ATITC nem
+// buffer de vertices nesta arvore, e o titulo tolera a ausencia dos outros
+// (medido: tolera sete interfaces de extensao inteiras).
+constexpr const char* kExtensoesIgles = "GL_OES_draw_texture ";
 
 // Os indices da zona de strings. Um endereco fixo por consulta, para duas
 // consultas seguidas nao se pisarem.
@@ -674,11 +680,238 @@ constexpr std::uint32_t kStrIglesVersion = 2;
 constexpr std::uint32_t kStrIglesExtensions = 3;
 constexpr std::uint32_t kStrIglesDesconhecida = 4;
 
+// --- O ESTADO DE GL DO IGLES11 QUE A EXTENSAO PRECISA ----------------------
+//
+// O `AtenderClasse` nao tem um objecto-hoardeiro: o estado das classes vive nos
+// OBJECTOS do guest, e o do IGLES11 igual. Um bloco proprio na faixa
+// `0x8F000000` -- a que a bateria inteira ja provou que o corpus nao toca (o
+// comentario do `0x800C0000` em `classes.h`).
+//
+// Campos, todos u32:
+//   +0  textura_ligada (o GLuint do `glBindTexture`; 0 = nenhuma)
+//   +4  largura da imagem   +8  altura   +12 formato_do_pixel (o 6.o arg do
+//       `glTexImage2D`)   +16 tipo (o 8.o)   +20 ponteiro (o 9.o: os texels no
+//       espaco do guest)   +44 contador do `glGenTextures` (os ids so precisam
+//       de ser unicos e distintos de zero)
+//
+// NAO HA AQUI RECORTE (`GL_TEXTURE_CROP_RECT_OES`): o pedaco da textura que o
+// `glDrawTex*OES` desenha. Nenhum titulo do corpus o pede (as strings dos dez
+// `.mod` nao o nomeiam), e o default da extensao e a textura INTEIRA. O desenho
+// ja esta pronto a respeita-lo quando um titulo o usar.
+constexpr std::uint32_t kEstadoIgles = 0x8F030000u;
+constexpr std::uint32_t kIglesTexLigada = kEstadoIgles + 0u;
+constexpr std::uint32_t kIglesTexLargura = kEstadoIgles + 4u;
+constexpr std::uint32_t kIglesTexAltura = kEstadoIgles + 8u;
+constexpr std::uint32_t kIglesTexFormato = kEstadoIgles + 12u;
+constexpr std::uint32_t kIglesTexTipo = kEstadoIgles + 16u;
+constexpr std::uint32_t kIglesTexPonteiro = kEstadoIgles + 20u;
+constexpr std::uint32_t kIglesContador = kEstadoIgles + 44u;
+
+// O `glDrawTex*OES` -- o blit de ecra do `GL_OES_draw_texture`.
+//
+// Coordenadas de JANELA (o zero de y fica EMBAIXO, como no OpenGL), sem
+// passar pelas matrizes: e o caminho que um emulador usa para pôr a tela dele
+// na tela do aparelho, e e o que os dez portes de arcade do console fazem.
+// Largura ou altura negativas espelham o eixo (zeebx, `rasterizer.rs`,
+// `draw_texture`).
+//
+// Os pixels vao para o BUFFER DO ECRA NO GUEST (`kBaseDoEcraNoGuest`, RGB565):
+// o mesmo sitio onde o titulo escreveria; a sincronizacao do `IDisplay::Update`
+// (e o absorver final da bateria) conta-os como desenho. Sem a Tela pelo meio
+// nao ha rasterizador: e um blit, como a extensao manda. A amostragem e a do
+// rasterizador desta arvore (GL_NEAREST, clamp; RGBA/RGB/LUMINANCE x
+// GL_UNSIGNED_BYTE) para uma textura desenhada aqui nao mentir sobre o que
+// desenhou.
+bool DesenharRectTexturaIgles(Memoria& mem, float x, float y, float /*z*/, float w, float h,
+                              std::string* motivo) {
+  const std::uint32_t tex = mem.Ler32(kIglesTexLigada);
+  if (tex == 0) {
+    *motivo = "sem textura ligada (glBindTexture nao servido)";
+    return false;
+  }
+  const std::uint32_t largura = mem.Ler32(kIglesTexLargura);
+  const std::uint32_t altura = mem.Ler32(kIglesTexAltura);
+  const std::uint32_t formato = mem.Ler32(kIglesTexFormato);
+  const std::uint32_t tipo = mem.Ler32(kIglesTexTipo);
+  const std::uint32_t ponteiro = mem.Ler32(kIglesTexPonteiro);
+  if (largura == 0 || altura == 0 || ponteiro == 0) {
+    *motivo = "textura sem imagem (glTexImage2D nao servido)";
+    return false;
+  }
+  if (w == 0.0f || h == 0.0f) {
+    *motivo = "rect de largura ou altura zero";
+    return false;
+  }
+  const bool rgba = (formato == gl_slots::GL_RGBA && tipo == gl_slots::GL_UNSIGNED_BYTE);
+  const bool rgb = (formato == gl_slots::GL_RGB && tipo == gl_slots::GL_UNSIGNED_BYTE);
+  const bool lum = (formato == gl_slots::GL_LUMINANCE && tipo == gl_slots::GL_UNSIGNED_BYTE);
+  if (!rgba && !rgb && !lum) {
+    char d[96];
+    std::snprintf(d, sizeof(d),
+                  "textura com formato 0x%04x e tipo 0x%04x sem caminho de amostragem",
+                  formato, tipo);
+    *motivo = d;
+    return false;
+  }
+
+  // JANELA -> ECRA. A janela do GL tem o zero embaixo; o buffer do guest cresce
+  // para BAIXO. O rect (x, y) e o canto INFERIOR esquerdo; largura e altura
+  // levam SINAL, e o sinal e o que espelha o eixo: o intervalo fica entre os
+  // dois e a coordenada de textura anda com o canto (como no zeebx).
+  const int wl = zb2::brew::kLarguraDoEcra;
+  const int hl = zb2::brew::kAlturaDoEcra;
+  const float esquerda = x, direita = x + w;
+  const float topo = static_cast<float>(hl) - y, fundo = static_cast<float>(hl) - (y + h);
+  const int x0 = std::max(0, static_cast<int>(std::floor(std::min(esquerda, direita))));
+  const int x1 = std::min(wl, static_cast<int>(std::ceil(std::max(esquerda, direita))));
+  const int y0 = std::max(0, static_cast<int>(std::floor(std::min(topo, fundo))));
+  const int y1 = std::min(hl, static_cast<int>(std::ceil(std::max(topo, fundo))));
+  if (x1 <= x0 || y1 <= y0) {
+    *motivo = "rect fora do ecra";
+    return false;
+  }
+
+  const float inv_l = (direita != esquerda) ? 1.0f / (direita - esquerda) : 0.0f;
+  const float inv_t = (topo != fundo) ? 1.0f / (topo - fundo) : 0.0f;
+  const int tecl = static_cast<int>(largura) - 1;
+  const int teca = static_cast<int>(altura) - 1;
+  for (int linha = y0; linha < y1; ++linha) {
+    // v=0 na linha de BAIXO da imagem (a convencao do OpenGL e a do
+    // rasterizador desta arvore): o canto inferior do rect mostra v0, que e a
+    // PRIMEIRA linha dos dados do `glTexImage2D`.
+    float v = (topo - static_cast<float>(linha)) * inv_t;
+    v = std::min(1.0f, std::max(0.0f, v));
+    const int ty = std::min(teca, static_cast<int>(std::floor(v * static_cast<float>(altura))));
+    for (int col = x0; col < x1; ++col) {
+      const float s = (static_cast<float>(col) - esquerda) * inv_l;
+      const float u = std::min(1.0f, std::max(0.0f, s));
+      const int tx = std::min(tecl, static_cast<int>(std::floor(u * static_cast<float>(largura))));
+      const std::uint32_t origem = ponteiro + static_cast<std::uint32_t>(ty * static_cast<int>(largura) + tx) * (rgba ? 4u : (rgb ? 3u : 1u));
+      std::uint8_t r, g, b;
+      if (rgba) {
+        r = mem.Ler8(origem + 0u);
+        g = mem.Ler8(origem + 1u);
+        b = mem.Ler8(origem + 2u);
+      } else if (rgb) {
+        r = mem.Ler8(origem + 0u);
+        g = mem.Ler8(origem + 1u);
+        b = mem.Ler8(origem + 2u);
+      } else {
+        r = g = b = mem.Ler8(origem);
+      }
+      const std::uint16_t rgb565 = static_cast<std::uint16_t>(((r >> 3) << 11) |
+                                                              ((g >> 2) << 5) | (b >> 3));
+      mem.Escrever16(zb2::brew::kBaseDoEcraNoGuest +
+                         static_cast<std::uint32_t>(linha * wl + col) * 2u,
+                     rgb565);
+    }
+  }
+  return true;
+}
+
 bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
-  // O IGLES11Ext, faixa propria (15 slots, AEEGLES11Ext.h).
+  // O IGLES11Ext, faixa propria (15 slots, AEEGLES11Ext.h). A CABECA e os
+  // OITO `DrawTex*OES` sao o que o `GL_OES_draw_texture` promete, e sao
+  // SERVIDOS; os quatro de palette/weight (3..6) recusam COM NOME, porque nao
+  // ha caminho para eles -- o titulo tolera a ausencia (medido, 12-gl.md C.1).
   if (indice >= kVtableIglesExt && indice < kVtableIglesExt + kIglesExtSlots) {
     const std::uint32_t slot = indice - kVtableIglesExt;
     char nome[64], det[192];
+    Memoria& mem = cpu.Mem();
+
+    // A CABECA. O wrapper do titulo (`GLES_ext.c`) chama `IGLES11EXT_Release`
+    // no fim (`ReleaseNBI`) e `IGLES11EXT_QueryInterface` para se servir a si
+    // proprio; a contagem vive no objecto, como em todas as interfaces.
+    if (slot == igles_ext_slots::kIglesExt_AddRef) {
+      const std::uint32_t n = mem.Ler32(kObjetoIglesExt + 4) + 1;
+      mem.Escrever32(kObjetoIglesExt + 4, n);
+      cpu.Set(kR0, n);
+      return true;
+    }
+    if (slot == igles_ext_slots::kIglesExt_Release) {
+      const std::uint32_t n = mem.Ler32(kObjetoIglesExt + 4);
+      if (n == 0) {
+        traco.RegistarFalta(Area::Brew, "IGLES11Ext::Release",
+                            "Release de um objecto com contagem zero");
+        cpu.Set(kR0, kAeeUnsupported);
+        return true;
+      }
+      mem.Escrever32(kObjetoIglesExt + 4, n - 1);
+      cpu.Set(kR0, n - 1);
+      return true;
+    }
+    if (slot == igles_ext_slots::kIglesExt_QueryInterface) {
+      const std::uint32_t iid = cpu.Get(kR1), ppo = cpu.Get(kR2);
+      if (ppo == 0) {
+        traco.RegistarFalta(Area::Brew, "IGLES11Ext::QueryInterface", "ppObj nulo");
+        cpu.Set(kR0, kAeeBadParm);
+        return true;
+      }
+      if (iid == kIidGles11Ext) {
+        mem.Escrever32(ppo, kObjetoIglesExt);
+        cpu.Set(kR0, kAeeSuccess);
+      } else {
+        mem.Escrever32(ppo, 0);
+        cpu.Set(kR0, kAeeUnsupported);
+      }
+      return true;
+    }
+
+    // O `glDrawTex*OES` (slots 7..14): as OITO variantes desenham o mesmo rect,
+    // so muda como os cinco numeros chegam. A decodificacao e a do zeemu
+    // (`BrewEGL.cpp`, `handle_draw_tex_oes`), com o pMe no r0.
+    if (slot >= igles_ext_slots::kIglesExt_DrawTexsOES &&
+        slot <= igles_ext_slots::kIglesExt_DrawTexfvOES) {
+      const bool s = (slot == igles_ext_slots::kIglesExt_DrawTexsOES ||
+                      slot == igles_ext_slots::kIglesExt_DrawTexsvOES);
+      const bool i = (slot == igles_ext_slots::kIglesExt_DrawTexiOES ||
+                      slot == igles_ext_slots::kIglesExt_DrawTexivOES);
+      const bool x = (slot == igles_ext_slots::kIglesExt_DrawTexxOES ||
+                      slot == igles_ext_slots::kIglesExt_DrawTexxvOES);
+      const bool vetorial = (slot == igles_ext_slots::kIglesExt_DrawTexsvOES ||
+                             slot == igles_ext_slots::kIglesExt_DrawTexivOES ||
+                             slot == igles_ext_slots::kIglesExt_DrawTexxvOES ||
+                             slot == igles_ext_slots::kIglesExt_DrawTexfvOES);
+      auto num = [&](std::uint32_t cruda) -> float {
+        if (s) return static_cast<float>(static_cast<std::int16_t>(cruda & 0xFFFFu));
+        if (i) return static_cast<float>(static_cast<std::int32_t>(cruda));
+        if (x) return static_cast<float>(static_cast<std::int32_t>(cruda)) / 65536.0f;
+        float f;
+        std::memcpy(&f, &cruda, 4);
+        return f;
+      };
+      auto comp = [&](std::uint32_t onde, int k) -> float {
+        if (onde == 0) return 0.0f;
+        if (s) return num(mem.Ler16(onde + 2u * static_cast<std::uint32_t>(k)));
+        return num(mem.Ler32(onde + 4u * static_cast<std::uint32_t>(k)));
+      };
+      float xr, yr, zr, wr, hr;
+      if (vetorial) {
+        const std::uint32_t coords = cpu.Get(kR1);
+        xr = comp(coords, 0); yr = comp(coords, 1); zr = comp(coords, 2);
+        wr = comp(coords, 3); hr = comp(coords, 4);
+      } else {
+        xr = num(cpu.Get(kR1)); yr = num(cpu.Get(kR2)); zr = num(cpu.Get(kR3));
+        const std::uint32_t sp = cpu.Get(kSP);
+        wr = num(mem.Ler32(sp + 0u)); hr = num(mem.Ler32(sp + 4u));
+      }
+      std::string motivo;
+      if (!DesenharRectTexturaIgles(mem, xr, yr, zr, wr, hr, &motivo)) {
+        std::snprintf(nome, sizeof(nome), "IGLES11Ext::%s", NomeDoSlotIglesExt(slot));
+        std::snprintf(det, sizeof(det), "%s (recto %.1f,%.1f %.1fx%.1f)", motivo.c_str(), xr, yr,
+                      wr, hr);
+        traco.RegistarFalta(Area::Brew, nome, det);
+        cpu.Set(kR0, kAeeUnsupported);
+        return true;
+      }
+      std::snprintf(nome, sizeof(nome), "IGLES11Ext::%s", NomeDoSlotIglesExt(slot));
+      std::snprintf(det, sizeof(det), "recto (%.1f, %.1f %.1fx%.1f), textura %u", xr, yr, wr, hr,
+                    mem.Ler32(kIglesTexLigada));
+      traco.Emitir(Area::Brew, Nivel::Depuracao, nome, det);
+      cpu.Set(kR0, kAeeSuccess);
+      return true;
+    }
+
     std::snprintf(nome, sizeof(nome), "IGLES11Ext::%s", NomeDoSlotIglesExt(slot));
     std::snprintf(det, sizeof(det), "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x lr=0x%08x",
                   cpu.Get(kR0), cpu.Get(kR1), cpu.Get(kR2), cpu.Get(kR3), cpu.Get(kLR));
@@ -745,6 +978,81 @@ bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
       // RESPONDER UM VALOR QUE NAO SE MEDIU E `RegistarPressuposto`, e nao
       // `RegistarFalta` (traco.h: "um caminho nunca e os dois").
       traco.RegistarPressuposto(Area::Brew, "IGLES11::GetString", o_que);
+      return true;
+    }
+
+    // O CAMINHO DE TEXTURA MINIMO QUE O `glDrawTex*OES` EXIGE. O blit desenha a
+    // textura LIGADA: sem `glBindTexture`/`glTexImage2D` servidos a extensao
+    // anunciada nao tem o que desenhar (e os dez titulos chamam estes tres logo
+    // a seguir ao `InitGLExtensions`). O estado fica no bloco `kEstadoIgles`,
+    // observavel e testavel como o resto das classes.
+    if (slot == igles_slots::kIgles_GenTextures) {
+      // `int GenTextures(iname *pMe, GLsizei n, GLuint *textures)` (AEEGLES10.h:88).
+      const std::uint32_t n = cpu.Get(kR1), lista = cpu.Get(kR2);
+      if (n == 0 || lista == 0) {
+        traco.RegistarFalta(Area::Brew, "IGLES11::GenTextures", "n ou lista nulo");
+        cpu.Set(kR0, kAeeBadParm);
+        return true;
+      }
+      Memoria& mem = cpu.Mem();
+      std::uint32_t contador = mem.Ler32(kIglesContador);
+      for (std::uint32_t k = 0; k < n; ++k) {
+        mem.Escrever32(lista + 4u * k, ++contador);
+      }
+      mem.Escrever32(kIglesContador, contador);
+      cpu.Set(kR0, kAeeSuccess);
+      return true;
+    }
+    if (slot == igles_slots::kIgles_BindTexture) {
+      // `int BindTexture(iname *pMe, AEEGLenum target, AEEGLuint texture)`.
+      const std::uint32_t alvo = cpu.Get(kR1), tex = cpu.Get(kR2);
+      if (alvo != gl_slots::GL_TEXTURE_2D) {
+        traco.RegistarFalta(Area::Brew, "IGLES11::BindTexture",
+                            "alvo diferente de GL_TEXTURE_2D");
+        cpu.Set(kR0, kAeeUnsupported);
+        return true;
+      }
+      Memoria& mem = cpu.Mem();
+      mem.Escrever32(kIglesTexLigada, tex);
+      cpu.Set(kR0, kAeeSuccess);
+      return true;
+    }
+    if (slot == igles_slots::kIgles_TexImage2D) {
+      // `int TexImage2D(iname *pMe, target, level, internalformat, width,
+      // height, border, format, type, pixels)` (AEEGLES10.h:127): para alem do
+      // pMe sao NOVE argumentos, os seis ultimos na pilha.
+      Memoria& mem = cpu.Mem();
+      const std::uint32_t sp = cpu.Get(kSP);
+      const std::uint32_t alvo = cpu.Get(kR1);
+      const std::uint32_t larg = mem.Ler32(sp + 0u);
+      const std::uint32_t alt = mem.Ler32(sp + 4u);
+      const std::uint32_t formato = mem.Ler32(sp + 12u);
+      const std::uint32_t tipo = mem.Ler32(sp + 16u);
+      const std::uint32_t pixels = mem.Ler32(sp + 20u);
+      if (alvo != gl_slots::GL_TEXTURE_2D) {
+        traco.RegistarFalta(Area::Brew, "IGLES11::TexImage2D",
+                            "alvo diferente de GL_TEXTURE_2D");
+        cpu.Set(kR0, kAeeUnsupported);
+        return true;
+      }
+      if (larg == 0 || alt == 0) {
+        traco.RegistarFalta(Area::Brew, "IGLES11::TexImage2D",
+                            "textura com largura ou altura zero");
+        cpu.Set(kR0, kAeeUnsupported);
+        return true;
+      }
+      if (pixels == 0) {
+        traco.RegistarFalta(Area::Brew, "IGLES11::TexImage2D",
+                            "sem ponteiro para os texels");
+        cpu.Set(kR0, kAeeUnsupported);
+        return true;
+      }
+      mem.Escrever32(kIglesTexLargura, larg);
+      mem.Escrever32(kIglesTexAltura, alt);
+      mem.Escrever32(kIglesTexFormato, formato);
+      mem.Escrever32(kIglesTexTipo, tipo);
+      mem.Escrever32(kIglesTexPonteiro, pixels);
+      cpu.Set(kR0, kAeeSuccess);
       return true;
     }
 

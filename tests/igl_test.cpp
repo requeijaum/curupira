@@ -21,9 +21,13 @@
 #include <string>
 #include <vector>
 
+#include "core/brew/classes.h"
+#include "core/brew/ecra.h"
 #include "core/brew/igl.h"
+#include "core/cpu/arm_interpreter.h"
 #include "core/memoria/memoria.h"
 #include "core/traco/traco.h"
+#include "tools/igles_slots.inc"
 
 namespace zb2::brew {
 namespace {
@@ -545,6 +549,262 @@ TEST(RegistoGl, AddRefEReleaseMexemNaContagem) {
   EXPECT_EQ(ret, 2u);
   EXPECT_EQ(b.igl.Executar(kIgl_Release, Args(b.igl.Objeto()), &ret), ResultadoGl::Feito);
   EXPECT_EQ(ret, 1u);
+}
+
+// ---------------------------------------------------------------------------
+// 5. A FRENTE gloe: `GL_OES_draw_texture` + `glDrawTexivOES` JUNTOS
+// ---------------------------------------------------------------------------
+//
+// O que estes testes provam e a REGRA MEDIDA do relatorio 12-gl.md: anunciar a
+// extensao SEM servir o `glDrawTexivOES` da 10 regressoes (pixels 307384 -> 0)
+// nos dez titulos `emulator_neo`. O anuncio (a string de extensoes do
+// `IGLES11::GetString`) e o servico (o blit dos `IGLES11Ext::DrawTex*OES`)
+// habitam os DOIS em `core/brew/classes.cpp` -- o `Igl` (`core/brew/igl.cpp`)
+// nao participa no caminho dos dez titulos (medido: zero faltas IGL no corpus
+// inteiro). Estes testes correm `AtenderClasse` com uma CPU real, como os de
+// `classes_test.cpp`, para exigirem o MESMO caminho que o guest usa.
+
+// O banco das classes: objectos construidos + CPU real + saidas, porque e a
+// cablagem que o `despacho` usa (o `Despacho::Correr` chama `AtenderClasse`).
+struct BancoClasses {
+  Tempo tempo;
+  Traco traco;
+  DestinoMemoria destino;
+  Memoria mem;
+  Saidas saidas;
+  ArmInterpreter cpu;
+
+  BancoClasses()
+      : traco("teste-da-frente-gloe", &tempo), mem(&traco), cpu(mem, &traco) {
+    traco.JuntarDestino(&destino);
+    saidas.base = 0xF0000000u;
+    saidas.passo = 4;
+    saidas.quantos = 100000;
+    saidas.ativa = true;
+    cpu.ConfigurarSaidas(saidas);
+    ConstruirClasses(mem, saidas, traco);
+  }
+
+  std::size_t Faltas(const std::string& nome) const {
+    const auto& f = traco.ContagemFaltas();
+    const auto it = f.find(nome);
+    return it == f.end() ? 0 : static_cast<std::size_t>(it->second);
+  }
+  std::uint16_t Pixel(int x, int y) const {
+    return static_cast<std::uint16_t>(mem.Ler16(
+        zb2::brew::kBaseDoEcraNoGuest + static_cast<std::uint32_t>(y * 640 + x) * 2u));
+  }
+};
+
+TEST(FrenteGloe, OAnuncioEServidoNoMesmoCommitDoBlit) {
+  // A REGRA em forma de teste: a lista de extensoes contem `GL_OES_draw_texture`
+  // (o blit serve-o, nos testes abaixo) e NAO contem os nomes que o zeebx
+  // anuncia e esta arvore nao serve (`GL_ATI_*`, `GL_ARB_vertex_buffer_object`):
+  // anunciar o que nao existe faz o titulo saltar para uma funcao que nao esta
+  // la (o caso MEDIDO em 12-gl.md C.4).
+  BancoClasses b;
+  const std::uint32_t pret = 0x80100000u;
+  b.mem.Escrever32(pret, 0xdeadbeefu);
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, gl_slots::GL_EXTENSIONS);
+  b.cpu.Set(kR2, pret);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_GetString, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  const std::uint32_t p = b.mem.Ler32(pret);
+  ASSERT_NE(p, 0u) << "NUNCA NULO: ha um strstr medido sobre este resultado";
+  std::string s;
+  b.mem.LerCadeia(p, &s, 0x100);
+  EXPECT_NE(s.find("GL_OES_draw_texture"), std::string::npos) << s;
+  EXPECT_EQ(s.find("GL_ATI_"), std::string::npos) << "atitc/imageon nao sao servidos: " << s;
+  EXPECT_EQ(s.find("GL_ARB_"), std::string::npos) << "vertex_buffer_object nao e servido: " << s;
+}
+
+TEST(FrenteGloe, OEstadoDeTexturaMinimoEServidoComSucesso) {
+  // O blit desenha a textura LIGADA; o titulo liga-a com `glGenTextures`,
+  // `glBindTexture` e `glTexImage2D` no IGLES11, e os tres tem de responder
+  // antes de qualquer rect. (VERMELHO antes da frente: recusavam todos.)
+  BancoClasses b;
+  const std::uint32_t texels = 0x0002C000u;
+  const std::uint32_t pilha = 0x0002D000u;
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, 1u);            // n = 1
+  b.cpu.Set(kR2, 0x0002B000u);   // lista de ids
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_GenTextures, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  EXPECT_NE(b.mem.Ler32(0x0002B000u), 0u);
+
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, gl_slots::GL_TEXTURE_2D);
+  b.cpu.Set(kR2, b.mem.Ler32(0x0002B000u));
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_BindTexture, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, gl_slots::GL_TEXTURE_2D);
+  b.cpu.Set(kR2, 0u);                                   // level
+  b.cpu.Set(kR3, gl_slots::GL_RGBA);                    // internalformat
+  b.cpu.Set(kSP, pilha);
+  b.mem.Escrever32(pilha + 0u, 2u);                     // width
+  b.mem.Escrever32(pilha + 4u, 2u);                     // height
+  b.mem.Escrever32(pilha + 8u, 0u);                     // border
+  b.mem.Escrever32(pilha + 12u, gl_slots::GL_RGBA);     // format (o 6.o arg)
+  b.mem.Escrever32(pilha + 16u, gl_slots::GL_UNSIGNED_BYTE);  // type
+  b.mem.Escrever32(pilha + 20u, texels);                // pixels
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_TexImage2D, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+}
+
+TEST(FrenteGloe, OBlitEscreveOPedacoDaTexturaNoEcraDoGuest) {
+  // Uma textura 2x2 RGBA com quatro texels de cores distintas, desenhada num
+  // rect 4x4 em coordenadas de JANELA (8, 8). O rect ocupa as linhas 468..471 e
+  // as colunas 8..11 do ecra do guest, e cada canto mostra o texel certo:
+  //
+  //   linha 468 (topo do rect, v=1)  -> fila 1 dos dados: azul | branco
+  //   linha 471 (fundo do rect, v=0) -> fila 0 dos dados: vermelho | verde
+  //
+  // (as colunas 8..11 mapeiam u 0..1: azul/vermelho em 8,9; branco/verde em 10,11)
+  BancoClasses b;
+  const std::uint32_t texels = 0x0002C000u;
+  const std::uint32_t pilha = 0x0002D000u;
+  const std::uint32_t coords = 0x0002E000u;
+  // fila 0 dos dados: vermelho, verde  | fila 1: azul, branco (RGBA8, LE)
+  b.mem.Escrever32(texels + 0u, 0xFF0000FFu);
+  b.mem.Escrever32(texels + 4u, 0xFF00FF00u);
+  b.mem.Escrever32(texels + 8u, 0xFFFF0000u);
+  b.mem.Escrever32(texels + 12u, 0xFFFFFFFFu);
+
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, gl_slots::GL_TEXTURE_2D);
+  b.cpu.Set(kR2, 7u);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_BindTexture, b.traco));
+  ASSERT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, gl_slots::GL_TEXTURE_2D);
+  b.cpu.Set(kR2, 0u);
+  b.cpu.Set(kR3, gl_slots::GL_RGBA);
+  b.cpu.Set(kSP, pilha);
+  b.mem.Escrever32(pilha + 0u, 2u);
+  b.mem.Escrever32(pilha + 4u, 2u);
+  b.mem.Escrever32(pilha + 8u, 0u);
+  b.mem.Escrever32(pilha + 12u, gl_slots::GL_RGBA);
+  b.mem.Escrever32(pilha + 16u, gl_slots::GL_UNSIGNED_BYTE);
+  b.mem.Escrever32(pilha + 20u, texels);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_TexImage2D, b.traco));
+  ASSERT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+
+  // `glDrawTexivOES(pMe, const GLint *coords)` -- coords = x, y, z, w, h.
+  b.mem.Escrever32(coords + 0u, 8u);
+  b.mem.Escrever32(coords + 4u, 8u);
+  b.mem.Escrever32(coords + 8u, 0u);
+  b.mem.Escrever32(coords + 12u, 4u);
+  b.mem.Escrever32(coords + 16u, 4u);
+  b.cpu.Set(kR0, kObjetoIglesExt);
+  b.cpu.Set(kR1, coords);
+  EXPECT_TRUE(
+      AtenderClasse(b.cpu, kVtableIglesExt + igles_ext_slots::kIglesExt_DrawTexivOES, b.traco));
+  ASSERT_EQ(b.cpu.Get(kR0), kAeeSuccess) << "o rect recusou; ver a falta no traco";
+
+  // Os quatro cantos do rect, em RGB565: vermelho 0xF800, verde 0x07E0,
+  // azul 0x001F, branco 0xFFFF.
+  EXPECT_EQ(b.Pixel(8, 468), 0x001Fu);    // topo esquerda -> azul
+  EXPECT_EQ(b.Pixel(10, 468), 0xFFFFu);   // topo direita -> branco
+  EXPECT_EQ(b.Pixel(8, 471), 0xF800u);    // fundo esquerda -> vermelho
+  EXPECT_EQ(b.Pixel(10, 471), 0x07E0u);   // fundo direita -> verde
+  // E o rect NAO vazou fora do sitio: um pixel a 20px de distancia continua
+  // por escrever.
+  EXPECT_EQ(b.Pixel(30, 30), 0u);
+}
+
+TEST(FrenteGloe, ALarguraNegativaEspelhaOEixo) {
+  // O sinal da largura espelha: com w = -4 o rect passa a ocupar as colunas
+  // 4..7, e o texel da DIREITA da textura (branco) fica no lado ESQUERDO do
+  // rect. MEDIDO no zeebx (`rasterizer.rs::draw_texture`): "largura ou altura
+  // negativa ali espelha o eixo -- e assim que a extensao vira a imagem".
+  BancoClasses b;
+  const std::uint32_t texels = 0x0002C000u;
+  const std::uint32_t pilha = 0x0002D000u;
+  const std::uint32_t coords = 0x0002E000u;
+  b.mem.Escrever32(texels + 0u, 0xFF0000FFu);
+  b.mem.Escrever32(texels + 4u, 0xFF00FF00u);
+  b.mem.Escrever32(texels + 8u, 0xFFFF0000u);
+  b.mem.Escrever32(texels + 12u, 0xFFFFFFFFu);
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, gl_slots::GL_TEXTURE_2D);
+  b.cpu.Set(kR2, 7u);
+  AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_BindTexture, b.traco);
+  ASSERT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, gl_slots::GL_TEXTURE_2D);
+  b.cpu.Set(kR2, 0u);
+  b.cpu.Set(kR3, gl_slots::GL_RGBA);
+  b.cpu.Set(kSP, pilha);
+  b.mem.Escrever32(pilha + 0u, 2u);
+  b.mem.Escrever32(pilha + 4u, 2u);
+  b.mem.Escrever32(pilha + 8u, 0u);
+  b.mem.Escrever32(pilha + 12u, gl_slots::GL_RGBA);
+  b.mem.Escrever32(pilha + 16u, gl_slots::GL_UNSIGNED_BYTE);
+  b.mem.Escrever32(pilha + 20u, texels);
+  AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_TexImage2D, b.traco);
+  ASSERT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  // x=8, w=-4 -> rect nas colunas 4..7 (8 nao pertence ao rect).
+  b.mem.Escrever32(coords + 0u, 8u);
+  b.mem.Escrever32(coords + 4u, 8u);
+  b.mem.Escrever32(coords + 8u, 0u);
+  b.mem.Escrever32(coords + 12u, static_cast<std::uint32_t>(-4));
+  b.mem.Escrever32(coords + 16u, 4u);
+  b.cpu.Set(kR0, kObjetoIglesExt);
+  b.cpu.Set(kR1, coords);
+  EXPECT_TRUE(
+      AtenderClasse(b.cpu, kVtableIglesExt + igles_ext_slots::kIglesExt_DrawTexivOES, b.traco));
+  ASSERT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  // Topo do rect (linha 468, fila 1): o lado esquerdo do rect mostra o texel da
+  // DIREITA da textura (branco), e o direito mostra o azul.
+  EXPECT_EQ(b.Pixel(4, 468), 0xFFFFu);
+  EXPECT_EQ(b.Pixel(7, 468), 0x001Fu);
+  // Fora do rect (coluna 8) nada foi escrito por este rect.
+  EXPECT_EQ(b.Pixel(8, 468), 0u);
+}
+
+TEST(FrenteGloe, OBlitSemTexturaRecusaComNome) {
+  // Sem `glBindTexture` o blit NAO pode desenhar: "devolver sucesso e nao
+  // desenhar" e o defeito do stub do `glCullFace`. A recusa tem de se ler.
+  BancoClasses b;
+  const std::uint32_t coords = 0x0002E000u;
+  b.mem.Escrever32(coords + 0u, 0u);
+  b.mem.Escrever32(coords + 4u, 0u);
+  b.mem.Escrever32(coords + 8u, 0u);
+  b.mem.Escrever32(coords + 12u, 4u);
+  b.mem.Escrever32(coords + 16u, 4u);
+  b.cpu.Set(kR0, kObjetoIglesExt);
+  b.cpu.Set(kR1, coords);
+  EXPECT_TRUE(
+      AtenderClasse(b.cpu, kVtableIglesExt + igles_ext_slots::kIglesExt_DrawTexivOES, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("IGLES11Ext::DrawTexivOES"), 1u);
+  EXPECT_EQ(b.Pixel(10, 10), 0u);
+}
+
+TEST(FrenteGloe, ACabecaDoIglesExtViveNoObjecto) {
+  // O wrapper (`GLES_ext.c`) chama `IGLES11EXT_QueryInterface` para se servir a
+  // si proprio e `IGLES11EXT_Release` no fim (`ReleaseNBI`): a contagem tem de
+  // viver no objecto, como nas outras interfaces.
+  BancoClasses b;
+  const std::uint32_t ppo = 0x80100010u;
+  b.cpu.Set(kR0, kObjetoIglesExt);
+  b.cpu.Set(kR1, kIidGles11Ext);
+  b.cpu.Set(kR2, ppo);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIglesExt + igles_ext_slots::kIglesExt_QueryInterface,
+                            b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  EXPECT_EQ(b.mem.Ler32(ppo), kObjetoIglesExt);
+
+  b.cpu.Set(kR0, kObjetoIglesExt);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIglesExt + igles_ext_slots::kIglesExt_AddRef, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), 2u);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIglesExt + igles_ext_slots::kIglesExt_Release,
+                            b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), 1u);
 }
 
 }  // namespace

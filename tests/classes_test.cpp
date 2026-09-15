@@ -522,7 +522,7 @@ TEST(Classes, OsNomesDoIglesSaoOsDosCabecalhos) {
 // e o ultimo pedido de cada um. As strings do `.mod` dizem o resto:
 // `GL_OES_draw_texture`, `glDrawTexivOES`, `InitGLExtensions failed`,
 // `c:/my_code/emulator_neo/framework/GLES_ext.c`.
-TEST(Classes, OGetStringDoIglesNuncaDevolveNuloEAListaDeExtensoesEstaVazia) {
+TEST(Classes, OGetStringDoIglesNuncaDevolveNuloESoAnunciaOServido) {
   Bancada b;
   const std::uint32_t pret = 0x80100000u;
   auto pedir = [&](std::uint32_t qual) {
@@ -538,9 +538,13 @@ TEST(Classes, OGetStringDoIglesNuncaDevolveNuloEAListaDeExtensoesEstaVazia) {
     b.M().LerCadeia(p, &s, kPassoDeStringIgles);
     return s;
   };
-  // A LISTA VAZIA: nenhuma extensao e servida, e anunciar uma que nao existe
-  // faz o titulo saltar para uma funcao que nao existe.
-  EXPECT_EQ(pedir(gl_slots::GL_EXTENSIONS), "");
+  // A LISTA ANUNCIADA E SO O QUE SE SERVE: `GL_OES_draw_texture`, porque o
+  // blit existe (servido em classes.cpp); nada mais -- anunciar o que nao
+  // existe faz o titulo saltar para uma funcao que nao esta la.
+  const std::string ext = pedir(gl_slots::GL_EXTENSIONS);
+  EXPECT_NE(ext.find("GL_OES_draw_texture"), std::string::npos) << ext;
+  EXPECT_EQ(ext.find("GL_ATI_"), std::string::npos) << ext;
+  EXPECT_EQ(ext.find("GL_ARB_"), std::string::npos) << ext;
   EXPECT_EQ(pedir(gl_slots::GL_VERSION), "OpenGL ES-CM 1.1");
   EXPECT_EQ(pedir(gl_slots::GL_VENDOR), "");
   EXPECT_EQ(pedir(gl_slots::GL_RENDERER), "");
