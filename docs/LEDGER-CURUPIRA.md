@@ -2058,3 +2058,46 @@ applet e a andar. Os que mais aparecem:
 5. Um sub-agente que contradiz o enunciado que recebeu vale mais do que um que o
    cumpre: quatro das correccoes desta ronda vieram de agentes que disseram
    "a premissa que me deste esta errada, e aqui esta a medicao".
+
+### Correccao a tabela acima: a demanda le-se por TITULOS, nao por pedidos
+
+A tabela da seccao anterior ordenava a demanda por PEDIDOS, e isso levou-me a
+escrever que o `IFile::slot3` era "de longe o maior". **Esta errado como
+prioridade.** Os 70 pedidos sao TODOS do mesmo titulo (`allstarcards`). O mesmo
+para o bloco `IGLES11`: 46 pedidos em 14 slots distintos, mas so **tres**
+titulos. Contado por TITULOS AFECTADOS, o mapa e outro:
+
+| titulos | pedidos | falta |
+|---|---|---|
+| **11** | 11 | `IBitmap::slot12` |
+| **11** | 11 | `IThread::Start` |
+| **10** | 10 | `AEEHelperFuncs[0x00c] strcat` -- FEITO em `d2613ac` |
+| **9** | 9 | `AEEHelperFuncs[0x184] sleep` -- FEITO em `d2613ac` |
+| 4 | 5 | `IFileMgr::Remove` |
+| 3 | 10 | `IGLES11::slot104` |
+| 1 | 70 | `IFile::slot3` (`IFile_Read`) -- so o `allstarcards` |
+
+**Ruling**: a bateria ordena a demanda por pedidos, e essa ordem engana quando um
+titulo sozinho chama a mesma coisa num laco. A lista de faltas devia trazer as
+duas contagens. Custo de nao mudar: continuar a escolher a frente errada por ler
+a coluna errada -- ja aconteceu uma vez, aqui.
+
+### `d2613ac` -- strcat e sleep, e um teste meu que nao testava nada
+
+As duas ajudantes que mais TITULOS pediam. O `sleep` **nao dorme**: avanca o
+relogio VIRTUAL (`agora_ms_`), com tecto de um minuto. Dormir a serio pararia o
+relogio do anfitriao dentro de uma medicao -- a mesma violacao do P4 que fez
+apagar o `kOrcamentoSegundos`.
+
+**O erro que vale a pena guardar**: escrevi dois testes, passaram, e ao arrancar a
+ligacao para provar o vermelho eles CONTINUARAM VERDES. Chamavam o indice interno
+(1568/1569) e entravam no ramo do despacho directamente, sem passar pela tabela
+`AEEHelperFuncs`. Testavam a implementacao, e o que faltava era a CABLAGEM. O
+teste certo le `tabela + 0x00C` e confirma para onde aponta -- que e o que o
+modulo faz. E a mesma armadilha do "falta SetTimer com o SetTimer a funcionar",
+pela segunda vez no projecto.
+
+Efeito isolado: 0 regressoes, 0 melhorias, 21 neutros. As duas faltas desaparecem
+e nenhuma nova aparece (191 -> 172 pedidos, 37 -> 35 nomes). Nenhum degrau se
+move: os titulos que as pediam ja andavam, e continuam a parar onde paravam --
+so que agora por outro motivo.
