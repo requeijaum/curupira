@@ -14,6 +14,7 @@
 #include "core/memoria/memoria.h"
 #include "core/traco/traco.h"
 #include "tools/brew_slots.inc"
+#include "tools/igles_slots.inc"
 
 namespace zb2::brew {
 namespace {
@@ -1462,6 +1463,37 @@ TEST(EntradaNoDespacho, UmaThreadQueSoEsperaEParkadaENaoPrendeOLacoDeEventos) {
   EXPECT_EQ(b.Mem().Ler32(kMarcadorDoTemporizador), 0x33333333u)
       << "o laco de eventos tem de CORRER durante a espera da thread";
   (void)r;
+}
+
+// ===========================================================================
+// A FRENTE tela: A TELA DO MOTOR DO IGLES11 (o IGL de 40300+)
+// ===========================================================================
+//
+// O IGL de 30000 recebe a Tela dentro do `InstalarGl` (frente raster). O
+// IGLES11 -- o objecto que os 8 titulos 3D usam -- tem um motor proprio
+// (`classes.cpp`, `ConstruirIgles`) e a assembleia NAO o ligava a Tela: o
+// `Clear` desse objecto recusava a ESCRITA ("o IGL NAO TEM TELA LIGADA",
+// medido no ridgeracer: IGLES11::Clear 1x, pixels=0 -- o fio que as frentes
+// glbloco e qualcomm deixaram encostado).
+//
+// A ARMADILHA 3 desta casa: um teste que chamasse `AtenderClasse` a um motor
+// construido a mao nao testaria a CABLAGEM. Este corre a MESMA assembleia que
+// a bateria usa (`InstalarAjudantes` -> `ConstruirClasses` -> `ConstruirIgles`)
+// e pede o `Clear` pelo endereco de saida da vtable do IGLES11, com o pc do
+// guest a entrar la dentro -- o caminho real. VERMELHO antes da frente, verde
+// depois.
+
+TEST(FrenteTela, AAssembleiaLigaATelaAoMotorDoIgles11) {
+  Bancada b;
+  b.D().TelaRef().Limpar();
+  const std::uint32_t r0 = b.ChamaSaida(kVtableIgles + igles_slots::kIgles_Clear,
+                                        kObjetoIgles, gl_slots::GL_COLOR_BUFFER_BIT);
+  EXPECT_EQ(r0, kAeeSuccess);
+  EXPECT_EQ(b.Faltas("IGLES11::Clear"), 0u);
+  EXPECT_EQ(b.D().TelaRef().Escritos(),
+            static_cast<std::uint32_t>(Tela::kLargura * Tela::kAltura))
+      << "o Clear do IGLES11 tem de escrever na TELA DO DESPACHO, e nao recusar";
+  EXPECT_EQ(b.D().TelaRef().CoresDistintas(), 1u);
 }
 
 }  // namespace zb2::brew

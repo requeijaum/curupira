@@ -874,6 +874,20 @@ void Despacho::InstalarAjudantes(const Saidas& saidas, Endereco tabela) {
   // `tools/bateria.cpp` e partilhado e esta frente nao o altera.
   ConstruirClasses(mem_, saidas, traco_);
 
+  // A TELA DO MOTOR DO IGLES11 (frente tela). O `ConstruirIgles` -- chamado
+  // por `ConstruirClasses` acima -- RECONSTROI o motor do IGLES11 por corrida
+  // (uma vez por titulo), e o `InstalarGl`, feito ANTES em cima, so liga a
+  // Tela ao IGL de 30000. O IGLES11 (40300+, o objecto que os 8 titulos 3D
+  // usam) ficava sem ela: o `glClear` desse objecto RECUSAVA a escrita com "o
+  // IGL NAO TEM TELA LIGADA" (medido no ridgeracer: IGLES11::Clear 1x,
+  // pixels=0) -- o fio que as frentes glbloco e qualcomm deixaram encostado.
+  // O acesso e const porque o `EstadoDoIgles11` e a janela de leitura dos
+  // testes; definir a tela e o unico remendo desta frente em ficheiro
+  // partilhado, e fica AQUI para a ligacao acompanhar a instalacao.
+  if (const Igl* igles11 = EstadoDoIgles11()) {
+    const_cast<Igl*>(igles11)->DefinirTela(&tela_);
+  }
+
   for (std::uint32_t off = 0; off < 117 * 4; off += 4) {
     if (off == 0x68 || off == 0x6c || ja_tem(off)) continue;
     // UM endereco de saida POR OFFSET, e nao um stub generico para todos.

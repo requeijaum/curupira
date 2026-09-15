@@ -1000,5 +1000,35 @@ TEST(FrenteGlbloco, OClearAcumulaAMascaraERecusaAEscritaSemSuperficie) {
       << b.Detalhe("IGLES11::Clear");
 }
 
+// ---------------------------------------------------------------------------
+// 6. A FRENTE tela: A TELA DO MOTOR GL
+// ---------------------------------------------------------------------------
+//
+// O IGLES11 tem um motor do MESMO tipo do IGL de 30000 (`Igl`), reconstruido
+// por `ConstruirIgles` (uma vez por corrida). O IGL de 30000 recebe a Tela na
+// assembleia (`Despacho::InstalarGl`); o do IGLES11 ficou SEM ela -- o
+// `glClear` desse objecto recusava a ESCRITA ("o IGL NAO TEM TELA LIGADA",
+// medido no ridgeracer: IGLES11::Clear 1x, pixels=0). O teste abaixo prova o
+// CONTRATO do motor (definir a Tela -> a limpeza escreve); o teste da
+// assembleia (que e quem liga o fio) vive em `entrada_despacho_test.cpp`.
+
+TEST(FrenteTela, OClearDoIgles11EscreveNaTelaDepoisDeDefinirTela) {
+  // O MESMO ACTO do despacho (`Igl::DefinirTela` sobre o motor do IGLES11)
+  // faz o `Clear` desse objecto escrever 640x480 pixels na Tela, com sucesso e
+  // sem falta -- em vez de acumular a mascara e recusar (o teste
+  // `OClearAcumula...` fixa o outro lado do mesmo cabo).
+  BancoClasses b;
+  Tela tela;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+  const_cast<Igl*>(EstadoDoIgles11())->DefinirTela(&tela);
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, GL_COLOR_BUFFER_BIT);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Clear, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  EXPECT_EQ(b.Faltas("IGLES11::Clear"), 0u);
+  EXPECT_EQ(tela.Escritos(), static_cast<std::uint32_t>(Tela::kLargura * Tela::kAltura));
+  EXPECT_EQ(tela.CoresDistintas(), 1u);
+}
+
 }  // namespace
 }  // namespace zb2::brew
