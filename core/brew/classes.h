@@ -107,7 +107,8 @@ enum class Classe : std::uint32_t {
   kTextCtl = 2,
   kThread = 3,
   kPNGDecoderBREW = 4,
-  kQuantas = 5,
+  kQEGL = 5,
+  kQuantas = 6,
 };
 
 constexpr std::uint32_t kQuantasClasses = static_cast<std::uint32_t>(Classe::kQuantas);

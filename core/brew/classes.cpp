@@ -49,12 +49,26 @@ const char* NomeDoSlotPNGDecoderBREW(unsigned slot) {
   }
 }
 
+// QEGL (0x0103d8ec): DECLARADO, nao medido no SDK. So aparece em comentarios
+// de teste OpenVG (UTOpenVGSuite.c:201) e numa tabela propria do zeebulator --
+// nenhum `.h`/`.bid` o define. Por isso so IQI (3 slots) com nomes genericos:
+// inventar slots EGL seria mentir comportamento que nao se mediu.
+const char* NomeDoSlotQEGL(unsigned slot) {
+  switch (slot) {
+    case 0: return "AddRef";
+    case 1: return "Release";
+    case 2: return "QueryInterface";
+    default: return "?";
+  }
+}
+
 const char* (*const kNomeDoSlot[])(unsigned) = {
     &brew_slots::NomeDeAppHistory,
     &brew_slots::NomeDeValueModel,
     &brew_slots::NomeDeTextCtl,
     &NomeDoSlotThread,
     &NomeDoSlotPNGDecoderBREW,
+    &NomeDoSlotQEGL,
 };
 
 // Quantos slots cada interface TEM, do mesmo cabecalho (IThread: 12, medido em
@@ -65,6 +79,7 @@ const std::uint32_t kSlotsDaInterface[] = {
     brew_slots::kTextCtlSlots,
     12,
     5,
+    3,
 };
 
 // OS NOMES QUE A DEMANDA VAI MOSTRAR. O CLSID vem da constante gerada em
@@ -81,6 +96,7 @@ constexpr Ficha kFichas[kQuantasClasses] = {
     {brew_clsids::kClsid_TEXTCTL, "AEECLSID_TEXTCTL", "ITextCtl"},
     {brew_clsids::kClsid_THREAD, "AEECLSID_THREAD", "IThread"},
     {brew_clsids::kClsid_PNGDECODER_BREW, "AEECLSID_PNGDECODER_BREW", "IImageDecoder"},
+    {0x0103d8ecu, "AEECLSID_QEGL", "QEGL"},
 };
 
 // OS TRES CLSIDs, lidos do `.inc` gerado. Se um deles divergir do cabecalho, a

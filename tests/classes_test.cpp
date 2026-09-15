@@ -338,6 +338,19 @@ TEST(Classes, OTextCtlGuardaEstadoESemFalta) {
   EXPECT_EQ(b.Faltas("ITextCtl::SetInputMode"), 0u);
 }
 
+TEST(Classes, OQEGLTemTresSlotsDeclaradosERecusaComNome) {
+  const std::uint32_t q = static_cast<std::uint32_t>(Classe::kQEGL);
+  EXPECT_STREQ(NomeDaInterface(q), "QEGL");
+  EXPECT_STREQ(NomeDaClasse(q), "AEECLSID_QEGL");
+  EXPECT_STREQ(NomeDoSlotDaClasse(q, 2), "QueryInterface");
+  EXPECT_EQ(ObjetoDoClsid(0x0103d8ecu), ObjetoDaClasse(q));
+  Bancada b;
+  b.Cpu().Set(kR0, ObjetoDaClasse(q));
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(q) + 2, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("QEGL::QueryInterface"), 1u);
+}
+
 TEST(Classes, OValueModelNaoTemMetodoImplementadoEPorIssoRecusaComNome) {
   const std::uint32_t vm = static_cast<std::uint32_t>(Classe::kValueModel_1);
   for (std::uint32_t s = 0; s < brew_slots::kValueModelSlots; ++s) {

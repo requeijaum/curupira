@@ -436,6 +436,23 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // sao 20000+, e o ramo `idx >= kBaseDoShell` (2000) mais abaixo apanhava-os
         // e dava-lhes o NOME de um metodo do IShell. Foi por um nome errado num
         // ramo generico que o `SetTimer` ja se perdeu uma vez nesta arvore.
+      } else if (idx == VtClasse(static_cast<std::uint32_t>(Classe::kAppHistory)) +
+                               brew_slots::kAppHistory_GetClass) {
+        // `int GetClass(po, AEECLSID *pcls)` (AEEIAppHistory.h): devolve o CLSID
+        // da entrada corrente -- que e o titulo, lista de 1 (premissa do Top).
+        // Honesto agora que o motor guarda o CLSID (SituarTitulo): sem CLSID,
+        // EFAILED; pcls nulo, EBADPARM.
+        const std::uint32_t pcls = cpu.Get(kR1);
+        if (pcls == 0) {
+          cpu.Set(kR0, kAeeBadParm);
+        } else if (!tem_clsid_) {
+          cpu.Set(kR0, kAeeFailed);
+        } else {
+          mem_.Escrever32(pcls, clsid_titulo_);
+          cpu.Set(kR0, kAeeSuccess);
+        }
+        traco_.Emitir(Area::Brew, Nivel::Depuracao, "APPHISTORY_GETCLASS",
+                      tem_clsid_ ? "clsid do titulo" : "sem clsid");
       } else if (AtenderClasse(cpu, idx, traco_)) {
         // AS CLASSES CONHECIDAS (`core/brew/classes.h`). ESTE RAMO VEM ANTES DO
         // `idx >= kBaseDoShell`, e nao e gosto: os indices desta faixa sao 40000+

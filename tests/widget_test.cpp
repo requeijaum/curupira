@@ -566,6 +566,22 @@ TEST(Widget, OQueryClassRespondeOTituloEAsClassesServidas) {
   EXPECT_EQ(b.ChamaSaida(1541, 0x80020000u, 0x12345678u), 0u);
 }
 
+TEST(Widget, OGetClassEscreveOClsidDoTitulo) {
+  Bancada b;
+  constexpr std::uint32_t kGetClass =
+      40000 + 0 * 32 + brew_slots::kAppHistory_GetClass;
+  // Sem CLSID: EFAILED (1), sem escrever.
+  b.Mem().Escrever32(0x80100000u, 0xDEADBEEFu);
+  EXPECT_EQ(b.ChamaSaida(kGetClass, 0x8F000000u, 0x80100000u), 1u);
+  EXPECT_EQ(b.Mem().Ler32(0x80100000u), 0xDEADBEEFu);
+  // pcls nulo: EBADPARM (14).
+  EXPECT_EQ(b.ChamaSaida(kGetClass, 0x8F000000u, 0), 14u);
+  // Com CLSID: SUCCESS + escrito.
+  b.D().SituarTitulo("d", "p", 0x010292c3u);
+  EXPECT_EQ(b.ChamaSaida(kGetClass, 0x8F000000u, 0x80100000u), 0u);
+  EXPECT_EQ(b.Mem().Ler32(0x80100000u), 0x010292c3u);
+}
+
 TEST(Widget, OSetPropertyDeFidVisibleDeixaRastoComONome) {
   Bancada b;
   const std::uint32_t r =
