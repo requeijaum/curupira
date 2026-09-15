@@ -14,6 +14,8 @@
 
 #include <cstddef>
 #include <cstdint>
+
+#include "core/brew/ajudantes.h"  // Alocador + os kAee*
 #include <vector>
 
 #include "tools/brew_slots.inc"
@@ -44,6 +46,18 @@ constexpr std::uint32_t kObjShell = 0x80020000u;
 constexpr std::uint32_t kObjDisplay = 0x80030000u;
 constexpr std::uint32_t kObjFileMgr = 0x80040000u;
 constexpr std::uint32_t kObjDibBase = 0x80050000u;
+
+// A FRONTEIRA COM OS IDIBs DO PNG (frente imgdec).
+//
+// Os DIBs compativeis deste servico (slot13) sobem do FUNDO da pagina
+// (`kObjDibBase + 0x340`) e os IDIBs que o descodificador PNG constroi DESCE do
+// TOPO (`0x80050FC0`, `core/brew/classes.h` `kObjetosDibDoPng`, ate 28 objectos
+// de 0x40 -> fundo em 0x800508C0). As duas pontas trabalham na MESMA pagina e
+// sem esta fronteira cruzam-se depois de ~23 alocacoes de cada lado -- e um
+// objecto partilhado por dois donos e um defeito que so aparece em producao.
+constexpr std::uint32_t kFimDosDibCompativeis = kObjDibBase + 0x8C0u;
+static_assert(kFimDosDibCompativeis <= 0x800508C0u,
+              "a fronteira dos DIBs compativeis tem de ficar ABAIXO do fundo dos IDIBs do PNG");
 constexpr std::uint32_t kObjGenericoBase = 0x80060000u;
 constexpr std::uint32_t kObjFileBase = 0x80070000u;
 constexpr std::uint32_t kPassoGenericoObj = 0x100;
@@ -193,6 +207,63 @@ const char* NomeDoAjudante(std::uint32_t offset);
 // interface que tem nomes em cabecalho.
 const char* NomeDeUnzipStream(unsigned slot);
 const char* NomeDeMemStream(unsigned slot);
+
+// ---------------------------------------------------------------------------
+// A FAMILIA DO IBITMAP (frente ibmap2) -- SERVIDA, e CABLADA no despacho.
+//
+// O `IBitmap` tem 16 slots (`AEEIBitmap.h`, `INHERIT_IBitmap`): 3 de cabeca
+// (AddRef, Release, QueryInterface) + RGBToNative(3), NativeToRGB(4), DrawPixel(5),
+// GetPixel(6), SetPixels(7), DrawHScanline(8), FillRect(9), BltIn(10), BltOut(11),
+// GetInfo(12), CreateCompatibleBitmap(13), SetTransparencyColor(14),
+// GetTransparencyColor(15).
+//
+// MEDIDO (corrida de referencia /tmp/corrida_thrd.json, titulos do corpus):
+//   `IBitmap::slot13` em 6 titulos (fifa09, pacmania, tectoy, tekken2, zeebo_app,
+//   zenonia) e `torkandkral` com 17 pedidos; `IImageDecoder::GetBitmap` em 4
+//   (abd, heavyweaponbrew, peggle, torkandkral); `IGLES11::TexEnvx` em 4 (abd,
+//   pacmania, peggle, torkandkral). Ver /tmp/pesquisa/ibitmap.md.
+//
+// O que os titulos fazem DEPOIS do slot13 (traco + desmonte, ver o relatorio):
+//   - tekken2 (lr=0x1ba8c): `CreateCompatibleBitmap` sobre o bitmap do ecra
+//     (0x80050300), e a seguir `RGBToNative` (slot 3) + `DrawPixel` (slot 5)
+//     por pixel, desenhando recursos `image/bmp` do .bar PARA o DIB novo;
+//   - pacmania (lr=0x12d94): slot13 por imagem carregada (LOADING_STAGE_IMAGES),
+//     e a seguir `QueryInterface(0x01001045 = AEEIID_IDIB)` (slot 2) +
+//     `GetInfo` (slot 12), com escrita DIRECTA no `pBmp`.
+//
+// ESTE FICHEIRO SERVE A FAMILIA TODA (slots 2..15 da faixa 8000) por cima do
+// CABECALHO PUBLICO DO IDIB (`AEEIDIB.h:42-55`, `CamposDoIdib`): as dimensoes,
+// o passo e o buffer de cada bitmap vivem na memoria do guest, e o servidor
+// le-os de la -- a mesma fonte que o jogo usa, e a unica que nao pode divergir.
+//
+// COMO ESTA LIGADO (o ramo vive em `core/brew/despacho.cpp`, ANTES do ramo
+// generico `idx >= kBaseDoShell` -- ver a nota la, o lugar e contrato):
+//
+//     } else if (idx >= zb2::brew::kVtableBitmap + 2 &&
+//                idx < zb2::brew::kVtableBitmap + 16 &&
+//                AtenderBitmapDaFamilia(cpu, mem_, al_, traco_, idx)) {
+//
+// A vtable de TODOS os objectos DIB (o ecra em `kObjDibBase+0x300`, os dos
+// `IDisplay::CreateDIBitmap` e os criados por este slot13) ja aponta para a
+// faixa 8000 (`ConstruirVtableDoBitmap`), logo o ramo serve a familia sem
+// tocar em cablagem nenhuma. Devolve `true` quando o indice e desta faixa e foi
+// atendido (com sucesso OU com recusa registada); `false` para o despacho
+// seguir a cadeia.
+bool AtenderBitmapDaFamilia(ICpu& cpu, Memoria& mem, Alocador& al, Traco& traco,
+                            std::uint32_t indice);
+
+// Os IIDs que o `IDIB` responde (frente ibmap2): UMA lista, usada nos DOIS
+// caminhos que respondem ao `QueryInterface` do bitmap -- o servidor da familia
+// (slots 8002..8015) e o ramo do despacho no endereco que a ferramenta cabla no
+// slot 2 (`tools/bateria.cpp`, `kWire`). Duas listas que tem de concordar sao
+// zero listas: foi uma divergencia dessas que fez a bateria cablar o slot 12 do
+// IBitmap para o `strcat` (ver o aviso em `tools/bateria.cpp:268-289`).
+//
+// `0x01001045` e o `AEECLSID_DIB` (`AEEClassIDs.h:157`), `0x0100102c` o
+// `AEECLSID_DIB_20` (`:114`) e `0x01001029` (`CORE+41`, hoje `AEECLSID_TRANSFORM`,
+// `:111`) e o valor do DIB de uma versao ANTERIOR do BREW -- MEDIDO: o `fifa09` e
+// o `zenonia` pedem exactamente esse IID ao bitmap que acabaram de criar.
+bool IidDeDib(std::uint32_t iid);
 
 }  // namespace zb2::brew
 

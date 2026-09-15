@@ -19,6 +19,7 @@ add_library(zb2_core STATIC
   core/carga/mod.cpp
   core/carga/bar.cpp
   core/carga/inflate.cpp
+  core/carga/png.cpp
   core/carga/pack.cpp
   core/carga/pakz.cpp
   core/brew/ajudantes.cpp

@@ -12,6 +12,8 @@
 #include "core/brew/clsids.h"
 #include "core/brew/despacho.h"
 #include "core/brew/interface.h"
+#include "core/carga/inflate.h"   // Adler32: o stream zlib que o teste monta
+#include "core/carga/png.h"       // ImagemPng::Rgb565/Crc32DePng (o descodificador)
 #include "core/brew/vfs.h"
 #include "core/cpu/arm_interpreter.h"
 #include "core/memoria/memoria.h"
@@ -306,20 +308,16 @@ TEST(Classes, OPNGDecoderTemCincoSlotsNaOrdemDoCabecalho) {
   EXPECT_STREQ(NomeDaClasse(png), "AEECLSID_PNGDECODER_BREW");
   EXPECT_STREQ(NomeDoSlotDaClasse(png, 3), "GetBitmap");
   EXPECT_STREQ(NomeDoSlotDaClasse(png, 4), "GetRop");
-  for (std::uint32_t s = 2; s < 5; ++s) {
-    EXPECT_FALSE(SlotDaClasseImplementado(png, s)) << "slot " << s;
-  }
+  // OS DOIS METODOS DA INTERFACE TEM CORPO (frente imgdec): o `GetBitmap` devolve
+  // o bitmap descodificado e o `GetRop` a operacao de rasterizacao. A cabeca
+  // (0..2) e do `INHERIT_IQI` e nao entra nesta lista -- a regra e a mesma do
+  // `QEGL` e do `ITextCtl`. O slot 5 esta FORA da tabela do cabecalho (5 slots).
+  EXPECT_FALSE(SlotDaClasseImplementado(png, 2));
+  EXPECT_TRUE(SlotDaClasseImplementado(png, 3));
+  EXPECT_TRUE(SlotDaClasseImplementado(png, 4));
+  EXPECT_FALSE(SlotDaClasseImplementado(png, 5));
 }
 
-TEST(Classes, OPNGDecoderGetBitmapRecusaComNome) {
-  Bancada b;
-  const std::uint32_t png =
-      static_cast<std::uint32_t>(Classe::kPNGDecoderBREW);
-  b.Cpu().Set(kR0, ObjetoDaClasse(png));
-  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(png) + brew_slots::kImageDecoder_GetBitmap, b.T()));
-  EXPECT_EQ(b.Cpu().Get(kR0), kAeeUnsupported);
-  EXPECT_EQ(b.Faltas("IImageDecoder::GetBitmap"), 1u);
-}
 
 // ---------------------------------------------------------------------------
 // 9. A TABELA DO IThread, DO IImageDecoder E DO IForceFeed E A GERADA.
@@ -661,6 +659,7 @@ constexpr std::uint32_t kSentinelaDoTeste = 0xFFFFFFF0u;
 constexpr std::uint32_t kPpObjDoTeste = 0x80091000u;
 constexpr std::uint32_t kCelulaDoTeste = 0x80092000u;
 constexpr std::uint32_t kCelulaDoTeste2 = 0x80093000u;
+constexpr std::uint32_t kPngDoTeste = 0x80094000u;   // os bytes do PNG que o jogo "escreve"
 constexpr std::uint32_t kRotinaDeInicio = 0x00000600u;  // codigo de teste do guest
 constexpr std::uint32_t kRotinaDaThread = 0x00000640u;
 
@@ -856,6 +855,181 @@ TEST(Classes, OIThreadStartSegundaVezDaAlreadyEExitNaoIniciadaDaFailed) {
   EXPECT_EQ(c.Cpu().Get(kR0), kAeeFailed);
 }
 
+
+TEST(Classes, OPNGDecoderGetBitmapSemFluxoRecusaComONome) {
+  Bancada b;
+  const std::uint32_t png = static_cast<std::uint32_t>(Classe::kPNGDecoderBREW);
+  // 1. Sem ponteiro de saida: BADPARM, e nada escrito (nao ha onde escrever).
+  b.Cpu().Set(kR0, ObjetoDaClasse(png));
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(png) + brew_slots::kImageDecoder_GetBitmap, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeBadParm);
+  EXPECT_EQ(b.Faltas("IImageDecoder::GetBitmap"), 1u);
+  // 2. Com ponteiro e SEM imagem: `AEE_EFAILED` (o codigo que o cabecalho
+  //    promete), o ponteiro fica a ZERO -- o jogo le-o antes de usar -- e a falta
+  //    fica com o MOTIVO (nenhum `Write` antes do `GetBitmap`).
+  // Uma SEGUNDA bancada para o caso 2: o `Detalhe` devolve o PRIMEIRO evento com
+  // aquele nome, e o da bancada anterior e o do `ppiBitmap` nulo.
+  const std::uint32_t saida = 0x80091000u;
+  Bancada c;
+  c.M().Escrever32(saida, 0xDEADBEEFu);
+  c.Cpu().Set(kR0, ObjetoDaClasse(png));
+  c.Cpu().Set(kR1, saida);
+  EXPECT_TRUE(AtenderClasse(c.Cpu(), VtClasse(png) + brew_slots::kImageDecoder_GetBitmap, c.T()));
+  EXPECT_EQ(c.Cpu().Get(kR0), kAeeFailed);
+  EXPECT_EQ(c.M().Ler32(saida), 0u);
+  EXPECT_EQ(c.Faltas("IImageDecoder::GetBitmap"), 1u);
+  EXPECT_NE(c.Detalhe("IImageDecoder::GetBitmap").find("fluxo vazio"), std::string::npos)
+      << c.Detalhe("IImageDecoder::GetBitmap");
+}
+
+// UM PNG DE 2x2 RGBA, montado com as regras do formato (tamanho e CRC em
+// big-endian) e um bloco deflate STORED -- nao ha compressor nesta arvore, e o
+// `Adler32`/`Crc32DePng` do proprio motor escrevem-no. O ULTIMO pixel e
+// totalmente transparente, para o `tem_alpha` (e o `GetRop`) terem o que medir.
+std::vector<std::uint8_t> PngDoTeste() {
+  const std::vector<std::uint8_t> cru = {0, 255, 0, 0, 255, 0, 255, 0, 255,
+                                         0, 0, 0, 255, 255, 0, 0, 0, 0};
+  std::vector<std::uint8_t> zlib_stream = {0x78u, 0x01u, 0x01u};
+  const std::uint16_t n = static_cast<std::uint16_t>(cru.size());
+  zlib_stream.push_back(static_cast<std::uint8_t>(n & 0xffu));
+  zlib_stream.push_back(static_cast<std::uint8_t>((n >> 8) & 0xffu));
+  zlib_stream.push_back(static_cast<std::uint8_t>((~n) & 0xffu));
+  zlib_stream.push_back(static_cast<std::uint8_t>(((~n) >> 8) & 0xffu));
+  zlib_stream.insert(zlib_stream.end(), cru.begin(), cru.end());
+  const std::uint32_t adler = Adler32(cru.data(), cru.size());
+  for (int i = 3; i >= 0; --i) zlib_stream.push_back(static_cast<std::uint8_t>((adler >> (8 * i)) & 0xffu));
+
+  std::vector<std::uint8_t> v = {0x89u, 0x50u, 0x4eu, 0x47u, 0x0du, 0x0au, 0x1au, 0x0au};
+  auto chunk = [&](const char* tipo, const std::vector<std::uint8_t>& dados) {
+    const std::uint32_t tam = static_cast<std::uint32_t>(dados.size());
+    for (int i = 3; i >= 0; --i) v.push_back(static_cast<std::uint8_t>((tam >> (8 * i)) & 0xffu));
+    std::vector<std::uint8_t> com_tipo(tipo, tipo + 4);
+    com_tipo.insert(com_tipo.end(), dados.begin(), dados.end());
+    v.insert(v.end(), com_tipo.begin(), com_tipo.end());
+    const std::uint32_t crc = Crc32DePng(com_tipo.data(), com_tipo.size());
+    for (int i = 3; i >= 0; --i) v.push_back(static_cast<std::uint8_t>((crc >> (8 * i)) & 0xffu));
+  };
+  const std::vector<std::uint8_t> ihdr = {0, 0, 0, 2, 0, 0, 0, 2, 8, 6, 0, 0, 0};
+  chunk("IHDR", ihdr);
+  chunk("IDAT", zlib_stream);
+  chunk("IEND", {});
+  return v;
+}
+
+TEST(Classes, OPNGDecoderServeAImagemPelaCadeiaDaVtable) {
+  BancadaDoDespacho b;
+  const std::uint32_t k = static_cast<std::uint32_t>(Classe::kPNGDecoderBREW);
+  // 1. CreateInstance(po, AEECLSID_PNGDECODER_BREW, &ppo) -- o slot 2 do IShell.
+  b.ChamaSaida(kBaseDoShell + 2, kObjShell, 0x01030766u, kPpObjDoTeste);
+  const std::uint32_t obj = b.M().Ler32(kPpObjDoTeste);
+  ASSERT_EQ(obj, ObjetoDaClasse(k)) << "CreateInstance tem de devolver o objecto do descodificador";
+  const std::uint32_t vt = b.M().Ler32(obj);
+  ASSERT_EQ(vt, b.S().Endereco(VtClasse(k))) << "o objecto tem de apontar para a vtable";
+
+  // 2. A CABLAGEM, LIDA DA TABELA (e nao por um id interno): o slot 3
+  //    (`GetBitmap`) tem de apontar para o ramo do descodificador, e nao para o
+  //    stub que recusava tudo. Era essa a falta medida nos quatro titulos.
+  EXPECT_EQ(b.M().Ler32(vt + brew_slots::kImageDecoder_GetBitmap * 4),
+            b.S().Endereco(VtClasse(k) + brew_slots::kImageDecoder_GetBitmap));
+  EXPECT_EQ(b.M().Ler32(vt + brew_slots::kImageDecoder_GetRop * 4),
+            b.S().Endereco(VtClasse(k) + brew_slots::kImageDecoder_GetRop));
+
+  // 3. O `QueryInterface(AEEIID_IForceFeed)` pelo slot 2 da vtable -- o pedido
+  //    que os quatro titulos fazem antes de escrever seja o que for.
+  b.ChamaSaida(VtClasse(k) + brew_slots::kImageDecoder_QueryInterface, obj, kIidForceFeed,
+               kCelulaDoTeste);
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
+  const std::uint32_t ff = b.M().Ler32(kCelulaDoTeste);
+  ASSERT_EQ(ff, kObjetoForceFeed) << "o IForceFeed e a segunda interface do mesmo objecto";
+  // A VTABLE E OUTRA, e esta na TABELA (40520): e o que faz o `Write` chegar ao
+  // mesmo objecto por um caminho que o `ConstruirObjeto` cablou.
+  EXPECT_EQ(b.M().Ler32(ff), b.S().Endereco(kVtableForceFeed));
+  EXPECT_EQ(b.M().Ler32(b.S().Endereco(kVtableForceFeed) + brew_slots::kForceFeed_Write * 4),
+            b.S().Endereco(kVtableForceFeed + brew_slots::kForceFeed_Write));
+
+  // 4. O `Write` do PNG, pelo slot 3 do IForceFeed, com o fluxo nos bytes do
+  //    teste. `kR0` e a interface de escrita, `kR1` o buffer, `kR2` o tamanho.
+  const std::vector<std::uint8_t> png = PngDoTeste();
+  b.M().EscreverBloco(kPngDoTeste, png.data(), static_cast<std::uint32_t>(png.size()));
+  b.ChamaSaida(kVtableForceFeed + brew_slots::kForceFeed_Write, ff, kPngDoTeste,
+               static_cast<std::uint32_t>(png.size()));
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
+  EXPECT_EQ(b.Faltas("IForceFeed::Write"), 0u);
+
+  // 5. O `GetBitmap`, pelo slot 3 da vtable do descodificador.
+  b.ChamaSaida(VtClasse(k) + brew_slots::kImageDecoder_GetBitmap, obj, kCelulaDoTeste2);
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
+  const std::uint32_t bitmap = b.M().Ler32(kCelulaDoTeste2);
+  ASSERT_NE(bitmap, 0u);
+  EXPECT_EQ(b.Faltas("IImageDecoder::GetBitmap"), 0u);
+
+  // 6. O CABECALHO PUBLICO DO IDIB, campo a campo: e o que o jogo le
+  //    (`[r5,#8]`, `[r5,#0x14]`, `[r5,#0x16]` no laco medido do `abd`).
+  EXPECT_NE(bitmap, ObjetoDaClasse(k)) << "o bitmap nao e o descodificador";
+  EXPECT_LT(bitmap, 0x80051000u) << "o IDIB tem de estar na pagina dos bitmaps";
+  EXPECT_GE(bitmap, 0x80050000u);
+  EXPECT_EQ(static_cast<std::uint32_t>(b.M().Ler16(bitmap + CamposDoIdib::kCx)), 2u);
+  EXPECT_EQ(static_cast<std::uint32_t>(b.M().Ler16(bitmap + CamposDoIdib::kCy)), 2u);
+  EXPECT_EQ(static_cast<std::uint32_t>(b.M().Ler16(bitmap + CamposDoIdib::kNPitch)), 4u);
+  EXPECT_EQ(static_cast<std::uint32_t>(b.M().Ler8(bitmap + CamposDoIdib::kNDepth)), 16u);
+  EXPECT_EQ(static_cast<std::uint32_t>(b.M().Ler8(bitmap + CamposDoIdib::kNColorScheme)),
+            static_cast<std::uint32_t>(CamposDoIdib::kEsquemaDeCor565));
+  EXPECT_EQ(b.M().Ler32(bitmap + CamposDoIdib::kPPaletteMap), 0u)
+      << "o +4 de um IDIB e o pPaletteMap e TEM de ficar nulo (`IDIB_FlushPalette`)";
+  EXPECT_EQ(b.M().Ler32(bitmap + CamposDoIdib::kPvt), b.M().Ler32(0x80050300u))
+      << "a vtable do IDIB novo e a mesma do bitmap do ecra";
+
+  // 7. OS PIXELS: o `pBmp` do cabecalho, em RGB565, pela ordem do ficheiro.
+  const std::uint32_t pbmp = b.M().Ler32(bitmap + CamposDoIdib::kPBmp);
+  ASSERT_NE(pbmp, 0u);
+  EXPECT_EQ(b.M().Ler16(pbmp + 0), ImagemPng::Rgb565(255, 0, 0));
+  EXPECT_EQ(b.M().Ler16(pbmp + 2), ImagemPng::Rgb565(0, 255, 0));
+  EXPECT_EQ(b.M().Ler16(pbmp + 4), ImagemPng::Rgb565(0, 0, 255));
+  EXPECT_EQ(b.M().Ler16(pbmp + 6), ImagemPng::Rgb565(0, 0, 0));
+
+  // 8. O `GetRop`: a imagem tem um pixel transparente, logo NAO e opaca. O SDK
+  //    promete `AEE_RO_COPY` para opacas e TRANSPARENT/BLEND para as outras.
+  b.ChamaSaida(VtClasse(k) + brew_slots::kImageDecoder_GetRop, obj);
+  EXPECT_EQ(b.Cpu().Get(kR0), 7u) << "AEE_RO_TRANSPARENT (AEERasterOp.h:31)";
+  EXPECT_EQ(b.Faltas("IImageDecoder::GetRop"), 0u);
+
+  // 9. O `Reset` limpa o fluxo: o `GetBitmap` seguinte ja nao tem imagem, e diz
+  //    isso em vez de servir a antiga.
+  b.ChamaSaida(kVtableForceFeed + brew_slots::kForceFeed_Reset, ff);
+  b.M().Escrever32(kCelulaDoTeste2, 0xDEADBEEFu);
+  b.ChamaSaida(VtClasse(k) + brew_slots::kImageDecoder_GetBitmap, obj, kCelulaDoTeste2);
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeFailed);
+  EXPECT_EQ(b.M().Ler32(kCelulaDoTeste2), 0u);
+}
+
+TEST(Classes, OForceFeedDoPngAtendeAquiTemVtableEOQiDeVolta) {
+  BancadaDoDespacho b;
+  const std::uint32_t k = static_cast<std::uint32_t>(Classe::kPNGDecoderBREW);
+  const std::uint32_t ff = kObjetoForceFeed;
+  // A CABECA, pelo slot 2 do proprio IForceFeed: o `QueryInterface` de volta para
+  // o descodificador (as duas interfaces sao o mesmo objecto) e a recusa COM
+  // NOME para o que este objecto nao serve.
+  b.ChamaSaida(kVtableForceFeed + brew_slots::kForceFeed_QueryInterface, ff, kIidImageDecoder,
+               kCelulaDoTeste);
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
+  EXPECT_EQ(b.M().Ler32(kCelulaDoTeste), ObjetoDaClasse(k));
+  b.ChamaSaida(kVtableForceFeed + brew_slots::kForceFeed_QueryInterface, ff, 0x01001002u,
+               kCelulaDoTeste);
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeUnsupported);
+  EXPECT_EQ(b.M().Ler32(kCelulaDoTeste), 0u);
+  EXPECT_EQ(b.Faltas("IForceFeed::QueryInterface"), 1u);
+  // O `AddRef`/`Release` do IForceFeed contam no proprio objecto (a faixa das
+  // classes, e nao a dos bitmaps).
+  b.ChamaSaida(kVtableForceFeed + brew_slots::kForceFeed_AddRef, ff);
+  EXPECT_EQ(b.Cpu().Get(kR0), 2u) << "a contagem nasce a 1 (o `ConstruirObjeto` poe-a)";
+  b.ChamaSaida(kVtableForceFeed + brew_slots::kForceFeed_Release, ff);
+  EXPECT_EQ(b.Cpu().Get(kR0), 1u);
+  // E a recusa do `GetRop` sem imagem nenhuma leva o MOTIVO (o COPY e o valor de
+  // uma imagem opaca, e nao se marca nada como servido).
+  b.ChamaSaida(VtClasse(k) + brew_slots::kImageDecoder_GetRop, ObjetoDaClasse(k));
+  EXPECT_EQ(b.Cpu().Get(kR0), 2u) << "AEE_RO_COPY";
+  EXPECT_EQ(b.Faltas("IImageDecoder::GetRop"), 1u);
+}
 
 }  // namespace
 }  // namespace zb2::brew

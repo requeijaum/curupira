@@ -26,6 +26,8 @@
 #include <vector>
 
 #include "core/carga/bar.h"
+#include "core/brew/sha256.h"   // o resumo do buffer RGB565 inteiro
+#include "core/carga/png.h"       // o descodificador PNG (frente imgdec)
 
 namespace {
 
@@ -625,4 +627,103 @@ TEST(BarDeVerdade, AeeControlsDoSDKConfereComOCabecalhoDoVendedor) {
   // id 51 (AEE_IDS_BREW_SUSPENDED) existe; 52 nao.
   EXPECT_TRUE(a.Ler(51, 1).ok);
   EXPECT_FALSE(a.Ler(52, 1).ok);
+}
+
+// ---------------------------------------------------------------------------
+// OS QUATRO PNGs QUE OS TITULOS DA FRENTE `imgdec` ENTREGAM AO DESCODIFICADOR
+// ---------------------------------------------------------------------------
+//
+// Os quatro titulos que queimam os 8 M passos num laco de conversao de imagem
+// (`abd` 279369, `peggle` 278962, `torkandkral` 280463, `heavyweaponbrew`
+// 278200) pedem `AEECLSID_PNGDECODER_BREW` ao `CreateInstance`, perguntam-lhe
+// `AEEIID_IForceFeed` (0x0101eb0b), escrevem-lhe um recurso e pedem-lhe o
+// bitmap. Este teste abre o `.bar` de cada um, resolve o par (tipo, id) que a
+// bateria mediu, descodifica o recurso e compara o SHA256 DO BUFFER RGB565
+// INTEIRO -- um numero por ficheiro real.
+//
+// O ORACULO E INDEPENDENTE: os quatro resumos foram medidos com o `zlib` do
+// Python (inflate + os cinco filtros por linha da secao 9 do PNG), e nao com
+// este descodificador. Os tres que pedem com `tipo=20480` recebem o PNG cru; o
+// `peggle` pede com `tipo=6` e recebe um `AEEResBlob` (mime `image/png` impresso
+// no recurso, dado em `bDataOffset`) -- e o teste usa o MESMO caminho do blob
+// que o `LerBlob` ja serve, para a montagem do recurso tambem ser provada.
+std::string RaizDosModsDosPngs() {
+  std::vector<std::string> raizes;
+  if (const char* env = std::getenv("ZB2_MODS")) {
+    if (*env != '\0') raizes.push_back(env);
+  } else {
+    raizes.push_back("/media/rafaelfrequiao/8C5F-19E51/zeebo/ROMs/debug_nand/mod");
+  }
+  for (const std::string& r : raizes) {
+    std::ifstream f(r + "/279369/data.bar", std::ios::binary);
+    if (f) return r;
+  }
+  return {};
+}
+
+TEST(BarDeVerdade, OsQuatroPngsDosTitulosDoImgdecDescodificam) {
+  const std::string raiz = RaizDosModsDosPngs();
+  if (raiz.empty()) {
+    GTEST_SKIP() << "sem a midia do corpus nesta maquina (ZB2_MODS): o teste NAO passou, nao correu";
+  }
+  struct Alvo {
+    const char* rel;      // o ficheiro de recursos, relativo a `mod/`
+    std::uint16_t tipo;   // o par medido na corrida
+    std::uint16_t id;
+    std::uint32_t largura, altura;
+    const char* sha_do_rgb565;
+    bool tem_alpha;
+  };
+  const Alvo alvos[] = {
+      {"278200/heavyweapon.bar", 20480u, 9346u, 943u, 44u,
+       "fe0571c4ac81f20c50c20c14e1d55baad5d18e43c427dd960cfb33620892024c", true},
+      // OS OUTROS TRES QUE O `heavyweaponbrew` CARREGA no mesmo `CreateInstance`
+      // (medidos no traco: os ids 0x2465..0x2482 e o 0x23ad/0x23b0/0x23c2). O
+      // 9136 e a razao de este descodificador servir 4 bits por amostra: e um PNG
+      // de PALETA DE 4 BITS, e sem ele o `GetBitmap` recusava e o titulo voltava ao
+      // laco de 8 M passos.
+      {"278200/heavyweapon.bar", 20480u, 9154u, 60u, 90u,
+       "54d9a47d7c9617f8d1f406564a1cc2387567b5b27f05144f3af53bdcaa34dd79", true},
+      {"278200/heavyweapon.bar", 20480u, 9133u, 63u, 30u,
+       "a69c48033e3f29bdb9e8a7e8f345f1994c027bf657699ab32a65503965e5536d", true},
+      {"278200/heavyweapon.bar", 20480u, 9136u, 21u, 20u,
+       "553004476d3491743ed4a4788bf64eac5877a1a00aecee4097b88de805fad3fb", false},
+      {"278962/resources.bar", 6u, 5000u, 252u, 252u,
+       "a1c59a64a66f11ac05052b9644e6f475fee9a84fc2d85ea616e91671dc1e5601", true},
+      {"279369/data.bar", 20480u, 9073u, 291u, 125u,
+       "8e27ec23c21446bf030d1f85dee70b33aa63b6440b2660aa043a20016a889ca8", true},
+      // O `torkandkral` entrega a MESMA imagem do `abd` (os dois `.bar` sao
+      // ficheiros diferentes): o mesmo resumo, e isso confirma-o.
+      {"280463/data.bar", 20480u, 9008u, 291u, 125u,
+       "8e27ec23c21446bf030d1f85dee70b33aa63b6440b2660aa043a20016a889ca8", true},
+  };
+  for (const Alvo& alvo : alvos) {
+    std::string motivo;
+    ArquivoBar a = ArquivoBar::AbrirFicheiro(raiz + "/" + alvo.rel, &motivo);
+    ASSERT_TRUE(a.Valido()) << alvo.rel << ": " << motivo;
+    const RecursoDoBar r = a.Ler(alvo.id, alvo.tipo);
+    ASSERT_TRUE(r.ok) << alvo.rel << " id=" << alvo.id << " tipo=" << alvo.tipo << ": " << r.motivo;
+    const std::uint8_t* dados = r.dados;
+    std::size_t tamanho = r.tamanho;
+    if (alvo.tipo == 6u) {
+      const BlobDoBar blob = ArquivoBar::LerBlob(r);
+      ASSERT_TRUE(blob.ok) << alvo.rel << ": " << blob.motivo;
+      EXPECT_EQ(blob.mime, "image/png") << alvo.rel;
+      dados = blob.dados;
+      tamanho = blob.tamanho;
+    }
+    zb2::ImagemPng img;
+    std::string porque;
+    ASSERT_TRUE(zb2::DescodificarPng(dados, tamanho, &img, &porque)) << alvo.rel << ": " << porque;
+    EXPECT_EQ(img.largura, alvo.largura) << alvo.rel;
+    EXPECT_EQ(img.altura, alvo.altura) << alvo.rel;
+    EXPECT_EQ(img.tem_alpha, alvo.tem_alpha) << alvo.rel;
+    std::vector<std::uint8_t> bytes(img.pixels.size() * 2u, 0u);
+    for (std::size_t k = 0; k < img.pixels.size(); ++k) {
+      bytes[k * 2u] = static_cast<std::uint8_t>(img.pixels[k] & 0xFFu);
+      bytes[k * 2u + 1u] = static_cast<std::uint8_t>(img.pixels[k] >> 8);
+    }
+    EXPECT_EQ(zb2::brew::Sha256Hex(bytes.data(), bytes.size()), std::string(alvo.sha_do_rgb565))
+        << alvo.rel;
+  }
 }

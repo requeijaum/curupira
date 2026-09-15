@@ -10,6 +10,9 @@
 #include <vector>
 
 #include "core/brew/clsids.h"
+// O DESCODIFICADOR PNG (frente imgdec): `core/carga/png.h`, na pasta dos
+// descodificadores de contentor (inflate, pack, bar).
+#include "core/carga/png.h"
 #include "core/brew/ecra.h"
 #include "core/brew/egl.h"   // NomeDoIidDaFamiliaGl + kIidEgl10/11
 #include "core/brew/igl.h"
@@ -524,6 +527,13 @@ bool SlotDaClasseImplementado(std::uint32_t k, std::uint32_t slot) {
            slot == brew_slots::kThread_Join || slot == brew_slots::kThread_Suspend ||
            slot == brew_slots::kThread_GetResumeCBK;
   }
+  if (k == static_cast<std::uint32_t>(Classe::kPNGDecoderBREW)) {
+    // O DESCODIFICADOR PNG (frente imgdec): o `GetBitmap` (slot 3) devolve o
+    // bitmap descodificado e o `GetRop` (slot 4) a operacao de rasterizacao que
+    // lhe corresponde. A cabeca (0..2) e do `INHERIT_IQI` e nao entra nesta lista
+    // -- a regra e a mesma do `QEGL` e do `ITextCtl`.
+    return slot == brew_slots::kImageDecoder_GetBitmap || slot == brew_slots::kImageDecoder_GetRop;
+  }
   if (k == static_cast<std::uint32_t>(Classe::kTextCtl)) {
     // O pacote de estado do `zenonia` (6 pedidos na bateria): guarda estado,
     // sem desenho. HandleEvent devolve FALSE (nao tratado); as void nao tocam r0.
@@ -537,6 +547,9 @@ bool SlotDaClasseImplementado(std::uint32_t k, std::uint32_t slot) {
 
 void ConstruirClasses(Memoria& mem, const Saidas& saidas, Traco& traco) {
   ReporEstadoTextCtl();
+  // O DESCODIFICADOR PNG tambem e POR CORRIDA: o fluxo que um titulo escreveu
+  // nao pode ser a imagem de outro (o mesmo motivo do `ReporEstadoThreads`).
+  ReporEstadoDoPng();
   // O ESTADO DAS THREADS TAMBEM E POR CORRIDA. Sem isto, a segunda Bancada de
   // um teste (ou o segundo titulo da bateria) via a thread da primeira: o
   // `Start` respondia EALREADY a quem nao tinha iniciado nada.
@@ -581,6 +594,24 @@ void ConstruirClasses(Memoria& mem, const Saidas& saidas, Traco& traco) {
         std::snprintf(det, sizeof(det), "%s slot %u", NomeDaClasse(k), s);
         traco.RegistarFalta(Area::Brew, "classes_da_brewm_cablagem_perdida", det);
       }
+    }
+  }
+
+  // A SEGUNDA INTERFACE DO DESCODIFICADOR PNG: o `IForceFeed`, com vtable
+  // propria e o mesmo `ConstruirObjeto` (objecto +0 = vtable, +4 = contagem,
+  // slots 0/1 = AddRef/Release do despacho). O `Write` e o `Reset` ficam nos
+  // slots 3 e 4, do `.inc` GERADO do `AEEIForceFeed.h`.
+  ConstruirObjeto(mem, saidas, kObjetoForceFeed, saidas.Endereco(kVtableForceFeed),
+                  kForceFeedSlots, kVtableForceFeed);
+  {
+    const std::uint32_t vt = saidas.Endereco(kVtableForceFeed);
+    bool ok = mem.Ler32(kObjetoForceFeed) == vt;
+    for (std::uint32_t s = 2; s < kForceFeedSlots && ok; ++s) {
+      ok = mem.Ler32(vt + s * 4) == saidas.Endereco(kVtableForceFeed + s);
+    }
+    if (!ok) {
+      traco.RegistarFalta(Area::Brew, "classes_da_brewm_cablagem_perdida",
+                          "IForceFeed do descodificador PNG sem vtable cablada");
     }
   }
 
@@ -1107,7 +1138,434 @@ bool AtenderCabecaQualcomm(ICpu& cpu, Traco& traco, std::uint32_t objeto,
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// O DESCODIFICADOR PNG: `IImageDecoder` + `IForceFeed` (frente `imgdec`).
+//
+// O QUE ISTO SERVE, e porque e que a versao anterior desta frente aterrava num
+// laco de 473 M pixels (medido, `/tmp/pesquisa/memo.md` secao 2): o
+// `AEECLSID_PNGDECODER_BREW` JA existia como classe, mas so a CABECA era
+// servida. Os quatro titulos fazem sempre o mesmo:
+//
+//   CreateInstance(0x01030766) -> QI(AEEIID_IForceFeed 0x0101eb0b) -> Write ->
+//   GetBitmap -> (o NULL que vinha do GetBitmap nao era visto e) a conversao de
+//   pixels de um bitmap que nunca existiu.
+//
+// Com o bitmap a serio, o `pBmp`/`cx`/`cy` do cabecalho PUBLICO do IDIB existem,
+// e o laco do jogo acaba no fim da imagem em vez de percorrer paginas virgens.
+//
+// OS DOIS IIDs E OS SLOTS vem dos cabecalhos e do `.inc` GERADO
+// (`brew_slots.inc`): `INHERIT_IQI` da os tres primeiros e a posicao do metodo
+// da o resto. Nenhum numero escrito a mao.
+namespace {
+
+// `AEERasterOp.h:25-33`: `AEE_RO_COPY` e o terceiro valor do enum (0 OR, 1 XOR,
+// 2 COPY) e o `AEE_RO_TRANSPARENT` o oitavo. O `GetRop` do SDK promete COPY para
+// uma imagem opaca e TRANSPARENT/BLEND para uma com transparencia
+// (`AEEIImageDecoder.h`, `IImageDecoder_GetRop`).
+// Os dois primeiros bytes do que o jogo escreveu, em hexadecimal. So serve para
+// o traco: e o que diz se o que chegou e mesmo um PNG, sem um segundo
+// descodificador a decidir por nos.
+std::string BytesEmHexCurto(const std::uint8_t* d, std::size_t n) {
+  static const char* kHex = "0123456789abcdef";
+  std::string s;
+  for (std::size_t k = 0; k < n; ++k) {
+    if (k != 0) s += ' ';
+    s += kHex[d[k] >> 4];
+    s += kHex[d[k] & 0xF];
+  }
+  return s;
+}
+
+constexpr std::uint32_t kRasterOpCopy = 2;
+constexpr std::uint32_t kRasterOpTransparent = 7;
+
+// ASSINATURA PNG (ISO/IEC 15948, secao 5.2). E por ela que se reconhece o
+// recurso que o jogo entrega -- o `peggle` entrega o `AEEResBlob` inteiro (com o
+// mime `image/png` e o `bDataOffset` a frente), os outros tres o PNG cru.
+constexpr std::uint8_t kAssinaturaPng[8] = {0x89u, 0x50u, 0x4eu, 0x47u,
+                                            0x0du, 0x0au, 0x1au, 0x0au};
+
+// O limite do fluxo que o descodificador aceita acumular. O maior recurso de
+// imagem dos quatro titulos tem 64 629 bytes (`peggle`); 4 MiB e o mesmo limite
+// da banda dos pixels, e um titulo que escreva mais do que isto recebe
+// ENOMEMORY COM O NUMERO em vez de o emulador crescer sem fim.
+constexpr std::uint32_t kMaximoDoFluxo = 0x00400000u;
+
+std::vector<std::uint8_t> g_png_fluxo;
+zb2::ImagemPng g_png_imagem;
+std::uint32_t g_png_pixels_livres = kBandaDosPixelsDoPng;
+std::uint32_t g_png_objetos_dib = 0;
+std::uint32_t g_png_rop = kRasterOpCopy;
+bool g_png_tem_imagem = false;
+
+}  // namespace
+
+// O ESTADO DO DESCODIFICADOR E POR CORRIDA: dois titulos da bateria (ou duas
+// `Bancada` de um teste) nao podem ver o fluxo um do outro. O mesmo motivo do
+// `ReporEstadoTextCtl` e do `ReporEstadoThreads`.
+void ReporEstadoDoPng() {
+  g_png_fluxo.clear();
+  g_png_imagem = zb2::ImagemPng{};
+  g_png_pixels_livres = kBandaDosPixelsDoPng;
+  g_png_objetos_dib = 0;
+  g_png_rop = kRasterOpCopy;
+  g_png_tem_imagem = false;
+}
+
+namespace {
+
+// O BITMAP DO DESCODIFICADOR: um IDIB novo, com o cabecalho PUBLICO escrito
+// campo a campo (`CamposDoIdib`, transcrito de `AEEIDIB.h:42-55`) e os pixels
+// RGB565 numa banda propria.
+//
+// A VTABLE E LIDA DO BITMAP DO ECRA. E o unico sitio onde ela existe nesta
+// arvore (o `Despacho` constroi-a e guarda o endereco), e o `Despacho` e de
+// outra frente: ler o ponteiro que ja esta no objecto do ecra e o que mantem a
+// cablagem numa fonte so. Se o objecto do ecra ainda nao tiver vtable, RECUSA --
+// um bitmap com o `+0` a zero e um `blx 0` no primeiro `AddRef` do jogo.
+bool CriarDibDoPng(Memoria& mem, Traco& traco, const zb2::ImagemPng& img,
+                   std::uint32_t* objeto) {
+  const std::uint32_t bytes = img.largura * 2u * img.altura;
+  if (g_png_objetos_dib >= kMaximoDeObjetosDibDoPng) {
+    char det[128];
+    std::snprintf(det, sizeof(det),
+                  "%ux%u: os %u objectos IDIB da banda %s ja foram usados",
+                  static_cast<unsigned>(img.largura), static_cast<unsigned>(img.altura),
+                  static_cast<unsigned>(kMaximoDeObjetosDibDoPng), Hex(kObjetosDibDoPng).c_str());
+    traco.RegistarFalta(Area::Brew, "IImageDecoder::GetBitmap", det);
+    return false;
+  }
+  if (g_png_pixels_livres + bytes > kBandaDosPixelsDoPng + kBytesDaBandaDoPng) {
+    char det[160];
+    std::snprintf(det, sizeof(det),
+                  "%ux%u pede %u bytes em %s: a banda de %u bytes ja tem %u usados",
+                  static_cast<unsigned>(img.largura), static_cast<unsigned>(img.altura),
+                  static_cast<unsigned>(bytes), Hex(kBandaDosPixelsDoPng).c_str(),
+                  static_cast<unsigned>(kBytesDaBandaDoPng),
+                  static_cast<unsigned>(g_png_pixels_livres - kBandaDosPixelsDoPng));
+    traco.RegistarFalta(Area::Brew, "IImageDecoder::GetBitmap", det);
+    return false;
+  }
+  const std::uint32_t vtable = mem.Ler32(zb2::brew::kObjDibBase + 0x300);
+  if (vtable == 0) {
+    traco.RegistarFalta(Area::Brew, "IImageDecoder::GetBitmap",
+                        "o bitmap do ecra ainda nao tem vtable: o idib novo ficaria com o +0 a zero");
+    return false;
+  }
+
+  const std::uint32_t pixels = g_png_pixels_livres;
+  g_png_pixels_livres += (bytes + 3u) & ~3u;
+  const std::uint32_t obj = kObjetosDibDoPng - g_png_objetos_dib * kPassoDoObjetoDib;
+  ++g_png_objetos_dib;
+
+  // OS PIXELS EM RGB565, little-endian: a mesma ordem do buffer do ecra
+  // (`core/brew/ecra.h`) e de todos os DIBs desta arvore. Um bloco de bytes
+  // escrito de UMA vez -- e o `size()` do vector e a conta dos pixels, para uma
+  // imagem curta nao deixar meia banda por escrever.
+  std::vector<std::uint8_t> cru(static_cast<std::size_t>(bytes), 0u);
+  for (std::size_t k = 0; k < img.pixels.size(); ++k) {
+    cru[k * 2u] = static_cast<std::uint8_t>(img.pixels[k] & 0xFFu);
+    cru[k * 2u + 1u] = static_cast<std::uint8_t>(img.pixels[k] >> 8);
+  }
+  mem.EscreverBloco(pixels, cru.data(), bytes);
+
+  using C = CamposDoIdib;
+  mem.Escrever32(obj + C::kPvt, vtable);
+  // O `+4` de um IDIB e o `pPaletteMap` PUBLICO (`AEEIDIB.h:44`), e nao uma
+  // contagem: um 1 aqui e uma chamada indirecta pelo endereco 1 no
+  // `IDIB_FlushPalette` (`:83-86`). A contagem vive no `Despacho`
+  // (`refs_do_dib_`), que reconhece a faixa deste objecto.
+  mem.Escrever32(obj + C::kPPaletteMap, 0);
+  mem.Escrever32(obj + C::kPBmp, pixels);
+  mem.Escrever32(obj + C::kPRGB, 0);
+  mem.Escrever32(obj + C::kNcTransparent, 0);
+  mem.Escrever16(obj + C::kCx, static_cast<std::uint16_t>(img.largura));
+  mem.Escrever16(obj + C::kCy, static_cast<std::uint16_t>(img.altura));
+  mem.Escrever16(obj + C::kNPitch, static_cast<std::uint16_t>(img.largura * 2u));
+  mem.Escrever16(obj + C::kCntRGB, 0);
+  mem.Escrever8(obj + C::kNDepth, 16);
+  mem.Escrever8(obj + C::kNColorScheme, C::kEsquemaDeCor565);
+  for (std::uint32_t k = C::kReservado; k < C::kTamanho; ++k) mem.Escrever8(obj + k, 0u);
+
+  // A LEITURA DE VOLTA, e por inteiro: uma cablagem perdida tem de aparecer
+  // aqui, e nao no laco do jogo.
+  if (mem.Ler32(obj + C::kPvt) != vtable || mem.Ler32(obj + C::kPBmp) != pixels ||
+      mem.Ler16(obj + C::kCx) != static_cast<std::uint16_t>(img.largura) ||
+      mem.Ler16(obj + C::kCy) != static_cast<std::uint16_t>(img.altura)) {
+    traco.RegistarFalta(Area::Brew, "IImageDecoder::GetBitmap",
+                        "o cabecalho do IDIB novo nao ficou escrito em " + Hex(obj));
+    return false;
+  }
+  *objeto = obj;
+  traco.Emitir(Area::Brew, Nivel::Depuracao, "PNG_DESCODIFICADOR",
+               std::string("IDIB ") + Hex(obj) + " pixels=" + Hex(pixels) + " " +
+                   std::to_string(img.largura) + "x" + std::to_string(img.altura) +
+                   " pitch=" + std::to_string(img.largura * 2u) +
+                   (img.tem_alpha ? " com transparencia" : " sem transparencia"));
+  return true;
+}
+
+// O FLUXO -> A IMAGEM. Corre no `GetBitmap` (e no `GetRop`, que tambem precisa de
+// saber se a imagem tem transparencia), uma vez por fluxo.
+bool DescodificarOFluxo(const Memoria& mem, Traco& traco, std::string* motivo) {
+  (void)mem;
+  if (g_png_tem_imagem) return true;
+  if (g_png_fluxo.empty()) {
+    *motivo = "fluxo vazio: nenhum `IForceFeed::Write` antes deste pedido";
+    return false;
+  }
+  // O PREFIXO DO AEEResBlob. O `peggle` pede o recurso com `tipo=6` e recebe um
+  // blob com o mime impresso (`0c 00 "image/png" 00` + o dado, medido com
+  // `tools/medir_bar.py recurso`), e o dado comeca em `bDataOffset`. Procura-se a
+  // ASSINATURA, e diz-se quantos bytes se saltaram: se ela nao estiver nos
+  // primeiros 64, o `DescodificarPng` recusa com os primeiros bytes do fluxo, e
+  // nao ha adivinhacao nenhuma.
+  std::size_t inicio = 0;
+  bool achou = false;
+  const std::size_t limite = std::min<std::size_t>(64u, g_png_fluxo.size());
+  for (std::size_t k = 0; k <= limite; ++k) {
+    if (k + 8u > g_png_fluxo.size()) break;
+    if (std::memcmp(g_png_fluxo.data() + k, kAssinaturaPng, 8u) == 0) {
+      inicio = k;
+      achou = true;
+      break;
+    }
+  }
+  zb2::ImagemPng img;
+  std::string porque;
+  if (!zb2::DescodificarPng(g_png_fluxo.data() + inicio, g_png_fluxo.size() - inicio, &img, &porque)) {
+    *motivo = "fluxo de " + std::to_string(g_png_fluxo.size()) + " bytes" +
+              (achou ? (" (assinatura em +" + std::to_string(inicio) + ")") : std::string()) +
+              ": " + porque;
+    return false;
+  }
+  if (inicio != 0) {
+    traco.Emitir(Area::Brew, Nivel::Depuracao, "PNG_DESCODIFICADOR",
+                 "o fluxo comecou em +" + std::to_string(inicio) +
+                     " bytes (cabecalho de AEEResBlob: bDataOffset + mime)");
+  }
+  g_png_imagem = std::move(img);
+  g_png_tem_imagem = true;
+  // O ROP SAI DO QUE A IMAGEM TEM, e nao do color type: um PNG com canal de alfa
+  // todo a 255 e uma imagem OPACA (`AEEIImageDecoder.h`, "This will return
+  // AEE_RO_COPY for opaque images").
+  g_png_rop = g_png_imagem.tem_alpha ? kRasterOpTransparent : kRasterOpCopy;
+  traco.Emitir(Area::Brew, Nivel::Depuracao, "PNG_DESCODIFICADOR",
+               "descodificados " + std::to_string(g_png_fluxo.size()) + " bytes em " +
+                   std::to_string(g_png_imagem.largura) + "x" +
+                   std::to_string(g_png_imagem.altura) + " (" +
+                   (g_png_imagem.tem_alpha ? "RGBA com alfa" : "opaca") + ")");
+  return true;
+}
+
+// OS CINCO SLOTS DO `IImageDecoder` (brew_slots.inc: IQI 3 + GetBitmap 3 +
+// GetRop 4). `false` = o slot nao e desta interface (cai no ramo generico, que
+// recusa COM O NOME).
+bool AtenderDecodificadorPng(ICpu& cpu, Traco& traco, std::uint32_t slot) {
+  Memoria& mem = cpu.Mem();
+  const std::uint32_t obj = ObjetoDaClasse(static_cast<std::uint32_t>(Classe::kPNGDecoderBREW));
+  if (slot == brew_slots::kImageDecoder_AddRef) {
+    const std::uint32_t n = mem.Ler32(obj + 4) + 1;
+    mem.Escrever32(obj + 4, n);
+    cpu.Set(kR0, n);
+    return true;
+  }
+  if (slot == brew_slots::kImageDecoder_Release) {
+    const std::uint32_t n = mem.Ler32(obj + 4);
+    if (n == 0) {
+      traco.RegistarFalta(Area::Brew, "IImageDecoder::Release",
+                          "Release de um objecto com contagem zero");
+      cpu.Set(kR0, kAeeUnsupported);
+      return true;
+    }
+    mem.Escrever32(obj + 4, n - 1);
+    cpu.Set(kR0, n - 1);
+    return true;
+  }
+  if (slot == brew_slots::kImageDecoder_QueryInterface) {
+    const std::uint32_t iid = cpu.Get(kR1);
+    const std::uint32_t ppo = cpu.Get(kR2);
+    if (ppo == 0) {
+      traco.RegistarFalta(Area::Brew, "IImageDecoder::QueryInterface", "ppObj nulo");
+      cpu.Set(kR0, kAeeBadParm);
+      return true;
+    }
+    if (iid == kIidImageDecoder) {
+      mem.Escrever32(ppo, obj);
+      cpu.Set(kR0, kAeeSuccess);
+      traco.Emitir(Area::Brew, Nivel::Depuracao, "PNG_DESCODIFICADOR",
+                   "QI iid=0x01026e20 (IImageDecoder) -> o proprio objecto");
+      return true;
+    }
+    if (iid == kIidForceFeed) {
+      // A SEGUNDA INTERFACE E OUTRO PONTEIRO: um objecto com duas interfaces
+      // entrega um ponteiro por interface, cada um com a vtable dele no `+0`.
+      // Era esta a falta medida nos quatro titulos (`IImageDecoder::
+      // QueryInterface r1=0x0101eb0b`).
+      mem.Escrever32(ppo, kObjetoForceFeed);
+      cpu.Set(kR0, kAeeSuccess);
+      traco.Emitir(Area::Brew, Nivel::Depuracao, "PNG_DESCODIFICADOR",
+                   std::string("QI iid=0x0101eb0b (IForceFeed) -> ") + Hex(kObjetoForceFeed));
+      return true;
+    }
+    mem.Escrever32(ppo, 0);
+    char det[96];
+    std::snprintf(det, sizeof(det), "iid=0x%08x sem objecto neste descodificador", iid);
+    traco.RegistarFalta(Area::Brew, "IImageDecoder::QueryInterface", det);
+    cpu.Set(kR0, kAeeUnsupported);
+    return true;
+  }
+  if (slot == brew_slots::kImageDecoder_GetBitmap) {
+    const std::uint32_t ppi = cpu.Get(kR1);
+    if (ppi == 0) {
+      traco.RegistarFalta(Area::Brew, "IImageDecoder::GetBitmap",
+                          "ppiBitmap nulo (`AEEIImageDecoder.h`, ppiBitmap [out])");
+      cpu.Set(kR0, kAeeBadParm);
+      return true;
+    }
+    mem.Escrever32(ppi, 0);
+    std::string motivo;
+    if (!DescodificarOFluxo(mem, traco, &motivo)) {
+      // `AEE_EFAILED` e o codigo que o cabecalho promete quando nao ha imagem
+      // descodificada, e o ponteiro fica a ZERO -- o jogo le-o antes de usar.
+      traco.RegistarFalta(Area::Brew, "IImageDecoder::GetBitmap", motivo);
+      cpu.Set(kR0, kAeeFailed);
+      return true;
+    }
+    std::uint32_t bitmap = 0;
+    if (!CriarDibDoPng(mem, traco, g_png_imagem, &bitmap)) {
+      cpu.Set(kR0, kAeeNoMemory);
+      return true;
+    }
+    mem.Escrever32(ppi, bitmap);
+    cpu.Set(kR0, kAeeSuccess);
+    return true;
+  }
+  if (slot == brew_slots::kImageDecoder_GetRop) {
+    std::string motivo;
+    if (!DescodificarOFluxo(mem, traco, &motivo)) {
+      // Nao ha imagem: nao ha transparencia a declarar. A falta fica registada
+      // (o `COPY` e o valor de uma imagem opaca, e o que menos estraga), e nao se
+      // marca nada como servido.
+      traco.RegistarFalta(Area::Brew, "IImageDecoder::GetRop", motivo);
+      cpu.Set(kR0, kRasterOpCopy);
+      return true;
+    }
+    cpu.Set(kR0, g_png_rop);
+    return true;
+  }
+  return false;
+}
+
+// OS CINCO SLOTS DO `IForceFeed` (brew_slots.inc: IQI 3 + Write 3 + Reset 4).
+bool AtenderForceFeed(ICpu& cpu, Traco& traco, std::uint32_t slot) {
+  Memoria& mem = cpu.Mem();
+  const std::uint32_t obj = kObjetoForceFeed;
+  if (slot == brew_slots::kForceFeed_AddRef) {
+    const std::uint32_t n = mem.Ler32(obj + 4) + 1;
+    mem.Escrever32(obj + 4, n);
+    cpu.Set(kR0, n);
+    return true;
+  }
+  if (slot == brew_slots::kForceFeed_Release) {
+    const std::uint32_t n = mem.Ler32(obj + 4);
+    if (n == 0) {
+      traco.RegistarFalta(Area::Brew, "IForceFeed::Release", "Release de um objecto com contagem zero");
+      cpu.Set(kR0, kAeeUnsupported);
+      return true;
+    }
+    mem.Escrever32(obj + 4, n - 1);
+    cpu.Set(kR0, n - 1);
+    return true;
+  }
+  if (slot == brew_slots::kForceFeed_QueryInterface) {
+    const std::uint32_t iid = cpu.Get(kR1);
+    const std::uint32_t ppo = cpu.Get(kR2);
+    if (ppo == 0) {
+      traco.RegistarFalta(Area::Brew, "IForceFeed::QueryInterface", "ppObj nulo");
+      cpu.Set(kR0, kAeeBadParm);
+      return true;
+    }
+    if (iid == kIidForceFeed) {
+      mem.Escrever32(ppo, obj);
+      cpu.Set(kR0, kAeeSuccess);
+      return true;
+    }
+    if (iid == kIidImageDecoder) {
+      // O CAMINHO DE VOLTA: quem tem a interface de escrita pode pedir o
+      // descodificador ao MESMO objecto (o SDK declara as duas no mesmo).
+      mem.Escrever32(ppo, ObjetoDaClasse(static_cast<std::uint32_t>(Classe::kPNGDecoderBREW)));
+      cpu.Set(kR0, kAeeSuccess);
+      return true;
+    }
+    mem.Escrever32(ppo, 0);
+    char det[96];
+    std::snprintf(det, sizeof(det), "iid=0x%08x sem objecto neste descodificador", iid);
+    traco.RegistarFalta(Area::Brew, "IForceFeed::QueryInterface", det);
+    cpu.Set(kR0, kAeeUnsupported);
+    return true;
+  }
+  if (slot == brew_slots::kForceFeed_Write) {
+    // `int Write(IForceFeed *po, void *pBuf, int cb)`: o dado escrito e a
+    // CONTINUACAO do que ja foi escrito desde o ultimo `Reset` (`AEEIForceFeed.h`).
+    // `pBuf` nulo ou `cb` a zero e o FIM do stream (o cabecalho diz "or NULL to
+    // signify the end of the stream of data"): fecha-se o fluxo e nao se acrescenta
+    // nada. Nao se descodifica aqui -- quem descodifica e o `GetBitmap`, que e
+    // quem tem o ponteiro de saida.
+    const std::uint32_t pbuf = cpu.Get(kR1);
+    const std::int32_t cb = static_cast<std::int32_t>(cpu.Get(kR2));
+    if (pbuf == 0 || cb <= 0) {
+      traco.Emitir(Area::Brew, Nivel::Depuracao, "PNG_DESCODIFICADOR",
+                   "fim do fluxo (" + std::to_string(g_png_fluxo.size()) + " bytes escritos)");
+      cpu.Set(kR0, kAeeSuccess);
+      return true;
+    }
+    if (static_cast<std::uint32_t>(cb) > kMaximoDoFluxo - g_png_fluxo.size()) {
+      char det[128];
+      std::snprintf(det, sizeof(det), "cb=%d com %u bytes ja no fluxo passa o limite de %u",
+                    static_cast<int>(cb), static_cast<unsigned>(g_png_fluxo.size()),
+                    static_cast<unsigned>(kMaximoDoFluxo));
+      traco.RegistarFalta(Area::Brew, "IForceFeed::Write", det);
+      cpu.Set(kR0, kAeeNoMemory);
+      return true;
+    }
+    const std::size_t antes = g_png_fluxo.size();
+    g_png_fluxo.resize(antes + static_cast<std::size_t>(cb));
+    mem.LerBloco(pbuf, g_png_fluxo.data() + antes, static_cast<std::uint32_t>(cb));
+    // O fluxo novo anula a imagem antiga: o que esta escrito e a CONTINUACAO, e
+    // uma imagem ja descodificada deixaria de corresponder-lhe.
+    g_png_tem_imagem = false;
+    g_png_imagem = zb2::ImagemPng{};
+    traco.Emitir(Area::Brew, Nivel::Depuracao, "PNG_DESCODIFICADOR",
+                 "fluxo += " + std::to_string(cb) + " bytes (total " +
+                     std::to_string(g_png_fluxo.size()) + ") primeiros=[" +
+                     BytesEmHexCurto(g_png_fluxo.data() + antes,
+                                     static_cast<std::size_t>(cb) < 8u ? static_cast<std::size_t>(cb) : 8u) +
+                     "]");
+    cpu.Set(kR0, kAeeSuccess);
+    return true;
+  }
+  if (slot == brew_slots::kForceFeed_Reset) {
+    // `void Reset(IForceFeed *po)`: prepara o objecto para um stream novo. Void,
+    // logo nao toca no r0 (a mesma regra do `ITextCtl::SetActive`).
+    ReporEstadoDoPng();
+    traco.Emitir(Area::Brew, Nivel::Depuracao, "PNG_DESCODIFICADOR", "Reset: fluxo limpo");
+    return true;
+  }
+  return false;
+}
+
+}  // namespace
+
 bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
+  // O `IForceFeed` DO DESCODIFICADOR PNG -- a SEGUNDA interface do mesmo objecto,
+  // com vtable propria (40520, ver `classes.h`). Este ramo vem ANTES da guarda da
+  // faixa das classes porque 40520 esta acima do fim da tabela das sete classes
+  // (40000 + 7*32 = 40224) e abaixo das extensoes QUALCOMM (40600).
+  if (indice >= kVtableForceFeed && indice < kVtableForceFeed + kForceFeedSlots) {
+    return AtenderForceFeed(cpu, traco, indice - kVtableForceFeed);
+  }
+
   // O IGLES11Ext, faixa propria (15 slots, AEEGLES11Ext.h). A CABECA e os
   // OITO `DrawTex*OES` sao o que o `GL_OES_draw_texture` promete, e sao
   // SERVIDOS; os quatro de palette/weight (3..6) recusam COM NOME, porque nao
@@ -1798,6 +2256,14 @@ bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
   if (k == k_texto && slot == brew_slots::kTextCtl_HandleEvent) {
     // `boolean HandleEvent(po, evt, w, dw)`: sem widgets, nada tratado -> FALSE.
     cpu.Set(kR0, 0);
+    return true;
+  }
+  // O DESCODIFICADOR PNG (`IImageDecoder`). O ramo vem antes do generico porque
+  // os slots 3 (`GetBitmap`) e 4 (`GetRop`) tem corpo: um `GetBitmap` que nao
+  // responde deixa o descritor do jogo a NULL e o jogo AVANCA para a conversao
+  // de um bitmap que nao existe (a medicao que abriu esta frente).
+  if (k == static_cast<std::uint32_t>(Classe::kPNGDecoderBREW) &&
+      AtenderDecodificadorPng(cpu, traco, slot)) {
     return true;
   }
   if (SlotDaClasseImplementado(k, slot)) {

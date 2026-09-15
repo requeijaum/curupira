@@ -656,6 +656,80 @@ TEST(BitmapGetInfo, OSlot12RespondeOTamanhoDaTelaERespeitaONSize) {
   EXPECT_EQ(b.Mem().Ler32(kInfo + 8), kGuarda) << "nSize = 8 nao autoriza o terceiro campo";
 }
 
+// ===========================================================================
+// A FRENTE ibmap2: a resposta tem de ser sobre o OBJECT QUE O GUEST PERGUNTOU.
+//
+// Os dois ramos abaixo (`kSlotIdBitmapGetInfo` = 1572 e `kSlotIdBitmapQI` = 1565)
+// sao os enderecos que a FERRAMENTA cabla nos slots 12 e 2 da vtable do IBitmap
+// (`tools/bateria.cpp`, `kWire`). Chegam aqui com QUALQUER bitmap no r0.
+//
+// Ate o `CreateCompatibleBitmap` (slot 13) existir, o unico bitmap alcancavel era
+// o do ECRA -- e por isso responder 640x480 e publicar o ecra valia sempre. Com a
+// familia servida (frente ibmap2) o guest cria DIBs proprios e pergunta por ELES:
+// um desenho composto no DIB errado e um desenho que nao aparece.
+//
+// MEDIDO no `pacmania` (lr=0x12d94): `CreateCompatibleBitmap` -> `QI(AEEIID_IDIB)`
+// -> `GetInfo(nSize=12)`, e o jogo guarda esses numeros para escrever no `pBmp`.
+// ===========================================================================
+TEST(BitmapGetInfo, OGetInfoDeUmDibCriadoRespondeAsDimensoesDELE) {
+  Bancada b;
+  constexpr std::uint32_t kInfo = 0x80212000u;
+  constexpr std::uint32_t kPpDib = 0x80212100u;
+  constexpr std::uint32_t kGuarda = 0xDEADBEEFu;
+  // `int CreateDIBitmap(IDisplay*, IDIB **ppIDIB, uint8 colorDepth, uint16 w,
+  //                     uint16 h)` -- o `h` vai na pilha.
+  b.ChamaSaida(1538, kObjDisplay, kPpDib, 16u, 78u, 64u);
+  const std::uint32_t dib = b.Mem().Ler32(kPpDib);
+  ASSERT_NE(dib, 0u) << "sem DIB criado nao ha o que perguntar";
+  for (std::uint32_t k = 0; k < 4; ++k) b.Mem().Escrever32(kInfo + k * 4, kGuarda);
+  b.ChamaSaida(1572, dib, kInfo, 12u);
+  // VERMELHO NA BASE (antes da correccao): 640x480 e 16 -- o tamanho do ECRA.
+  EXPECT_EQ(b.Mem().Ler32(kInfo + 0), 78u) << "a largura e a do DIB, nao a do ecra";
+  EXPECT_EQ(b.Mem().Ler32(kInfo + 4), 64u) << "a altura e a do DIB, nao a do ecra";
+  EXPECT_EQ(b.Mem().Ler32(kInfo + 8), 16u) << "RGB565 = 16 bits";
+  // O CONTRATO DO ECRA NAO MUDA: o ecra responde com o tamanho da Tela.
+  b.ChamaSaida(1572, kObjDibBase + 0x300, kInfo, 12u);
+  EXPECT_EQ(b.Mem().Ler32(kInfo + 0), static_cast<std::uint32_t>(Tela::kLargura));
+  EXPECT_EQ(b.Mem().Ler32(kInfo + 4), static_cast<std::uint32_t>(Tela::kAltura));
+}
+
+TEST(BitmapQI, OQueryInterfaceDeUmDibCriadoDevolveOProprioObjeto) {
+  Bancada b;
+  constexpr std::uint32_t kPpDib = 0x80212200u;
+  constexpr std::uint32_t kPpo = 0x80212300u;
+  b.ChamaSaida(1538, kObjDisplay, kPpDib, 16u, 320u, 240u);
+  const std::uint32_t dib = b.Mem().Ler32(kPpDib);
+  ASSERT_NE(dib, 0u);
+  b.Mem().Escrever32(kPpo, 0xDEADBEEFu);
+  // `int QueryInterface(IBitmap*, AEEIID, void**)` com `AEEIID_IDIB` (0x01001045).
+  b.ChamaSaida(1565, dib, 0x01001045u, kPpo);
+  // VERMELHO NA BASE (antes da correccao): sai o objecto do ECRA. Quem recebe
+  // esse ponteiro escreve os pixels no ecra em vez de no bitmap dele.
+  EXPECT_EQ(b.Mem().Ler32(kPpo), dib) << "o IDIB devolvido e o mesmo objecto pedido";
+  // O ECRA continua a devolver o proprio objecto do ecra.
+  b.Mem().Escrever32(kPpo, 0u);
+  b.ChamaSaida(1565, kObjDibBase + 0x300, 0x01001045u, kPpo);
+  EXPECT_EQ(b.Mem().Ler32(kPpo), kObjDibBase + 0x300u);
+
+  // OS IIDs ANTIGOS DO DIB SAO A MESMA LISTA (`IidDeDib`): `0x0100102c` e o
+  // `AEECLSID_DIB_20` (`AEEClassIDs.h:114`) e `0x01001029` (`CORE+41`) e o valor
+  // do DIB de uma versao anterior do BREW -- MEDIDO: o `fifa09` e o `zenonia`
+  // pedem exactamente esse IID ao bitmap que acabaram de criar
+  // (`CreateCompatibleBitmap` -> `QI(0x01001029)`), e o IID nao se serve so
+  // porque a ferramenta cablou este endereco no slot 2 em vez do da familia.
+  for (const std::uint32_t iid : {0x0100102cu, 0x01001029u}) {
+    b.Mem().Escrever32(kPpo, 0u);
+    b.ChamaSaida(1565, dib, iid, kPpo);
+    EXPECT_EQ(b.Mem().Ler32(kPpo), dib) << "iid=0x" << std::hex << iid;
+  }
+  // Um IID de OUTRA interface continua a ser recusado com o nome, e nao com o
+  // bitmap (o `0x01001001` e o `AEECLSID_DISPLAY`).
+  b.Mem().Escrever32(kPpo, 0xDEADBEEFu);
+  EXPECT_EQ(b.ChamaSaida(1565, dib, 0x01001001u, kPpo), kAeeUnsupported);
+  EXPECT_EQ(b.Mem().Ler32(kPpo), 0u) << "recusa nao deixa o ponteiro por limpar";
+}
+
+
 TEST(Qegl, ORetornoSaiPeloPonteiroFinalEOsArgumentosEstaoDeslocados) {
   // A MOLDURA DO QEGL: `int metodo(IQEGL *pMe, <args do EGL>, <tipo> *pSaida)`.
   //

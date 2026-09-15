@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "core/brew/classes.h"   // AtenderClasse + ConstruirIgles (o TexEnvx do IGLES11)
 #include "core/brew/despacho.h"
 #include "core/brew/ecra.h"
 #include "core/brew/interface.h"
@@ -12,6 +13,7 @@
 #include "core/memoria/memoria.h"
 #include "core/traco/traco.h"
 #include "tools/brew_slots.inc"
+#include "tools/igles_slots.inc"  // kIgles_TexEnvx (AEEGLES10.h + AEEGLES11.h)
 
 namespace zb2::brew {
 namespace {
@@ -120,6 +122,10 @@ class Bancada {
   Memoria& Mem() { return mem_; }
   Despacho& D() { return *despacho_; }
   Tela& T() { return despacho_->TelaRef(); }
+  Alocador& Al() { return *al_; }
+  Traco& Tr() { return traco_; }
+  ArmInterpreter& Cpu() { return cpu_; }
+  const Saidas& S() const { return saidas_; }
 
  private:
   Memoria mem_;
@@ -240,6 +246,323 @@ TEST(SondaDeLeitura, DizQuemLeuOCampoEDeQuePc) {
   mem.PcAtual(0x5678);
   mem.Ler32(0x1000);
   EXPECT_EQ(mem.LeiturasSondadas().size(), 2u);
+}
+
+
+// ===========================================================================
+// A FAMILIA DO IBITMAP (frente ibitmap): o slot13 (`CreateCompatibleBitmap`) e
+// o que os titulos fazem depois dele. Ver /tmp/pesquisa/ibitmap.md.
+//
+// O PRIMEIRO teste e VERMELHO NA BASE (prova da tarefa): o despacho ainda nao
+// tem o ramo da familia, e o slot13 do bitmap do ecra recusa com nome. Fica
+// VERDE quando o dono do `despacho.cpp` aceitar o ramo de duas condicoes que o
+// relatorio propoe (`AtenderBitmapDaFamilia` na cadeia de indices 8002..8015).
+//
+// OS OUTROS provam o SERVIDOR (o que vai dentro desse ramo) ao nivel da ABI,
+// chamando `AtenderBitmapDaFamilia` com registos postos a mao -- sem depender
+// de nenhum ficheiro de outra frente. E o que torna o patch aplicavel, legivel
+// e testavel antes de o despacho o ligar.
+// ===========================================================================
+
+// Os tres `AEERasterOp` que o servidor conhece. Sao valores do SDK
+// (`AEEGraphics.h`; o zeebx `src/machine.rs:68-71`); se divergirem do servidor,
+// o teste do `FillRect` transparente fica vermelho -- e e isso que ele existe
+// para apanhar.
+constexpr std::uint32_t kRopXorTeste = 1;
+constexpr std::uint32_t kRopCopyTeste = 2;
+constexpr std::uint32_t kRopTransparenteTeste = 7;
+
+TEST(BitmapCompativel, OSlot13RefusaHojeECriaOBitmapQuandoCablar) {
+  Bancada b;
+  const std::uint32_t bmp = b.BitmapDoEcra();
+  const std::uint32_t pp = 0x80091010u;
+  b.Mem().Escrever32(pp, 0xDEADBEEFu);
+  // O caminho do guest: `ldr pc,[vt,#52]` (slot 13) com out em r1, w em r2,
+  // h em r3. MEDIDO no `tekken2` (lr=0x1ba8c) e no `pacmania` (lr=0x12d94).
+  const std::uint32_t rc = b.ChamarMetodo(bmp, 13, pp, 320, 240);
+  // VERMELHO NA BASE: o despacho recusa com `kAeeUnsupported` (20) e
+  // `IBitmap::slot13` na lista de faltas. VERDE quando o ramo da familia entrar.
+  EXPECT_EQ(rc, kAeeSuccess) << "hoje o slot13 recusa (o commit da frente ibitmap"
+                                " liga o ramo de AtenderBitmapDaFamilia no despacho)";
+  const std::uint32_t obj = b.Mem().Ler32(pp);
+  EXPECT_NE(obj, 0xDEADBEEFu) << "o pp tem de ser escrito com o objecto novo";
+  EXPECT_NE(obj, 0u);
+  using C = CamposDoIdib;
+  EXPECT_EQ(b.Mem().Ler16(obj + C::kCx), 320u);
+  EXPECT_EQ(b.Mem().Ler16(obj + C::kCy), 240u);
+  EXPECT_EQ(b.Mem().Ler16(obj + C::kNPitch), 640u);
+  EXPECT_EQ(b.Mem().Ler8(obj + C::kNDepth), 16u);
+}
+
+TEST(BitmapCompativel, OServidorCriaUmDibComCabecalhoPublico) {
+  Bancada b;
+  const std::uint32_t bmp = b.BitmapDoEcra();
+  const std::uint32_t pp = 0x80091010u;
+  b.Mem().Escrever32(pp, 0);
+  auto& cpu = b.Cpu();
+  cpu.Set(kR0, bmp);
+  cpu.Set(kR1, pp);
+  cpu.Set(kR2, 320);
+  cpu.Set(kR3, 240);
+  ASSERT_TRUE(AtenderBitmapDaFamilia(cpu, b.Mem(), b.Al(), b.Tr(), kVtableBitmap + 13));
+  EXPECT_EQ(cpu.Get(kR0), kAeeSuccess);
+  const std::uint32_t obj = b.Mem().Ler32(pp);
+  ASSERT_NE(obj, 0u);
+  // O CABECALHO PUBLICO DO IDIB (`AEEIDIB.h:42-55`) campo a campo, como o do
+  // ecra: o jogo le `cx`/`cy`/`nPitch`/`nDepth` directamente (o `pacmania` faz
+  // GetInfo + QI(IDIB) logo a seguir ao slot13).
+  using C = CamposDoIdib;
+  const std::uint32_t pbmp = b.Mem().Ler32(obj + C::kPBmp);
+  ASSERT_NE(pbmp, 0u) << "zero e a base do modulo do titulo";
+  EXPECT_EQ(b.Mem().Ler32(obj), b.Mem().Ler32(bmp)) << "a MESMA vtable do bitmap";
+  EXPECT_EQ(b.Mem().Ler32(obj + C::kPPaletteMap), 0u);
+  EXPECT_EQ(b.Mem().Ler32(obj + C::kPRGB), 0u);
+  EXPECT_EQ(b.Mem().Ler16(obj + C::kCx), 320u);
+  EXPECT_EQ(b.Mem().Ler16(obj + C::kCy), 240u);
+  EXPECT_EQ(b.Mem().Ler16(obj + C::kNPitch), 640u);
+  EXPECT_EQ(b.Mem().Ler16(obj + C::kCntRGB), 0u);
+  EXPECT_EQ(b.Mem().Ler8(obj + C::kNDepth), 16u);
+  EXPECT_EQ(b.Mem().Ler8(obj + C::kNColorScheme), C::kEsquemaDeCor565);
+  // Determinismo (P4): um DIB novo nasce a ZEROS, nao com lixo do heap.
+  EXPECT_EQ(b.Mem().Ler16(pbmp), 0u);
+  // A faixa de objectos: acima do ecra (+0x300), e nunca o proprio ecra.
+  EXPECT_NE(obj, bmp);
+  EXPECT_GE(obj, kObjDibBase + 0x340u);
+  EXPECT_LT(obj, kObjDibBase + 0x1000u);
+}
+
+TEST(BitmapCompativel, ODesenhoDaFamiliaEscreveNoBufferDoGuest) {
+  Bancada b;
+  const std::uint32_t bmp = b.BitmapDoEcra();
+  const std::uint32_t pp = 0x80091010u;
+  b.Mem().Escrever32(pp, 0);
+  auto& cpu = b.Cpu();
+  cpu.Set(kR0, bmp);
+  cpu.Set(kR1, pp);
+  cpu.Set(kR2, 8);
+  cpu.Set(kR3, 8);
+  ASSERT_TRUE(AtenderBitmapDaFamilia(cpu, b.Mem(), b.Al(), b.Tr(), kVtableBitmap + 13));
+  const std::uint32_t obj = b.Mem().Ler32(pp);
+  ASSERT_NE(obj, 0u);
+  const std::uint32_t pbmp = b.Mem().Ler32(obj + CamposDoIdib::kPBmp);
+  ASSERT_NE(pbmp, 0u);
+  const std::uint32_t sp = 0x80092000u;
+
+  // DrawPixel (slot 5): r1=x r2=y r3=cor565 rop=[sp]. O mesmo padrao MEDIDO no
+  // tekken2 a seguir ao slot13 (RGBToNative + DrawPixel por pixel do BMP).
+  cpu.Set(kR0, obj);
+  cpu.Set(kR1, 3);
+  cpu.Set(kR2, 4);
+  cpu.Set(kR3, 0xF800u);
+  b.Mem().Escrever32(sp, kRopCopyTeste);
+  cpu.Set(kSP, sp);
+  ASSERT_TRUE(AtenderBitmapDaFamilia(cpu, b.Mem(), b.Al(), b.Tr(), kVtableBitmap + 5));
+  EXPECT_EQ(cpu.Get(kR0), kAeeSuccess) << "o DrawPixel escreve no DIB novo";
+  EXPECT_EQ(b.Mem().Ler16(pbmp + (4 * 8 + 3) * 2u), 0xF800u);
+  EXPECT_EQ(b.Mem().Ler16(pbmp), 0u) << "o resto continua a zeros";
+
+  // GetPixel (slot 6): r3 = ponteiro de saida.
+  const std::uint32_t pc = 0x80092010u;
+  cpu.Set(kR0, obj);
+  cpu.Set(kR1, 3);
+  cpu.Set(kR2, 4);
+  cpu.Set(kR3, pc);
+  ASSERT_TRUE(AtenderBitmapDaFamilia(cpu, b.Mem(), b.Al(), b.Tr(), kVtableBitmap + 6));
+  EXPECT_EQ(b.Mem().Ler32(pc), 0xF800u);
+
+  // RGBToNative (slot 3): RGB_WHITE (0xFFFFFF00) -> branco 565 (0xFFFF).
+  cpu.Set(kR0, obj);
+  cpu.Set(kR1, 0xFFFFFF00u);
+  ASSERT_TRUE(AtenderBitmapDaFamilia(cpu, b.Mem(), b.Al(), b.Tr(), kVtableBitmap + 3));
+  EXPECT_EQ(cpu.Get(kR0), 0xFFFFu);
+
+  // GetInfo (slot 12): o AEEBitmapInfo sao tres u32 (cx, cy, nDepth).
+  const std::uint32_t pinfo = 0x80092020u;
+  cpu.Set(kR0, obj);
+  cpu.Set(kR1, pinfo);
+  cpu.Set(kR2, 12);
+  ASSERT_TRUE(AtenderBitmapDaFamilia(cpu, b.Mem(), b.Al(), b.Tr(), kVtableBitmap + 12));
+  EXPECT_EQ(b.Mem().Ler32(pinfo), 8u);
+  EXPECT_EQ(b.Mem().Ler32(pinfo + 4), 8u);
+  EXPECT_EQ(b.Mem().Ler32(pinfo + 8), 16u);
+
+  // QueryInterface IDIB (slot 2): o proprio objecto -- e o que o pacmania pede
+  // com o IID 0x01001045 logo a seguir ao slot13.
+  const std::uint32_t ppo = 0x80092030u;
+  cpu.Set(kR0, obj);
+  cpu.Set(kR1, 0x01001045u);  // AEEIID_IDIB (AEEIDIB.h:37)
+  cpu.Set(kR2, ppo);
+  ASSERT_TRUE(AtenderBitmapDaFamilia(cpu, b.Mem(), b.Al(), b.Tr(), kVtableBitmap + 2));
+  EXPECT_EQ(cpu.Get(kR0), kAeeSuccess);
+  EXPECT_EQ(b.Mem().Ler32(ppo), obj);
+}
+
+TEST(BitmapCompativel, OFillRectEOTransparenteSeguemORop) {
+  Bancada b;
+  const std::uint32_t bmp = b.BitmapDoEcra();
+  const std::uint32_t pp = 0x80091010u;
+  b.Mem().Escrever32(pp, 0);
+  auto& cpu = b.Cpu();
+  cpu.Set(kR0, bmp);
+  cpu.Set(kR1, pp);
+  cpu.Set(kR2, 16);
+  cpu.Set(kR3, 16);
+  ASSERT_TRUE(AtenderBitmapDaFamilia(cpu, b.Mem(), b.Al(), b.Tr(), kVtableBitmap + 13));
+  const std::uint32_t obj = b.Mem().Ler32(pp);
+  ASSERT_NE(obj, 0u);
+  const std::uint32_t pbmp = b.Mem().Ler32(obj + CamposDoIdib::kPBmp);
+
+  // FillRect (slot 9): r1=rect r2=cor r3=rop. O rect e 4 x int16 (x,y,dx,dy).
+  const std::uint32_t prc = 0x80092040u;
+  b.Mem().Escrever16(prc + 0, 1);
+  b.Mem().Escrever16(prc + 2, 2);
+  b.Mem().Escrever16(prc + 4, 5);
+  b.Mem().Escrever16(prc + 6, 4);
+  cpu.Set(kR0, obj);
+  cpu.Set(kR1, prc);
+  cpu.Set(kR2, 0x07E0u);
+  cpu.Set(kR3, kRopCopyTeste);
+  ASSERT_TRUE(AtenderBitmapDaFamilia(cpu, b.Mem(), b.Al(), b.Tr(), kVtableBitmap + 9));
+  EXPECT_EQ(b.Mem().Ler16(pbmp + (3 * 16 + 2) * 2u), 0x07E0u);
+  EXPECT_EQ(b.Mem().Ler16(pbmp), 0u) << "fora do rect nao pinta";
+
+  // A cor transparente: `SetTransparencyColor` (slot 14) + FillRect com
+  // `AEE_RO_TRANSPARENT` e a MESMA cor -> NAO escreve (o `IBITMAP_Invalidate`
+  // do SDK e isto; o zeebx mede o caso no Bejeweled).
+  cpu.Set(kR0, obj);
+  cpu.Set(kR1, 0x001Fu);
+  ASSERT_TRUE(AtenderBitmapDaFamilia(cpu, b.Mem(), b.Al(), b.Tr(), kVtableBitmap + 14));
+  const std::uint32_t prc2 = 0x80092050u;
+  b.Mem().Escrever16(prc2 + 0, 0);
+  b.Mem().Escrever16(prc2 + 2, 0);
+  b.Mem().Escrever16(prc2 + 4, 16);
+  b.Mem().Escrever16(prc2 + 6, 16);
+  cpu.Set(kR0, obj);
+  cpu.Set(kR1, prc2);
+  cpu.Set(kR2, 0x001Fu);
+  cpu.Set(kR3, kRopTransparenteTeste);
+  ASSERT_TRUE(AtenderBitmapDaFamilia(cpu, b.Mem(), b.Al(), b.Tr(), kVtableBitmap + 9));
+  EXPECT_EQ(cpu.Get(kR0), kAeeSuccess);
+  EXPECT_EQ(b.Mem().Ler16(pbmp + (3 * 16 + 2) * 2u), 0x07E0u) << "transparente nao apaga";
+  // GetTransparencyColor (slot 15) devolve o que o 14 guardou.
+  const std::uint32_t pc = 0x80092060u;
+  cpu.Set(kR0, obj);
+  cpu.Set(kR1, pc);
+  ASSERT_TRUE(AtenderBitmapDaFamilia(cpu, b.Mem(), b.Al(), b.Tr(), kVtableBitmap + 15));
+  EXPECT_EQ(b.Mem().Ler32(pc), 0x001Fu);
+}
+
+TEST(BitmapCompativel, OBltCopiaPixelsEntreCompativeis) {
+  Bancada b;
+  const std::uint32_t bmp = b.BitmapDoEcra();
+  auto& cpu = b.Cpu();
+  const auto criar = [&](std::uint32_t pp, std::uint32_t w, std::uint32_t h) {
+    b.Mem().Escrever32(pp, 0);
+    cpu.Set(kR0, bmp);
+    cpu.Set(kR1, pp);
+    cpu.Set(kR2, w);
+    cpu.Set(kR3, h);
+    EXPECT_TRUE(AtenderBitmapDaFamilia(cpu, b.Mem(), b.Al(), b.Tr(), kVtableBitmap + 13));
+    return b.Mem().Ler32(pp);
+  };
+  const std::uint32_t origem = criar(0x80091010u, 8, 8);
+  const std::uint32_t destino = criar(0x80091020u, 12, 12);
+  ASSERT_NE(origem, 0u);
+  ASSERT_NE(destino, 0u);
+  const std::uint32_t pbmp_o = b.Mem().Ler32(origem + CamposDoIdib::kPBmp);
+  const std::uint32_t pbmp_d = b.Mem().Ler32(destino + CamposDoIdib::kPBmp);
+  const std::uint32_t sp = 0x80092070u;
+
+  // Um pixel na origem (4,5) e outro na cor transparente (0,0).
+  cpu.Set(kR0, origem);
+  cpu.Set(kR1, 4);
+  cpu.Set(kR2, 5);
+  cpu.Set(kR3, 0x1234u);
+  b.Mem().Escrever32(sp, kRopCopyTeste);
+  cpu.Set(kSP, sp);
+  ASSERT_TRUE(AtenderBitmapDaFamilia(cpu, b.Mem(), b.Al(), b.Tr(), kVtableBitmap + 5));
+
+  // BltIn (slot 10): r1=xd r2=yd r3=dx [sp]=dy,src,xs,ys,rop.
+  //  (po, xDst, yDst, dx, dy, pSrc, xSrc, ySrc, rop)
+  cpu.Set(kR0, destino);
+  cpu.Set(kR1, 2);
+  cpu.Set(kR2, 3);
+  cpu.Set(kR3, 8);
+  b.Mem().Escrever32(sp + 0, 8);   // dy
+  b.Mem().Escrever32(sp + 4, origem);
+  b.Mem().Escrever32(sp + 8, 0);   // xs
+  b.Mem().Escrever32(sp + 12, 0);  // ys
+  b.Mem().Escrever32(sp + 16, kRopCopyTeste);
+  ASSERT_TRUE(AtenderBitmapDaFamilia(cpu, b.Mem(), b.Al(), b.Tr(), kVtableBitmap + 10));
+  EXPECT_EQ(b.Mem().Ler16(pbmp_d + (8 * 12 + 6) * 2u), 0x1234u)
+      << "o pixel (4,5) da origem chegou a (2+4, 3+5) do destino";
+  EXPECT_EQ(b.Mem().Ler16(pbmp_d + (3 * 12 + 2) * 2u), 0u)
+      << "o resto do destino continua a zeros";
+
+  // BltOut (slot 11): inverte os papeis -- destino do outro lado.
+  const std::uint32_t destino2 = criar(0x80091030u, 16, 16);
+  ASSERT_NE(destino2, 0u);
+  const std::uint32_t pbmp_d2 = b.Mem().Ler32(destino2 + CamposDoIdib::kPBmp);
+  cpu.Set(kR0, origem);  // a FONTE
+  cpu.Set(kR1, 1);
+  cpu.Set(kR2, 1);
+  cpu.Set(kR3, 4);
+  b.Mem().Escrever32(sp + 0, 4);
+  b.Mem().Escrever32(sp + 4, destino2);
+  b.Mem().Escrever32(sp + 8, 4);
+  b.Mem().Escrever32(sp + 12, 5);
+  b.Mem().Escrever32(sp + 16, kRopCopyTeste);
+  ASSERT_TRUE(AtenderBitmapDaFamilia(cpu, b.Mem(), b.Al(), b.Tr(), kVtableBitmap + 11));
+  EXPECT_EQ(b.Mem().Ler16(pbmp_d2 + (1 * 16 + 1) * 2u), 0x1234u)
+      << "o (4,5) da origem chegou a (1,1) do destino2";
+}
+
+TEST(BitmapCompativel, OServidorRecusaComNomeForaDaFaixaEComObjectoInvalido) {
+  Bancada b;
+  auto& cpu = b.Cpu();
+  // Fora da faixa da familia: nao e nosso, o despacho segue a cadeia.
+  EXPECT_FALSE(AtenderBitmapDaFamilia(cpu, b.Mem(), b.Al(), b.Tr(), kVtableBitmap + 16));
+  EXPECT_FALSE(AtenderBitmapDaFamilia(cpu, b.Mem(), b.Al(), b.Tr(), kVtableBitmap + 1));
+  // Objecto sem cabecalho (o pp a zeros): DrawPixel recusa COM NOME e nao mente.
+  cpu.Set(kR0, 0x80050F00u);
+  cpu.Set(kR1, 0);
+  cpu.Set(kR2, 0);
+  cpu.Set(kR3, 0);
+  cpu.Set(kSP, 0x80092000u);
+  b.Mem().Escrever32(0x80092000u, kRopCopyTeste);
+  EXPECT_TRUE(AtenderBitmapDaFamilia(cpu, b.Mem(), b.Al(), b.Tr(), kVtableBitmap + 5));
+  EXPECT_EQ(cpu.Get(kR0), kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("IBitmap::DrawPixel"), 1u);
+}
+
+
+// ---------------------------------------------------------------------------
+// O IGLES11::TexEnvx (mesma frente, tema imagem/estado de textura).
+//
+// MEDIDO em 4 titulos (abd, pacmania, peggle, torkandkral), sempre com o MESMO
+// par logo a seguir ao `glEnable(GL_TEXTURE_2D)`:
+//
+//     r1=0x2300 (GL_TEXTURE_ENV_MODE) r2=0x2200 (GL_MODULATE)
+//
+// O motor do IGL de 80 slots (`igl.cpp`) JA implementa o `kIgl_TexEnvx` -- so
+// falta a entrada do mapa `SlotIglesNoIgl` em `classes.cpp` (uma linha:
+// `case kIgles_TexEnvx: return kIgl_TexEnvx;`). O teste abaixo fica VERMELHO
+// enquanto essa linha nao existe, e VERDE com ela. O ficheiro `classes.cpp`
+// esta ocupado pela frente qualcomm; por isso este teste vive AQUI, onde nao
+// pisa ninguem, e a entrada do mapa fica no relatorio como PROPOSTA.
+// ===========================================================================
+TEST(FrenteIbitmap, OTexEnvxDoIglesRecusaHojeEServeOModoQuandoMapeado) {
+  Bancada b;
+  ConstruirIgles(b.Mem(), b.S(), b.Tr());
+  auto& cpu = b.Cpu();
+  cpu.Set(kR0, kObjetoIgles);
+  cpu.Set(kR1, 0x2300u);  // GL_TEXTURE_ENV_MODE (medido nos 4 titulos)
+  cpu.Set(kR2, 0x2200u);  // GL_MODULATE (medido nos 4 titulos)
+  ASSERT_TRUE(AtenderClasse(cpu, kVtableIgles + igles_slots::kIgles_TexEnvx, b.Tr()));
+  // VERMELHO NA BASE: a recusa generica com nome. VERDE com a linha do mapa
+  // `SlotIglesNoIgl(kIgles_TexEnvx) -> kIgl_TexEnvx` em classes.cpp.
+  EXPECT_EQ(cpu.Get(kR0), kAeeSuccess) << "hoje o IGLES11::TexEnvx recusa com nome";
+  EXPECT_EQ(b.Faltas("IGLES11::TexEnvx"), 0u) << "com o mapa, o motor do IGL serve o modo";
 }
 
 }  // namespace zb2::brew

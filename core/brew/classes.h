@@ -213,6 +213,74 @@ constexpr std::uint32_t kObjetoGles11ExtPak = 0x8F244000u;
 constexpr std::uint32_t kObjetoEglOesSwapInterval = 0x8F245000u;
 constexpr std::uint32_t kObjetoEglGetPowerLevel = 0x8F246000u;
 
+// --- O DESCODIFICADOR PNG: `IImageDecoder` + `IForceFeed` (frente imgdec) ------
+//
+// O `AEECLSID_PNGDECODER_BREW` (0x01030766) ja era criado aqui, mas so a CABECA
+// era servida: os cinco slots do `IImageDecoder` recusavam todos com o nome. Os
+// QUATRO titulos que queimam os 8 M passos num laco de conversao de imagem
+// (`abd` 279369, `peggle` 278962, `torkandkral` 280463, `heavyweaponbrew`
+// 278200) param exactamente ai:
+//
+//   CreateInstance(0x01030766)
+//   QI(AEEIID_IForceFeed 0x0101eb0b)          <- falta 1x por titulo
+//   Write(dados)
+//   GetBitmap(&pBitmap)                       <- falta 1x por titulo; pBitmap fica
+//                                               a NULL e o jogo converte os pixels
+//                                               de um bitmap que nao existe
+//
+// MEDIDO em `/tmp/pesquisa/memo.md` (seccao 2): com o descritor a NULL o jogo le
+// a CABECA DO PROPRIO MODULO como se fosse o cabecalho do IDIB (`[0+8]`,
+// `[0+0x14]`, `[0+0x16]`) e percorre 0x1c34e1a0 = 473 227 680 pixels de paginas
+// virgens ate gastar o orcamento.
+//
+// OS DOIS IIDs vem dos cabecalhos do SDK e os slots do `.inc` GERADO
+// (`brew_slots.inc`, de `AEEIImageDecoder.h` e `AEEIForceFeed.h`): o
+// `INHERIT_IQI` da os tres primeiros e a posicao do metodo o resto.
+constexpr std::uint32_t kIidImageDecoder = 0x01026e20u;  // AEEIImageDecoder.h:30
+constexpr std::uint32_t kIidForceFeed = 0x0101eb0b;      // AEEIForceFeed.h:27
+
+// A SEGUNDA VTABLE DO MESMO OBJECTO. Um objecto BREW que exporta duas interfaces
+// entrega um PONTEIRO por interface, cada um com a vtable dele no `+0`: e por
+// isso que o `QueryInterface` devolve outro endereco, e nao o proprio.
+//
+// 40520 esta LIVRE no mapa das faixas: 40000-40223 sao as classes, 40300-40447 o
+// IGLES11, 40500-40514 o IGLES11Ext e 40600+ as sete extensoes QUALCOMM.
+constexpr std::uint32_t kVtableForceFeed = 40520;
+constexpr std::uint32_t kForceFeedSlots = brew_slots::kForceFeedSlots;
+static_assert(brew_slots::kForceFeedSlots == 5, "o IForceFeed tem 5 slots (IQI 3 + Write + Reset)");
+//
+// O ENDERECO DO OBJECTO e 0x8F010100: o RESTO DA PAGINA DO OBJECTO DO IGLES11
+// (o objecto em +0, a zona de strings dos `glGetString` em +0x1000). Foi MEDIDO
+// que isto importa: a memoria do guest e esparsa POR PAGINAS, e uma pagina nova
+// muda o numero de leituras recusadas de um titulo que varre paginas virgens --
+// com o objecto em 0x8F008000 (pagina nova) o `zeebopeteca` passava de 532 503
+// para 532 502 leituras recusadas, e com este endereco volta a 532 503. Uma
+// pagina que a corrida ja escreve nao acrescenta nada ao mapa.
+constexpr std::uint32_t kObjetoForceFeed = 0x8F010100u;
+
+// A BANDA DOS PIXELS DESCODIFICADOS. `0x8F300000`: dentro da faixa 0x8F000000 que
+// a bateria inteira ja provou que o corpus nao toca (o comentario do 0x800C0000
+// no topo deste ficheiro), ACIMA do pool das pilhas das threads (0x8F030000 +
+// 2 MiB = 0x8F230000) e dos objectos QUALCOMM (0x8F240000..0x8F247000). Os 4 MiB
+// cobrem 1 Mi-pixel em RGB565 (o teto do descodificador) com folga para varias
+// imagens do mesmo titulo; esgotada a banda, a recusa diz os numeros.
+constexpr std::uint32_t kBandaDosPixelsDoPng = 0x8F300000u;
+constexpr std::uint32_t kBytesDaBandaDoPng = 0x00400000u;
+
+// OS OBJECTOS IDIB DO DESCODIFICADOR. Tem de ficar dentro da pagina que o
+// despacho reconhece como "um objecto de bitmap" (`despacho.h`,
+// `EUmObjectoDeBitmap`: 0x80050000..0x80051000) -- e isso que faz o
+// `AddRef`/`Release` deles contar do lado do despacho em vez de escrever no `+4`,
+// que num IDIB e o `pPaletteMap` PUBLICO (`AEEIDIB.h:44`) e nao uma contagem.
+//
+// A CONSTRUCAO DESCE DO TOPO (0x80050FC0, passo 0x40, ate 0x80050900): o
+// `IDisplay::CreateDIBitmap` sobe do FUNDO da mesma pagina (`despacho.cpp`,
+// `kObjDibBase + dibs_ * 0x40`) e o bitmap do ecra esta em +0x300. As duas pontas
+// so se cruzam se um titulo alocar 60 DIBs pelo `CreateDIBitmap`.
+constexpr std::uint32_t kObjetosDibDoPng = 0x80050FC0u;
+constexpr std::uint32_t kPassoDoObjetoDib = 0x40u;
+constexpr std::uint32_t kMaximoDeObjetosDibDoPng = 28u;
+
 // O NOME de UM slot destas sete interfaces, das listas dos `INHERIT_*` do SDK
 // (os ficheiros e as linhas estao no `.cpp`). "?" fora da tabela.
 const char* NomeDoSlotEglGetColorBuffer(std::uint32_t slot);
@@ -264,6 +332,12 @@ const char* NomeDoSlotIglesExt(std::uint32_t slot);
 // Repoem o estado do ITextCtl (ativo/props/modo) no arranque. Sem isto, dois
 // testes na mesma Bancada veriam o estado um do outro -- statics partilhados.
 void ReporEstadoTextCtl();
+
+// Repoe o estado do descodificador PNG (fluxo escrito, imagem descodificada, banda
+// de pixels e busca dos objectos IDIB) no arranque de cada corrida. Chamado pelo
+// `ConstruirClasses`, como o `ReporEstadoTextCtl`: sem isto, o fluxo de um titulo
+// seria a imagem do titulo seguinte.
+void ReporEstadoDoPng();
 
 // --- O IThread cooperativo ---------------------------------------------------
 //

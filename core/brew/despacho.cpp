@@ -18,6 +18,19 @@
 
 namespace zb2::brew {
 
+// O TECTO DE SAIDAS SERVIDAS POR FASE.
+//
+// O 20000 nasceu para o laco de QUADRO (medido: ~19 saidas por quadro x 1051
+// quadros ~= 20 000) e travava ciclos presos em saidas. MEDIDO na frente
+// ibmap2: ha trabalho LEGITIMO que nao cabe la -- o `tekken2` descodifica SEIS
+// imagens do `.bar` a `RGBToNative`+`DrawPixel` por byte, ~118 000 saidas so na
+// primeira, e a fase morria a meio da descodificacao (pixels 322 M -> 307 200 e
+// textos 2096 -> 0, o chamado "regressao da composicao" -- que era isto).
+// O tecto sobe para 200 000: cabe a descodificacao medida com folga, e um ciclo
+// preso continua a ser travado (e o tecto de PASSOS, 8 M, e o limite que
+// sobrevive a tudo).
+constexpr std::uint64_t kSaidasPorFase = 20000;
+
 namespace {
 
 // Os IIDs que o corpus MEDIU como pedidos.
@@ -1638,6 +1651,16 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
                                    "sem EnumInit servido: iteracao vazia, devolve FALSE (nao ha entradas)");
         ultimo_erro_do_fm_ = kAeeFailed;
         cpu.Set(kR0, 0);  // FALSE
+      } else if (idx >= zb2::brew::kVtableBitmap + 2 &&
+                 idx < zb2::brew::kVtableBitmap + 16 &&
+                 AtenderBitmapDaFamilia(cpu, mem_, al_, traco_, idx)) {
+        // A FAMILIA DO IBITMAP, servida sobre o OBJECT a que o guest chamou
+        // (frente ibmap2). ESTE RAMO TEM DE FICAR ANTES DO RAMO GENERICO
+        // `idx >= kBaseDoShell`: a faixa 8002..8015 e >= 2000, e a cadeia e de
+        // `else if` -- um ramo posto DEPOIS do generico NUNCA corre para estes
+        // indices. MEDIDO: com o ramo depois, o trace de uma corrida de 3
+        // titulos e BYTE A BYTE o mesmo da base (o gancho era codigo morto, e
+        // a medida dizia "sem regressao" sobre um gancho que nao existia).
       } else if (idx >= kBaseDoShell) {
         // O NOME tem de dizer de QUE interface e o slot. Um so "IShell::slot"
         // para tudo dava `IShell::slot4004` para um metodo do IDisplay -- numero
@@ -2385,12 +2408,39 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // altura do ecra.
         const std::uint32_t pinfo = cpu.Get(kR1);
         const std::uint32_t nsize = cpu.Get(kR2);
+        // DE QUE BITMAP E QUE O GUEST PERGUNTA? Nao e sempre o ecra.
+        //
+        // Este ramo responde pelo `idx` que a FERRAMENTA cabla (`kWire`:
+        // `{kVtableBitmap, 12, kSlotIdBitmapGetInfo}`), e por isso a pergunta
+        // chega aqui com QUALQUER bitmap no r0 -- e o `CreateCompatibleBitmap`
+        // passou a existir (frente ibmap2), logo o r0 pode ser um DIB NOVO, com
+        // as dimensoes DELE. Responder 640x480 a quem pergunta pelo DIB que
+        // acabou de criar e o mesmo defeito que esta frente veio corrigir, um
+        // nivel acima.
+        //
+        // MEDIDO no `pacmania` (lr=0x12d94): `CreateCompatibleBitmap` ->
+        // `QI(AEEIID_IDIB)` -> `GetInfo(nSize=12)`, e o jogo guarda os dois
+        // numeros para escrever no `pBmp`.
+        //
+        // O ECRA continua a responder com o tamanho da `Tela`: o objecto do
+        // ecra e o unico cujo cabecalho publico pode NAO estar escrito ainda
+        // (so ganha pagina quando alguem o pede), e o tamanho dele E o da Tela.
+        const std::uint32_t po = cpu.Get(kR0);
+        const bool e_o_ecra = (po == zb2::brew::kObjDibBase + 0x300);
+        using C = zb2::brew::CamposDoIdib;
+        const bool e_outro_dib = !e_o_ecra && EUmObjectoDeBitmap(po);
         if (pinfo == 0) {
           cpu.Set(kR0, kAeeBadParm);
         } else {
-          const std::uint32_t campos[3] = {static_cast<std::uint32_t>(zb2::brew::Tela::kLargura),
-                                           static_cast<std::uint32_t>(zb2::brew::Tela::kAltura),
-                                           16u};  // RGB565, o pixel da `Tela`
+          std::uint32_t campos[3] = {static_cast<std::uint32_t>(zb2::brew::Tela::kLargura),
+                                     static_cast<std::uint32_t>(zb2::brew::Tela::kAltura),
+                                     16u};  // RGB565, o pixel da `Tela`
+          if (e_outro_dib) {
+            campos[0] = mem_.Ler16(po + C::kCx);
+            campos[1] = mem_.Ler16(po + C::kCy);
+            const std::uint32_t prof = mem_.Ler8(po + C::kNDepth);
+            campos[2] = prof > 0 ? prof : 16u;
+          }
           for (std::uint32_t k2 = 0; k2 < 3 && (k2 + 1) * 4 <= nsize; ++k2) {
             mem_.Escrever32(pinfo + k2 * 4, campos[k2]);
           }
@@ -2404,14 +2454,45 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         const std::uint32_t ppo = cpu.Get(kR2);
         if (ppo == 0) {
           cpu.Set(kR0, kAeeBadParm);
-        } else if (iid == kIidDib) {
+        } else if (zb2::brew::IidDeDib(iid)) {
+          // A LISTA DOS IIDs DE DIB E UMA SO (`zb2::brew::IidDeDib`), e nao
+          // duas: o servidor da familia responde ao mesmo pedido quando a
+          // vtable nao tem este endereco cablado (`ConstruirVtableDoBitmap`
+          // poe `8002` no slot 2; a ferramenta poe este). Com a lista partida,
+          // o mesmo `QI(0x0100102c)` respondia de duas maneiras diferentes
+          // conforme quem cablou a vtable.
           // O IDIB e a MESMA struct (`AEEIDIB.h:57-60`, `IDIB_to_IBitmap` e um
           // cast): quem pede IID_DIB vai LER os campos publicos, logo o
           // cabecalho tem de estar escrito antes de o ponteiro sair daqui.
-          mem_.Escrever32(ppo, EscreverCabecalhoDoBitmapDoEcra());
-          cpu.Set(kR0, kAeeSuccess);
-          traco_.Emitir(Area::Brew, Nivel::Depuracao, "IBITMAP_QUERYINTERFACE",
-                        "IID_DIB -> proprio objeto");
+          //
+          // O PONTEIRO QUE SAI E O DO OBJECT CODE O GUEST PERGUNTOU, e nao o do
+          // ecra: era isso que este ramo fazia, e publicar o ecra a quem pediu o
+          // DIB que acabou de criar poe o desenho do titulo no ecra por engano
+          // (ou o contrario: o titulo escreve no ecra a pensar que escreve no
+          // bitmap dele). Para os DIBs criados (`CreateDIBitmap`, e o
+          // `CreateCompatibleBitmap` do slot13) o cabecalho ja foi escrito na
+          // criacao.
+          const std::uint32_t po = cpu.Get(kR0);
+          const bool e_o_ecra = (po == zb2::brew::kObjDibBase + 0x300);
+          const std::uint32_t obj =
+              e_o_ecra ? EscreverCabecalhoDoBitmapDoEcra()
+                       : (EUmObjectoDeBitmap(po) ? po : 0u);
+          if (obj == 0) {
+            // Um ponteiro fora da faixa dos bitmaps nao tem IDIB para publicar:
+            // RECUSA COM NOME, em vez de publicar o ecra (que e o que este ramo
+            // fazia, e mentia sobre o objecto).
+            mem_.Escrever32(ppo, 0);
+            char det[64];
+            std::snprintf(det, sizeof(det), "po=0x%08x nao e um bitmap da maquina", po);
+            traco_.RegistarFalta(Area::Brew, "IBitmap::QueryInterface", det);
+            cpu.Set(kR0, kAeeUnsupported);
+          } else {
+            mem_.Escrever32(ppo, obj);
+            cpu.Set(kR0, kAeeSuccess);
+            traco_.Emitir(Area::Brew, Nivel::Depuracao, "IBITMAP_QUERYINTERFACE",
+                          e_o_ecra ? "IID_DIB -> o bitmap do ecra"
+                                   : "IID_DIB -> o proprio objeto");
+          }
         } else {
           mem_.Escrever32(ppo, 0);
           char det[64];
@@ -2927,7 +3008,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
       // um ciclo preso em recusas nunca acumulava 201: entre recusas ha sempre
       // instrucoes do proprio laco, e o detector morreria em silencio.
       if (!recusou_agora) recusas_seguidas = 0;
-      if (++saidas > 20000) { resultado.motivo = "laco_de_saidas"; return resultado; }
+      if (++saidas > kSaidasPorFase) { resultado.motivo = "laco_de_saidas"; return resultado; }
       // O PARK DA ESPERA (frente park), na MESMA fronteira da thread. Os dois
       // usam o mesmo facto: aqui o guest esta num ponto onde o estado vivo cabe
       // nos registadores, e trocar de contexto nao interrompe nada pela metade.

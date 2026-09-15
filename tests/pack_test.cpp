@@ -58,6 +58,7 @@
 #include "core/brew/vfs.h"
 #include "core/carga/inflate.h"
 #include "core/carga/pack.h"
+#include "core/carga/png.h"
 #include "core/memoria/memoria.h"
 #include "core/traco/traco.h"
 
@@ -160,6 +161,63 @@ std::vector<std::uint8_t> ZlibStored(const std::vector<std::uint8_t>& dados) {
   const std::uint32_t adler = Adler32(dados.data(), dados.size());
   // BIG-ENDIAN: e o unico campo do stream que nao vai LSB primeiro (RFC1950, 2.2).
   for (int i = 3; i >= 0; --i) v.push_back(static_cast<std::uint8_t>((adler >> (8 * i)) & 0xffu));
+  return v;
+}
+
+// ---------------------------------------------------------------------------
+// UM PNG MONTADO NO PROPRIO TESTE
+// ---------------------------------------------------------------------------
+//
+// Nao ha codificador de PNG nesta arvore, e nao passa a haver: o teste monta os
+// chunks com as regras do formato (IHDR/PLTE/IDAT/IEND, tamanho e CRC em
+// big-endian) e o CRC vem do `Crc32DePng` do descodificador -- a MESMA funcao que
+// o vai conferir, e nao uma segunda copia dela. O IDAT e o `ZlibStored` que ja
+// existe acima: um bloco deflate STORED, que e o que dispensa um compressor.
+std::vector<std::uint8_t> ChunkPng(const char* tipo, const std::vector<std::uint8_t>& dados) {
+  std::vector<std::uint8_t> v;
+  const std::uint32_t n = static_cast<std::uint32_t>(dados.size());
+  for (int i = 3; i >= 0; --i) v.push_back(static_cast<std::uint8_t>((n >> (8 * i)) & 0xffu));
+  std::vector<std::uint8_t> com_tipo(tipo, tipo + 4);
+  com_tipo.insert(com_tipo.end(), dados.begin(), dados.end());
+  v.insert(v.end(), com_tipo.begin(), com_tipo.end());
+  const std::uint32_t crc = Crc32DePng(com_tipo.data(), com_tipo.size());
+  for (int i = 3; i >= 0; --i) v.push_back(static_cast<std::uint8_t>((crc >> (8 * i)) & 0xffu));
+  return v;
+}
+
+// `linhas` ja vem com o byte de FILTRO a frente de cada linha (o teste decide o
+// filtro que quer exercitar). `paleta` vazio = sem PLTE.
+std::vector<std::uint8_t> MontarPng(std::uint32_t largura, std::uint32_t altura,
+                                    std::uint8_t color_type, std::uint8_t profundidade,
+                                    const std::vector<std::uint8_t>& linhas,
+                                    const std::vector<std::uint8_t>& paleta = {},
+                                    std::uint8_t entrelacado = 0,
+                                    const std::vector<std::uint8_t>& trns = {}) {
+  std::vector<std::uint8_t> v;
+  const std::uint8_t assinatura[8] = {0x89u, 0x50u, 0x4eu, 0x47u, 0x0du, 0x0au, 0x1au, 0x0au};
+  v.insert(v.end(), assinatura, assinatura + 8);
+  std::vector<std::uint8_t> ihdr;
+  for (int i = 3; i >= 0; --i) ihdr.push_back(static_cast<std::uint8_t>((largura >> (8 * i)) & 0xffu));
+  for (int i = 3; i >= 0; --i) ihdr.push_back(static_cast<std::uint8_t>((altura >> (8 * i)) & 0xffu));
+  ihdr.push_back(profundidade);
+  ihdr.push_back(color_type);
+  ihdr.push_back(0);  // compressao: deflate
+  ihdr.push_back(0);  // filtro: adaptativo
+  ihdr.push_back(entrelacado);
+  const std::vector<std::uint8_t> c_ihdr = ChunkPng("IHDR", ihdr);
+  v.insert(v.end(), c_ihdr.begin(), c_ihdr.end());
+  if (!paleta.empty()) {
+    const std::vector<std::uint8_t> c_plte = ChunkPng("PLTE", paleta);
+    v.insert(v.end(), c_plte.begin(), c_plte.end());
+  }
+  if (!trns.empty()) {
+    const std::vector<std::uint8_t> c_trns = ChunkPng("tRNS", trns);
+    v.insert(v.end(), c_trns.begin(), c_trns.end());
+  }
+  const std::vector<std::uint8_t> c_idat = ChunkPng("IDAT", ZlibStored(linhas));
+  v.insert(v.end(), c_idat.begin(), c_idat.end());
+  const std::vector<std::uint8_t> c_iend = ChunkPng("IEND", {});
+  v.insert(v.end(), c_iend.begin(), c_iend.end());
   return v;
 }
 
@@ -780,4 +838,180 @@ TEST(Pack, OsNovePacotesDoCorpusPassamTodasAsGuardas) {
     }
   }
   EXPECT_EQ(total, 127u) << "os 9 pacotes do corpus tem 127 entradas (medido)";
+}
+
+// ---------------------------------------------------------------------------
+// (e) O DESCODIFICADOR PNG -- o formato que os quatro titulos da frente `imgdec`
+//     entregam ao `IImageDecoder` da consola.
+//
+// PORQUE ESTA AQUI: e a mesma familia do inflate (o PNG e inflate + filtros por
+// linha), e e este ficheiro que ja monta streams zlib com o `ZlibStored`. Os
+// PNGs daqui sao SINTETICOS de proposito: as guardas que se querem provar sao as
+// do formato, uma a uma. Os QUATRO PNGs REAIS do corpus (os que os titulos
+// entregam) estao no `bar_test.cpp`, onde ja ha o leitor do `.bar` que os
+// entrega -- e la o criterio e o sha256 do buffer RGB565 inteiro.
+// ---------------------------------------------------------------------------
+
+TEST(Png, OsCincoColorTypesQueSeServemDaoOsPixelsCertos) {
+  struct Caso {
+    const char* nome;
+    std::uint8_t color_type;
+    std::uint32_t largura, altura;
+    std::vector<std::uint8_t> linhas;   // com o byte de filtro a frente
+    std::vector<std::uint8_t> paleta;
+    std::vector<std::uint8_t> trns;
+    std::vector<std::uint16_t> esperado;
+    bool tem_alpha;
+    std::uint8_t profundidade = 8;
+  };
+  const std::vector<Caso> casos = {
+      // RGBA 2x2 (o color type dos tres titulos do `abd`): vermelho opaco, verde
+      // com alfa 128, azul e uma cor de tres canais:
+      //   linha 0: filtro 0 | (255,0,0,255) | (0,255,0,128)
+      //   linha 1: filtro 0 | (0,0,255,255) | (16,32,64,255)
+      {"rgba", 6, 2, 2,
+       {0, 255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 0, 255, 255, 16, 32, 64, 255},
+       {}, {},
+       {0xF800u, 0x07E0u, 0x001Fu, 0x1108u},
+       true},
+      // RGB 2x2: as mesmas cores sem canal de alfa -- a imagem e OPACA.
+      {"rgb", 2, 2, 2,
+       {0, 255, 0, 0, 0, 255, 0, 0, 0, 0, 255, 16, 32, 64},
+       {}, {},
+       {0xF800u, 0x07E0u, 0x001Fu, 0x1108u},
+       false},
+      // PALETA 2x2 (o color type do `peggle`), com `tRNS` de UMA entrada: o
+      // indice 0 e transparente e os outros nao (a regra do `tRNS` numa paleta e
+      // "os primeiros N indices", PNG 11.3.2.1).
+      {"paleta", 3, 2, 2,
+       {0, 0, 1, 0, 2, 1},
+       {255, 0, 0, 0, 255, 0, 0, 0, 255},
+       {0},
+       {0xF800u, 0x07E0u, 0x001Fu, 0x07E0u},
+       true},
+      // CINZA 2x1: sem alfa nenhum.
+      {"cinza", 0, 2, 1, {0, 0, 255}, {}, {}, {0x0000u, 0xFFFFu}, false},
+      // PALETA DE 4 BITS (o formato do `heavyweaponbrew` 21x20: bd=4, ct=3): os
+      // dois indices vao EMPACOTADOS num byte (o primeiro nos bits de cima) e a
+      // linha e arredondada para o byte. Os indices sao 3 e 15; a paleta tem 16
+      // entradas para o 15 ter cor.
+      {"paleta-4bits", 3, 2, 1,
+       {0, 0x3fu},
+       {0,   0,   0,   1,   2,   3,   4,   5,   6,   7,   8,   9,   10,  11,  12,  13,
+        14,  15,  16,  17,  18,  19,  20,  21,  22,  23,  24,  25,  26,  27,  28,  29,
+        30,  31,  32,  33,  34,  35,  36,  37,  38,  39,  40,  41,  42,  43,  44,  45},
+       {},
+       //  A paleta comeca em (0,0,0) e sobe de um em um: a entrada 3 e (7,8,9) e
+       //  a 15 e (43,44,45).
+       {zb2::ImagemPng::Rgb565(7, 8, 9), zb2::ImagemPng::Rgb565(43, 44, 45)},
+       false,
+       4},
+      // CINZA DE 1 BIT (bd=1, ct=0): o valor e ESTICADO para 0..255 (PNG 12.5) --
+      // 0 -> preto, 1 -> branco. Sem o esticar, o 1 sairia quase preto.
+      {"cinza-1bit", 0, 2, 1, {0, 0x40u}, {}, {}, {0x0000u, 0xFFFFu}, false, 1},
+      // CINZA+ALFA 1x2: o segundo pixel e transparente; o RGB565 nao carrega o
+      // alfa, mas o `tem_alpha` diz que ele existe (e o que o `GetRop` usa).
+      {"cinza+alfa", 4, 1, 2, {0, 128, 255, 0, 255, 0}, {}, {}, {0x8410u, 0xFFFFu}, true},
+  };
+  for (const Caso& c : casos) {
+    const std::vector<std::uint8_t> png =
+        MontarPng(c.largura, c.altura, c.color_type, c.profundidade, c.linhas, c.paleta, 0, c.trns);
+    zb2::ImagemPng img;
+    std::string motivo;
+    ASSERT_TRUE(zb2::DescodificarPng(png.data(), png.size(), &img, &motivo))
+        << c.nome << ": " << motivo;
+    EXPECT_EQ(img.largura, c.largura) << c.nome;
+    EXPECT_EQ(img.altura, c.altura) << c.nome;
+    EXPECT_EQ(img.tem_alpha, c.tem_alpha) << c.nome;
+    ASSERT_EQ(img.pixels.size(), c.esperado.size()) << c.nome;
+    for (std::size_t k = 0; k < c.esperado.size(); ++k) {
+      EXPECT_EQ(img.pixels[k], c.esperado[k]) << c.nome << " pixel " << k;
+    }
+  }
+}
+
+TEST(Png, OsCincoFiltrosPorLinhaDaoOMesmoQueSemFiltro) {
+  // O MESMO 1x5 de cinza, gravado com cada um dos cinco filtros. As linhas
+  // seguintes referem-se a linha ANTERIOR JA reconstruida, e e isso que o
+  // `Up`/`Average`/`Paeth` provam: um descodificador que aplique os filtros por
+  // ordem errada, ou que use a linha errada, da pixels diferentes.
+  const std::vector<std::uint8_t> pixels = {10, 20, 30, 40, 50};
+  // filtro 0 (None): os pixels levam dos 0 aos 4.
+  const std::vector<std::vector<std::uint8_t>> linhas = {
+      {0, 10, 20, 30, 40, 50},
+      {1, 10, 10, 10, 10, 10},           // Sub: cada um menos o da esquerda
+      {2, 10, 20, 30, 40, 50},           // Up: a anterior e zero (primeira linha)
+      {3, 10, 15, 20, 25, 30},           // Average: (a+0)/2 somado
+      {4, 10, 10, 10, 10, 10},           // Paeth: com b=c=0 (a primeira linha) o preditor e o `a`
+  };
+  for (std::size_t f = 0; f < linhas.size(); ++f) {
+    const std::vector<std::uint8_t> png = MontarPng(5, 1, 0, 8, linhas[f]);
+    zb2::ImagemPng img;
+    std::string motivo;
+    ASSERT_TRUE(zb2::DescodificarPng(png.data(), png.size(), &img, &motivo))
+        << "filtro " << f << ": " << motivo;
+    ASSERT_EQ(img.pixels.size(), pixels.size()) << "filtro " << f;
+    for (std::size_t k = 0; k < pixels.size(); ++k) {
+      EXPECT_EQ(img.pixels[k], zb2::ImagemPng::Rgb565(pixels[k], pixels[k], pixels[k]))
+          << "filtro " << f << " pixel " << k;
+    }
+  }
+}
+
+TEST(Png, RecusaComMotivo) {
+  const std::vector<std::uint8_t> bom = MontarPng(1, 1, 0, 8, {0, 7});
+  zb2::ImagemPng img;
+  std::string motivo;
+  const auto recusa = [&](const std::vector<std::uint8_t>& v, const char* trecho) {
+    motivo.clear();
+    EXPECT_FALSE(zb2::DescodificarPng(v.data(), v.size(), &img, &motivo));
+    EXPECT_NE(motivo.find(trecho), std::string::npos) << motivo;
+  };
+
+  // 1. Sem assinatura: o `peggle` entrega o `AEEResBlob` inteiro, e o chamador e
+  //    que tem de o reconhecer -- aqui prova-se que o descodificador NAO adivinha.
+  std::vector<std::uint8_t> sem_assinatura = bom;
+  sem_assinatura[0] = 0x0cu;
+  recusa(sem_assinatura, "assinatura");
+  recusa({}, "mais curto");
+
+  // 2. Bit depth que nao seja 8 (o IHDR comeca em 8+8 = 16).
+  std::vector<std::uint8_t> bd16 = MontarPng(1, 1, 0, 16, {0, 7});
+  recusa(bd16, "bit depth 16");
+
+  // 3. Entrelacado (Adam7): o campo do IHDR que diz isso e o ultimo do chunk.
+  std::vector<std::uint8_t> adam7 = MontarPng(1, 1, 0, 8, {0, 7}, {}, 1);
+  recusa(adam7, "entrelacado");
+
+  // 4. Um CHUNK CRITICO desconhecido (o bit 5 do primeiro byte do tipo). O chunk
+  //    e inserido ANTES do IEND com o CRC certo, para a recusa ser a do chunk e
+  //    nao a do CRC.
+  std::vector<std::uint8_t> com_critico = bom;
+  const std::vector<std::uint8_t> estranho = ChunkPng("ZZZZ", {1, 2, 3});
+  std::size_t onde_iend = 0;
+  for (std::size_t k = 8; k + 4 <= com_critico.size(); ++k) {
+    if (com_critico[k] == 'I' && com_critico[k + 1] == 'E' && com_critico[k + 2] == 'N' &&
+        com_critico[k + 3] == 'D') {
+      onde_iend = k - 4;
+      break;
+    }
+  }
+  ASSERT_NE(onde_iend, 0u);
+  com_critico.insert(com_critico.begin() + static_cast<std::ptrdiff_t>(onde_iend), estranho.begin(),
+                     estranho.end());
+  recusa(com_critico, "chunk critico desconhecido ZZZZ");
+
+  // 5. Um byte estragado dentro do IDAT: o CRC do chunk apanha-o.
+  std::vector<std::uint8_t> estragado = bom;
+  estragado[estragado.size() - 20] ^= 0xffu;
+  recusa(estragado, "CRC");
+
+  // 6. Um indice de paleta sem entrada na PLTE (2 cores na tabela, indice 5).
+  const std::vector<std::uint8_t> png_paleta = MontarPng(1, 1, 3, 8, {0, 5}, {0, 0, 0, 255, 255, 255});
+  recusa(png_paleta, "indice de paleta 5");
+
+  // 7. E o caminho bom continua bom: o criterio e a MESMA funcao que recusou.
+  motivo.clear();
+  EXPECT_TRUE(zb2::DescodificarPng(bom.data(), bom.size(), &img, &motivo)) << motivo;
+  EXPECT_EQ(img.pixels.size(), 1u);
 }
