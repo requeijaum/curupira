@@ -264,6 +264,18 @@ constexpr std::uint32_t kSlotIdBacklight = 1542;
 constexpr std::uint32_t kSlotIdMkDir = 1544;
 constexpr std::uint32_t kSlotIdRemove = 1509;
 constexpr std::uint32_t kSlotIdBitmapQI = 1565;
+// **SEGUNDA COPIA DE UM NUMERO**, como o `kSlotIdBitmapQI` acima: o valor tem de
+// ser o mesmo que `core/brew/despacho.cpp` usa (1572). Fica aqui porque a tabela
+// de cablagem vive nesta ferramenta; quem mudar um lado tem de mudar o outro.
+//
+// E ISTO JA FALHOU, UMA HORA DEPOIS DE O AVISO ACIMA SER ESCRITO: o numero era
+// 1568, colidiu com o `strcat` de outra frente, mudei-o no `despacho.cpp` e NAO
+// aqui. A bateria passou a cablar o slot 12 do IBitmap para a implementacao do
+// `strcat`, e a medicao deu "10 regressoes, pixels 640 -> 0" -- um numero que
+// parecia legitimo e nao era. Duas copias do mesmo numero em ficheiros
+// diferentes nao se defendem com um comentario; defendem-se com a leitura de
+// volta que o `kWire` faz logo abaixo, e que aqui ainda nao cobre este slot.
+constexpr std::uint32_t kSlotIdBitmapGetInfo = 1572;
 constexpr std::uint32_t kSlotIdGetDest = 1545;
 constexpr std::uint32_t kSlotIdSetDest = 1546;
 constexpr std::uint32_t kSlotIdRmDir = 1547;
@@ -654,6 +666,10 @@ Estado Medir(const Titulo& t, const std::string& dir) {
       {zb2::brew::kVtableFileMgr, brew_slots::kFileMgr_MkDir, kSlotIdMkDir},
       {zb2::brew::kVtableFileMgr, brew_slots::kFileMgr_Remove, kSlotIdRemove},
       {zb2::brew::kVtableBitmap, 2, kSlotIdBitmapQI},
+      // IBitmap::GetInfo -- slot 12 (`AEEIBitmap.h:42-58`). MEDIDO como pedido
+      // pelos 10 titulos da familia `emulator_neo` (`karnovr.mod` 0xfdd4, com
+      // `nSize = 0xc = sizeof(AEEBitmapInfo)`).
+      {zb2::brew::kVtableBitmap, 12, kSlotIdBitmapGetInfo},
   };
   for (const auto& w : kWire) {
     // A GUARDA: um slot 0 num objecto ROPI e o `QueryInterface` da IBase, e a

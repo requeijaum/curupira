@@ -94,7 +94,20 @@ const AtributoDaConfig kConfigDoZeebulator[] = {
     {EGL_BLUE_SIZE, 5, "tela.h: CorAtual(rgb565) -- 5 bits de azul"},
     // E o pedido do corpus confere: `ddragonz.mod` 0x14fc10 pede R=5, G=6, B=5.
     {EGL_ALPHA_SIZE, 0, "nao ha canal alfa em nenhum buffer deste emulador"},
-    {EGL_DEPTH_SIZE, 0, "nao ha buffer de profundidade (tela.h so tem pixels)"},
+    // HA BUFFER DE PROFUNDIDADE, e a linha anterior dizia o contrario: o
+    // rasterizador deste emulador guarda um `std::vector<float> profundidade_`
+    // (`core/video/rasterizador.h:243`), com `TemBufferDeProfundidade()` a dize-lo
+    // (:210) e teste/escrita de profundidade (:166-168). **O config negava uma
+    // coisa que o proprio modulo tem.**
+    //
+    // 16 e a profundidade do ecra do Zeebo (RGB565 + Z16); o zeebx declara o mesmo
+    // (`src/video/gles.rs:84`), e o float do nosso buffer cobre essa precisao.
+    //
+    // CONSEQUENCIA MEDIDA de estar a 0: o `karnovr` pede `EGL_DEPTH_SIZE 16`, o
+    // `eglChooseConfig` devolve 0 configs (a comparacao de tamanhos e
+    // `pedido <= oferecido`, egl.cpp:560), o `eglCreateWindowSurface` recebe
+    // config 0 e recusa, e o titulo desenha "InitGLSurface failed".
+    {EGL_DEPTH_SIZE, 16, "rasterizador.h:210,243 tem buffer de profundidade; Z16 do ecra (zeebx src/video/gles.rs:84)"},
     {EGL_STENCIL_SIZE, 0, "nao ha buffer de stencil"},
     {EGL_LUMINANCE_SIZE, 0, "nao ha config de luminancia"},
     {EGL_ALPHA_MASK_SIZE, 0, "nao ha mascara de alfa"},

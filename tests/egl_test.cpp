@@ -228,7 +228,20 @@ TEST(ConfigDoEgl, OsValoresSaoOsDaTela) {
   EXPECT_EQ(valor(EGL_BLUE_SIZE), 5u);
   EXPECT_EQ(valor(EGL_BUFFER_SIZE), 16u);
   EXPECT_EQ(valor(EGL_ALPHA_SIZE), 0u);
-  EXPECT_EQ(valor(EGL_DEPTH_SIZE), 0u);
+  // EGL_DEPTH_SIZE ERA 0 E CONTRADIZIA O PROPRIO EMULADOR: o rasterizador tem
+  // buffer de profundidade (`core/video/rasterizador.h:210` `TemBufferDeProfundidade()`,
+  // `:243` `std::vector<float> profundidade_`, `:166-168` teste e escrita). O
+  // config negava uma coisa que o modulo ao lado tem.
+  //
+  // MEDIDO, e e o que o mudou: o `karnovr` pede `EGL_DEPTH_SIZE 16` no
+  // `eglChooseConfig`; com 0, a comparacao de tamanhos (`egl.cpp`, "o config tem
+  // de ter pelo menos o pedido") devolvia ZERO configs, o
+  // `eglCreateWindowSurface` recebia config 0 e recusava, e os 10 titulos da
+  // familia `emulator_neo` desenhavam "InitGLSurface failed".
+  //
+  // 16 e a profundidade do ecra do Zeebo (RGB565 + Z16), o mesmo que o zeebx
+  // declara (`src/video/gles.rs:84`); o float do nosso buffer cobre essa precisao.
+  EXPECT_EQ(valor(EGL_DEPTH_SIZE), 16u);
   EXPECT_EQ(valor(EGL_STENCIL_SIZE), 0u);
   EXPECT_EQ(valor(EGL_SURFACE_TYPE),
               static_cast<std::uint32_t>(EGL_WINDOW_BIT | EGL_PIXMAP_BIT));

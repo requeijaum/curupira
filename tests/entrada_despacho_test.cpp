@@ -5,6 +5,7 @@
 #include <string>
 
 #include "core/brew/ajudantes.h"
+#include "core/brew/classes.h"
 #include "core/brew/despacho.h"
 #include "core/brew/ihiddevice.h"
 #include "core/cpu/arm_interpreter.h"
@@ -543,6 +544,131 @@ TEST(Ajudantes, OStrstrEstaEm0x0D8EDistingueMaiusculas) {
   // E a cablagem, no offset do cabecalho e nao no do zeebulator.
   EXPECT_EQ(b.Mem().Ler32(kTabela + 0x0D8), b.S().Endereco(1571)) << "strstr vive em 0x0D8";
   EXPECT_EQ(b.Mem().Ler32(kTabela + 0x0C8), b.S().Endereco(1570)) << "strncpy vive em 0x0C8";
+}
+
+// ===========================================================================
+// O CAMINHO DO DESENHO -- os quatro defeitos que mantinham os 10 titulos da
+// familia `emulator_neo` em 640 pixels e 1 cor. Cada teste diz o que MEDIU.
+// ===========================================================================
+
+TEST(DrawRect, RectNuloComFillLimpaOEcraInteiro) {
+  // `AEEIDisplay.h:1043-1045`: "If pRect is NULL and dwFlags contains
+  // IDF_RECT_FILL, this function clears the entire destination bitmap (or
+  // current clip rectangle if set) using clrFill."
+  //
+  // E o `IDisplay_ClearScreen` (`AEEIDisplay.h:380-383`) e exactamente essa
+  // chamada. O despacho tinha um `if (prc != 0)` a envolver tudo: TODA a limpeza
+  // de ecra do corpus era deitada fora sem nada a acusar.
+  //
+  // MEDIDO no `karnovr.mod` 0xe8ac-0xe8d4 (`mov r1,#0`, `mov r3,#2` -> `[sp]`).
+  constexpr std::uint32_t kIdfRectFill = 0x02u;   // AEEIDisplay.h:41
+  constexpr std::uint32_t kIdfRectFrame = 0x01u;  // AEEIDisplay.h:40
+  constexpr std::uint32_t kRgbNone = 0xFFFFFFFFu; // AEERGBVAL.h:27
+  {
+    Bancada b;
+    b.D().TelaRef().Limpar();
+    b.ChamaSaida(1533, kObjDisplay, 0u, kRgbNone, kRgbNone, kIdfRectFill,
+                 static_cast<std::uint64_t>(Tela::kLargura) * Tela::kAltura + 1000);
+    EXPECT_EQ(b.D().TelaRef().Escritos(),
+              static_cast<std::uint32_t>(Tela::kLargura) * Tela::kAltura)
+        << "DrawRect(NULL, ..., IDF_RECT_FILL) tem de limpar o ecra inteiro";
+  }
+  {
+    // SEM o FILL, um `pRect` nulo e um rectangulo VAZIO (mesma linha do SDK).
+    Bancada b;
+    b.D().TelaRef().Limpar();
+    b.ChamaSaida(1533, kObjDisplay, 0u, kRgbNone, kRgbNone, kIdfRectFrame);
+    EXPECT_EQ(b.D().TelaRef().Escritos(), 0u)
+        << "pRect nulo SEM IDF_RECT_FILL e um rectangulo vazio";
+  }
+  {
+    // "or current clip rectangle if set": com clip, limpa-se o CLIP.
+    Bancada b;
+    b.D().TelaRef().Limpar();
+    constexpr std::uint32_t kRect = 0x80210000u;
+    b.Mem().Escrever16(kRect + 0, 10);
+    b.Mem().Escrever16(kRect + 2, 20);
+    b.Mem().Escrever16(kRect + 4, 30);
+    b.Mem().Escrever16(kRect + 6, 40);
+    b.ChamaSaida(1536, kObjDisplay, kRect);  // SetClipRect
+    b.ChamaSaida(1533, kObjDisplay, 0u, kRgbNone, kRgbNone, kIdfRectFill, 100000);
+    EXPECT_EQ(b.D().TelaRef().Escritos(), 30u * 40u) << "o clip e que manda no tamanho";
+  }
+}
+
+TEST(DrawText, NCharsMenosUmContaAStringENaoQuatroMilMilhoes) {
+  // `AEEIDisplay.h:939-940`: "nChars ... If this is -1, the length will be
+  // automatically computed by this function".
+  //
+  // `nchars` era lido como `uint32`: `0xFFFFFFFF * 8` dava um laco de quatro mil
+  // milhoes de iteracoes que escrevia 640 pixels (a largura do ecra) -- e ERA
+  // ESSA a medida "640 pixels" dos 10 titulos da familia `emulator_neo`.
+  // Medido: ~4 s de uma corrida de 9,2 s do `karnovr` gastos neste unico laco.
+  Bancada b;
+  b.D().TelaRef().Limpar();
+  constexpr std::uint32_t kTexto = 0x80211000u;
+  const char* kAscii = "OLA";  // 3 caracteres
+  for (std::uint32_t k = 0; k < 3; ++k) {
+    b.Mem().Escrever16(kTexto + k * 2, static_cast<std::uint16_t>(kAscii[k]));
+  }
+  b.Mem().Escrever16(kTexto + 6, 0);  // AECHAR terminador
+  // x, y e prcBackground vao na pilha (sp+0, sp+4, sp+8); o `ChamaSaida` so
+  // escreve o sp+0, os outros dois escrevem-se aqui.
+  b.Mem().Escrever32(0x80090004u, 0);  // y = 0
+  b.Mem().Escrever32(0x80090008u, 0);  // prcBackground = NULL
+  b.ChamaSaida(1532, kObjDisplay, 0x8000u /* AEE_FONT_NORMAL */, kTexto, 0xFFFFFFFFu,
+               /*na_pilha = x =*/0u, 100000);
+  EXPECT_EQ(b.D().TelaRef().Escritos(), 3u * 8u)
+      << "com nChars = -1 conta-se a string: 3 caracteres x 8 px";
+}
+
+TEST(BitmapGetInfo, OSlot12RespondeOTamanhoDaTelaERespeitaONSize) {
+  // `int GetInfo(IBitmap*, AEEBitmapInfo*, int nSize)` -- slot 12
+  // (`AEEIBitmap.h:42-58`), com `AEEBitmapInfo` = {cx, cy, nDepth}
+  // (`AEEIBitmap.h:34-38`).
+  //
+  // MEDIDO: os 10 titulos da familia `emulator_neo` pedem-no com `nSize = 0xc`
+  // (`karnovr.mod` 0xfdd4) e guardam cx/cy como o tamanho do ecra. Sem resposta,
+  // ficavam com lixo da pilha a fazer de largura e altura.
+  Bancada b;
+  constexpr std::uint32_t kInfo = 0x80212000u;
+  constexpr std::uint32_t kGuarda = 0xDEADBEEFu;
+  for (std::uint32_t k = 0; k < 4; ++k) b.Mem().Escrever32(kInfo + k * 4, kGuarda);
+  b.ChamaSaida(1572, kObjDibBase + 0x300, kInfo, 12u);
+  EXPECT_EQ(b.Mem().Ler32(kInfo + 0), static_cast<std::uint32_t>(Tela::kLargura));
+  EXPECT_EQ(b.Mem().Ler32(kInfo + 4), static_cast<std::uint32_t>(Tela::kAltura));
+  EXPECT_EQ(b.Mem().Ler32(kInfo + 8), 16u) << "RGB565 = 16 bits, o pixel da Tela";
+  EXPECT_EQ(b.Mem().Ler32(kInfo + 12), kGuarda) << "escreveu para la do AEEBitmapInfo";
+
+  // O `nSize` e o contrato (`AEEIBitmap.h:764`): com 8, o terceiro campo fica.
+  for (std::uint32_t k = 0; k < 4; ++k) b.Mem().Escrever32(kInfo + k * 4, kGuarda);
+  b.ChamaSaida(1572, kObjDibBase + 0x300, kInfo, 8u);
+  EXPECT_EQ(b.Mem().Ler32(kInfo + 0), static_cast<std::uint32_t>(Tela::kLargura));
+  EXPECT_EQ(b.Mem().Ler32(kInfo + 8), kGuarda) << "nSize = 8 nao autoriza o terceiro campo";
+}
+
+TEST(Qegl, ORetornoSaiPeloPonteiroFinalEOsArgumentosEstaoDeslocados) {
+  // A MOLDURA DO QEGL: `int metodo(IQEGL *pMe, <args do EGL>, <tipo> *pSaida)`.
+  //
+  // MEDIDO no `karnovr.mod` (base 0, offset de ficheiro == endereco):
+  //   0x102c0 `ldr pc,[r4,#0x14]` (slot 5 = eglInitialize) e logo a seguir
+  //   0x102c4 `ldr r0,[sp,#4]` -- o titulo devolve *pSaida, NAO o r0.
+  // O `InitGLSurface` (0xfba8) faz `cmp r0,#1` e desviava para o ecra de erro
+  // "InitGLSurface failed" com o lixo da pilha que estava no lugar do EGL_TRUE.
+  //
+  // E o `pMe` DESLOCA os argumentos: sem o deslocamento, o `dpy` verdadeiro caia
+  // no lugar do `major` e o modulo escrevia `1` EM CIMA do objecto IEGL.
+  Bancada b;
+  const std::uint32_t qegl = VtClasse(static_cast<std::uint32_t>(Classe::kQEGL));
+  constexpr std::uint32_t kSaida = 0x80213000u;
+  constexpr std::uint32_t kQeglObj = 0x8F005000u;  // ObjetoDaClasse(kQEGL)
+  b.Mem().Escrever32(kSaida, 0x5A5A5A5Au);
+  const std::uint32_t vtable_antes = b.Mem().Ler32(kObjIegl);
+  // eglInitialize(pMe, dpy, major = NULL, minor = NULL, &saida)
+  b.ChamaSaida(qegl + 5, kQeglObj, kObjIegl, 0u, 0u, kSaida);
+  EXPECT_EQ(b.Mem().Ler32(kSaida), 1u) << "EGL_TRUE tem de sair pelo ponteiro final";
+  EXPECT_EQ(b.Mem().Ler32(kObjIegl), vtable_antes)
+      << "o dpy no lugar do `major` escrevia por cima da vtable do IEGL";
 }
 
 }  // namespace zb2::brew

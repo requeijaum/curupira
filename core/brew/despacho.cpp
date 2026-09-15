@@ -75,6 +75,11 @@ constexpr std::uint32_t kSlotIdStrcat = 1568, kSlotIdSleep = 1569;
 // comparacao com ele que as trouxe -- mas com DOIS OFFSETS TROCADOS do lado
 // dele, ver o comentario no ramo do `strstr`.
 constexpr std::uint32_t kSlotIdStrncpy = 1570, kSlotIdStrstr = 1571;
+// AVISO A QUEM ACRESCENTAR O PROXIMO: estes numeros sao um espaco PARTILHADO e
+// nao ha nada que impeca dois de colidirem. Ja aconteceu: duas frentes desta
+// sessao escolheram 1568 (o `strcat` e o `IBitmap::GetInfo`), e o sintoma foi um
+// teste de bitmap a chamar a implementacao do `strcat`. Confirma com
+// `grep -n "= 15[0-9][0-9]" core/brew/despacho.cpp` antes de escolher.
 constexpr std::uint32_t kSlotIdMemmove = 1506, kSlotIdStrcmp = 1507, kSlotIdStrchr = 1508;
 constexpr std::uint32_t kSlotIdStrtowstr = 1500, kSlotIdGetAeeVersion = 1501,
                        kSlotIdAeeGetRand = 1502;
@@ -87,7 +92,7 @@ constexpr std::uint32_t kSlotIdGetFontMetrics = 1530, kSlotIdMeasureText = 1531,
                        kSlotIdSetColor = 1535, kSlotIdSetClipRect = 1536, kSlotIdUpdate = 1537,
                        kSlotIdCreateDIBitmap = 1538, kSlotIdBacklight = 1542;
 constexpr std::uint32_t kSlotIdMkDir = 1544,
-                       kSlotIdBitmapQI = 1565,
+                       kSlotIdBitmapQI = 1565, kSlotIdBitmapGetInfo = 1572,
                        kSlotIdRemove = 1509,
                        kSlotIdGetDest = 1545,
                        kSlotIdSetDest = 1546, kSlotIdRmDir = 1547, kSlotIdGetDeviceInfo = 1549,
@@ -99,6 +104,13 @@ constexpr std::uint32_t kSlotIdSprintf = 1560, kSlotIdVsprintf = 1561, kSlotIdHe
                        kSlotIdVsnprintf = 1566, kSlotIdRealloc = 1567,
                        kSlotIdFreeResData = 1563, kSlotIdCheckPriv = 1564;
 constexpr std::uint32_t kBaseDoSlot = 1000;
+// A LARGURA DECLARADA DE UM CARACTERE no `DrawText` sem fonte carregada. Nao e
+// uma medida de fonte nenhuma: e a aproximacao que este modulo assume, dita uma
+// vez para os dois sitios que a usam (o comprimento e a barra).
+constexpr std::uint32_t kLarguraDoCaractere = 8;
+// Os itens da paleta do IDisplay (`AEEIDisplay.h:139-142,165`): 1 = CLR_USER_TEXT,
+// 2 = CLR_USER_BACKGROUND, 3 = CLR_USER_LINE (= CLR_USER_FRAME).
+constexpr std::uint32_t kClrUserBackground = 2, kClrUserLine = 3;
 
 // Uma linha da tabela de ajudantes: o offset no `AEEHelperFuncs` e o endereco de
 // saida da implementacao.
@@ -609,20 +621,56 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // ocorrencia do erro de ordem). O slot 2 (QI) fica no AtenderClasse.
         const std::uint32_t qegl_base = VtClasse(static_cast<std::uint32_t>(Classe::kQEGL));
         const std::uint32_t q_slot = idx - qegl_base;
+        const std::uint32_t slot_iegl = QeglParaIegl(q_slot);
+        // A MOLDURA DE CHAMADA DO QEGL TEM MAIS DOIS ARGUMENTOS QUE A DO IEGL, e
+        // isso estava por tratar nos dois lados:
+        //
+        //   QEGL:  int metodo(IQEGL *pMe, <os argumentos do EGL>, <tipo> *pSaida)
+        //   IEGL:  <tipo> metodo(<os argumentos do EGL>)   -- como este modulo o serve
+        //
+        // 1. O `pMe` DESLOCA TODOS OS ARGUMENTOS UM LUGAR. Sem o deslocamento, o
+        //    `eglInitialize` do `karnovr` chegava aqui com `dpy = pMe` (0x8F005000)
+        //    -- que o `display_ok` ACEITA -- e com o `dpy` verdadeiro
+        //    (0x800B1000) no lugar do `major`. O modulo escrevia entao `1` em
+        //    0x800B1000, que e o PROPRIO OBJECTO IEGL: a palavra escrita por cima
+        //    e o ponteiro da vtable. Uma chamada bem sucedida destruia a interface.
+        //
+        // 2. O VALOR DE RETORNO SAI PELO PONTEIRO FINAL, e nao pelo r0. MEDIDO em
+        //    tres pontos do `karnovr.mod` (o `.mod` carrega na base 0, logo o
+        //    offset do ficheiro e o endereco):
+        //      0x102c0 `ldr pc,[r4,#0x14]` (slot 5, eglInitialize) e logo a seguir
+        //              0x102c4 `ldr r0,[sp,#4]`  -- devolve *pSaida, nao o r0;
+        //      0x104a4 `ldr pc,[r4,#0x24]` (slot 9, eglChooseConfig) e
+        //              0x104a8 `ldr r0,[sp,#0xc]`;
+        //      (e o `abd` 0x14688/0x146c4 no GetDisplay, que ja estava tratado.)
+        //    O `karnovr` compara `cmp r0,#1` em 0x102b8 (dentro de `InitGLSurface`,
+        //    0xfba8) e, com lixo da pilha no lugar do EGL_TRUE, desviava para o
+        //    ecra de erro "InitGLSurface failed". **Era este o tecto dos 10
+        //    titulos que escreviam pixels.**
+        //
+        // O INDICE DO PONTEIRO DE SAIDA NAO E ADIVINHADO: e o numero de argumentos
+        // que o proprio `Egl::Executar` declara ter consumido (`ChamadaEgl::n_args`),
+        // que e o numero de parametros do EGL. Confere com os tres pontos medidos:
+        // GetDisplay 1 -> r2; Initialize 3 -> sp[0]; ChooseConfig 5 -> sp[8].
+        const bool qegl_ibase = (q_slot == 0 || q_slot == 1);  // AddRef/Release levam `pMe`
         ArgumentosGl avq;
-        for (int k2 = 0; k2 < 4; ++k2) avq.reg[k2] = cpu.Get(kR0 + k2);
-        avq.sp = cpu.Get(kSP);
+        if (qegl_ibase) {
+          for (int k2 = 0; k2 < 4; ++k2) avq.reg[k2] = cpu.Get(kR0 + k2);
+          avq.sp = cpu.Get(kSP);
+        } else {
+          avq.reg[0] = cpu.Get(kR1);
+          avq.reg[1] = cpu.Get(kR2);
+          avq.reg[2] = cpu.Get(kR3);
+          avq.reg[3] = mem_.Ler32(cpu.Get(kSP));
+          avq.sp = cpu.Get(kSP) + 4;
+        }
         avq.lr = cpu.Get(kLR);
         std::uint32_t retornoq = 0;
-        egl_.Executar(QeglParaIegl(q_slot), avq, &retornoq);
+        const ResultadoGl rq = egl_.Executar(slot_iegl, avq, &retornoq);
         cpu.Set(kR0, retornoq);
-        // O QEGL PASSA UM PONTEIRO DE SAIDA no r2 do GetDisplay e le-o depois
-        // (abd 0x14688: `add r2,sp,#0xc`; 0x146c4: `ldr r0,[sp,#0xc]`). O IEGL
-        // classico devolve o display no r0 e nao tem esse argumento -- aqui
-        // escreve-se o MESMO valor nos dois sitios, para o titulo que le a saida
-        // nao ficar com lixo da pilha a fazer de display.
-        if (QeglParaIegl(q_slot) == gl_slots::kIegl_GetDisplay && retornoq != 0) {
-          const std::uint32_t out = cpu.Get(kR2);
+        if (!qegl_ibase && rq != ResultadoGl::NaoImplementado && !egl_.Ultimas().empty()) {
+          const std::size_t n = egl_.Ultimas().back().n_args;
+          const std::uint32_t out = (n < 4) ? avq.reg[n] : mem_.Ler32(avq.sp + (n - 4) * 4);
           if (out != 0) mem_.Escrever32(out, retornoq);
         }
       } else if (AtenderClasse(cpu, idx, traco_)) {
@@ -1142,16 +1190,57 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // r1 era a rect e nao havia cores. Neste SDK o r1 e a RECT, o r2 e a cor
         // do contorno e o r3 a do preenchimento -- e o bit `DW_RECT_DRAW` do
         // dwFlags e que diz se e contorno ou cheio.
+        // `pRect` NULO COM `IDF_RECT_FILL` LIMPA O ECRA INTEIRO, e nao "nao faz
+        // nada" -- `AEEIDisplay.h:1043-1045`: "If pRect is NULL and dwFlags
+        // contains IDF_RECT_FILL, this function clears the entire destination
+        // bitmap (or current clip rectangle if set) using clrFill. If pRect is
+        // NULL without IDF_RECT_FILL flag, this function treats pRect as an empty
+        // rectangle."
+        //
+        // E O IDIOMA MAIS COMUM DO SDK: `IDisplay_ClearScreen`
+        // (`AEEIDisplay.h:380-383`) e exactamente `DrawRect(p, NULL, RGB_NONE,
+        // RGB_NONE, IDF_RECT_FILL)`. Com o `if (prc != 0)` a envolver tudo, **toda
+        // a limpeza de ecra do corpus era deitada fora em silencio**.
+        //
+        // MEDIDO no `karnovr.mod` 0xe8ac-0xe8d4: `mov r1,#0` (pRect), `mov r3,#2`
+        // -> `str r3,[sp]` (IDF_RECT_FILL), `ldr pc,[r4,#0x14]`.
         const std::uint32_t prc = cpu.Get(kR1);
-        if (prc != 0) {
+        // `RGB_NONE` (0xFFFFFFFF, `AEERGBVAL.h:27`) NAO E UMA COR: e "sem cor
+        // dada". Truncado para 565 dava BRANCO por acidente da truncagem.
+        //
+        // O que o SDK diz que se usa nesse caso esta escrito para o `DrawText`
+        // (`AEEIDisplay.h:963-965`): "using the CLR_USER_BACKGROUND as the fill
+        // color and CLR_USER_FRAME as the frame color". E o mesmo par de itens
+        // que o `DrawRect` preenche e contorna, e `CLR_USER_FRAME` e
+        // `CLR_USER_LINE` (`AEEIDisplay.h:165`).
+        //
+        // O `IDisplay_ClearScreen` (`AEEIDisplay.h:380-383`) passa `RGB_NONE` nas
+        // DUAS cores -- sem esta regra, limpar o ecra pintava-o de branco.
+        //
+        // DECLARADO, e nao medido: o valor inicial dos itens e 0 (preto). O que a
+        // maquina real poe num item que nunca foi escrito nao esta medido.
+        const auto cor_ou_item = [&](std::uint32_t rgb, std::uint32_t item) {
+          return rgb == 0xFFFFFFFFu ? tela_.CorDoItem(item) : rgb;
+        };
+        const std::uint32_t clrframe = cor_ou_item(cpu.Get(kR2), kClrUserLine);
+        const std::uint32_t clrfill = cor_ou_item(cpu.Get(kR3), kClrUserBackground);
+        const std::uint32_t flags = mem_.Ler32(cpu.Get(kSP) + 0);
+        // Os bits do `AEERectFlags` (`AEEIDisplay.h:39-43`): FRAME = contorno (1),
+        // FILL = cheio (2).
+        const bool contorno = (flags & 0x01u) != 0, cheio = (flags & 0x02u) != 0;
+        if (prc == 0) {
+          if (cheio) {
+            // "or current clip rectangle if set" -- o clip E o rectangulo.
+            const std::uint32_t* c = tela_.ClipAtual();
+            tela_.CorAtual(Tela::RgbvalPara565(clrfill));
+            tela_.Retangulo(c[0], c[1], c[2], c[3], true);
+          }
+          // Sem FILL, um `pRect` nulo e um rectangulo VAZIO: nada a desenhar.
+        } else {
           const int x = static_cast<std::int16_t>(mem_.Ler16(prc));
           const int y = static_cast<std::int16_t>(mem_.Ler16(prc + 2));
           const int w = static_cast<std::int16_t>(mem_.Ler16(prc + 4));
           const int h = static_cast<std::int16_t>(mem_.Ler16(prc + 6));
-          const std::uint32_t clrframe = cpu.Get(kR2), clrfill = cpu.Get(kR3);
-          const std::uint32_t flags = mem_.Ler32(cpu.Get(kSP) + 0);
-          // Os bits do `AEERectFlags`: DRAW = contorno, FILL = cheio.
-          const bool contorno = (flags & 0x01u) != 0, cheio = (flags & 0x02u) != 0;
           if (cheio || contorno) {
             tela_.CorAtual(Tela::RgbvalPara565(cheio ? clrfill : clrframe));
             tela_.Retangulo(x < 0 ? 0 : static_cast<std::uint32_t>(x),
@@ -1190,7 +1279,30 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
                            fw < 0 ? 0 : static_cast<std::uint32_t>(fw),
                            fh < 0 ? 0 : static_cast<std::uint32_t>(fh), true);
         }
-        const std::uint32_t larg = (nchars > 0 ? nchars : 1) * 8;
+        // `nChars == -1` QUER DIZER "conta tu", e nao "4.294.967.295 caracteres":
+        // `AEEIDisplay.h:939-940` -- "If this is -1, the length will be
+        // automatically computed by this function".
+        //
+        // O QUE ESTAVA AQUI ERA PIOR DO QUE UM COMPRIMENTO ERRADO: `nchars` e
+        // `uint32`, logo `0xFFFFFFFF * 8` dava `0xFFFFFFF8` e o laco corria QUATRO
+        // MIL MILHOES de vezes por chamada -- medido, ~4 s de uma corrida de 9 s
+        // num so `DrawText` do `karnovr` -- para escrever 640 pixels (a largura do
+        // ecra), que era exactamente a medida "640 pixels" dos 10 titulos da
+        // familia `emulator_neo`. E a mesma licao do `Tela::Retangulo`
+        // (`core/brew/tela.h`): limitar ANTES de percorrer.
+        std::uint32_t quantos = nchars;
+        if (static_cast<std::int32_t>(nchars) < 0) {
+          quantos = 0;
+          const std::uint32_t ptexto = cpu.Get(kR2);
+          // AECHAR e uint16 (`AEE.h`), terminado em 0. O limite e a largura do
+          // ecra em caracteres: mais do que isso nao cabe na `Tela` de qualquer
+          // maneira, e um ponteiro invalido nao pode custar um laco sem fim.
+          const std::uint32_t kMaximo = Tela::kLargura / kLarguraDoCaractere + 1;
+          if (ptexto != 0) {
+            while (quantos < kMaximo && mem_.Ler16(ptexto + quantos * 2) != 0) ++quantos;
+          }
+        }
+        const std::uint32_t larg = (quantos > 0 ? quantos : 1) * kLarguraDoCaractere;
         for (std::uint32_t i = 0; i < larg; ++i) tela_.Ponto(static_cast<int>(x + i), static_cast<int>(y));
         ++textos_;
         cpu.Set(kR0, static_cast<std::uint32_t>(larg));
@@ -1333,6 +1445,36 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           cpu.Set(kR0, 0);  // SUCCESS
         } else {
           cpu.Set(kR0, kAeeUnsupported);
+        }
+      } else if (idx == kSlotIdBitmapGetInfo) {
+        // `int GetInfo(IBitmap *po, AEEBitmapInfo *pinfo, int nSize)` -- IBitmap
+        // slot 12 (`AEEIBitmap.h:42-58`: `INHERIT_IQI` gasta 0,1,2 e o `GetInfo`
+        // e o decimo terceiro campo do macro).
+        //
+        // `AEEBitmapInfo` sao TRES uint32 (`AEEIBitmap.h:34-38`): cx, cy, nDepth.
+        // O guest DIZ quantos bytes conhece no `nSize`, e escreve-se so esses --
+        // e o contrato do proprio cabecalho (`AEEIBitmap.h:764`: "The size of
+        // AEEBitmapInfo in the current version").
+        //
+        // PORQUE E QUE ISTO ESTAVA A FALTAR CUSTA PIXELS: o `karnovr` (e os outros
+        // nove da familia `emulator_neo`) le daqui o TAMANHO DO ECRA antes de
+        // montar a superficie GL -- `karnovr.mod` 0xfda4 `GetDeviceBitmap`, 0xfdd4
+        // `ldr pc,[r3,#0x30]` (slot 12) com `r2 = 0xc`, e a seguir 0xfddc/0xfde0
+        // `ldr r3,[sp]` / `ldr r2,[sp,#4]` -> guarda em `[r5,#0x38]` e `[r5,#0x3c]`.
+        // Sem resposta, o titulo fica com o lixo da pilha a fazer de largura e
+        // altura do ecra.
+        const std::uint32_t pinfo = cpu.Get(kR1);
+        const std::uint32_t nsize = cpu.Get(kR2);
+        if (pinfo == 0) {
+          cpu.Set(kR0, kAeeBadParm);
+        } else {
+          const std::uint32_t campos[3] = {static_cast<std::uint32_t>(zb2::brew::Tela::kLargura),
+                                           static_cast<std::uint32_t>(zb2::brew::Tela::kAltura),
+                                           16u};  // RGB565, o pixel da `Tela`
+          for (std::uint32_t k2 = 0; k2 < 3 && (k2 + 1) * 4 <= nsize; ++k2) {
+            mem_.Escrever32(pinfo + k2 * 4, campos[k2]);
+          }
+          cpu.Set(kR0, kAeeSuccess);
         }
       } else if (idx == kSlotIdBitmapQI) {
         // `int QueryInterface(IBitmap*, AEEIID, void**)` no bitmap do ecra.
