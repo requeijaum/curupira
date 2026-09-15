@@ -18,27 +18,33 @@ uma acrescenta um titulo novo a lista dos que sobem.
 | carga | 62 | 62 | 100% |
 | ponteiro de modulo | 62 | 62 | 100% |
 | vtable valida | 48 | **62** | **100%** |
-| applet instanciado | 37 | **56** | 90% |
+| applet instanciado | 37 | **58** | 94% |
 | ciclo completo (create+start retornam) | 4 | **30** | 48% |
-| sem faltas nenhumas | 0 | **32** | 52% |
-| **pixels escritos** | 0 | **10** | 16% |
+| sem faltas nenhumas | 0 | **34** | 55% |
+| **pixels escritos** | 0 | **11** | 18% |
 | **cores > 10 (criterio da etapa 3)** | 0 | **0** | **0%** |
 
 | # | etapa | estado | % |
 |---|---|---|---|
 | 0 | fundacao de medicao | FECHADA | 100% |
-| 1 | CPU de referencia | REABERTA E FECHADA | 95% |
+| 1 | CPU de referencia | reaberta DUAS vezes | 95% |
 | 2 | carregador MOD + 1o titulo | FECHADA | 100% |
-| 3 | IShell / IDisplay / desenho 2D | **PARCIAL** | **40%** |
+| 3 | IShell / IDisplay / desenho 2D | **PARCIAL** | **45%** |
 | 4 | ficheiros, VFS, 62 a correr | FECHADA | 100% |
 | 5 | midia e audio | PARCIAL | 50% |
-| 6 | GL e as duas familias 3D | **PARCIAL** | **25%** |
-| 7 | tabelas verificadas vs SDK | PARCIAL | 70% |
+| 6 | **GL e as duas familias 3D** | **PARCIAL** | **40%** |
+| 7 | tabelas verificadas vs SDK | PARCIAL | 85% |
 | 8 | entrada | PARCIAL | 60% |
 | 9 | regressoes automaticas | FECHADA | 100% |
+| 10 | o instrumento mede menos do que acontece | **PARCIAL** | 80% |
+| 11 | formatos que faltam | por comecar | 0% |
+| 12 | Crazyball Engine | por comecar | 0% |
+| 13 | IUnzipAStream (NOVA) | por comecar | 0% |
 
-**Media: 74%.** E a media engana: as tres etapas que faltam sao as que produzem
-IMAGEM, que e o que o projecto existe para fazer.
+**Media: 68%** (baixou por se terem acrescentado tres etapas novas, e nao por
+regressao -- os degraus todos subiram ou ficaram). A media continua a enganar: o
+criterio da etapa 3 (**mais de 10 cores**) esta em **0 de 62**, e e esse que diz
+se o emulador desenha ou nao.
 
 ---
 
@@ -94,7 +100,7 @@ tinha o mesmo defeito que o codigo.
 
 62/62 carregam. O `imicro3d` faz o ciclo completo.
 
-## Etapa 3 -- IShell, IDisplay e desenho 2D -- PARCIAL (40%)
+## Etapa 3 -- IShell, IDisplay e desenho 2D -- PARCIAL (45%)
 
 Criterio: **um titulo 2D desenha e o ecra tem mais de 10 cores.**
 
@@ -125,7 +131,7 @@ Falta: um titulo que desenhe DE VERDADE. O caminho medido esta na etapa 6.
 reciclado. **O criterio (`a3d` toca som, misturador com amostras nao nulas) nao
 foi medido nesta ronda** -- fica por provar.
 
-## Etapa 6 -- GL e as duas familias 3D -- PARCIAL (25%) -- **O GARGALO**
+## Etapa 6 -- GL e as duas familias 3D -- PARCIAL (40%) -- **O GARGALO**
 
 Entregavel: `core/brew/igl`, `core/video/`.
 Criterio: um titulo 3D desenha geometria com textura.
@@ -152,7 +158,7 @@ extraido para `/tmp/sdk402` (tem `sdk/inc/gles/`), que e a versao que a consola 
 
 Titulo: `karnovr` (ou qualquer um dos dez).
 
-## Etapa 7 -- A tabela de interfaces verificada contra o SDK -- PARCIAL (70%)
+## Etapa 7 -- A tabela de interfaces verificada contra o SDK -- PARCIAL (85%)
 
 `AEEHelperFuncs`: os 117 nomes estao GERADOS do cabecalho e conferidos --
 **incluindo contra o SDK 4.0.2, que e o da consola: zero divergencias com o
@@ -163,9 +169,17 @@ Arbitragem fechada nesta ronda: o zeebulator tem `strstr` em `0x0e8` (que e o
 o cabecalho em 13/13. As duas trocas sao perigosas em silencio: `stristr` nao
 distingue maiusculas, e `vsprintf` recebe `AEEOldVaList` em vez de varargs.
 
-Falta: o `IGLES11` **nao tem gerador** e aparece na demanda com 14 slots
-distintos. E o `0x0dc`, que o zeebulator identificou empiricamente como
-"descomprime gzip" e o cabecalho diz `memcmp` -- as duas nao podem ser verdade.
+O `IGLES11` JA TEM GERADOR (`tools/nomear_igles.py`, com guarda no CTest):
+`INHERIT_IBase(3) + IGLES10(106) + IGLES11(39) = 148`, que bate com o
+`kIglesSlots` que estava a mao. As faltas anonimas do corpus passaram de
+**dezassete para QUATRO** (`IBitmap::slot13`, `IShell::slot19`, `IFile::slot3`,
+`IFile::slot5`).
+
+Falta: ligar mais dos 117 ajudantes (estao 20), e nomear as quatro que sobram. O `0x0dc` FICOU RESOLVIDO: e `memcmp`, provado por desmonte
+(`ddragonz.mod` 0x11DDB8 faz `memcmp(dados, "OI", 2)`, e `"OI"` e o magic do
+OBM1). O engano do zeebulator veio do stub dele, que ao "suceder sempre"
+desligou a verificacao do magic -- **um stub que mente pode fabricar a evidencia
+que o justifica**.
 
 ## Etapa 8 -- Entrada -- PARCIAL (60%)
 
@@ -191,20 +205,31 @@ corridas antigas continuam a ser lidas.
 
 ## Etapas novas, que a medicao obrigou a acrescentar
 
-### Etapa 10 -- O instrumento mede menos do que acontece
+### Etapa 10 -- O instrumento mede menos do que acontece -- PARCIAL (80%)
 
-**O achado mais grave da ronda**, e esta por confirmar: a bateria nao reporta as
-recusas da fase `start`. O agente `cpu` contou **21 145 027** recusas no
-interpretador contra um maximo de **936** no campo `recusadas` do JSON.
+**FEITO, e a resposta foi "sim, mas os numeros estavam errados".** A perda
+existia: `e.recusadas = cpu.InstruscoesRecusadas()` era atribuicao e nao
+acumulacao, e o `Repor` do `CreateInstance` apagava a conta da carga. Mas o total
+e **28 227 409** e nao 21 M, e o maximo da referencia era **4 549 330** e nao 936.
+A parte da alegacao sobre as FALTAS era falsa -- nunca se perderam.
 
-Se isto se confirmar, varias das prioridades tiradas da coluna de faltas estao
-mal ordenadas -- e o P3 (a bateria como especificacao executavel) esta a falhar
-em silencio, que e exactamente o que o P2 existe para impedir.
+E A RESPOSTA QUE IMPORTAVA: com as recusas completas, **a tabela de faltas por
+titulos afectados nao muda nem uma chave**. O plano NAO estava mal ordenado.
 
-Criterio: a soma das recusas do JSON bate com a soma contada no interpretador,
-por titulo e por fase. Um teste que falha se divergirem.
+Ha agora `recusadas_carga`, `recusadas_create`, `recusadas_start` e
+`recusadas_quadros`, tratados como campos OPCIONAIS pelo `comparar` (uma corrida
+antiga continua a ser lida). Mais dois defeitos de instrumento corrigidos na
+mesma frente:
+- **`Memoria::PcAtual` nunca era chamado fora dos testes** -- toda a corrida real
+  registava `pc = 0`, e qualquer diagnostico que dependesse de saber QUEM fez o
+  acesso estava cego;
+- **`kSlotDbgPrintf` estava ligado ao id do `strtowstr`** -- toda a chamada a
+  `dbgprintf` do corpus corria a funcao errada, e escrevia UTF-16 por cima do
+  codigo do proprio modulo.
 
-**Esta etapa vem ANTES de escolher a proxima frente por numeros.**
+FALTA para fechar: a conta continua CURTA -- a instrucao indefinida `0xE7F000F0`
+corre como `ldrb` e nao e recusada. E o `Despacho::Correr` aborta a fase em
+`saidas > 200` contando todas as saidas em vez de recusas seguidas.
 
 ### Etapa 11 -- Os formatos que faltam, por ordem de titulos afectados
 
@@ -264,23 +289,51 @@ medida por traco num titulo que la chegue, e cruzada com o que servimos hoje.
 
 ---
 
-## A ordem a seguir, por ganho MEDIDO
+## A ordem a seguir, por ganho MEDIDO  *(revista a 15/09, 3a ronda)*
 
-1. **Etapa 10** -- confirmar (ou desmentir) as 21 M recusas nao reportadas.
-   Vem primeiro porque decide se os numeros que ordenam tudo o resto sao de fiar.
-2. **Etapa 6** -- `GL_OES_draw_texture` + `glDrawTexivOES`, as duas juntas.
-   Unico caminho medido de ecra de erro para imagem; 10 titulos; 1e5 px cada.
-3. **Etapa 12** -- o que o `ttdGraphicsDeviceZeebo` pede. 17 titulos de uma vez.
-4. **Etapa 11** -- `.pakz` (15 pastas, formato ja resolvido) e depois `.mif`.
-5. **Etapa 3** -- so depois disto e que o criterio das 10 cores tem hipotese.
+**A ordem anterior tinha o `IDIB::pBmp` (25 titulos) como a maior alavanca. Eram
+DOIS titulos** -- a falta media a nossa escrita e nao a leitura do guest. Foi
+medido e corrigido; o item caiu de 1o para 10o. A lista abaixo ja conta com isso.
 
-O que NAO fazer agora, e porque: ligar mais ajudantes da `AEEHelperFuncs`
-(`strncpy` e `strstr` entraram nesta ronda e deram ZERO na bateria -- entram por
-correccao de contrato, nao por demanda medida); implementar formatos de estudio;
-e tirar prioridades da coluna de PEDIDOS em vez da de TITULOS AFECTADOS (o
-`IFile::Read` tem 70 pedidos e e UM titulo so).
+1. **`Despacho::Correr` aborta a fase cedo demais.** Conta TODAS as saidas em
+   `saidas > 200`, em vez de recusas SEGUIDAS: depois de centenas de `strncmp`
+   legitimos, a primeira recusa legitima mata a fase. Medido pelo agente `gl` como
+   "o proximo bloqueio, e ja nao e GL". **E de instrumento, e barato.**
+2. **`IThread::Start` -- 12 titulos.** A maior frente real depois da revisao.
+3. **Etapa 6, a parte C: `GL_OES_draw_texture` + `glDrawTexivOES` JUNTOS.**
+   Ja esta provado que e a extensao que para os dez (teste com `GL_EXTENSIONS`
+   vazio), que anunciar sem servir da 10 regressoes, e que a funcao vem do
+   `IGLES11Ext` (`0x0103d8eb`) e nao do `eglGetProcAddress`. Falta servir os 12
+   metodos que hoje recusam com nome.
+4. **Etapa 12 -- o que o `ttdGraphicsDeviceZeebo` pede.** 17 titulos de uma vez.
+5. **O bloco GL nomeado:** `BindTexture`, `MatrixMode`, `Viewport` (4 titulos
+   cada), `Enable`/`Disable`/`EnableClientState` (3 cada).
+6. **`IFileMgr::RmDir` e `Remove`** -- 4 titulos cada.
+7. **Etapa 13 -- `IUnzipAStream`** (9 titulos). No BREW a descompressao e uma
+   INTERFACE, e nao um slot da `AEEHelperFuncs`. Vem antes dos formatos.
+8. **Etapa 11 -- `.pakz`** (15 pastas, formato ja resolvido) e depois `.mif`.
+9. **As quatro faltas que ainda nao tem nome:** `IBitmap::slot13` (4 titulos),
+   `IShell::slot19`, `IFile::slot3`, `IFile::slot5`.
+10. **`pBmp` a serio** -- `tekken2` e `zenonia`, os dois que o leem mesmo.
 
----
+O QUE NAO FAZER, e porque (tudo medido nesta sessao): ligar mais ajudantes da
+`AEEHelperFuncs` sem demanda (o `strncpy` e o `strstr` deram ZERO); anunciar
+extensoes de GL sem as servir (10 regressoes, medido); implementar formatos de
+estudio (`.big` em 52 pastas -- ninguem chega a abri-los); e tirar prioridades da
+coluna de PEDIDOS em vez da de TITULOS AFECTADOS.
+
+## Etapa 13 -- IUnzipAStream, a via de descompressao do BREW
+
+`AEECLSID_UNZIPSTREAM = 0x01001014` (`AEEClassIDs.h:82`, `AEECLSID_CORE + 20`),
+interface `IUnzipAStream` (`AEEUnzipStream.h`). A constante esta em NOVE dos 62
+`.mod`: `alpineracerex` (6x), `ddragonz`, `ridgeracer`, `tekken2`, `gof`, `rmp`,
+`zeeboids`, `allstarcards`, `pbc`. O `AEECLSID_MEMASTREAM` (`0x0100100C`) esta em
+mais nove.
+
+Achado ao fechar a contradicao do `0x0DC`: o `ddragonz` **nao tem inflate
+proprio** -- sem tabelas de deflate e sem `0x1f8b` no binario. Descomprime pela
+interface do sistema. Ate agora tinhamos a constante registada com o nome
+`kIidFile`, e o `QueryClass` respondia SIM a uma classe que nao servimos.
 
 ## O laco de trabalho
 

@@ -2101,3 +2101,125 @@ Efeito isolado: 0 regressoes, 0 melhorias, 21 neutros. As duas faltas desaparece
 e nenhuma nova aparece (191 -> 172 pedidos, 37 -> 35 nomes). Nenhum degrau se
 move: os titulos que as pediam ja andavam, e continuam a parar onde paravam --
 so que agora por outro motivo.
+
+---
+
+## Ronda de 15/09, terceira parte -- a Fase 0, e tres numeros que nao mediam o que eu pensava
+
+Quatro frentes, escolhidas por uma estrategia de **menor esforco primeiro + falhar
+mais rapido primeiro**: validar o instrumento ANTES de investir, e gastar uma
+linha a testar a hipotese antes de gastar um dia a construir.
+
+| degrau | antes | depois |
+|---|---|---|
+| vtable | 62/62 | 62/62 |
+| applet | 56 | **58** |
+| pixels | 10 | **11** |
+| sem falta nenhuma | 29 | **34** |
+| cores > 10 (criterio da etapa 3) | 0 | **0** |
+
+### A Fase 0 respondeu as duas perguntas que a justificavam
+
+**As 21 M recusas?** A perda existia -- `tools/bateria.cpp` fazia
+`e.recusadas = cpu.InstruscoesRecusadas()`, atribuicao e nao acumulacao, e o
+`Repor` do `CreateInstance` apagava a conta da carga. Mas os numeros da alegacao
+estavam ERRADOS: o total e **28 227 409** e nao 21 M, e o maximo da referencia era
+**4 549 330** (`ridgeracer`) e nao 936 -- 936 era o segundo. E metade da alegacao
+era FALSA: as faltas nunca se perderam (`ContagemFaltas()` ja era lido depois do
+`start`).
+
+**O plano estava mal ordenado?** **NAO.** Com as recusas completas, a tabela de
+faltas por titulos afectados nao muda **nem uma chave** (36 chaves, comparadas
+por programa). Foi esta resposta que libertou o resto da ronda.
+
+### `0x0DC` e `memcmp` -- a contradicao entre fontes esta fechada
+
+Prova por desmonte no `ddragonz.mod` (0x11DDB8): tres argumentos, `mov r2,#2`,
+`r1` a apontar para os bytes `"OI"`, e o retorno testado com `cmp r0,#0`. E
+`memcmp(dados, "OI", 2)`, e `"OI"` e o magic do **OBM1** -- a seguir vem o parser
+do OBM1, byte a byte igual ao `core/loader/obm1.h` do PROPRIO zeebulator.
+
+**Porque e que o zeebulator se enganou, e a licao vale mais que o facto:** o stub
+dele, ao "suceder sempre", DESLIGOU a verificacao do magic. O parser passou a
+engolir um stream gzip, e o valor que ele usou como prova (`0x8b9d`) e o byte +2
+do cabecalho gzip. A implementacao de descompressao acertava por ACIDENTE --
+inflacionava e devolvia 0, o que fazia o magic passar a existir.
+**Um stub que mente pode fabricar a evidencia que o justifica.**
+
+Cairam tambem as hipoteses (b) e (c): a tabela do dispositivo E a do SDK, com 15
+ancoras do zeebulator a bater com o cabecalho.
+
+### TRES numeros que usei para priorizar e que nao mediam o que eu pensava
+
+1. Os **"640 pixels"** que tiraram a coluna PIXELS do zero eram um `DrawText` com
+   `nChars = -1` lido como `uint32`, cortado pelo clip na largura do ecra. O texto
+   era "InitGLSurface failed".
+2. Os **"70 pedidos"** do `IFile::Read` eram **um titulo so** (`allstarcards`),
+   num laco. A bateria ordena por PEDIDOS, e essa ordem engana.
+3. Os **"25 titulos"** do `IDIB::pBmp` -- o item numero UM do plano -- sao **DOIS**.
+   A falta era registada ao ESCREVER o cabecalho do bitmap, e nao quando o guest
+   LIA o campo. Com uma sonda de leitura a serio, 23 dos 25 leem so o offset +0
+   (a vtable), para saber o TAMANHO do ecra; so o `tekken2` (0x34ad8) e o
+   `zenonia` (0xb644) leem o +8.
+
+### Dois defeitos de instrumento que nos cegavam
+
+- **`Memoria::PcAtual` nunca era chamado fora dos testes.** Toda a corrida real
+  registava `pc = 0`: qualquer diagnostico que dependesse de saber QUEM fez o
+  acesso estava cego. Agora e posto em `ArmInterpreter::Passo`.
+- **`kSlotDbgPrintf` estava ligado ao id 1500, que e o `kSlotIdStrtowstr`.** TODA
+  a chamada a `dbgprintf` do corpus corria o `strtowstr` -- que le o `r1` como
+  DESTINO. O `cninja` chama com `r1 = 4`, e o emulador escrevia UTF-16 por cima de
+  0x04..0x9c, que e o CODIGO do proprio modulo. Depois saltava para `PC = 0`.
+  E a mesma armadilha do id 1568 de ontem; desta vez ficou a guarda que aborta no
+  arranque se dois ids colidirem.
+
+### `mov pc,lr` nao saltava -- e o mesmo defeito, no outro sitio
+
+O commit `d0f1146` corrigiu isto para o `ldr pc,[rn,#imm]`. **Tratou o SITIO e
+nao o PADRAO**, e o mesmo defeito continuou vivo nas instrucoes de dados
+processados -- que e onde ele mais aparece: **2 727 `mov pc,lr` em 43 dos 62
+modulos** (o retorno de funcao do ARM) e 29 tabelas de saltos em 27.
+
+Efeito: applet 56 -> 58, e o **`fifa09`** passa a escrever 307 200 pixels -- o
+PRIMEIRO titulo com pixels fora da familia `emulator_neo`.
+
+### O teste de falhar rapido funcionou, e poupou um dia
+
+Antes de construir o caminho todo do `GL_OES_draw_texture`, o agente serviu o
+`glGetString` com a lista de extensoes **VAZIA** e correu a bateria. Os dez
+titulos ficaram IDENTICOS a base -- chamam o slot 67 uma vez, sempre com
+`r1 = 0x1f03` (GL_EXTENSIONS). **Confirma-se que e a extensao que os para.**
+Custou uma linha e uma corrida.
+
+E a outra metade tambem foi medida: **anunciar sem servir da 10 REGRESSOES**
+(pixels 307 384 -> 0). O anuncio nao entrou no commit.
+
+Correccao a uma premissa minha: o `glDrawTexivOES` NAO vem do
+`eglGetProcAddress` -- vem do `IGLES11Ext` (`AEEIID_GLES11EXT = 0x0103d8eb`).
+
+### `0x01001014` era `AEECLSID_UNZIPSTREAM`, e diziamos que o serviamos
+
+Achado a verificar o trabalho do agente do `0x0DC`. A constante estava no
+`despacho.cpp` com o nome `kIidFile` e entrava na lista do `QueryClass`, que
+respondia SIM a uma classe que o `CreateInstance` nao serve. O `IFile` nao tem
+CLSID nenhum -- nasce do `IFileMgr::OpenFile`. A constante esta em NOVE dos 62
+`.mod`. **Dizer "suporto" e depois nao criar e pior do que recusar.**
+
+### O gerador do IGLES11, e o que sobra por nomear
+
+`3 + 106 + 39 = 148`, e bate com o `kIglesSlots` que estava a mao. As faltas
+anonimas do corpus passam de **17 para QUATRO** (`IBitmap::slot13`,
+`IShell::slot19`, `IFile::slot3`, `IFile::slot5`).
+
+### Metodo: o que esta ronda confirmou
+
+1. **Validar o instrumento antes de investir.** Das quatro frentes, duas eram de
+   medicao e nao de funcionalidade -- e foram as que mudaram mais o plano.
+2. **Gastar uma linha a testar a hipotese antes de gastar um dia a construir.**
+   O `GL_EXTENSIONS` vazio valeu mais que qualquer implementacao desta ronda.
+3. **Um numero grande na tabela de demanda nao e um bloqueio grande.** Tres vezes
+   seguidas o maior numero era um artefacto de como o mediamos.
+4. **Verificar o `git status` depois de aplicar um patch**, e nao a mensagem do
+   `git apply`. Cortei a saida com `head -5`, perdi tres linhas de
+   "Retrocediendo a la aplicacion", e corri 543 testes numa arvore sem o patch.
