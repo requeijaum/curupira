@@ -79,7 +79,7 @@ const std::uint32_t kSlotsDaInterface[] = {
     brew_slots::kTextCtlSlots,
     12,
     5,
-    3,
+    27,
 };
 
 // OS NOMES QUE A DEMANDA VAI MOSTRAR. O CLSID vem da constante gerada em

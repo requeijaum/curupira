@@ -456,6 +456,20 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         }
         traco_.Emitir(Area::Brew, Nivel::Depuracao, "APPHISTORY_GETCLASS",
                       tem_clsid_ ? "clsid do titulo" : "sem clsid");
+      } else if (idx >= VtClasse(static_cast<std::uint32_t>(Classe::kQEGL)) &&
+                 idx < VtClasse(static_cast<std::uint32_t>(Classe::kQEGL)) + kQeglSlots &&
+                 idx != VtClasse(static_cast<std::uint32_t>(Classe::kQEGL)) + 2) {
+        // O QEGL, ANTES DO AtenderClasse: a faixa e 40000+ e o ramo das classes
+        // apanhava estes slots e devolvia `QEGL::?` sem comportamento (nona
+        // ocorrencia do erro de ordem). O slot 2 (QI) fica no AtenderClasse.
+        const std::uint32_t qegl_base = VtClasse(static_cast<std::uint32_t>(Classe::kQEGL));
+        ArgumentosGl avq;
+        for (int k2 = 0; k2 < 4; ++k2) avq.reg[k2] = cpu.Get(kR0 + k2);
+        avq.sp = cpu.Get(kSP);
+        avq.lr = cpu.Get(kLR);
+        std::uint32_t retornoq = 0;
+        egl_.Executar(QeglParaIegl(idx - qegl_base), avq, &retornoq);
+        cpu.Set(kR0, retornoq);
       } else if (AtenderClasse(cpu, idx, traco_)) {
         // AS CLASSES CONHECIDAS (`core/brew/classes.h`). ESTE RAMO VEM ANTES DO
         // `idx >= kBaseDoShell`, e nao e gosto: os indices desta faixa sao 40000+

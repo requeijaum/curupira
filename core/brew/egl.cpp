@@ -102,11 +102,12 @@ const AtributoDaConfig kConfigDoZeebulator[] = {
     {EGL_SAMPLE_BUFFERS, 0, "nao ha multisampling"},
     {EGL_LEVEL, 0, "nao ha configs em niveis de framebuffer (EGL_LEVEL 0)"},
     {EGL_CONFIG_ID, 1, "identificador desta unica config, escolhido por este modulo"},
-    // SO SUPERFICIE DE JANELA: o `eglCreatePixmapSurface` e o
-    // `eglCreatePbufferSurface` RECUSAM, e o config tem de dizer o mesmo que os
+    // JANELA E PIXMAP: o `eglCreatePbufferSurface` RECUSA, e o config tem de dizer
+    // o mesmo que os
     // metodos fazem -- um config que prometesse PBUFFER_BIT seria uma promessa
     // que o modulo nao cumpre.
-    {EGL_SURFACE_TYPE, EGL_WINDOW_BIT, "so superficies de janela sao criadas aqui"},
+    {EGL_SURFACE_TYPE, EGL_WINDOW_BIT | EGL_PIXMAP_BIT,
+     "janela + pixmap (pixmap guardada sem raster, como a janela)"},
     // O IGL deste SDK e o do `AEEGL.h`: "OpenGLES 1.0 Common-Lite spec".
     {EGL_RENDERABLE_TYPE, EGL_OPENGL_ES_BIT, "AEEGL.h: OpenGLES 1.0 Common-Lite spec"},
     {EGL_CONFORMANT, EGL_OPENGL_ES_BIT, "AEEGL.h: OpenGLES 1.0 Common-Lite spec"},
@@ -615,11 +616,26 @@ ResultadoEgl Egl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint3
                            std::to_string(ultimos_atributos_.size() / 2) +
                            " par(es) guardado(s) sem interpretacao");
     }
-    case kIegl_CreatePixmapSurface:
-      // Nao ha pixmap nativa. Recusar e a verdade, e o config tambem nao promete
-      // EGL_PIXMAP_BIT (ver `kConfig`).
-      return recusa(4, "nao ha pixmap nativa (o config nao promete EGL_PIXMAP_BIT)",
-                    EGL_BAD_MATCH);
+    case kIegl_CreatePixmapSurface: {
+      // A pixmap e um IDIB do guest (fluxo OpenVG: GetDeviceBitmap + QI DIB).
+      // Espelha a window: valida, cria handle, guarda o ponteiro sem interpretar.
+      const std::uint32_t dpy = a.reg[0], cfg = a.reg[1], pixmap = a.reg[2];
+      const std::uint32_t lista = a.reg[3];
+      if (!display_ok(dpy, 4)) return ResultadoGl::Recusado;
+      if (!iniciado(4)) return ResultadoGl::Recusado;
+      if (cfg != kConfigUnico) return recusa(4, "config nao e o deste emulador", EGL_BAD_CONFIG);
+      std::string porque;
+      if (!LerListaDeAtributos(lista, &ultimos_atributos_, &porque)) {
+        return recusa(4, porque, EGL_BAD_ATTRIBUTE);
+      }
+      const std::uint32_t s = CriarSuperficie();
+      if (s == 0) return recusa(4, "limite de superficies deste modulo atingido", EGL_BAD_ALLOC);
+      return feito_com(4, s,
+                       "superficie de pixmap criada; pixmap " + Hex(pixmap) +
+                           " guardada e NAO interpretada (sem rasterizador); atributos: " +
+                           std::to_string(ultimos_atributos_.size() / 2) +
+                           " par(es) guardado(s) sem interpretacao");
+    }
     case kIegl_CreatePbufferSurface:
       return recusa(3, "nao ha memoria de pbuffer (o config tem EGL_MAX_PBUFFER_* a zero)",
                     EGL_BAD_MATCH);

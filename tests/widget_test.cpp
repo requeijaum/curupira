@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "core/brew/ajudantes.h"
+#include "core/brew/classes.h"
 #include "core/brew/despacho.h"
 #include "core/brew/interface.h"
 #include "core/brew/widget.h"
@@ -595,6 +596,20 @@ TEST(Widget, ODrawRectLeAEERectComoQuatroInt16) {
   const std::uint32_t antes = b.D().TelaRef().Escritos();
   b.ChamaSaida(1533, 0x80030000u, kRect, 0x00FF0000u, 0x0000FF00u);
   EXPECT_GT(b.D().TelaRef().Escritos(), antes);
+}
+
+TEST(Widget, OQeglDelegaNoIeglComDeslocamento) {
+  // QEGL = IEGL sem GetProcAddress (slot 8): traducao pura, provada aqui para
+  // nao depender da bateria.
+  EXPECT_EQ(QeglParaIegl(4), 4u);
+  EXPECT_EQ(QeglParaIegl(7), 7u);
+  EXPECT_EQ(QeglParaIegl(8), 9u);
+  EXPECT_EQ(QeglParaIegl(18), 19u);
+  EXPECT_EQ(QeglParaIegl(26), 27u);
+  // E o despacho atende o slot 4 do QEGL como GetDisplay.
+  Bancada b;
+  const std::uint32_t qegl = VtClasse(static_cast<std::uint32_t>(Classe::kQEGL));
+  EXPECT_NE(b.ChamaSaida(qegl + 4, 0, 0, 0, 0), 0u);
 }
 
 TEST(Widget, OSetPropertyDeFidVisibleDeixaRastoComONome) {

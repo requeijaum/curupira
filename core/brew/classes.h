@@ -123,6 +123,10 @@ constexpr std::uint32_t kSlotsDaClasse = 32;
 // O IGLES11 vive em faixa propria (40300+, 148 slots): nao cabe nos 32 por
 // classe, e alargar o passo partia a aritmetica de todas as outras.
 constexpr std::uint32_t kVtableClasseBase = 40000;
+// QEGL = IEGL sem GetProcAddress (slot 8): tudo a partir de 8 desloca -1
+// (zeemu BrewEGL.cpp setup_vtables; 27 slots + Fn).
+constexpr std::uint32_t kQeglSlots = 27;
+constexpr std::uint32_t QeglParaIegl(std::uint32_t q) { return q >= 8 ? q + 1 : q; }
 constexpr std::uint32_t kVtableIgles = 40300;
 constexpr std::uint32_t kIglesSlots = 148;
 constexpr std::uint32_t kObjetoIgles = 0x8F006000u;

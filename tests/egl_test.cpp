@@ -230,7 +230,8 @@ TEST(ConfigDoEgl, OsValoresSaoOsDaTela) {
   EXPECT_EQ(valor(EGL_ALPHA_SIZE), 0u);
   EXPECT_EQ(valor(EGL_DEPTH_SIZE), 0u);
   EXPECT_EQ(valor(EGL_STENCIL_SIZE), 0u);
-  EXPECT_EQ(valor(EGL_SURFACE_TYPE), static_cast<std::uint32_t>(EGL_WINDOW_BIT));
+  EXPECT_EQ(valor(EGL_SURFACE_TYPE),
+              static_cast<std::uint32_t>(EGL_WINDOW_BIT | EGL_PIXMAP_BIT));
   // NAO HA PBUFFER: o `eglCreatePbufferSurface` recusa, e o config tem de dizer o
   // mesmo que o metodo faz.
   EXPECT_EQ(valor(EGL_MAX_PBUFFER_PIXELS), 0u);
@@ -452,13 +453,15 @@ TEST(CicloDoEgl, OGetProcAddressDevolveZeroERegistaOPedido) {
   EXPECT_NE(b.egl.Ultimas().back().motivo.find("glMapBufferOES"), std::string::npos);
 }
 
-TEST(CicloDoEgl, OPixmapEPbufferECopyBuffersRecusam) {
+TEST(CicloDoEgl, OPixmapServeComoHandleEPbufferECopyBuffersRecusam) {
   Banco b;
   std::uint32_t r = 0;
   EXPECT_EQ(b.egl.Executar(kIegl_Initialize, Args(kDisplayUnico, 0, 0), &r), ResultadoGl::Feito);
+  // A pixmap e guardada sem raster, como a janela (fluxo OpenVG: IDIB do guest).
   EXPECT_EQ(b.egl.Executar(kIegl_CreatePixmapSurface, Args(kDisplayUnico, kConfigUnico, 0, 0), &r),
-            ResultadoGl::Recusado);
-  EXPECT_EQ(b.egl.Erro(), EGL_BAD_MATCH);
+            ResultadoGl::Feito);
+  EXPECT_NE(r, 0u);
+  EXPECT_EQ(b.egl.Erro(), EGL_SUCCESS);
   EXPECT_EQ(b.egl.Executar(kIegl_CreatePbufferSurface, Args(kDisplayUnico, kConfigUnico, 0), &r),
             ResultadoGl::Recusado);
   EXPECT_EQ(b.egl.Executar(kIegl_CopyBuffers, Args(kDisplayUnico, kPrimeiraSuperficie, 0), &r),
@@ -557,16 +560,16 @@ TEST(NenhumCaminhoMudo, AsVinteEOitoChamadasFicamNoTraco) {
 TEST(NenhumCaminhoMudo, ARecusaFicaNaListaDeFaltas) {
   Banco b;
   std::uint32_t r = 0;
-  b.egl.Executar(kIegl_CreatePixmapSurface, Args(kDisplayUnico, kConfigUnico, 0, 0), &r);
+  b.egl.Executar(kIegl_CreatePbufferSurface, Args(kDisplayUnico, kConfigUnico, 0), &r);
   bool achou = false;
   for (const auto& par : b.egl.Recusas()) {
-    if (par.first == "eglCreatePixmapSurface" && par.second > 0) achou = true;
+    if (par.first == "eglCreatePbufferSurface" && par.second > 0) achou = true;
   }
   // A LISTA DO QUE FALTA, por nome: a arvore antiga nao tinha isto em lado nenhum,
   // e por isso nao havia como saber o que era fachada.
   EXPECT_TRUE(achou);
   for (const auto& par : b.traco.ContagemFaltas()) {
-    if (par.first == "eglCreatePixmapSurface") achou = true;
+    if (par.first == "eglCreatePbufferSurface") achou = true;
   }
   EXPECT_TRUE(achou);
 }
