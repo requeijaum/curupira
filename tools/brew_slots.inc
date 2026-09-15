@@ -649,6 +649,73 @@ inline const char* NomeDeIDrawDecorator(unsigned slot) {
   return slot < 17 ? k[slot] : "slot_fora_da_tabela";
 }
 
+// platform/system/inc/AEEThread.h
+//   cabeca: INHERIT_IRscPool = 7 slots de cabeca
+//   5 metodos; slot = 7 + posicao
+constexpr unsigned kThread_AddRef = 0;
+constexpr unsigned kThread_Release = 1;
+constexpr unsigned kThread_QueryInterface = 2;
+constexpr unsigned kThread_Malloc = 3;
+constexpr unsigned kThread_Free = 4;
+constexpr unsigned kThread_HoldRsc = 5;
+constexpr unsigned kThread_ReleaseRsc = 6;
+constexpr unsigned kThread_Start = 7;
+constexpr unsigned kThread_Exit = 8;
+constexpr unsigned kThread_Join = 9;
+constexpr unsigned kThread_Suspend = 10;
+constexpr unsigned kThread_GetResumeCBK = 11;
+// Quantos slots esta interface TEM, lido do cabecalho. E o limite da
+// cablagem e o do `NomeDeThread` -- uma so constante, para os dois nao
+// poderem divergir.
+constexpr unsigned kThreadSlots = 12;
+
+inline const char* NomeDeThread(unsigned slot) {
+  static const char* k[] = {
+      "AddRef", "Release", "QueryInterface", "Malloc", "Free", "HoldRsc", "ReleaseRsc", "Start", "Exit", "Join", "Suspend", "GetResumeCBK",
+  };
+  return slot < 12 ? k[slot] : "slot_fora_da_tabela";
+}
+
+// platform/media/inc/AEEIImageDecoder.h
+//   cabeca: INHERIT_IQI = 3 slots de cabeca
+//   2 metodos; slot = 3 + posicao
+constexpr unsigned kImageDecoder_AddRef = 0;
+constexpr unsigned kImageDecoder_Release = 1;
+constexpr unsigned kImageDecoder_QueryInterface = 2;
+constexpr unsigned kImageDecoder_GetBitmap = 3;
+constexpr unsigned kImageDecoder_GetRop = 4;
+// Quantos slots esta interface TEM, lido do cabecalho. E o limite da
+// cablagem e o do `NomeDeImageDecoder` -- uma so constante, para os dois nao
+// poderem divergir.
+constexpr unsigned kImageDecoderSlots = 5;
+
+inline const char* NomeDeImageDecoder(unsigned slot) {
+  static const char* k[] = {
+      "AddRef", "Release", "QueryInterface", "GetBitmap", "GetRop",
+  };
+  return slot < 5 ? k[slot] : "slot_fora_da_tabela";
+}
+
+// platform/system/inc/AEEIForceFeed.h
+//   cabeca: INHERIT_IQI = 3 slots de cabeca
+//   2 metodos; slot = 3 + posicao
+constexpr unsigned kForceFeed_AddRef = 0;
+constexpr unsigned kForceFeed_Release = 1;
+constexpr unsigned kForceFeed_QueryInterface = 2;
+constexpr unsigned kForceFeed_Write = 3;
+constexpr unsigned kForceFeed_Reset = 4;
+// Quantos slots esta interface TEM, lido do cabecalho. E o limite da
+// cablagem e o do `NomeDeForceFeed` -- uma so constante, para os dois nao
+// poderem divergir.
+constexpr unsigned kForceFeedSlots = 5;
+
+inline const char* NomeDeForceFeed(unsigned slot) {
+  static const char* k[] = {
+      "AddRef", "Release", "QueryInterface", "Write", "Reset",
+  };
+  return slot < 5 ? k[slot] : "slot_fora_da_tabela";
+}
+
 // platform/ui/inc/AEEIForm.h
 constexpr unsigned PROP_FORM = 20480u;
 constexpr unsigned WID_FORM = 20480u;

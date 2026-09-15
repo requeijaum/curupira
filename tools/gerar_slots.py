@@ -80,6 +80,30 @@ INTERFACES = [
     ("IDecorator", "platform/ui/inc/AEEIDecorator.h",   "#define INHERIT_IDecorator("),
     ("IDrawDecorator", "platform/ui/inc/AEEIDrawDecorator.h",
      "#define INHERIT_IDrawDecorator("),
+    # AS TRES INTERFACES QUE ESTAVAM ESCRITAS A MAO EM `core/brew/classes.cpp`.
+    #
+    # O `IThread` (o `tectoy` cria `AEECLSID_THREAD`), o `IImageDecoder` (o
+    # `AEECLSID_PNGDECODER_BREW`) e o `IForceFeed` tinham os nomes de slot num
+    # `switch` escrito a mao no `classes.cpp`, e as CONTAGENS (12 e 5) como
+    # literais na tabela `kSlotsDaInterface` -- um numero de cabecalho transcrito
+    # a mao, que e exactamente o defeito que este gerador existe para tirar do
+    # caminho. As cadeias resolvem-se como todas as outras, lendo os cabecalhos:
+    #
+    #     INHERIT_IThread       = INHERIT_IRscPool(7) + 5 = 12
+    #     INHERIT_IRscPool      = INHERIT_IQI(3) + 4      = 7   (AEEIRscPool.h)
+    #     INHERIT_IImageDecoder = INHERIT_IQI(3) + 2      = 5
+    #     INHERIT_IForceFeed    = INHERIT_IQI(3) + 2      = 5
+    #
+    # A CONTAGEM E OS NOMES SAEM DA MESMA LEITURA (`k<nome>Slots` e
+    # `NomeDe<nome>`), para nao poderem divergir um do outro.
+    #
+    # O `IForceFeed` NAO e usado por nenhuma classe do motor hoje. Entra na mesma
+    # porque a tabela e do SDK, e nao do que o motor ja usa: a proxima interface
+    # desta familia fica com o numero ja lido, em vez de mais um `switch` a mao.
+    ("Thread",   "platform/system/inc/AEEThread.h",       "#define INHERIT_IThread("),
+    ("ImageDecoder", "platform/media/inc/AEEIImageDecoder.h",
+     "#define INHERIT_IImageDecoder("),
+    ("ForceFeed", "platform/system/inc/AEEIForceFeed.h",  "#define INHERIT_IForceFeed("),
 ]
 
 

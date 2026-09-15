@@ -5,6 +5,10 @@
 
 #include "core/brew/clsids.h"
 #include "tools/brew_slots.inc"
+// A CONTAGEM DO QEGL prende-se ao IEGL gerado: o QEGL e o IEGL sem o
+// `GetProcAddress` (slot 8). Ver o `static_assert` no fim das tabelas abaixo --
+// o `27` deixou de ser um numero escrito neste ficheiro.
+#include "tools/gl_slots.inc"
 // Os TRES numeros. Vem do mesmo `.inc` gerado que o `NomeDoClsid` usa, e nao de
 // literais escritos neste ficheiro: e essa a unica forma de o nome e o numero
 // nao poderem divergir.
@@ -15,44 +19,26 @@ namespace zb2::brew {
 namespace {
 
 // O nome do slot de cada classe, vindo da tabela GERADA (`tools/brew_slots.inc`,
-// gerada de `AEEText.h`, `AEEIAppHistory.h` e `AEEIValueModel.h`). Um nome de
-// slot escrito a mao seria exactamente o numero transcrito de memoria que o
-// gerador existe para impedir. Excecao: IThread (AEEThread.h + AEEIRscPool.h +
-// AEEIQI.h), sem entrada no gerador; nomes declarados abaixo, na ordem do
-// cabecalho (IQI 3 + RscPool 4 + Thread 5 = 12).
-const char* NomeDoSlotThread(unsigned slot) {
-  switch (slot) {
-    case 0: return "AddRef";
-    case 1: return "Release";
-    case 2: return "QueryInterface";
-    case 3: return "Malloc";
-    case 4: return "Free";
-    case 5: return "HoldRsc";
-    case 6: return "ReleaseRsc";
-    case 7: return "Start";
-    case 8: return "Exit";
-    case 9: return "Join";
-    case 10: return "Suspend";
-    case 11: return "GetResumeCBK";
-    default: return "?";
-  }
-}
-
-const char* NomeDoSlotPNGDecoderBREW(unsigned slot) {
-  switch (slot) {
-    case 0: return "AddRef";
-    case 1: return "Release";
-    case 2: return "QueryInterface";
-    case 3: return "GetBitmap";
-    case 4: return "GetRop";
-    default: return "?";
-  }
-}
-
-// QEGL (0x0103d8ec): DECLARADO, nao medido no SDK. So aparece em comentarios
-// de teste OpenVG (UTOpenVGSuite.c:201) e numa tabela propria do zeebulator --
-// nenhum `.h`/`.bid` o define. Por isso so IQI (3 slots) com nomes genericos:
-// inventar slots EGL seria mentir comportamento que nao se mediu.
+// gerada de `AEEText.h`, `AEEIAppHistory.h`, `AEEIValueModel.h`, `AEEThread.h` +
+// `AEEIRscPool.h` e `AEEIImageDecoder.h`). Um nome de slot escrito a mao seria
+// exactamente o numero transcrito de memoria que o gerador existe para impedir.
+//
+// O `IThread` E O `IImageDecoder` SAIRAM DAQUI. Tinham um `switch` escrito neste
+// ficheiro, com os nomes e as CONTAGENS (12 e 5) transcritos do cabecalho; agora
+// sao o `NomeDeThread`/`NomeDeImageDecoder` e o `kThreadSlots`/
+// `kImageDecoderSlots` do `.inc`. A cadeia (`INHERIT_IThread` ->
+// `INHERIT_IRscPool` -> `INHERIT_IQI`) e lida pelo gerador: o slot 7 e o `Start`
+// porque o cabecalho o poe la, e nao porque alguem o contou.
+//
+// O `QEGL` E A EXCECAO, e ela FICA -- a razao esta escrita e e uma medicao:
+// nenhum cabecalho deste SDK o declara (so aparece em comentarios de teste OpenVG
+// e numa tabela propria do zeebulator). Nomear os 24 metodos EGL que faltam a
+// partir de outro emulador seria inventar ABI e, pior, mudar o nome das recusas
+// (`QEGL::?` -> `QEGL::eglSwapBuffers`) sem uma fonte do SDK que o sustente. So
+// os tres slots do `INHERIT_IQI` ficam nomeados, e o resto diz "?".
+//
+// A CONTAGEM do QEGL, essa, deixou de ser um `27` solto: ver o `static_assert`
+// mais abaixo, que a prende ao `kIeglSlots` GERADO de `AEEGL.h`.
 const char* NomeDoSlotQEGL(unsigned slot) {
   switch (slot) {
     case 0: return "AddRef";
@@ -66,21 +52,35 @@ const char* (*const kNomeDoSlot[])(unsigned) = {
     &brew_slots::NomeDeAppHistory,
     &brew_slots::NomeDeValueModel,
     &brew_slots::NomeDeTextCtl,
-    &NomeDoSlotThread,
-    &NomeDoSlotPNGDecoderBREW,
+    &brew_slots::NomeDeThread,
+    &brew_slots::NomeDeImageDecoder,
     &NomeDoSlotQEGL,
 };
 
-// Quantos slots cada interface TEM, do mesmo cabecalho (IThread: 12, medido em
-// AEEThread.h/AEEIRscPool.h/AEEIQI.h).
+// Quantos slots cada interface TEM, do mesmo cabecalho. As cinco primeiras vem
+// do `.inc` GERADO -- nome e contagem da MESMA leitura, para nao divergirem.
 const std::uint32_t kSlotsDaInterface[] = {
     brew_slots::kAppHistorySlots,
     brew_slots::kValueModelSlots,
     brew_slots::kTextCtlSlots,
-    12,
-    5,
-    27,
+    brew_slots::kThreadSlots,
+    brew_slots::kImageDecoderSlots,
+    kQeglSlots,
 };
+
+// E OS NUMEROS QUE ESTAVAM A MAO, CONFERIDOS. Nao e decoracao: era aqui que o
+// `12`, o `5` e o `27` viviam, e um deles estar errado fazia o despacho registar
+// `IThread::slot12` (fora da tabela) em vez do metodo pedido. Se o cabecalho do
+// SDK mudar, e a COMPILACAO que cai, e nao a bateria quatro minutos depois.
+static_assert(brew_slots::kThreadSlots == 12, "o IThread tem 12 slots (IQI 3 + RscPool 4 + 5)");
+static_assert(brew_slots::kImageDecoderSlots == 5, "o IImageDecoder tem 5 slots (IQI 3 + 2)");
+static_assert(brew_slots::kThread_Start == 7, "medido: `[r1,#0x1c]` = slot 7 e o Start");
+static_assert(brew_slots::kThread_ReleaseRsc == 6, "o fim do IRscPool e o slot 6");
+static_assert(brew_slots::kImageDecoder_GetBitmap == 3, "medido: o GetBitmap e o slot 3");
+// O QEGL e o IEGL SEM o `GetProcAddress` (slot 8 do IEGL): 28 - 1 = 27. O 28 vem
+// de `AEEGL.h` pelo `tools/gl_slots.inc` -- a mesma fonte que o IGL usa.
+static_assert(kQeglSlots == gl_slots::kIeglSlots - 1,
+              "o QEGL e o IEGL sem GetProcAddress (kIeglSlots - 1)");
 
 // OS NOMES QUE A DEMANDA VAI MOSTRAR. O CLSID vem da constante gerada em
 // `tools/clsids.inc` -- e nao de um literal escrito aqui.

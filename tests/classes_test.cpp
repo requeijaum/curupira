@@ -255,7 +255,10 @@ TEST(Classes, OThreadStartRecusaComNome) {
   Bancada b;
   const std::uint32_t th = static_cast<std::uint32_t>(Classe::kThread);
   b.Cpu().Set(kR0, ObjetoDaClasse(th));
-  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(th) + 7, b.T()));
+  // O slot vem do `.inc` GERADO (`AEEThread.h` + `AEEIRscPool.h` + `AEEIQI.h`), e
+  // nao de um 7 escrito aqui: o `EXPECT_EQ(..., 7u)` do teste 9 prende-o ao
+  // numero do cabecalho, e este prende o DESPACHO a ele.
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(th) + brew_slots::kThread_Start, b.T()));
   EXPECT_EQ(b.Cpu().Get(kR0), kAeeUnsupported);
   EXPECT_EQ(b.Faltas("IThread::Start"), 1u);
 }
@@ -292,9 +295,94 @@ TEST(Classes, OPNGDecoderGetBitmapRecusaComNome) {
   const std::uint32_t png =
       static_cast<std::uint32_t>(Classe::kPNGDecoderBREW);
   b.Cpu().Set(kR0, ObjetoDaClasse(png));
-  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(png) + 3, b.T()));
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(png) + brew_slots::kImageDecoder_GetBitmap, b.T()));
   EXPECT_EQ(b.Cpu().Get(kR0), kAeeUnsupported);
   EXPECT_EQ(b.Faltas("IImageDecoder::GetBitmap"), 1u);
+}
+
+// ---------------------------------------------------------------------------
+// 9. A TABELA DO IThread, DO IImageDecoder E DO IForceFeed E A GERADA.
+//
+// Estes dois primeiros tinham os nomes de slot num `switch` escrito a mao no
+// `classes.cpp`, e as CONTAGENS (12 e 5) como literais na tabela
+// `kSlotsDaInterface`. Passaram a vir do `tools/brew_slots.inc`, gerado de
+// `AEEThread.h` + `AEEIRscPool.h` + `AEEIQI.h` e de `AEEIImageDecoder.h`.
+//
+// O QUE SE PROVA AQUI e a coincidencia entre as DUAS fontes: a medicao do modulo
+// (`[r1,#0x1c]` = slot 7) e a leitura do cabecalho. Se o gerador voltar a contar
+// a cabeca por outra regra -- foi essa a origem do erro de um em todo o `IFile` --
+// estes `EXPECT` caem; um `switch` a mao, esse, concordava consigo proprio.
+// ---------------------------------------------------------------------------
+TEST(Classes, AThreadEaImageDecoderSaoAsTabelasGeradasDoCabecalho) {
+  // AS CADEIAS, resolvidas pelo gerador a partir dos cabecalhos:
+  //   INHERIT_IQI (3: AddRef, Release, QueryInterface)
+  //   + INHERIT_IRscPool (4: Malloc, Free, HoldRsc, ReleaseRsc)  = 7
+  //   + os 5 proprios do IThread                                 = 12
+  EXPECT_EQ(brew_slots::kThread_Malloc, 3u);
+  EXPECT_EQ(brew_slots::kThread_ReleaseRsc, 6u);
+  EXPECT_EQ(brew_slots::kThread_Start, 7u);
+  EXPECT_EQ(brew_slots::kThread_GetResumeCBK, 11u);
+  EXPECT_EQ(brew_slots::kThreadSlots, 12u);
+  EXPECT_EQ(brew_slots::kImageDecoder_GetBitmap, 3u);
+  EXPECT_EQ(brew_slots::kImageDecoder_GetRop, 4u);
+  EXPECT_EQ(brew_slots::kImageDecoderSlots, 5u);
+  // O NOME e indexado PELO PROPRIO SLOT -- o slot 7 do IThread e o `Start`.
+  EXPECT_STREQ(brew_slots::NomeDeThread(7), "Start");
+  EXPECT_STREQ(brew_slots::NomeDeImageDecoder(3), "GetBitmap");
+  EXPECT_STREQ(brew_slots::NomeDeImageDecoder(4), "GetRop");
+  // E o limite e o da tabela do cabecalho, nao o da vtable (32).
+  EXPECT_STREQ(brew_slots::NomeDeThread(12), "slot_fora_da_tabela");
+  EXPECT_STREQ(brew_slots::NomeDeImageDecoder(5), "slot_fora_da_tabela");
+  // O MOTOR USA ESSA TABELA: `kNomeDoSlot[]` em `classes.cpp` aponta para as
+  // funcoes geradas, e nao para um `switch` deste ficheiro.
+  const std::uint32_t th = static_cast<std::uint32_t>(Classe::kThread);
+  const std::uint32_t png = static_cast<std::uint32_t>(Classe::kPNGDecoderBREW);
+  EXPECT_STREQ(NomeDoSlotDaClasse(th, brew_slots::kThread_Start), "Start");
+  EXPECT_STREQ(NomeDoSlotDaClasse(th, brew_slots::kThreadSlots - 1), "GetResumeCBK");
+  EXPECT_STREQ(NomeDoSlotDaClasse(png, brew_slots::kImageDecoder_GetBitmap), "GetBitmap");
+  EXPECT_STREQ(NomeDoSlotDaClasse(png, brew_slots::kImageDecoder_GetRop), "GetRop");
+  // UMA SO LEITURA: a contagem e o nome do ultimo slot nao podem divergir --
+  // sao o mesmo `metodos()` do gerador.
+  EXPECT_STREQ(brew_slots::NomeDeThread(brew_slots::kThreadSlots - 1), "GetResumeCBK");
+  // O `IForceFeed` entra na tabela na mesma: o cabecalho existe
+  // (`platform/system/inc/AEEIForceFeed.h`) e nenhuma classe do motor o usa
+  // ainda. IQI 3 + `Write` + `Reset`.
+  EXPECT_EQ(brew_slots::kForceFeedSlots, 5u);
+  EXPECT_EQ(brew_slots::kForceFeed_Write, 3u);
+  EXPECT_STREQ(brew_slots::NomeDeForceFeed(3), "Write");
+  EXPECT_STREQ(brew_slots::NomeDeForceFeed(4), "Reset");
+}
+
+TEST(Classes, AContagemDeSlotsDoThreadEDoPNGDecidemONomeDaRecusa) {
+  // A CONTAGEM NAO E UM DETALHE DE ESTILO: e ela que decide se a recusa diz o
+  // NOME do metodo ou `slotN`. O ultimo slot do cabecalho tem nome; o seguinte,
+  // que a vtable de 32 slots tambem atende, ja esta fora da tabela. A fronteira
+  // entre os dois E a contagem lida do cabecalho.
+  const std::uint32_t th = static_cast<std::uint32_t>(Classe::kThread);
+  const std::uint32_t png = static_cast<std::uint32_t>(Classe::kPNGDecoderBREW);
+  Bancada b;
+  b.Cpu().Set(kR0, ObjetoDaClasse(th));
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(th) + 11, b.T()));
+  EXPECT_EQ(b.Faltas("IThread::GetResumeCBK"), 1u);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(th) + 12, b.T()));
+  EXPECT_EQ(b.Faltas("IThread::slot12"), 1u);
+  b.Cpu().Set(kR0, ObjetoDaClasse(png));
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(png) + 4, b.T()));
+  EXPECT_EQ(b.Faltas("IImageDecoder::GetRop"), 1u);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(png) + 5, b.T()));
+  EXPECT_EQ(b.Faltas("IImageDecoder::slot5"), 1u);
+  // E O QEGL, QUE NAO TEM CABECALHO NO SDK, fica como estava: so os tres slots do
+  // `INHERIT_IQI` sao nomeados, e o resto diz "?" -- inventar os 24 nomes EGL que
+  // faltam seria copiar a ABI de outro emulador. O que ESTA preso ao cabecalho e a
+  // CONTAGEM: 26 e o ultimo slot dentro da tabela, 27 ja esta fora
+  // (QEGL = IEGL sem `GetProcAddress`: `kIeglSlots` - 1 = 27, e o `kIeglSlots` vem
+  // de `AEEGL.h` pelo `tools/gl_slots.inc`).
+  const std::uint32_t q = static_cast<std::uint32_t>(Classe::kQEGL);
+  b.Cpu().Set(kR0, ObjetoDaClasse(q));
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(q) + 26, b.T()));
+  EXPECT_EQ(b.Faltas("QEGL::?"), 1u);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(q) + 27, b.T()));
+  EXPECT_EQ(b.Faltas("QEGL::slot27"), 1u);
 }
 
 TEST(Classes, OTextCtlGuardaEstadoESemFalta) {
