@@ -131,6 +131,35 @@ constexpr std::uint32_t QeglParaIegl(std::uint32_t q) { return q >= 8 ? q + 1 : 
 constexpr std::uint32_t kVtableIgles = 40300;
 constexpr std::uint32_t kIglesSlots = 148;
 constexpr std::uint32_t kObjetoIgles = 0x8F010000u;
+// A ZONA DE STRINGS DO IGLES11 (`glGetString`). Um bloco de 4 KB a seguir ao
+// objecto, DENTRO da mesma faixa `0x8F000000` que a bateria inteira ja provou
+// que o corpus nao toca (ver o comentario do `0x800C0000` acima: um endereco
+// "livre" no mapa nao e um endereco que o CORPUS nao usa, e isso foi MEDIDO).
+//
+// O desenho copia o do `core/brew/egl.h` (`kZonaDeStrings`): um endereco fixo
+// por consulta, escrito quando a consulta acontece. **Nunca se devolve NULO** --
+// ha um caso medido na arvore antiga (`ddragonz` mete o resultado do
+// `eglQueryString` num `strstr` sem testar o nulo).
+constexpr std::uint32_t kZonaDeStringsIgles = kObjetoIgles + 0x1000u;
+constexpr std::uint32_t kPassoDeStringIgles = 0x100;
+
+// O `IGLES11Ext` -- OUTRA interface, OUTRO objecto (AEEGLES11Ext.h,
+// AEEIID_GLES11EXT = 0x0103d8eb): 3 + 12 = 15 slots.
+//
+// PORQUE EXISTE, MEDIDO (sonda: `cninja` com `GL_OES_draw_texture` anunciado no
+// `glGetString`): o titulo passa a pedir `QEGL::QueryInterface` com OITO IIDs
+// seguidos, e este e o que lhe da o `glDrawTexivOES` que a extensao promete.
+// Os oito, todos identificados nos cabecalhos do SDK 4.0.2:
+//     0x010426e3 EGLOESSWAPINTERVAL   0x0103d8ef EGLGETCOLORBUFFER
+//     0x0103d8f0 EGLGETPOWERLEVEL     0x01051834 EGLSURFACEMANIP
+//     0x0103d8de GLES10EXT            0x0103d8eb GLES11EXT   <-- este
+//     0x0103def1 GLES11EXTPAK         0x01058546 GLESIMAGEONEXT
+// As strings do `.mod` (`framework/GLES_ext.c`) dizem que o titulo TOLERA a
+// ausencia dos outros ("platform does not support ... interface").
+constexpr std::uint32_t kVtableIglesExt = 40500;
+constexpr std::uint32_t kIglesExtSlots = 15;
+constexpr std::uint32_t kObjetoIglesExt = 0x8F020000u;
+constexpr std::uint32_t kIidGles11Ext = 0x0103d8ebu;
 // IIDs de interface (AEEGLES10/11.h via 3 refs; sem .h no SDK extract).
 constexpr std::uint32_t kIidGles10 = 0x0103d8ddu;
 constexpr std::uint32_t kIidGles11 = 0x0103d8eau;
@@ -165,8 +194,10 @@ void ConstruirClasses(Memoria& mem, const Saidas& saidas, Traco& traco);
 
 // O objeto IGLES11 (faixa propria): constroi vtable+objeto uma vez.
 void ConstruirIgles(Memoria& mem, const Saidas& saidas, Traco& traco);
-// Nome do slot IGLES11 (só IQI nomeado; resto e slotN, sem inventar).
+// Nome do slot IGLES11 e do slot IGLES11Ext, das tabelas GERADAS dos cabecalhos
+// (`tools/igles_slots.inc`).
 const char* NomeDoSlotIgles(std::uint32_t slot);
+const char* NomeDoSlotIglesExt(std::uint32_t slot);
 
 // Repoem o estado do ITextCtl (ativo/props/modo) no arranque. Sem isto, dois
 // testes na mesma Bancada veriam o estado um do outro -- statics partilhados.

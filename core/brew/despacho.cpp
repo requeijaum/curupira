@@ -118,6 +118,29 @@ constexpr std::uint32_t kSlotIdMkDir = 1544,
 constexpr std::uint32_t kSlotIdSprintf = 1560, kSlotIdVsprintf = 1561, kSlotIdHeapLock = 1562,
                        kSlotIdVsnprintf = 1566, kSlotIdRealloc = 1567,
                        kSlotIdFreeResData = 1563, kSlotIdCheckPriv = 1564;
+// O `dbgprintf` (AEEHelperFuncs 0x09c). **MEDIDO: ele estava a correr o
+// `strtowstr`, e a ESCREVER na memoria do titulo.**
+//
+// O id dele era `kBaseDoSlot + 500`. `kBaseDoSlot` e 1000, logo o id era 1500 --
+// e `kSlotIdStrtowstr` TAMBEM e 1500. Dois offsets do `AEEHelperFuncs` (0x040 e
+// 0x09c) apontavam para o MESMO endereco de saida, e o ramo do `strtowstr` vem
+// primeiro no `if/else` do despacho: **toda a chamada a `dbgprintf` de todo o
+// titulo corria o `strtowstr`**.
+//
+// O ESTRAGO, medido no `cninja` (sonda no `Despacho::Correr`, ver
+// `/tmp/pesquisa/12-gl.md`): o titulo chama
+//     dbgprintf(fmt, 4, "c:/my_code/emulator_neo/framework/ctordtor.cpp", 121)
+// e o `strtowstr` le r0 como ORIGEM e **r1 como DESTINO**. r1 = 4. A mensagem
+// `"eglGetProcAddress (NBI) - platform does not support EGLSurfaceManip
+// interface"` foi escrita em UTF-16 por cima de `0x00000004..0x0000009c` -- que
+// e o CODIGO do proprio modulo (a base e ZERO). Doze instrucoes depois um
+// `ldr pc,[r3,#0xd8]` (o `strstr` da tabela, lida da zona destruida) saltou para
+// o PC=0 e o titulo moeu dados ate ao fim do orcamento.
+//
+// 1580 e o primeiro id da faixa que NENHUM outro usa (conferido com
+// `grep -n "= 15[0-9][0-9]" core/brew/despacho.cpp`), e a guarda
+// `SemIdsRepetidos` abaixo passa a recusar a proxima colisao no arranque.
+constexpr std::uint32_t kSlotIdDbgPrintf = 1580;
 constexpr std::uint32_t kBaseDoSlot = 1000;
 // A LARGURA DECLARADA DE UM CARACTERE no `DrawText` sem fonte carregada. Nao e
 // uma medida de fonte nenhuma: e a aproximacao que este modulo assume, dita uma
@@ -386,7 +409,7 @@ void Despacho::InstalarAjudantes(const Saidas& saidas, Endereco tabela) {
     const LigacaoAjudante kLigados[] = {
       {0x68, 0},  // malloc -- tratado a parte, pelo alocador
       {0x6c, 1},  // free
-      {kSlotDbgPrintf, kBaseDoSlot + 500},
+      {kSlotDbgPrintf, kSlotIdDbgPrintf},
       {kSlotStrlen, kSlotIdStrlen},
       {kSlotMemset, kSlotIdMemset},
       {kSlotStrcpy, kSlotIdStrcpy},
@@ -415,6 +438,36 @@ void Despacho::InstalarAjudantes(const Saidas& saidas, Endereco tabela) {
       // TESTADO e **nao ligado ao slot** -- o mesmo caso.
       {brew_ajudantes::kAjudante_realloc, kSlotIdRealloc},
   };
+  // A GUARDA DOS IDs REPETIDOS. **Escrita depois de um id repetido custar uma
+  // frente inteira**: o `dbgprintf` tinha `kBaseDoSlot + 500` = 1500, que e o
+  // `kSlotIdStrtowstr`, e por isso TODA a chamada a `dbgprintf` corria o
+  // `strtowstr` e escrevia na memoria do titulo (ver o comentario do
+  // `kSlotIdDbgPrintf`). A faixa dos ids e um espaco PARTILHADO e nao tinha
+  // guarda nenhuma; agora tem, e ela fala no ARRANQUE em vez de o defeito
+  // aparecer como um titulo que mo!
+  //
+  // Duas condicoes, e as duas ja morderam:
+  //   1. dois offsets diferentes com o MESMO id de saida;
+  //   2. um id dentro da faixa generica [kBaseDoSlot, kBaseDoSlot+117), que o
+  //      laco do fim desta funcao usa para os offsets sem implementacao.
+  for (std::size_t a = 0; a < sizeof(kLigados) / sizeof(kLigados[0]); ++a) {
+    if (kLigados[a].saida >= kBaseDoSlot && kLigados[a].saida < kBaseDoSlot + 117 &&
+        kLigados[a].saida != 0 && kLigados[a].saida != 1) {
+      char det[128];
+      std::snprintf(det, sizeof(det),
+                    "o offset 0x%03x usa o id %u, que esta na faixa generica "
+                    "[%u,%u) dos offsets sem implementacao",
+                    kLigados[a].off, kLigados[a].saida, kBaseDoSlot, kBaseDoSlot + 117);
+      traco_.RegistarFalta(Area::Brew, "ajudantes_id_na_faixa_generica", det);
+    }
+    for (std::size_t b = a + 1; b < sizeof(kLigados) / sizeof(kLigados[0]); ++b) {
+      if (kLigados[a].saida != kLigados[b].saida) continue;
+      char det[128];
+      std::snprintf(det, sizeof(det), "os offsets 0x%03x e 0x%03x partilham o id %u",
+                    kLigados[a].off, kLigados[b].off, kLigados[a].saida);
+      traco_.RegistarFalta(Area::Brew, "ajudantes_id_repetido", det);
+    }
+  }
   for (const auto& lig : kLigados) {
     mem_.Escrever32(tabela + lig.off, saidas.Endereco(lig.saida));
   }
@@ -2065,7 +2118,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // uma recusa: um jogo que faca `if (IFILEMGR_GetLastError(pfm) ==
         // EFILEEXISTS)` para decidir o que fazer a seguir decide ao contrario.
         cpu.Set(kR0, static_cast<std::uint32_t>(ultimo_erro_do_fm_));
-      } else if (idx == kBaseDoSlot + 500) {
+      } else if (idx == kSlotIdDbgPrintf) {
         // dbgprintf
         std::string msg;
         mem_.LerCadeia(r0, &msg, 512);

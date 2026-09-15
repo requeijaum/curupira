@@ -119,6 +119,14 @@ set_tests_properties(slots_do_sdk_gl PROPERTIES SKIP_RETURN_CODE 77)
 add_test(NAME clsids_do_sdk COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/verificar_clsids.sh)
 set_tests_properties(clsids_do_sdk PROPERTIES SKIP_RETURN_CODE 77)
 
+# A GUARDA DA TABELA DO IGLES11. Regenera `tools/igles_slots.inc` de
+# `AEEGLES10.h` + `AEEGLES11.h` (SDK 4.0.2 da consola) e compara com o ficheiro
+# versionado. Os 148 nomes sao a diferenca entre uma lista de demanda que diz
+# `IGLES11::slot67` e uma que diz `IGLES11::GetString`.
+add_test(NAME slots_do_sdk_igles
+  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/verificar_slots_igles.sh)
+set_tests_properties(slots_do_sdk_igles PROPERTIES SKIP_RETURN_CODE 77)
+
 # A GUARDA DA TABELA DOS AJUDANTES (117 slots do `AEEHelperFuncs`). Regenera
 # `tools/ajudantes_slots.inc` de `AEEStdLib.h` e compara com o versionado; o
 # gerador tem ancoras internas, e `strtowstr`/`aee_GetRand` estao entre elas

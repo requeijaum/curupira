@@ -10,6 +10,8 @@
 #include "core/cpu/arm_interpreter.h"
 #include "core/memoria/memoria.h"
 #include "core/traco/traco.h"
+#include "tools/gl_slots.inc"
+#include "tools/igles_slots.inc"
 #include "tools/brew_slots.inc"
 #include "tools/clsids.inc"
 
@@ -464,9 +466,81 @@ TEST(Classes, OIglesRecusaComNomeESemMetodoFingido) {
   Bancada b;
   EXPECT_EQ(b.M().Ler32(kObjetoIgles), b.S().Endereco(kVtableIgles));
   b.Cpu().Set(kR0, kObjetoIgles);
-  EXPECT_TRUE(AtenderClasse(b.Cpu(), kVtableIgles + 79, b.T()));
+  // O 79 E O `MatrixMode`, e a recusa TEM DE O DIZER: era `IGLES11::slot79` --
+  // um numero cru que obrigava a contar campos no cabecalho a cada leitura da
+  // lista de demanda. O nome vem de `tools/igles_slots.inc` (gerado).
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), kVtableIgles + igles_slots::kIgles_MatrixMode, b.T()));
   EXPECT_EQ(b.Cpu().Get(kR0), kAeeUnsupported);
-  EXPECT_EQ(b.Faltas("IGLES11::slot79"), 1u);
+  EXPECT_EQ(b.Faltas("IGLES11::MatrixMode"), 1u);
+  EXPECT_EQ(b.Faltas("IGLES11::slot79"), 0u);
+}
+
+// OS NOMES DO IGLES11 SAO LIDOS DOS CABECALHOS, e nao escritos a mao.
+//
+// A tabela vem de `tools/nomear_igles.py` (AEEGLES10.h + AEEGLES11.h). Este
+// teste fixa as ANCORAS que foram conferidas a mao: se o gerador mudar de
+// ordem, a recusa passa a ter o nome errado -- que e PIOR do que nao ter nome,
+// porque parece medido.
+TEST(Classes, OsNomesDoIglesSaoOsDosCabecalhos) {
+  EXPECT_EQ(igles_slots::kQuantos, kIglesSlots);
+  EXPECT_STREQ(NomeDoSlotIgles(0), "AddRef");
+  EXPECT_STREQ(NomeDoSlotIgles(2), "QueryInterface");
+  EXPECT_STREQ(NomeDoSlotIgles(33), "BindTexture");
+  EXPECT_STREQ(NomeDoSlotIgles(64), "GenTextures");
+  EXPECT_STREQ(NomeDoSlotIgles(65), "GetError");
+  EXPECT_STREQ(NomeDoSlotIgles(67), "GetString");
+  EXPECT_STREQ(NomeDoSlotIgles(74), "LoadIdentity");
+  EXPECT_STREQ(NomeDoSlotIgles(79), "MatrixMode");
+  EXPECT_STREQ(NomeDoSlotIgles(104), "TexParameterx");
+  EXPECT_STREQ(NomeDoSlotIgles(108), "Viewport");
+  EXPECT_STREQ(NomeDoSlotIgles(147), "PointSizePointerOES");
+  EXPECT_STREQ(NomeDoSlotIgles(148), "?");
+}
+
+// O `glGetString` DO IGLES11 -- slot 67, pedido por DEZ titulos.
+//
+// MEDIDO na corrida de referencia: os dez titulos `emulator_neo` (cninja,
+// spinmast, strhoop, supbtime, karnovr, wizdfire, magdrop3, darkseal, baddudes,
+// hbarrel) chamam este slot UMA vez, com r1=0x1f03 (GL_EXTENSIONS), e a recusa
+// e o ultimo pedido de cada um. As strings do `.mod` dizem o resto:
+// `GL_OES_draw_texture`, `glDrawTexivOES`, `InitGLExtensions failed`,
+// `c:/my_code/emulator_neo/framework/GLES_ext.c`.
+TEST(Classes, OGetStringDoIglesNuncaDevolveNuloEAListaDeExtensoesEstaVazia) {
+  Bancada b;
+  const std::uint32_t pret = 0x80100000u;
+  auto pedir = [&](std::uint32_t qual) {
+    b.M().Escrever32(pret, 0xdeadbeefu);
+    b.Cpu().Set(kR0, kObjetoIgles);
+    b.Cpu().Set(kR1, qual);
+    b.Cpu().Set(kR2, pret);
+    EXPECT_TRUE(AtenderClasse(b.Cpu(), kVtableIgles + igles_slots::kIgles_GetString, b.T()));
+    EXPECT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
+    const std::uint32_t p = b.M().Ler32(pret);
+    EXPECT_NE(p, 0u) << "NUNCA NULO: ha um strstr medido sobre este resultado";
+    std::string s;
+    b.M().LerCadeia(p, &s, kPassoDeStringIgles);
+    return s;
+  };
+  // A LISTA VAZIA: nenhuma extensao e servida, e anunciar uma que nao existe
+  // faz o titulo saltar para uma funcao que nao existe.
+  EXPECT_EQ(pedir(gl_slots::GL_EXTENSIONS), "");
+  EXPECT_EQ(pedir(gl_slots::GL_VERSION), "OpenGL ES-CM 1.1");
+  EXPECT_EQ(pedir(gl_slots::GL_VENDOR), "");
+  EXPECT_EQ(pedir(gl_slots::GL_RENDERER), "");
+  // Nenhum destes quatro e uma RECUSA: sao pressupostos (traco.h, a regra de
+  // fronteira). A lista de faltas do IGLES11::GetString tem de estar vazia.
+  EXPECT_EQ(b.Faltas("IGLES11::GetString"), 0u);
+  // Uma consulta sem medida: string vazia, endereco valido, E uma falta com o
+  // numero -- e assim que se aprende o que os titulos pedem.
+  EXPECT_EQ(pedir(0x1f04u), "");
+  EXPECT_EQ(b.Faltas("IGLES11::GetString"), 1u);
+  // Ponteiro de retorno nulo: EBADPARM, sem escrever em lado nenhum.
+  b.Cpu().Set(kR0, kObjetoIgles);
+  b.Cpu().Set(kR1, gl_slots::GL_EXTENSIONS);
+  b.Cpu().Set(kR2, 0);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), kVtableIgles + igles_slots::kIgles_GetString, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeBadParm);
+  EXPECT_EQ(b.Faltas("IGLES11::GetString"), 2u);
 }
 
 TEST(Classes, OValueModelNaoTemMetodoImplementadoEPorIssoRecusaComNome) {

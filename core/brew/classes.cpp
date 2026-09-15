@@ -13,6 +13,11 @@
 // literais escritos neste ficheiro: e essa a unica forma de o nome e o numero
 // nao poderem divergir.
 #include "tools/clsids.inc"
+// OS 148 NOMES DO IGLES11, GERADOS de `AEEGLES10.h` + `AEEGLES11.h`
+// (`tools/nomear_igles.py`, guarda `tools/verificar_slots_igles.sh`). Antes
+// disto a lista de demanda tinha DEZASSETE entradas `IGLES11::slotN` -- e a
+// maior, o `slot67`, e pedida por dez titulos e chama-se `GetString`.
+#include "tools/igles_slots.inc"
 
 namespace zb2::brew {
 
@@ -250,17 +255,28 @@ void ConstruirClasses(Memoria& mem, const Saidas& saidas, Traco& traco) {
 }
 
 const char* NomeDoSlotIgles(std::uint32_t slot) {
-  switch (slot) {
-    case 0: return "AddRef";
-    case 1: return "Release";
-    case 2: return "QueryInterface";
-    default: return "?";
-  }
+  // A TABELA E GERADA (`tools/igles_slots.inc`). Escrever os nomes a mao aqui
+  // era exactamente o erro do mapa do IGLES11 da arvore antiga: uma ordem
+  // copiada de outro emulador. `kIglesSlots` e `igles_slots::kQuantos` sao duas
+  // fontes e o `static_assert` obriga-as a concordar.
+  static_assert(kIglesSlots == igles_slots::kQuantos,
+                "kIglesSlots (classes.h) diverge da conta dos cabecalhos do SDK");
+  if (slot >= igles_slots::kQuantos) return "?";
+  return igles_slots::kNomes[slot];
+}
+
+const char* NomeDoSlotIglesExt(std::uint32_t slot) {
+  static_assert(kIglesExtSlots == igles_ext_slots::kQuantos,
+                "kIglesExtSlots (classes.h) diverge de AEEGLES11Ext.h");
+  if (slot >= igles_ext_slots::kQuantos) return "?";
+  return igles_ext_slots::kNomes[slot];
 }
 
 void ConstruirIgles(Memoria& mem, const Saidas& saidas, Traco& traco) {
   ConstruirObjeto(mem, saidas, kObjetoIgles, saidas.Endereco(kVtableIgles),
                   kIglesSlots, kVtableIgles);
+  ConstruirObjeto(mem, saidas, kObjetoIglesExt, saidas.Endereco(kVtableIglesExt),
+                  kIglesExtSlots, kVtableIglesExt);
   if (mem.Ler32(kObjetoIgles) != saidas.Endereco(kVtableIgles)) {
     traco.RegistarFalta(Area::Brew, "igles_cablagem_perdida",
                         "o objecto nao aponta para a vtable");
@@ -273,14 +289,144 @@ void ConstruirIgles(Memoria& mem, const Saidas& saidas, Traco& traco) {
       traco.RegistarFalta(Area::Brew, "igles_cablagem_perdida", det);
     }
   }
+  // A MESMA LEITURA DE VOLTA PARA O `IGLES11Ext`. Uma cablagem que nao se
+  // confirma perde-se em silencio -- ja aconteceu neste trabalho.
+  if (mem.Ler32(kObjetoIglesExt) != saidas.Endereco(kVtableIglesExt)) {
+    traco.RegistarFalta(Area::Brew, "igles_ext_cablagem_perdida",
+                        "o objecto nao aponta para a vtable");
+    return;
+  }
+  for (std::uint32_t s = 2; s < kIglesExtSlots; ++s) {
+    if (mem.Ler32(saidas.Endereco(kVtableIglesExt) + s * 4) !=
+        saidas.Endereco(kVtableIglesExt + s)) {
+      char det[96];
+      std::snprintf(det, sizeof(det), "IGLES11Ext slot %u", s);
+      traco.RegistarFalta(Area::Brew, "igles_ext_cablagem_perdida", det);
+    }
+  }
 }
 
+// AS STRINGS DO `glGetString`, escritas na memoria do guest quando pedidas.
+//
+// A ASSINATURA E DO CABECALHO, e nao de ouvido (`AEEGLES10.h`, slot 67):
+//     int (*GetString)(iname *pMe, AEEGLenum name, AEEGLubyte const **ret)
+// -- devolve um codigo AEE e escreve o PONTEIRO em `*ret`. O thunk `glGetString`
+// do wrapper devolve esse ponteiro ao titulo.
+//
+// MEDIDO na corrida de referencia (`/tmp/corrida_base.json`, 62 titulos): os DEZ
+// titulos da familia `emulator_neo` chamam este slot UMA vez, sempre com
+//     r1=0x00001f03 (GL_EXTENSIONS)  r2=0x8007ff94 (um endereco na pilha)
+// e nenhum deles pede GL_VENDOR, GL_RENDERER ou GL_VERSION. A recusa deste slot
+// e o ultimo pedido de cada um antes de desistirem.
+std::uint32_t EscreverStringIgles(Memoria& mem, std::uint32_t indice, const char* texto) {
+  const std::uint32_t p = kZonaDeStringsIgles + indice * kPassoDeStringIgles;
+  std::uint32_t k = 0;
+  for (; texto[k] != 0 && k + 1 < kPassoDeStringIgles; ++k) {
+    mem.Escrever8(p + k, static_cast<std::uint8_t>(texto[k]));
+  }
+  mem.Escrever8(p + k, 0);
+  return p;
+}
+
+// A LISTA DE EXTENSOES ANUNCIADA. **VAZIA, e de proposito.**
+//
+// ANUNCIAR UMA EXTENSAO E PROMETER SERVI-LA: o titulo que le
+// `GL_OES_draw_texture` vai buscar o `glDrawTexivOES` ao `eglGetProcAddress` e
+// saltar para o que vier de la. Anunciar sem servir e PIOR do que nao anunciar
+// -- salta para uma funcao que nao existe.
+//
+// Esta string vazia e um TESTE, e nao uma resposta final: serve para medir se o
+// que prende os dez titulos e mesmo a extensao que procuram. O resultado esta
+// no relatorio.
+constexpr const char* kExtensoesIgles = "";
+
+// Os indices da zona de strings. Um endereco fixo por consulta, para duas
+// consultas seguidas nao se pisarem.
+constexpr std::uint32_t kStrIglesVendor = 0;
+constexpr std::uint32_t kStrIglesRenderer = 1;
+constexpr std::uint32_t kStrIglesVersion = 2;
+constexpr std::uint32_t kStrIglesExtensions = 3;
+constexpr std::uint32_t kStrIglesDesconhecida = 4;
+
 bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
-  // O IGLES11, faixa propria. Nenhum metodo desenhado: recusa com nome.
+  // O IGLES11Ext, faixa propria (15 slots, AEEGLES11Ext.h).
+  if (indice >= kVtableIglesExt && indice < kVtableIglesExt + kIglesExtSlots) {
+    const std::uint32_t slot = indice - kVtableIglesExt;
+    char nome[64], det[192];
+    std::snprintf(nome, sizeof(nome), "IGLES11Ext::%s", NomeDoSlotIglesExt(slot));
+    std::snprintf(det, sizeof(det), "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x lr=0x%08x",
+                  cpu.Get(kR0), cpu.Get(kR1), cpu.Get(kR2), cpu.Get(kR3), cpu.Get(kLR));
+    traco.RegistarFalta(Area::Brew, nome, det);
+    cpu.Set(kR0, kAeeUnsupported);
+    return true;
+  }
+  // O IGLES11, faixa propria.
   if (indice >= kVtableIgles && indice < kVtableIgles + kIglesSlots) {
     const std::uint32_t slot = indice - kVtableIgles;
     char nome[64], det[160];
-    if (slot < 3) {
+
+    if (slot == igles_slots::kIgles_GetString) {
+      const std::uint32_t qual = cpu.Get(kR1);
+      const std::uint32_t pret = cpu.Get(kR2);
+      if (pret == 0) {
+        traco.RegistarFalta(Area::Brew, "IGLES11::GetString", "ponteiro de retorno nulo");
+        cpu.Set(kR0, kAeeBadParm);
+        return true;
+      }
+      Memoria& mem = cpu.Mem();
+      std::uint32_t p = 0;
+      std::string o_que;
+      switch (qual) {
+        case gl_slots::GL_EXTENSIONS:
+          p = EscreverStringIgles(mem, kStrIglesExtensions, kExtensoesIgles);
+          o_que = std::string("GL_EXTENSIONS = \"") + kExtensoesIgles + "\"";
+          break;
+        case gl_slots::GL_VERSION:
+          // DECLARADO pela interface que este objecto entrega, e nao medido na
+          // maquina: o `QEGL::QueryInterface` responde `AEEIID_GLES11`, e a
+          // string canonica do OpenGL ES 1.1 e esta. Mesma regra do
+          // `EGL_VERSION = "1.0"` em `core/brew/egl.cpp`.
+          p = EscreverStringIgles(mem, kStrIglesVersion, "OpenGL ES-CM 1.1");
+          o_que = "GL_VERSION = \"OpenGL ES-CM 1.1\" (declarado pela interface IGLES11)";
+          break;
+        case gl_slots::GL_VENDOR:
+        case gl_slots::GL_RENDERER:
+          // O FABRICANTE E O NOME DO CHIP SAO AFIRMACOES SOBRE O HARDWARE, e nao
+          // foram medidos. A string VAZIA mantem o guest vivo (um `strstr` sobre
+          // ela devolve nulo em vez de rebentar) e nao inventa nada.
+          p = EscreverStringIgles(mem,
+                                  qual == gl_slots::GL_VENDOR ? kStrIglesVendor
+                                                              : kStrIglesRenderer,
+                                  "");
+          o_que = std::string(qual == gl_slots::GL_VENDOR ? "GL_VENDOR" : "GL_RENDERER") +
+                  " = \"\": sem medida do que a maquina responde";
+          break;
+        default: {
+          // NUNCA NULO, nem para uma consulta desconhecida: o endereco e valido
+          // e a string e vazia. A falta fica com o numero da consulta.
+          p = EscreverStringIgles(mem, kStrIglesDesconhecida, "");
+          char d[96];
+          std::snprintf(d, sizeof(d), "consulta 0x%08x sem medida (devolvida a string vazia)",
+                        qual);
+          traco.RegistarFalta(Area::Brew, "IGLES11::GetString", d);
+          mem.Escrever32(pret, p);
+          cpu.Set(kR0, kAeeSuccess);
+          return true;
+        }
+      }
+      mem.Escrever32(pret, p);
+      cpu.Set(kR0, kAeeSuccess);
+      // RESPONDER UM VALOR QUE NAO SE MEDIU E `RegistarPressuposto`, e nao
+      // `RegistarFalta` (traco.h: "um caminho nunca e os dois").
+      traco.RegistarPressuposto(Area::Brew, "IGLES11::GetString", o_que);
+      return true;
+    }
+
+    // CADA SLOT TEM NOME. Uma recusa `IGLES11::slot67` nao se pode ler; a mesma
+    // recusa com `IGLES11::GetString` diz que dez titulos param no
+    // `glGetString`. O `slot%u` fica so para um indice FORA da tabela, que nao
+    // pode acontecer com esta faixa mas nao se apaga por isso.
+    if (slot < igles_slots::kQuantos) {
       std::snprintf(nome, sizeof(nome), "IGLES11::%s", NomeDoSlotIgles(slot));
     } else {
       std::snprintf(nome, sizeof(nome), "IGLES11::slot%u", slot);
@@ -312,6 +458,18 @@ bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
       char det[96];
       std::snprintf(det, sizeof(det), "iid=0x%08x -> IGLES11", iid);
       traco.Emitir(Area::Brew, Nivel::Depuracao, "QEGL_QUERYINTERFACE", det);
+      return true;
+    }
+    // O `IGLES11Ext` -- OUTRO objecto, com a vtable de 15 slots de
+    // `AEEGLES11Ext.h`. E daqui que o titulo tira o `glDrawTexivOES` que o
+    // `GL_OES_draw_texture` anunciado no `glGetString` lhe promete. **Anunciar
+    // sem servir seria pior do que nao anunciar**: o titulo saltaria para uma
+    // funcao que nao existe.
+    if (iid == kIidGles11Ext) {
+      cpu.Mem().Escrever32(ppo, kObjetoIglesExt);
+      cpu.Set(kR0, kAeeSuccess);
+      traco.Emitir(Area::Brew, Nivel::Depuracao, "QEGL_QUERYINTERFACE",
+                   "iid=0x0103d8eb -> IGLES11Ext");
       return true;
     }
     cpu.Mem().Escrever32(ppo, 0);
