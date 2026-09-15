@@ -490,4 +490,59 @@ TEST(Ajudantes, OStrcatEOSleepESTAOCABLADOSNaTabelaDoModulo) {
       << "strcpy (0x008) perdeu a cablagem";
 }
 
+TEST(Ajudantes, OStrncpyNaoTerminaQuandoEnchePreencheZerosQuandoSobra) {
+  // `char *strncpy(char *dst, const char *src, size_t n)` -- AEEHelperFuncs 0x0C8.
+  // As duas pontas que enganam, e que um `strcpy` limitado nao faz:
+  //   - NAO termina em NUL se o src tiver n ou mais bytes;
+  //   - ENCHE o resto com zeros se tiver menos.
+  Bancada b;
+  constexpr std::uint32_t kD = 0x80210200u, kS = 0x80210300u;
+  for (std::uint32_t i = 0; i < 8; ++i) b.Mem().Escrever8(kD + i, 0x55u);
+  const char* s = "abcdef";
+  for (std::uint32_t i = 0; i <= 6; ++i) b.Mem().Escrever8(kS + i, static_cast<std::uint8_t>(s[i]));
+
+  // n MENOR que o src: copia n e NAO termina.
+  EXPECT_EQ(b.ChamaSaida(1570, kD, kS, 3), kD);
+  EXPECT_EQ(b.Mem().Ler8(kD + 0), 'a');
+  EXPECT_EQ(b.Mem().Ler8(kD + 2), 'c');
+  EXPECT_EQ(b.Mem().Ler8(kD + 3), 0x55u) << "strncpy nao pode terminar quando enche";
+
+  // n MAIOR que o src: copia, termina, e enche o resto de zeros.
+  for (std::uint32_t i = 0; i < 10; ++i) b.Mem().Escrever8(kD + i, 0x55u);
+  EXPECT_EQ(b.ChamaSaida(1570, kD, kS, 9), kD);
+  EXPECT_EQ(b.Mem().Ler8(kD + 5), 'f');
+  EXPECT_EQ(b.Mem().Ler8(kD + 6), 0u);
+  EXPECT_EQ(b.Mem().Ler8(kD + 8), 0u) << "o resto tem de ser enchido com zeros";
+  EXPECT_EQ(b.Mem().Ler8(kD + 9), 0x55u) << "e nao passar de n";
+}
+
+TEST(Ajudantes, OStrstrEstaEm0x0D8EDistingueMaiusculas) {
+  // `char *strstr(const char *haystack, const char *needle)` -- 0x0D8.
+  //
+  // O OFFSET IMPORTA: 0x0E8 e o `stristr`, que NAO distingue maiusculas. O
+  // zeebulator regista o strstr em 0x0E8 (`mod_runtime.cpp:21`) e essa troca e
+  // silenciosa -- o jogo recebe uma resposta plausivel e errada. Este teste fixa
+  // as DUAS coisas: que esta cablado no 0x0D8, e que distingue maiusculas (o que
+  // prova que e mesmo o strstr e nao o vizinho).
+  Bancada b;
+  constexpr std::uint32_t kH = 0x80210400u, kN = 0x80210500u;
+  auto poe = [&](std::uint32_t e, const char* t) {
+    for (std::uint32_t i = 0;; ++i) { b.Mem().Escrever8(e + i, static_cast<std::uint8_t>(t[i])); if (!t[i]) break; }
+  };
+  poe(kH, "roms/neogeo/karnovr");
+  poe(kN, "neogeo");
+  EXPECT_EQ(b.ChamaSaida(1571, kH, kN), kH + 5) << "tem de achar no offset 5";
+
+  poe(kN, "NeoGeo");
+  EXPECT_EQ(b.ChamaSaida(1571, kH, kN), 0u)
+      << "strstr DISTINGUE maiusculas -- se achasse, era o stristr de 0x0E8";
+
+  poe(kN, "");
+  EXPECT_EQ(b.ChamaSaida(1571, kH, kN), kH) << "agulha vazia devolve o palheiro";
+
+  // E a cablagem, no offset do cabecalho e nao no do zeebulator.
+  EXPECT_EQ(b.Mem().Ler32(kTabela + 0x0D8), b.S().Endereco(1571)) << "strstr vive em 0x0D8";
+  EXPECT_EQ(b.Mem().Ler32(kTabela + 0x0C8), b.S().Endereco(1570)) << "strncpy vive em 0x0C8";
+}
+
 }  // namespace zb2::brew

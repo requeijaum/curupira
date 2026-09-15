@@ -71,6 +71,10 @@ constexpr std::uint32_t kSlotIdStrlen = 1503, kSlotIdMemset = 1504, kSlotIdStrcp
 // 9. A medida que conta e TITULOS AFECTADOS, e nao pedidos -- o `IFile::Read`
 // tinha 70 pedidos e era UM titulo so (`allstarcards`).
 constexpr std::uint32_t kSlotIdStrcat = 1568, kSlotIdSleep = 1569;
+// `strncpy` (0x0C8) e `strstr` (0x0D8). O zeebulator ja as tinha, e foi a
+// comparacao com ele que as trouxe -- mas com DOIS OFFSETS TROCADOS do lado
+// dele, ver o comentario no ramo do `strstr`.
+constexpr std::uint32_t kSlotIdStrncpy = 1570, kSlotIdStrstr = 1571;
 constexpr std::uint32_t kSlotIdMemmove = 1506, kSlotIdStrcmp = 1507, kSlotIdStrchr = 1508;
 constexpr std::uint32_t kSlotIdStrtowstr = 1500, kSlotIdGetAeeVersion = 1501,
                        kSlotIdAeeGetRand = 1502;
@@ -114,6 +118,8 @@ constexpr std::uint32_t kSlotStrlen = brew_ajudantes::kAjudante_strlen;
 constexpr std::uint32_t kSlotMemset = brew_ajudantes::kAjudante_memset;
 constexpr std::uint32_t kSlotStrcpy = brew_ajudantes::kAjudante_strcpy;
 constexpr std::uint32_t kSlotStrcat = brew_ajudantes::kAjudante_strcat;
+constexpr std::uint32_t kSlotStrncpy = brew_ajudantes::kAjudante_strncpy;
+constexpr std::uint32_t kSlotStrstr = brew_ajudantes::kAjudante_strstr;
 constexpr std::uint32_t kSlotSleep = brew_ajudantes::kAjudante_sleep;
 constexpr std::uint32_t kSlotStrcmp = brew_ajudantes::kAjudante_strcmp;
 constexpr std::uint32_t kSlotStrchr = brew_ajudantes::kAjudante_strchr;
@@ -310,6 +316,8 @@ void Despacho::InstalarAjudantes(const Saidas& saidas, Endereco tabela) {
       {kSlotMemset, kSlotIdMemset},
       {kSlotStrcpy, kSlotIdStrcpy},
       {kSlotStrcat, kSlotIdStrcat},
+      {kSlotStrncpy, kSlotIdStrncpy},
+      {kSlotStrstr, kSlotIdStrstr},
       {kSlotSleep, kSlotIdSleep},
       {kSlotStrcmp, kSlotIdStrcmp},
       {kSlotStrchr, kSlotIdStrchr},
@@ -958,6 +966,50 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           ++i;
         }
         cpu.Set(kR0, r0);
+      } else if (idx == kSlotIdStrncpy) {
+        // `char *strncpy(char *dst, const char *src, size_t n)` -- 0x0C8.
+        // A SEMANTICA DA LIBC, com as duas pontas que enganam: NAO termina em
+        // NUL se o `src` tiver n ou mais bytes, e ENCHE o resto com zeros se
+        // tiver menos. Copiar so ate ao NUL deixaria lixo no fim do buffer, e
+        // terminar sempre escreveria um byte a mais do que o jogo reservou.
+        const std::uint32_t src = cpu.Get(kR1);
+        const std::uint32_t n = cpu.Get(kR2);
+        std::uint32_t i = 0;
+        for (; i < n; ++i) {
+          const std::uint8_t b = mem_.Ler8(src + i);
+          mem_.Escrever8(r0 + i, b);
+          if (b == 0) break;
+        }
+        for (; i < n; ++i) mem_.Escrever8(r0 + i, 0);  // o enchimento da libc
+        cpu.Set(kR0, r0);
+      } else if (idx == kSlotIdStrstr) {
+        // `char *strstr(const char *haystack, const char *needle)` -- 0x0D8.
+        // Devolve o ponteiro para a primeira ocorrencia, ou 0.
+        //
+        // O OFFSET E 0x0D8 E NAO 0x0E8. O `0x0E8` e o `stristr`, que NAO
+        // distingue maiusculas (`AEEStdLib.h`, campos 152 e 156 da
+        // `struct AEEHelperFuncs`). O zeebulator regista o `strstr` em 0x0E8
+        // (`core/brew/mod_runtime.cpp:21`), e isso e uma troca silenciosa: o
+        // jogo recebe uma resposta PLAUSIVEL e errada -- encontra onde nao devia
+        // ou nao encontra o que existe -- e nada falha nem fica registado.
+        // O topo do `tools/ajudantes_slots.inc` ja avisava deste par, em "AS
+        // QUATRO QUE ENGANAM"; o proprio ficheiro e gerado do cabecalho.
+        const std::uint32_t agulha = cpu.Get(kR1);
+        if (mem_.Ler8(agulha) == 0) {  // agulha vazia: devolve o palheiro
+          cpu.Set(kR0, r0);
+        } else {
+          std::uint32_t achou = 0;
+          for (std::uint32_t i = 0; mem_.Ler8(r0 + i) != 0; ++i) {
+            std::uint32_t j = 0;
+            for (;; ++j) {
+              const std::uint8_t a2 = mem_.Ler8(agulha + j);
+              if (a2 == 0) { achou = r0 + i; break; }
+              if (mem_.Ler8(r0 + i + j) != a2) break;
+            }
+            if (achou != 0) break;
+          }
+          cpu.Set(kR0, achou);
+        }
       } else if (idx == kSlotIdSleep) {
         // `void sleep(uint32 msecs)` -- AEEHelperFuncs 0x184
         // (`tools/ajudantes_slots.inc:251`). Pedido por NOVE dos 62.
