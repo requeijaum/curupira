@@ -2223,3 +2223,61 @@ anonimas do corpus passam de **17 para QUATRO** (`IBitmap::slot13`,
 4. **Verificar o `git status` depois de aplicar um patch**, e nao a mensagem do
    `git apply`. Cortei a saida com `head -5`, perdi tres linhas de
    "Retrocediendo a la aplicacion", e corri 543 testes numa arvore sem o patch.
+
+
+## 15/09 (2a metade) -- 28 commits, 668 testes, applet 62/62, 18/62 a desenhar
+
+Onde chegou o dia, MEDIDO (corpus 62, `ZB2_QUADROS=300 ZB2_EVT_START=1`):
+
+    carga 62/62 | modulo 62/62 | vtable 62/62 | applet 62/62
+    ciclo completo 28/62 | sem faltas 42/62 | pixels>0 18/62 | cores>10 1/62
+    total de pixels 1 642 418 175 | orcamento_esgotado 16 | silenciosos 30
+
+Os numeros que importam, um a um:
+- `applet` 58 -> **62** (todos instanciam). Os 3 ultimos foram o `eb6667e` (formas do
+  Thumb) e o `35c09dc` (**o LSL #0 e um MOV**, nao um deslocamento de 32 -- um defeito
+  MEU, apanhado pelo `rock3` no create do rocketweb).
+- `cores > 10`: 0 -> **1** (o `tekken2`, 31 cores) e o `allstarcards` chegou a 414 --
+  mas esse era ARTEFACTO (ver abaixo).
+- `gof` e `rmp`: 0 -> **90,3 M** e **91,9 M** pixels, com o `3258489` (tecto de saidas
+  por fase de 20 000 -> 2 000 000).
+
+### As duas mentiras dos numeros grandes (o achado do dia)
+
+- **`tekken2` 322 M px eram 1050 ENCHIMENTOS de ecra** do caminho de fallback (1 cor +
+  barras de texto). Com o slot13 servido o jogo descodifica 6 imagens do `.bar` e passa
+  a desenhar conteudo real: **31 cores**, 1 blit, 658 K px.
+- **`allstarcards` 94 M px / 414 cores vinham de um CODIGO DE ERRO**: o `atoi` devolvia
+  `AEE_EUNSUPPORTED` (20) e o jogo lia-o como numero de configuracao. Com os valores
+  honestos (1, 23, 0, -9, 16) chega ao estado real (650 K px) -- e provavelmente espera
+  ENTRADA, que a bateria nao entrega.
+- Licao: **a coluna `pixels` premeia preenchimentos**; o criterio da etapa 3 (cores) e
+  o unico que distingue "pintou" de "desenhou".
+
+### O que o tecto fez (e o que ele deslocou)
+
+O tecto de saidas por fase estava escolhido para o laco de quadro (~19 saidas x 1051
+quadros). A descodificacao das imagens do `tekken2` precisa de ~118 000. Levantado para
+2 000 000: `gof` e `rmp` desenham, o `tekken2` ganha cor. Em troca, o `orcamento_esgotado`
+subiu de **11 para 16 titulos** -- o muro passou dos despachos para os PASSOS (8 M).
+
+### Os defeitos de instrumento (a familia que nao para de aparecer)
+
+- **A leitura nao mapeada fica "pendente" e e consumida pela instrucao SEGUINTE**
+  (`ropi2`): a recusa aparece no PC errado. Toda a evidencia de recusas do dia esta
+  atribuida com esse erro -- e o `zeebx` nao tem o defeito (la a leitura devolve
+  `Result` no proprio acesso, `mem.rs`).
+- O `GUEST_DBGPRINTF` imprime a CADEIA DE FORMATO, nao a mensagem: a mensagem de ASSERT
+  de 7 titulos e invisivel.
+- As referencias das frentes deslizam: o `igl2` mediu "o gof nao desenha" contra uma
+  corrida anterior ao tecto -- quando o gof ja desenhava 90 M.
+- O `/tmp/corpus62.json` (62 titulos com `clsid = 0`) foi apanhado pelo `igl2` e
+  neutralizado: vive agora como `/tmp/corpus62-ARMADILHA-clsid-zero.json`.
+
+### O proximo, por evidencia
+
+1. O defeito da pendencia (base de prova de tudo o resto).
+2. `IShell::slot43` -- 4 titulos, contrato medido no zeebulator: 35 -> 0 por objecto,
+   `pOut = 1`.
+3. O guiao de entrada na bateria (o `EntradaDoZeebo` ja o sabe ler; esta a zero).
+4. Blending + iluminacao no rasterizador (`core/video`), com a receita do `zeebx`.

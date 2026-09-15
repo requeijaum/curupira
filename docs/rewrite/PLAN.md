@@ -13,16 +13,21 @@ uma acrescenta um titulo novo a lista dos que sobem.
 
 ## Estado medido (corpus de 62, `build/zb2_bateria`)
 
-| degrau | inicio | agora | % |
+| degrau | inicio | 15/09 (1a metade) | **15/09 (2a metade)** |
 |---|---|---|---|
-| carga | 62 | 62 | 100% |
-| ponteiro de modulo | 62 | 62 | 100% |
-| vtable valida | 48 | **62** | **100%** |
-| applet instanciado | 37 | **58** | 94% |
-| ciclo completo (create+start retornam) | 4 | **30** | 48% |
-| sem faltas nenhumas | 0 | **34** | 55% |
-| **pixels escritos** | 0 | **11** | 18% |
-| **cores > 10 (criterio da etapa 3)** | 0 | **0** | **0%** |
+| carga | 62 | 62 | **62/62** |
+| ponteiro de modulo | 62 | 62 | **62/62** |
+| vtable valida | 48 | 62 | **62/62** |
+| applet instanciado | 37 | 58 | **62/62** |
+| ciclo completo (create+start retornam) | 4 | 30 | **28/62** |
+| sem faltas nenhumas | 0 | 34 | **42/62** |
+| pixels escritos | 0 | 11 | **18/62** |
+| **cores > 10 (criterio da etapa 3)** | 0 | 0 | **1/62** (tekken2, 31 cores) |
+| total de pixels | 0 | ~3 M | **1 642 418 175** |
+
+**Todos os 62 títulos instanciam.** O tecto do degrau seguinte mudou de sítio: 30 títulos
+passam o ciclo sem UMA falta e sem um pixel (esperam entrada ou a thread), e 16 queimam o
+tecto de 8 M passos (a maior parte por caminhadas de memória sem chamada de API).
 
 | # | etapa | estado | % |
 |---|---|---|---|
@@ -334,6 +339,62 @@ Achado ao fechar a contradicao do `0x0DC`: o `ddragonz` **nao tem inflate
 proprio** -- sem tabelas de deflate e sem `0x1f8b` no binario. Descomprime pela
 interface do sistema. Ate agora tinhamos a constante registada com o nome
 `kIidFile`, e o `QueryClass` respondia SIM a uma classe que nao servimos.
+
+## A ronda de 15/09 (2a metade) -- o que a medicao obrigou a mudar
+
+**Vinte e oito commits, 668 testes, 0 regressoes em cada medicao isolada.** O que
+mudou de facto no corpus:
+
+| frente | efeito medido |
+|---|---|
+| **IThread** (`043d4cf` + `e697cd6` + `283d7dc`) | o IThread real, a thread a CORRER na fronteira entre APIs, e o `Start` com `lr == sentinela` como fronteira: 10 threads penduradas passam a correr |
+| **A TELA no motor do IGLES11** (`3dbddd3`) | o `ridgeracer` desenha (0 -> 307 200 px). O `InstalarGl` ligava a tela ao IGL de 30000 e o `ConstruirIgles` reconstroi um motor PROPRIO para o IGLES11 (40300+) -- ficava sem ela |
+| **O TECTO DE SAIDAS por fase** (`3258489`) | de 20 000 para 2 000 000: o `gof` (90,3 M px) e o `rmp` (91,9 M px) desenham, e o `tekken2` passa de 1 para **31 cores** |
+| **Imagem e bitmap** (`b3acdbc`) | `IImageDecoder` + `IForceFeed` + descodificador PNG + a familia do `IBitmap` por objecto; `torkandkral` create 8 M -> 1,9 M passos |
+| **cpu Thumb** (`eb6667e` + `35c09dc`) | as formas que faltavam (push/pop, shifts, ALU, stmia/ldmia, hi-reg, BL de 32 bits) e o **LSL #0 e um MOV**: applet 59 -> 62 |
+| **GL nomeado** (`4c7573f` `bbc084b` `eef6d91` `1aa5b3a`) | os 13 slots nomeados, `Lightfv`/`Materialfv`/`Orthof`, `GL_OES_draw_texture` + `glDrawTexivOES` juntos, e o `eglMakeCurrent` dos quatro zeros (a forma do SDK de LARGAR o contexto) |
+| **ajudantes** (`f5ab4e0` `7be87a9`) | `stricmp`, `atoi`, `strends`, `aee_GetTimeMS`, `wsprintf` |
+
+### As licoes que valem mais que os commits
+
+1. **Dois titulos tinham numeros grandes que eram ARTEFACTO.** O `tekken2` mostrava
+   322 M pixels que eram **1050 enchimentos de ecra do fallback** (1 cor + barras de
+   texto); o `allstarcards` mostrava 94 M que vinham do `atoi` a devolver
+   `AEE_EUNSUPPORTED` **lido como numero de configuracao**. Em ambos, servir o que
+   faltava MATOU o numero e revelou o estado real. **A coluna `pixels` premeia
+   preenchimentos.**
+2. **O gargalo desloca-se, nao desaparece.** Levantar o tecto de saidas nao criou
+   trabalho; fez o `orcamento_esgotado` subir de 11 para 16 titulos. O tecto de
+   PASSOS (8 M) passou a ser o muro dominante.
+3. **O defeito de instrumento e TRANSVERSAL.** A leitura nao mapeada fica "pendente" e
+   e consumida pela instrucao SEGUINTE: **toda a nossa evidencia de recusas esta
+   atribuida ao PC errado** (o `ropi2` corrigiu a evidencia do `memo`). O `zeebx`
+   resolve-o na raiz: a leitura devolve `Result` no proprio acesso (`mem.rs`).
+4. **As referencias das frentes deslizam.** Um "0 melhorias" medido contra uma corrida
+   de dois commits antes e uma contradicao, nao um resultado.
+5. **O GUIAO DE ENTRADA existe e esta a zero.** O `EntradaDoZeebo`
+   (`core/brew/ihid_entrada.h`) ja le um guiao de texto (`<t_ms> <eixo|botao> <uid>
+   <valor>`, com relogio injectado) -- e a bateria entrega `eventos_do_guiao = 0`.
+   O `allstarcards` medido acaba a espera de tecla, e 30 titulos estao nessa familia.
+
+### O PROXIMO (por evidencia, nao por gosto)
+
+1. **O defeito de instrumento da pendencia** -- conserta a base de prova de tudo o
+   resto (receita do zeebx: `Result` no acesso).
+2. **`IShell::slot43`** (4 titulos: abd, pacmania, ridgeracer + 1) -- contrato MEDIDO
+   no zeebulator (`ishell.cpp`): alterna **35 -> 0** por objecto e escreve a constante
+   pequena **1** no `pOut` (o endereco do shell forca "nao pronto").
+3. **O guiao de entrada na bateria** -- mecanismo pronto, 30 titulos na familia.
+4. **Blending + iluminacao no rasterizador** (`core/video`) -- receita completa no
+   `zeebx` (`rasterizer.rs`). E o unico caminho medido para `cores > 10` nos 3D, que
+   hoje so enchem o ecra.
+5. **`IShell::slot19`** (`LoadResObject`, 2 titulos) e **`GetIntegerv(GL_MAX_TEXTURE_SIZE)`**.
+
+**Armadilhas registadas:** o `tools/baseline/bateria.json` versionado e do commit
+`3f4681d` (velho); e `/tmp/corpus62-ARMADILHA-clsid-zero.json` tem os 62 titulos com
+`clsid = 0` -- **nunca medir com ele** (o corpus e o do repo, `sha256 348106f1...`).
+
+---
 
 ## O laco de trabalho
 
