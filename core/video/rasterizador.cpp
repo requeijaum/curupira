@@ -440,18 +440,31 @@ void Rasterizador::RasterizarTriangulo(const EstadoDeRasterizacao& e, const Vert
       const double wc = e_ab / area;
       const double wa = e_bc / area;
       const double wb = e_ca / area;
+
+      // CORRECAO DE PERSPECTIVA: os atributos (cor e textura) sao divididos por w
+      // de cada vertice e reescalados pela soma dos pesos ponderados por 1/w.
+      // O `z` de janela continua afim (linear em tela), como exige a especificacao OpenGL.
+      const double inv_wa = 1.0 / static_cast<double>(a.clip[3]);
+      const double inv_wb = 1.0 / static_cast<double>(b.clip[3]);
+      const double inv_wc = 1.0 / static_cast<double>(c.clip[3]);
+      const double den_persp = wa * inv_wa + wb * inv_wb + wc * inv_wc;
+      const double inv_den = (den_persp > 0.0) ? (1.0 / den_persp) : 1.0;
+      const double pwa = wa * inv_wa * inv_den;
+      const double pwb = wb * inv_wb * inv_den;
+      const double pwc = wc * inv_wc * inv_den;
+
       Rgba cor;
       if (e.sombreado_plano) {
         cor = c.cor;  // ponto 7 do cabecalho: a cor do ultimo vertice
       } else {
-        cor.r = static_cast<std::uint8_t>(std::min(255.0, wa * a.cor.r + wb * b.cor.r + wc * c.cor.r + 0.5));
-        cor.g = static_cast<std::uint8_t>(std::min(255.0, wa * a.cor.g + wb * b.cor.g + wc * c.cor.g + 0.5));
-        cor.b = static_cast<std::uint8_t>(std::min(255.0, wa * a.cor.b + wb * b.cor.b + wc * c.cor.b + 0.5));
+        cor.r = static_cast<std::uint8_t>(std::min(255.0, pwa * a.cor.r + pwb * b.cor.r + pwc * c.cor.r + 0.5));
+        cor.g = static_cast<std::uint8_t>(std::min(255.0, pwa * a.cor.g + pwb * b.cor.g + pwc * c.cor.g + 0.5));
+        cor.b = static_cast<std::uint8_t>(std::min(255.0, pwa * a.cor.b + pwb * b.cor.b + pwc * c.cor.b + 0.5));
         cor.a = 255;
       }
       if (e.textura_ligada) {
-        const float u = static_cast<float>(wa * a.u + wb * b.u + wc * c.u);
-        const float v = static_cast<float>(wa * a.v + wb * b.v + wc * c.v);
+        const float u = static_cast<float>(pwa * a.u + pwb * b.u + pwc * c.u);
+        const float v = static_cast<float>(pwa * a.v + pwb * b.v + pwc * c.v);
         cor = AmostrarTextura(e, u, v);
       }
       const float z = static_cast<float>(wa * a.z + wb * b.z + wc * c.z);

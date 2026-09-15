@@ -30,9 +30,8 @@
 // O QUE FICOU DE FORA, ESCRITO AQUI PORQUE E A UNICA FORMA DE NAO SER LIDO COMO
 // FEITO (P2). Cada linha nomeia o que nao existe, e nao "o que falta":
 //
-//   1. PERSPECTIVA: a interpolacao e AFIM, e nao corrigida por perspectiva (sem
-//      divisao por w na interpolacao). Um poligono grande muito inclinado
-//      mostra a textura esticada.
+//   1. PERSPECTIVA: a interpolacao de textura e cor E CORRIGIDA POR PERSPECTIVA
+//      (atributos divididos por w no rasterizador).
 //   2. SEM RECORTE DE FRUSTUM: um triangulo com qualquer vertice com w <= 0 e
 //      DESCARTADO (contado em `TriangulosDescartados()`), e nao recortado
 //      contra o plano proximo.

@@ -23,6 +23,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstring>
 #include <map>
 #include <string>
@@ -97,6 +98,60 @@ void PorVertices(Memoria& mem, Endereco onde, const std::vector<std::pair<float,
     EscreverFloat(mem, base + 4, v[k].second);
     EscreverFloat(mem, base + 8, 0.0f);
   }
+}
+
+// OS VERTICES COM z, ao contrario do `PorVertices` (que escreve z = 0): uma
+// projeccao de PERSPECTIVA precisa do z, porque e ele que faz o `w` divergir.
+void PorVerticesZ(Memoria& mem, Endereco onde, const std::vector<std::array<float, 3>>& v) {
+  for (std::size_t k = 0; k < v.size(); ++k) {
+    const Endereco base = onde + static_cast<Endereco>(k * 12);
+    EscreverFloat(mem, base, v[k][0]);
+    EscreverFloat(mem, base + 4, v[k][1]);
+    EscreverFloat(mem, base + 8, v[k][2]);
+  }
+}
+
+// AS COORDENADAS DE TEXTURA: 2 GL_FLOAT por vertice, passo 8.
+void PorUv(Memoria& mem, Endereco onde, const std::vector<std::pair<float, float>>& uv) {
+  for (std::size_t k = 0; k < uv.size(); ++k) {
+    EscreverFloat(mem, onde + static_cast<Endereco>(k * 8), uv[k].first);
+    EscreverFloat(mem, onde + static_cast<Endereco>(k * 8) + 4, uv[k].second);
+  }
+}
+
+// UMA TEXTURA DE UMA LINHA EM QUE O TEXEL i VALE i: o canal VERDE leva i * 4, e o
+// RGB565 descarta os dois bits mais baixos dele (`(i*4) >> 2 == i` ate i = 63),
+// pelo que a COR do pixel escrito DIZ QUAL TEXEL foi amostrado. Sem isto o teste
+// precisaria de uma tabela paralela de indices, que podia divergir da amostragem
+// -- e um teste que concorda consigo mesmo nao prova a amostragem.
+void PorTexturaDeUmaLinha(Memoria& mem, Endereco onde, int texels) {
+  for (int i = 0; i < texels; ++i) {
+    const Endereco p = onde + static_cast<Endereco>(i * 4);
+    mem.Escrever8(p, 0);
+    mem.Escrever8(p + 1, static_cast<std::uint8_t>(i * 4));
+    mem.Escrever8(p + 2, 0);
+    mem.Escrever8(p + 3, 255);
+  }
+}
+
+// A PROJECCAO DE PERSPECTIVA DOS TESTES DA SECCAO 6: um frustum simetrico com o
+// plano proximo em n = 1, o afastado em f = 100, o campo de visao de 90 graus
+// (`f = cot(45) = 1`) e aspecto 1. Column-major, como o `igl.cpp` a guarda:
+//
+//   clip.x = x   clip.y = y   clip.z = (f+n)/(n-f) * z + 2fn/(n-f)   clip.w = -z
+//
+// com (f+n)/(n-f) = 101/-99 e 2fn/(n-f) = 200/-99.
+//
+// O `clip.w = -z` E O QUE FAZ ESTE TESTE VALER: sem ele (uma projeccao
+// ortografica, `w = 1` em todo o lado) a interpolacao afim e a corrigida por
+// perspectiva dao O MESMO resultado, e um teste de perspectiva nao provaria nada.
+void PorFrustum(EstadoDeRasterizacao* e) {
+  for (int k = 0; k < 16; ++k) e->projection[k] = 0.0f;
+  e->projection[0] = 1.0f;                // (linha 0, coluna 0)
+  e->projection[5] = 1.0f;                // (linha 1, coluna 1)
+  e->projection[10] = -101.0f / 99.0f;    // (linha 2, coluna 2)
+  e->projection[14] = -200.0f / 99.0f;    // (linha 2, coluna 3)
+  e->projection[11] = -1.0f;              // (linha 3, coluna 2): o `clip.w = -z`
 }
 
 // O estado por omissao dos testes: uma janela de 8x8 pixels (para os numeros
@@ -693,6 +748,77 @@ TEST(Rasterizador, CapacidadeLigadaSemCaminhoEntraNasFaltasUmaVezSo) {
   EXPECT_EQ(b.traco.ContagemFaltas().at("blending_de_GL_sem_rasterizador"), 1u);
   // E o desenho ACONTECE na mesma: a cor sai opaca no lugar de nada.
   EXPECT_EQ(b.tela.Escritos(), 12u);
+}
+
+// ---------------------------------------------------------------------------
+// 6. A PERSPECTIVA NA INTERPOLACAO (w = -z)
+// ---------------------------------------------------------------------------
+
+TEST(Rasterizador, ATexturaEInterpoladaComPerspectiva) {
+  Memoria mem(nullptr);
+  Gravador g;
+  Rasterizador r(mem, g);
+  EstadoDeRasterizacao e = EstadoBase();  // janela (0,0,8,8), vermelho opaco
+  PorFrustum(&e);
+
+  // OS TRES VERTICES, e a conta que os poe na janela (w = -z):
+  //   janela x = (x/w + 1) * 8 / 2   |   janela y = (1 - y/w) * 8 / 2
+  //   A = (0, 0,    -2  ) -> w = 2   -> (4, 4)
+  //   B = (4, 0,    -4  ) -> w = 4   -> (8, 4)
+  //   C = (0, 2.4, -2.4) -> w = 2.4 -> (4, 0)
+  // Os w DIVERGEM (2, 4 e 2.4), e e isso que separa a interpolacao afim da
+  // corrigida por perspectiva.
+  constexpr Endereco kV = 0x00100000, kUV = 0x00102000, kT = 0x00103000;
+  PorVerticesZ(mem, kV, {{0.0f, 0.0f, -2.0f}, {4.0f, 0.0f, -4.0f}, {0.0f, 2.4f, -2.4f}});
+  // A textura de 37 texels (o verde do texel i vale i * 4, logo a cor escrita diz
+  // o INDICE amostrado: 37 * 4 = 148 < 256 e (i*4) >> 2 == i).
+  PorTexturaDeUmaLinha(mem, kT, 37);
+  PorUv(mem, kUV, {{0.0f, 0.0f}, {1.0f, 0.0f}, {0.0f, 0.0f}});
+  e.vertices = {true, 3, GL_FLOAT, 12, kV};
+  e.textura_ligada = true;
+  e.textura.existe = true;
+  e.textura.largura = 37;
+  e.textura.altura = 1;
+  e.textura.formato = GL_RGBA;
+  e.textura.tipo = GL_UNSIGNED_BYTE;
+  e.textura.ponteiro = kT;
+  e.coordenadas_de_textura = {true, 2, GL_FLOAT, 8, kUV};
+  PedidoDeDesenho p;
+  p.primitiva = GL_TRIANGLES;
+  p.quantos = 3;
+  std::string motivo;
+  ASSERT_TRUE(r.Desenhar(e, p, &motivo)) << motivo;
+
+  // OS SEIS PIXELS, calculados com correcao de perspectiva:
+  //   (4,1) -> texel 2 (u=0.0750)
+  //   (4,2) -> texel 2 (u=0.0714)
+  //   (5,2) -> texel 9 (u=0.2500)
+  //   (4,3) -> texel 2 (u=0.0682)
+  //   (5,3) -> texel 8 (u=0.2368)
+  //   (6,3) -> texel 17 (u=0.4687)
+  const std::map<std::pair<int, int>, std::uint32_t> esperado = {
+      {{4, 1}, 2u << 5}, {{4, 2}, 2u << 5}, {{4, 3}, 2u << 5},
+      {{5, 2}, 9u << 5}, {{5, 3}, 8u << 5}, {{6, 3}, 17u << 5}};
+  EXPECT_EQ(g.escritas.size(), esperado.size());
+  EXPECT_EQ(g.total, esperado.size());
+  for (const auto& par : esperado) {
+    EXPECT_TRUE(g.SoEstePixel(par.first.first, par.first.second, par.second))
+        << "pixel " << par.first.first << "," << par.first.second;
+    EXPECT_EQ(g.Vezes(par.first.first, par.first.second), 1);
+  }
+
+  // E NENHUM OUTRO: os centros em cima da diagonal ficam de fora pela regra de aresta.
+  EXPECT_EQ(g.Vezes(4, 0), 0);
+  EXPECT_EQ(g.Vezes(5, 1), 0);
+  EXPECT_EQ(g.Vezes(7, 3), 0);
+  EXPECT_EQ(g.Vezes(0, 0), 0);
+
+  // A PROVA DE QUE O TESTE CONSEGUE FALHAR:
+  // A interpolacao AFIM pura (sem dividir por w) daria texels 4, 4, 13, 4, 13, 23.
+  // Todos os 6 pixels seriam DIFERENTES dos valores esperados!
+  EXPECT_NE(g.pixels.at({6, 3}), static_cast<std::uint32_t>(23u << 5));
+  EXPECT_NE(g.pixels.at({5, 2}), static_cast<std::uint32_t>(13u << 5));
+  EXPECT_NE(g.pixels.at({5, 3}), static_cast<std::uint32_t>(13u << 5));
 }
 
 }  // namespace
