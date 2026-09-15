@@ -820,9 +820,35 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         semente = semente * 1103515245u + 12345u;
         cpu.Set(kR0, (semente >> 16) & 0x7FFFu);
       } else if (idx == kSlotIdSetColor) {
-        // `void SetColor(IDisplay *po, RGBVAL rgb)`. O Zeebo usa RGB565.
-        tela_.CorAtual(cpu.Get(kR1));
-        cpu.Set(kR0, 0);
+        // `RGBVAL SetColor(IDisplay *po, AEEClrItem clr, RGBVAL rgb)` -- TRES
+        // argumentos, e devolve a cor ANTERIOR do item (`AEEIDisplay.h:232` e
+        // :297; a descricao esta em :1297-1330).
+        //
+        // ESTAVA ERRADO DE TRES MANEIRAS, e as tres juntas escondiam-se:
+        //   1. `r1` e o ITEM (`AEEClrItem`, 1..16 -- `AEEIDisplay.h:139-156`), e
+        //      nao a cor. Usava-se o NUMERO DO ITEM como cor: um item entre 1 e
+        //      16 dava sempre um pixel quase preto.
+        //   2. a cor e `r2`, em RGBVAL (`MAKE_RGB` = `r<<8 | g<<16 | b<<24`,
+        //      `AEERGBVAL.h:24`), e a tela guarda RGB565. Truncar com `& 0xFFFF`
+        //      guardava os bits errados: `RGB_WHITE` (0xFFFFFF00) e
+        //      `MAKE_RGB(255,0,0)` (0x0000FF00) davam AMBOS 0xFF00 -- a mesma cor.
+        //   3. devolvia-se 0. O SDK devolve a cor anterior, e o idioma do
+        //      cabecalho (:134-136) e guardar esse valor para o repor a seguir:
+        //      um jogo que o faca repunha PRETO por cima do que tinha.
+        //
+        // `RGB_NONE` (0xFFFFFFFF, `AEERGBVAL.h:27`) LE sem escrever -- e a forma
+        // documentada de perguntar a cor de um item.
+        //
+        // O zeebx tem os tres pontos certos (`machine/display.rs:18-25`,
+        // `video/display.rs:25-36`): foi a comparacao com ele que deu por isto.
+        const std::uint32_t item = cpu.Get(kR1);
+        const std::uint32_t rgb = cpu.Get(kR2);
+        const std::uint32_t anterior = tela_.CorDoItem(item);
+        if (rgb != 0xFFFFFFFFu) {
+          tela_.DefinirCorDoItem(item, rgb);
+          tela_.CorAtual(Tela::RgbvalPara565(rgb));
+        }
+        cpu.Set(kR0, anterior);
       } else if (idx == kSlotIdSetClipRect) {
         // `void SetClipRect(IDisplay *po, AEERect *prc)` -- prc nulo limpa o clip.
         const std::uint32_t prc = cpu.Get(kR1);
@@ -860,7 +886,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           // Os bits do `AEERectFlags`: DRAW = contorno, FILL = cheio.
           const bool contorno = (flags & 0x01u) != 0, cheio = (flags & 0x02u) != 0;
           if (cheio || contorno) {
-            tela_.CorAtual(cheio ? clrfill : clrframe);
+            tela_.CorAtual(Tela::RgbvalPara565(cheio ? clrfill : clrframe));
             tela_.Retangulo(x < 0 ? 0 : static_cast<std::uint32_t>(x),
                              y < 0 ? 0 : static_cast<std::uint32_t>(y),
                              w < 0 ? 0 : static_cast<std::uint32_t>(w),
@@ -1086,11 +1112,23 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // Devolve o clip ACTUAL, que o `SetClipRect` guardou.
         const std::uint32_t prc = cpu.Get(kR1);
         if (prc != 0) {
+          // AEERect sao 4x int16 = OITO bytes (`AEERect.h:21-24`), e nao 4x u32.
+          //
+          // Escrevia-se DEZASSEIS: os oito a mais caiam por cima do que estivesse
+          // a seguir ao `AEERect` -- e o `AEERect` do guest esta quase sempre na
+          // PILHA, logo por cima das suas proprias variaveis locais. Corrupcao
+          // silenciosa: nada falha aqui, falha mais tarde e noutro sitio.
+          //
+          // O `SetClipRect`, oito linhas acima neste mesmo ficheiro, JA lia int16
+          // desde que isso foi medido. Ficou a metade do par por corrigir.
           const std::uint32_t* c = tela_.ClipAtual();
-          mem_.Escrever32(prc + 0, c[0]);
-          mem_.Escrever32(prc + 4, c[1]);
-          mem_.Escrever32(prc + 8, c[2]);
-          mem_.Escrever32(prc + 12, c[3]);
+          for (int k = 0; k < 4; ++k) {
+            const std::int32_t v = static_cast<std::int32_t>(c[k]);
+            const std::int16_t cortado = static_cast<std::int16_t>(
+                v > 32767 ? 32767 : (v < -32768 ? -32768 : v));
+            mem_.Escrever16(prc + static_cast<std::uint32_t>(k * 2),
+                            static_cast<std::uint16_t>(cortado));
+          }
         }
         cpu.Set(kR0, 0);
       } else if (idx == kSlotIdCancelTimer) {

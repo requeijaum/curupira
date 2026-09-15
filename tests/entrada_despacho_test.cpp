@@ -342,4 +342,88 @@ TEST(VtableDoBitmap, OGuestReleaseOBitmapSemSaltarParaZero) {
 }
 
 
+TEST(ClipRect, OGetClipRectEscreveOitoBytesENaoDezasseis) {
+  // `void IDISPLAY_GetClipRect(IDisplay*, AEERect*)` -- IDisplay slot 19.
+  //
+  // O AEERect sao 4x int16 = OITO bytes (`AEERect.h:21-24`). Escreviam-se
+  // DEZASSEIS, e os oito a mais caiam por cima do que estivesse a seguir --
+  // e o `AEERect` do guest esta quase sempre na PILHA, logo por cima das suas
+  // proprias variaveis locais. Nada falhava aqui: falhava mais tarde, noutro
+  // sitio, sem ligacao visivel a esta chamada.
+  //
+  // O `SetClipRect`, no mesmo ficheiro, JA lia int16 desde que isso foi medido
+  // (`despacho.cpp`, "AEERect sao 4x int16 ... nao 4x u32"). Era metade do par.
+  Bancada b;
+  constexpr std::uint32_t kRect = 0x80210000u;
+  constexpr std::uint16_t kGuarda = 0xBEEFu;
+
+  // A SENTINELA: as quatro meias-palavras LOGO A SEGUIR ao AEERect. Se o
+  // despacho escrever 16 bytes, come-as -- e e isso que este teste apanha.
+  for (std::uint32_t k = 0; k < 8; k += 2) b.Mem().Escrever16(kRect + 8 + k, kGuarda);
+
+  // Poe um clip conhecido pelo caminho normal (SetClipRect, 4x int16).
+  b.Mem().Escrever16(kRect + 0, 10);
+  b.Mem().Escrever16(kRect + 2, 20);
+  b.Mem().Escrever16(kRect + 4, 100);
+  b.Mem().Escrever16(kRect + 6, 50);
+  b.ChamaSaida(1536, kObjDisplay, kRect);  // kSlotIdSetClipRect
+
+  // Suja o rectangulo, para que a leitura de volta prove que escreveu mesmo.
+  for (std::uint32_t k = 0; k < 8; k += 2) b.Mem().Escrever16(kRect + k, 0x5A5Au);
+  b.ChamaSaida(1551, kObjDisplay, kRect);  // kSlotIdGetClipRect
+
+  EXPECT_EQ(static_cast<std::int16_t>(b.Mem().Ler16(kRect + 0)), 10);
+  EXPECT_EQ(static_cast<std::int16_t>(b.Mem().Ler16(kRect + 2)), 20);
+  EXPECT_EQ(static_cast<std::int16_t>(b.Mem().Ler16(kRect + 4)), 100);
+  EXPECT_EQ(static_cast<std::int16_t>(b.Mem().Ler16(kRect + 6)), 50);
+
+  // E OS OITO BYTES A SEGUIR CONTINUAM INTACTOS. Este e o coracao do teste:
+  // com a versao de 4x u32, as duas primeiras guardas ficavam a zero.
+  for (std::uint32_t k = 0; k < 8; k += 2) {
+    EXPECT_EQ(b.Mem().Ler16(kRect + 8 + k), kGuarda)
+        << "byte " << (8 + k) << " do lado de fora do AEERect foi escrito";
+  }
+}
+
+TEST(SetColor, OItemVaiNoR1ACorNoR2EORetornoEACorAnterior) {
+  // `RGBVAL SetColor(IDisplay*, AEEClrItem clr, RGBVAL rgb)` -- AEEIDisplay.h:232.
+  //
+  // Tres defeitos de uma vez, e os tres escondiam-se uns aos outros:
+  //   1. lia-se a cor do `r1`, que e o ITEM (1..16). O numero do item usado como
+  //      cor da sempre um pixel quase preto.
+  //   2. a cor (`r2`) e RGBVAL (`r<<8 | g<<16 | b<<24`); truncar com `& 0xFFFF`
+  //      fazia RGB_WHITE e MAKE_RGB(255,0,0) darem AMBOS 0xFF00.
+  //   3. devolvia-se 0 em vez da cor anterior. O idioma do cabecalho e guardar o
+  //      retorno e repo-lo -- com zero, repunha-se PRETO.
+  Bancada b;
+  constexpr std::uint32_t kItem = 1;  // CLR_USER_TEXT
+  constexpr std::uint32_t kBranco = 0xFFFFFF00u;   // RGB_WHITE
+  constexpr std::uint32_t kVermelho = 0x0000FF00u; // MAKE_RGB(255,0,0)
+
+  // A primeira chamada devolve a cor anterior do item, que e preto.
+  EXPECT_EQ(b.ChamaSaida(1535, kObjDisplay, kItem, kBranco), 0u);
+  // A segunda devolve o BRANCO que a primeira la deixou -- e nao zero.
+  EXPECT_EQ(b.ChamaSaida(1535, kObjDisplay, kItem, kVermelho), kBranco);
+
+  // RGB_NONE le sem escrever (AEERGBVAL.h:27).
+  EXPECT_EQ(b.ChamaSaida(1535, kObjDisplay, kItem, 0xFFFFFFFFu), kVermelho);
+  EXPECT_EQ(b.ChamaSaida(1535, kObjDisplay, kItem, 0xFFFFFFFFu), kVermelho)
+      << "RGB_NONE nao pode ter escrito nada";
+
+  // Itens DIFERENTES nao se pisam: o item 2 continua preto.
+  EXPECT_EQ(b.ChamaSaida(1535, kObjDisplay, 2u, kBranco), 0u);
+}
+
+TEST(SetColor, BrancoEVermelhoNaoDaoOMesmoPixel) {
+  // O coracao do defeito 2, isolado: com `& 0xFFFF` os dois davam 0xFF00.
+  // A conversao tem de ser a MESMA do rasterizador (`Para565`), senao o mesmo
+  // RGBVAL dava dois pixels diferentes conforme quem desenhasse.
+  EXPECT_NE(Tela::RgbvalPara565(0xFFFFFF00u), Tela::RgbvalPara565(0x0000FF00u));
+  EXPECT_EQ(Tela::RgbvalPara565(0xFFFFFF00u), 0xFFFFu);  // branco
+  EXPECT_EQ(Tela::RgbvalPara565(0x0000FF00u), 0xF800u);  // vermelho puro
+  EXPECT_EQ(Tela::RgbvalPara565(0x00FF0000u), 0x07E0u);  // verde puro
+  EXPECT_EQ(Tela::RgbvalPara565(0xFF000000u), 0x001Fu);  // azul puro
+  EXPECT_EQ(Tela::RgbvalPara565(0x00000000u), 0x0000u);  // preto
+}
+
 }  // namespace zb2::brew
