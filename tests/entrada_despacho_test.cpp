@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <string>
 
 #include "core/brew/ajudantes.h"
@@ -97,6 +99,7 @@ class Bancada {
   }
 
   Memoria& Mem() { return mem_; }
+  Vfs& AcessoAVfs() { return vfs_; }
   Despacho& D() { return *despacho_; }
   ArmInterpreter& Cpu() { return cpu_; }
   const Saidas& S() const { return saidas_; }
@@ -893,17 +896,17 @@ TEST(BitmapDoEcra, OPBmpApontaParaOEcraDoGuestEJaNaoEUmaFalta) {
 // `MkDir`/`Remove` ao lado, que registam. Uma recusa que nao se conta nao
 // aparece na corrida, e a lista do que falta diz que ninguem pediu.
 // ===========================================================================
-TEST(RecusasMudas, RmDirWriteESqlOpenPassamAContar) {
+TEST(RecusasMudas, WriteESqlOpenPassamAContar) {
   Bancada b;
-  constexpr std::uint32_t kSaidaRmDir = 1547, kSaidaWrite = 1559, kSaidaSqlOpen = 1553;
+  constexpr std::uint32_t kSaidaWrite = 1559, kSaidaSqlOpen = 1553;
   constexpr std::uint32_t kNome = 0x00094000u;
   const char* dir = "brew/save";
   for (std::uint32_t k = 0; dir[k] != 0; ++k) b.Mem().Escrever8(kNome + k, static_cast<std::uint8_t>(dir[k]));
   b.Mem().Escrever8(kNome + 9, 0);
 
-  EXPECT_EQ(b.ChamaSaida(kSaidaRmDir, 0x80060000u, kNome), kAeeUnsupported);
-  EXPECT_EQ(b.Faltas("IFileMgr::RmDir"), 1u);
-
+  // O `RmDir` SAIU DESTE TESTE, e nao por conveniencia: ele deixou de ser uma
+  // recusa muda. O `Remove` (1509) e o `RmDir` (1547) passaram a SERVIR o
+  // contrato sobre a VFS, e tem testes proprios (`FileMgrServido.*` abaixo).
   EXPECT_EQ(b.ChamaSaida(kSaidaWrite, 0x80060100u, 0x00094100u, 64), 0u);
   EXPECT_EQ(b.Faltas("IFile::Write"), 1u)
       << "o Write devolve BYTES ESCRITOS: zero e uma resposta legitima do "
@@ -921,8 +924,135 @@ TEST(GetLastError, DevolveOErroDaUltimaOperacaoQueFalhou) {
   constexpr std::uint32_t kNome = 0x00094400u;
   b.Mem().Escrever8(kNome, 0);
   EXPECT_EQ(b.ChamaSaida(kSaidaLastErr, 0x80060000u), 0u) << "sem operacao nenhuma, sem erro";
-  b.ChamaSaida(kSaidaRmDir, 0x80060000u, kNome);
-  EXPECT_EQ(b.ChamaSaida(kSaidaLastErr, 0x80060000u), static_cast<std::uint32_t>(kAeeUnsupported));
+  // A bancada nao registou VFS nenhuma, logo o caminho nao existe e o `RmDir`
+  // responde EFAILED -- e EFAILED e o que o `GetLastError` tem de dizer. Antes
+  // disto a resposta era `kAeeUnsupported` (20), que NAO e resposta do contrato
+  // do IFileMgr: `AEEFile.h` so declara SUCCESS e EFAILED para o `RmDir`.
+  EXPECT_EQ(b.ChamaSaida(kSaidaRmDir, 0x80060000u, kNome), static_cast<std::uint32_t>(kAeeFailed));
+  EXPECT_EQ(b.ChamaSaida(kSaidaLastErr, 0x80060000u), static_cast<std::uint32_t>(kAeeFailed));
+}
+
+// ===========================================================================
+// O IFileMgr A SERVIR: `Remove` (slot 4), `RmDir` (slot 6) e `EnumNext`
+// (slot 11), com o contrato do SDK sobre a VFS.
+//
+// A NUMERACAO E A DO CABECALHO, e nao a da cablagem da ferramenta: o primeiro
+// teste le `tools/brew_slots.inc`, GERADO de `AEEFile.h` (a guarda
+// `slots_do_sdk` regenera-o e compara). Chamar que chamasse so o ID interno
+// nao provavam nada sobre o slot que o JOGO chama -- foi a classe de defeito
+// que ja custou a cablagem do `SetTimer` nesta arvore.
+//
+// A VFS CONTINUA SO DE LEITURA, por decisao: estes jogos apagam saves, e apagar
+// no disco do HOSPEDEIRO destruiria a reprodutibilidade. O que se serve e a
+// RESPOSTA do contrato (SUCCESS/EFAILED, TRUE/FALSE) sobre o que a VFS conhece
+// -- o resultado da operacao, sem a operacao no disco.
+// ===========================================================================
+TEST(FileMgrDoSDK, OsSlotsDoIFileMgrSaoOsDoCabecalho) {
+  // `AEEFile.h`, `INHERIT_IFileMgr`: `INHERIT_IBase` = 2 slots (AddRef,
+  // Release), depois OpenFile, GetInfo, Remove, MkDir, RmDir, Test,
+  // GetFreeSpace, GetLastError, EnumInit, EnumNext, Rename, ...
+  EXPECT_EQ(brew_slots::kFileMgr_OpenFile, 2u);
+  EXPECT_EQ(brew_slots::kFileMgr_GetInfo, 3u);
+  EXPECT_EQ(brew_slots::kFileMgr_Remove, 4u);
+  EXPECT_EQ(brew_slots::kFileMgr_MkDir, 5u);
+  EXPECT_EQ(brew_slots::kFileMgr_RmDir, 6u);
+  EXPECT_EQ(brew_slots::kFileMgr_Test, 7u);
+  EXPECT_EQ(brew_slots::kFileMgr_GetFreeSpace, 8u);
+  EXPECT_EQ(brew_slots::kFileMgr_GetLastError, 9u);
+  EXPECT_EQ(brew_slots::kFileMgr_EnumInit, 10u);
+  EXPECT_EQ(brew_slots::kFileMgr_EnumNext, 11u);
+  EXPECT_EQ(brew_slots::kFileMgr_Rename, 12u);
+}
+
+TEST(FileMgrServido, ORemoveRespondeOContratoSemApagarNada) {
+  // MEDIDO (corrida do corte): 4 titulos pedem `Remove` (game, abd,
+  // allstarcards, torkandkral). O contrato (`AEEFile.h`, `IFILEMGR_Remove`)
+  // responde SUCCESS ou EFAILED; a VFS e so de leitura, logo a resposta e
+  // "existe? SUCCESS : EFAILED", e o ficheiro do hospedeiro fica intacto.
+  {
+    Bancada b;
+    constexpr std::uint32_t kSaidaRemove = 1509;
+    constexpr std::uint32_t kNome = 0x00094700u;
+    const char* ficheiro = "app.log";
+    for (std::uint32_t k = 0; ficheiro[k] != 0; ++k)
+      b.Mem().Escrever8(kNome + k, static_cast<std::uint8_t>(ficheiro[k]));
+    b.Mem().Escrever8(kNome + 7, 0);
+    // Nenhuma VFS registada: o ficheiro "nao existe" -> EFAILED, e NAO ha falta.
+    EXPECT_EQ(b.ChamaSaida(kSaidaRemove, kObjFileMgr, kNome), static_cast<std::uint32_t>(kAeeFailed));
+    EXPECT_EQ(b.Faltas("IFileMgr::Remove"), 0u);
+    const auto& p = b.Tr().ContagemPressupostos();
+    EXPECT_NE(p.find("IFileMgr::Remove"), p.end())
+        << "a resposta servida tem de ficar DECLARADA, e nao muda";
+  }
+  {
+    // Com a VFS registada e o ficheiro la dentro: SUCCESS, e o ficheiro do
+    // hospedeiro CONTINUA no disco -- a VFS respondeu, nao apagou.
+    const auto pasta = std::filesystem::temp_directory_path() / "zb2_teste_filemgr_remove";
+    std::filesystem::create_directories(pasta);
+    std::ofstream f(pasta / "app.log", std::ios::binary);
+    f << "x";
+    f.close();
+    Bancada b;
+    b.AcessoAVfs().Registar(pasta.string());
+    constexpr std::uint32_t kSaidaRemove = 1509;
+    constexpr std::uint32_t kNome = 0x00094800u;
+    const char* ficheiro = "app.log";
+    for (std::uint32_t k = 0; ficheiro[k] != 0; ++k)
+      b.Mem().Escrever8(kNome + k, static_cast<std::uint8_t>(ficheiro[k]));
+    b.Mem().Escrever8(kNome + 7, 0);
+    EXPECT_EQ(b.ChamaSaida(kSaidaRemove, kObjFileMgr, kNome), static_cast<std::uint32_t>(kAeeSuccess));
+    EXPECT_TRUE(std::filesystem::exists(pasta / "app.log"))
+        << "a VFS e so de leitura: o ficheiro do hospedeiro nao pode sumir";
+    std::filesystem::remove_all(pasta);
+  }
+}
+
+TEST(FileMgrServido, ORmDirRespondeNosDoisEnderecosDoSlot) {
+  // MEDIDO (corrida do corte): 6 titulos pedem `RmDir` (alpineracerex,
+  // pacmania, tekken2, gof, allstarcards, pbc) -- apagam saves velhos antes de
+  // gravar. O `RmDir` do SDK e o slot 6 (`kFileMgr_RmDir`); a cablagem da
+  // ferramenta (a tabela unica `kWire` de `tools/bateria.cpp`) aponta-lhe o id
+  // 1547. O servico responde nos DOIS enderecos: o que o SDK diz (7000+6) e o
+  // que a cablagem produz (1547), para a proxima correccao da cablagem nao
+  // poder partir sem se ver.
+  Bancada b;
+  constexpr std::uint32_t kNome = 0x00094900u;
+  const char* dir = "udata/gof_save_options";
+  for (std::uint32_t k = 0; dir[k] != 0; ++k)
+    b.Mem().Escrever8(kNome + k, static_cast<std::uint8_t>(dir[k]));
+  b.Mem().Escrever8(kNome + 22, 0);
+  // Sem VFS registada o caminho nao existe: EFAILED nos dois enderecos.
+  EXPECT_EQ(b.ChamaSaida(1547, kObjFileMgr, kNome), static_cast<std::uint32_t>(kAeeFailed));
+  EXPECT_EQ(b.ChamaSaida(kVtableFileMgr + brew_slots::kFileMgr_RmDir, kObjFileMgr, kNome),
+            static_cast<std::uint32_t>(kAeeFailed));
+  EXPECT_EQ(b.Faltas("IFileMgr::RmDir"), 0u);
+  EXPECT_EQ(b.Faltas("IFileMgr::slot6"), 0u);
+}
+
+TEST(FileMgrServido, OEnumNextRespondeFalsoSemEnumeracao) {
+  // MEDIDO (corrida do corte): gof, rmp e pbc chamam o slot 11 LOGO NO
+  // ARRANQUE, sem `EnumInit` -- e a sonda de saves ("ha entradas?"). O slot 11
+  // do SDK e o `EnumNext` (`kFileMgr_EnumNext`; ver tambem a chamada em
+  // `gof.mod` 0x3688c: `ldr r2,[r1,#44]` = vtable[11]). Sem estado de
+  // enumeracao a resposta honesta e FALSE (iteracao vazia), e o `GetLastError`
+  // passa a EFAILED -- o contrato (`AEEFile.h`, `IFILEMGR_EnumNext`: FALSE
+  // seguido de GetLastError devolve EFAILED mesmo quando a enumeracao acabou
+  // bem).
+  Bancada b;
+  constexpr std::uint32_t kSlot =
+      kVtableFileMgr + brew_slots::kFileMgr_EnumNext;  // 7000 + 11 = 7011
+  constexpr std::uint32_t kInfo = 0x00094a00u;
+  EXPECT_EQ(kSlot, 7011u);
+  // FALSE = 0, e o FileInfo nao e tocado.
+  b.Mem().Escrever32(kInfo, 0xDEADBEEFu);
+  EXPECT_EQ(b.ChamaSaida(kSlot, kObjFileMgr, kInfo), 0u);
+  EXPECT_EQ(b.Mem().Ler32(kInfo), 0xDEADBEEFu);
+  EXPECT_EQ(b.Faltas("IFileMgr::slot11"), 0u);
+  constexpr std::uint32_t kSaidaLastErr = 1512;
+  EXPECT_EQ(b.ChamaSaida(kSaidaLastErr, kObjFileMgr),
+            static_cast<std::uint32_t>(kAeeFailed));
+  const auto& p = b.Tr().ContagemPressupostos();
+  EXPECT_NE(p.find("IFileMgr::EnumNext"), p.end());
 }
 
 TEST(GetFreeSpace, OTotalEODoGuiaEOLivreFicaDeclaradoEContado) {

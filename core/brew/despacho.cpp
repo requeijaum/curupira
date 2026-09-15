@@ -964,7 +964,35 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           // cabecalho contar em cada ronda; uma que diz o nome e uma medida.
           std::snprintf(det, sizeof(det), "iid=0x%08x ppo=0x%08x %s", iid, ppo,
                         zb2::brew::DescreverClsid(iid).c_str());
-          traco_.RegistarFalta(Area::Brew, "IShell::CreateInstance CLSID desconhecido", det);
+          // O NOME ENTRA NA CHAVE DA FALTA, e nao so no detalhe. Medido na
+          // corrida do corte: 4 titulos recebem "CLSID desconhecido" (chessbots
+          // 0x0100100f, allstarcards 0x0100100c, pbc 0x01001039, a3d
+          // 0x010292c3) -- e a lista de demanda dizia UM numero sem nome.
+          //
+          // 0x010292c3 NAO esta em cabecalho nenhum deste SDK (`grep -rn` na
+          // arvore extraida nao o encontra): e o servico privado de 3D da HI
+          // Corporation, fornecido pelo `imicro3d.mod` -- o unico `.mif` do
+          // corpus sem applet (pasta 12875, clsid 0x010292c3), e o `a3d` (o
+          // titulo que o pede) emite "IMICRO3D failed creation" quando a
+          // criacao falha. Zeemu nomeia-o assim: "Private HI Corporation 3D
+          // service from imicro3d.mod" (`BrewShell.cpp:2737`,
+          // `BrewMicro3D.cpp:539`).
+          //
+          // O que se recusa continua a recusar (ECLASSNOTSUPPORT, ponteiro a
+          // zero) -- o que muda e o NOME com que a recusa fica contada. Nao se
+          // serve um IMicro3D, um LICENSE ou um MD5 sem implementacao: fingir
+          // um servico completo e o stub silencioso com outra cara (P2).
+          std::string chave_da_falta;
+          if (iid == 0x010292c3u) {
+            chave_da_falta = "IShell::CreateInstance IMicro3D (0x010292c3)";
+          } else if (const char* nome_do_clsid = zb2::brew::NomeDoClsid(iid)) {
+            chave_da_falta = std::string("IShell::CreateInstance ") + nome_do_clsid;
+          } else {
+            // Desconhecido de verdade: mantem a chave antiga, para os futuros
+            // desconhecidos continuarem a somar no mesmo sitio.
+            chave_da_falta = "IShell::CreateInstance CLSID desconhecido";
+          }
+          traco_.RegistarFalta(Area::Brew, chave_da_falta, det);
         }
       } else if (media_ && media_->Atender(idx, cpu)) {
         // O IMedia (core/brew/imedia) atendeu este indice de saida.
@@ -1131,6 +1159,38 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           resultado.passos += gastos;
           cpu.Set(kR0, entregue ? devolveu : 0);  // FALSE = ninguem tratou
         }
+      } else if (idx == kVtableFileMgr + brew_slots::kFileMgr_RmDir) {
+        // O `RmDir` NO ENDERECO QUE O SDK DIZ (slot 6 = 7000+6), e nao so no id
+        // que a cablagem da ferramenta produz (1547, acima--o servico responde
+        // nos dois). Este ramo vem ANTES do generico `idx >= kBaseDoShell` de
+        // proposito: a faixa 7000+ e a vtable do IFileMgr, e o ramo generico
+        // dava a estes dois enderecos o nome "IFileMgr::slotN" sem os atender.
+        // O teste `FileMgrServido.ORmDirRespondeNosDoisEnderecosDoSlot` cobre
+        // os dois enderecos.
+        std::string nome_end;
+        mem_.LerCadeia(cpu.Get(kR1), &nome_end, 512);
+        const bool existe_end = vfs_.Existe(nome_end);
+        ultimo_erro_do_fm_ = existe_end ? kAeeSuccess : kAeeFailed;
+        traco_.RegistarPressuposto(Area::Brew, "IFileMgr::RmDir",
+                                   existe_end ? "serviu SUCCESS no slot 6 (SDK): " + nome_end
+                                              : "serviu EFAILED no slot 6 (SDK): " + nome_end);
+        cpu.Set(kR0, static_cast<std::uint32_t>(ultimo_erro_do_fm_));
+      } else if (idx == kVtableFileMgr + brew_slots::kFileMgr_EnumNext) {
+        // `boolean EnumNext(IFileMgr *po, FileInfo *pInfo)` -- IFileMgr slot 11
+        // (`kFileMgr_EnumNext`; `AEEFile.h`, `IFILEMGR_EnumNext`).
+        //
+        // MEDIDO (corrida do corte): gof, rmp e pbc chamam o slot 11 LOGO NO
+        // ARRANQUE, sem `EnumInit` antes -- e a sonda de saves "ha entradas?".
+        // A demonstracao esta no proprio guest: `gof.mod` 0x3688c le a vtable e
+        // `ldr r2,[r1,#44]` (vtable[11]) e usa o retorno como boolean
+        // (`cmp r0,#1` em 0x36898). Sem estado de enumeracao a resposta
+        // honesta e FALSE (iteracao vazia), e o `GetLastError` passa a EFAILED
+        // -- o contrato do SDK manda exactamente isto: FALSE seguido de
+        // GetLastError devolve EFAILED mesmo quando a enumeracao terminou bem.
+        traco_.RegistarPressuposto(Area::Brew, "IFileMgr::EnumNext",
+                                   "sem EnumInit servido: iteracao vazia, devolve FALSE (nao ha entradas)");
+        ultimo_erro_do_fm_ = kAeeFailed;
+        cpu.Set(kR0, 0);  // FALSE
       } else if (idx >= kBaseDoShell) {
         // O NOME tem de dizer de QUE interface e o slot. Um so "IShell::slot"
         // para tudo dava `IShell::slot4004` para um metodo do IDisplay -- numero
@@ -2136,33 +2196,61 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         ultimo_erro_do_fm_ = kAeeUnsupported;
         cpu.Set(kR0, kAeeUnsupported);
       } else if (idx == kSlotIdRemove) {
-        // `int Remove(IFileMgr *po, const char *pszFile)` -- IFileMgr slot 4.
-        // Mesma decisao do RmDir/MkDir: VFS so de leitura, recusa em voz alta.
+        // `int Remove(IFileMgr *po, const char *pszFile)` -- IFileMgr slot 4
+        // (`tools/brew_slots.inc`, gerado de `AEEFile.h`).
+        //
+        // SERVIDO, e nao recusado: a demanda mediu 4 titulos (game, abd,
+        // allstarcards, torkandkral) a apagar saves. O contrato
+        // (`IFILEMGR_Remove`, AEEFile.h) responde SUCCESS ou EFAILED -- e e
+        // isso que se serve, sobre a VFS. A VFS continua SO DE LEITURA: apagar
+        // no disco do hospedeiro destruiria a reprodutibilidade, e estes jogos
+        // mexem em save dirs que nao sao assets do modulo. "Remove" responde
+        // entao "existe? -> SUCCESS : EFAILED", e a operacao no disco NAO
+        // acontece -- declarado no pressuposto, para a resposta servida ficar
+        // contada e nao muda.
         std::string nome;
         mem_.LerCadeia(cpu.Get(kR1), &nome, 512);
-        char det[96];
-        std::snprintf(det, sizeof(det), "Remove %s", nome.c_str());
-        traco_.RegistarFalta(Area::Brew, "IFileMgr::Remove", det);
-        ultimo_erro_do_fm_ = kAeeUnsupported;
-        cpu.Set(kR0, kAeeUnsupported);
+        const bool existe = vfs_.Existe(nome);
+        ultimo_erro_do_fm_ = existe ? kAeeSuccess : kAeeFailed;
+        traco_.RegistarPressuposto(Area::Brew, "IFileMgr::Remove",
+                                   existe ? "serviu SUCCESS: " + nome +
+                                                " existe na VFS; nada foi apagado no hospedeiro"
+                                          : "serviu EFAILED: " + nome +
+                                                " nao existe na VFS; nada foi apagado no hospedeiro");
+        traco_.Emitir(Area::Brew, Nivel::Depuracao, "FM_REMOVE",
+                      nome + (existe ? " -> OK (nada apagado)" : " -> MISS"));
+        cpu.Set(kR0, static_cast<std::uint32_t>(ultimo_erro_do_fm_));
       } else if (idx == kSlotIdRmDir) {
-        // `int RmDir(IFileMgr *po, const char *pszDir)` -- IFileMgr slot 7.
+        // `int RmDir(IFileMgr *po, const char *pszDir)`.
         //
-        // A VFS desta etapa e SO DE LEITURA, e e deliberado: um jogo que apague
-        // um ficheiro do modulo destroi a reprodutibilidade. Recusa-se em voz
-        // alta (principio P2) em vez de mentir com um sucesso que nao aconteceu.
+        // O SLOT, MEDIDO NA NUMERACAO DA CABLAGEM: a tabela unica `kWire` de
+        // `tools/bateria.cpp` aponta este id ao slot 7 da vtable, e o slot 7 do
+        // SDK (`kFileMgr_Test`) e o `Test` -- responde "existe?". O `RmDir` do
+        // SDK e o slot 6 (`kFileMgr_RmDir`), e o servico responde TAMBEM nesse
+        // endereco (7000+6, ramo abaixo) -- para a correccao da cablagem nao
+        // poder partir sem se ver. A regra servida e a mesma para os dois
+        // enderecos, e e a regra que os dois contratos partilham: o caminho
+        // existe na VFS? (no `RmDir` do SDK, a operacao so pode ter sucesso se
+        // o directorio existir e estiver vazio; a VFS nao consegue provar
+        // vazio e NAO apaga nada -- a decisao fica declarada no pressuposto).
         //
-        // "Em voz alta" era so o comentario: o `MkDir` e o `Remove`, dez linhas
-        // acima, registam a falta com o nome; este nao registava nada. Uma
-        // recusa que nao se conta nao aparece na corrida, e quem le a lista do
-        // que falta conclui que ninguem a pediu.
+        // A DEMANDA, medida: 6 titulos (alpineracerex, pacmania, tekken2, gof,
+        // allstarcards, pbc) apagam saves velhos antes de gravar -- e o guia do
+        // fabricante pede exactamente este padrao: "If there are files or
+        // directories elements beneath the directory to be removed, they should
+        // be removed prior to calling this function" (AEEFile.h, RmDir).
         std::string nome_rm;
         mem_.LerCadeia(cpu.Get(kR1), &nome_rm, 512);
-        char det_rm[96];
-        std::snprintf(det_rm, sizeof(det_rm), "RmDir %s", nome_rm.c_str());
-        traco_.RegistarFalta(Area::Brew, "IFileMgr::RmDir", det_rm);
-        ultimo_erro_do_fm_ = kAeeUnsupported;
-        cpu.Set(kR0, kAeeUnsupported);
+        const bool existe_rm = vfs_.Existe(nome_rm);
+        ultimo_erro_do_fm_ = existe_rm ? kAeeSuccess : kAeeFailed;
+        traco_.RegistarPressuposto(Area::Brew, "IFileMgr::RmDir",
+                                   existe_rm ? "serviu SUCCESS: " + nome_rm +
+                                                   " existe na VFS; diretorio NAO removido no hospedeiro"
+                                             : "serviu EFAILED: " + nome_rm +
+                                                   " nao existe na VFS; diretorio NAO removido no hospedeiro");
+        traco_.Emitir(Area::Brew, Nivel::Depuracao, "FM_RMDIR",
+                      nome_rm + (existe_rm ? " -> OK (nada removido)" : " -> MISS"));
+        cpu.Set(kR0, static_cast<std::uint32_t>(ultimo_erro_do_fm_));
       } else if (idx == kSlotIdGetAppInstance) {
         // `void *GetAppInstance(void)` -- o ponteiro do applet, para o codigo que
         // nao tem o `po` a mao. Nao tem argumentos: os registos que a bateria
