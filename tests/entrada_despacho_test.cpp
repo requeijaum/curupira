@@ -669,6 +669,76 @@ TEST(Qegl, ORetornoSaiPeloPonteiroFinalEOsArgumentosEstaoDeslocados) {
   EXPECT_EQ(b.Mem().Ler32(kSaida), 1u) << "EGL_TRUE tem de sair pelo ponteiro final";
   EXPECT_EQ(b.Mem().Ler32(kObjIegl), vtable_antes)
       << "o dpy no lugar do `major` escrevia por cima da vtable do IEGL";
+// ===========================================================================
+// `GetAEEVersion`: a ASSINATURA e o VALOR.
+//
+// `uint32 GetAEEVersion(byte *pszFormatted, int nSize, uint16 wFlags)`
+// (`AEEStdLib.h:115-116`). O `r1` e um TAMANHO, nao um ponteiro.
+// ===========================================================================
+TEST(GetAEEVersion, OR1EUmTamanhoENaoUmPonteiro) {
+  // O DEFEITO MEDIDO: o codigo antigo fazia `Escrever32(r1, versao)`. Com um
+  // `nSize` de 16 -- o valor natural para um buffer de "4.0.2.0" -- isso
+  // escrevia quatro bytes em 0x00000010, dentro da imagem do titulo (a base do
+  // modulo e ZERO, `tests/mod_base_test.cpp`), e o buffer do `r0` ficava por
+  // tocar.
+  Bancada b;
+  constexpr std::uint32_t kSaidaGetAeeVersion = 1501;  // `despacho.cpp:60`
+  constexpr std::uint32_t kBuf = 0x00091000u;
+  constexpr std::uint32_t kTamanho = 16;
+  b.Mem().Escrever32(kTamanho, 0xDEADBEEFu);  // o endereco que o defeito pisava
+  for (std::uint32_t k = 0; k < 32; ++k) b.Mem().Escrever8(kBuf + k, 0xAAu);
+
+  const std::uint32_t r = b.ChamaSaida(kSaidaGetAeeVersion, kBuf, kTamanho, 0x0001u);
+
+  EXPECT_EQ(b.Mem().Ler32(kTamanho), 0xDEADBEEFu)
+      << "o `nSize` foi usado como endereco de escrita";
+  // GAV_LATIN1 (`AEEStdLib.h:35`): cadeia de um byte por letra, terminada.
+  std::string s;
+  b.Mem().LerCadeia(kBuf, &s, 32);
+  EXPECT_EQ(s, "4.0.2.0");
+  EXPECT_EQ(r, 0x04000200u);
+}
+
+TEST(GetAEEVersion, SemGavLatin1ACadeiaEAECHAR) {
+  Bancada b;
+  constexpr std::uint32_t kSaidaGetAeeVersion = 1501;
+  constexpr std::uint32_t kBuf = 0x00091100u;
+  for (std::uint32_t k = 0; k < 32; ++k) b.Mem().Escrever8(kBuf + k, 0xAAu);
+  EXPECT_EQ(b.ChamaSaida(kSaidaGetAeeVersion, kBuf, 32, 0u), 0x04000200u);
+  const char* esperado = "4.0.2.0";
+  for (std::uint32_t k = 0; k < 7; ++k) {
+    EXPECT_EQ(b.Mem().Ler16(kBuf + k * 2), static_cast<std::uint16_t>(esperado[k])) << "letra " << k;
+  }
+  EXPECT_EQ(b.Mem().Ler16(kBuf + 14), 0u) << "AECHAR terminado";
+}
+
+TEST(GetAEEVersion, OValorEOQueOSDKCodifica) {
+  // `AEEStdLib.h:4948-4954`: byte alto da palavra alta = versao MAIOR. O valor
+  // antigo, `0x00400002`, lia-se "0.64.0.2". Mesmo valor no zeebx
+  // (`src/machine/helper.rs:695-705`) e no zeebulator (`mod_runtime.cpp:751`).
+  Bancada b;
+  constexpr std::uint32_t kSaidaGetAeeVersion = 1501;
+  const std::uint32_t v = b.ChamaSaida(kSaidaGetAeeVersion, 0, 0, 0);
+  EXPECT_EQ(v >> 24, 4u) << "versao maior";
+  EXPECT_EQ((v >> 16) & 0xFFu, 0u) << "versao menor";
+  EXPECT_EQ((v >> 8) & 0xFFu, 2u) << "sub-versao";
+  EXPECT_EQ(v & 0xFFu, 0u) << "build";
+  EXPECT_EQ(v, 0x04000200u);
+}
+
+TEST(GetAEEVersion, BufferPequenoDemaisNaoTransbordaEUmBufferNuloNaoEscreve) {
+  Bancada b;
+  constexpr std::uint32_t kSaidaGetAeeVersion = 1501;
+  constexpr std::uint32_t kBuf = 0x00091200u;
+  for (std::uint32_t k = 0; k < 16; ++k) b.Mem().Escrever8(kBuf + k, 0x55u);
+  EXPECT_EQ(b.ChamaSaida(kSaidaGetAeeVersion, kBuf, 4, 0x0001u), 0x04000200u);
+  std::string s;
+  b.Mem().LerCadeia(kBuf, &s, 16);
+  EXPECT_EQ(s, "4.0");  // 3 letras + terminador nos 4 bytes pedidos
+  EXPECT_EQ(b.Mem().Ler8(kBuf + 4), 0x55u) << "escreveu para la do `nSize`";
+  // `nSize` zero nao escreve nada, e o valor continua a ser devolvido.
+  EXPECT_EQ(b.ChamaSaida(kSaidaGetAeeVersion, kBuf, 0, 0x0001u), 0x04000200u);
+  EXPECT_EQ(b.Mem().Ler8(kBuf), static_cast<std::uint8_t>('4'));
 }
 
 }  // namespace zb2::brew

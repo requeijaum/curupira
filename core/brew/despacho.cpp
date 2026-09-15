@@ -1,5 +1,6 @@
 #include "core/brew/despacho.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <set>
@@ -1121,12 +1122,56 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         }
         cpu.Set(kR0, destino);
       } else if (idx == kSlotIdGetAeeVersion) {
-        // Devolve a versao, e escreve-a em *pVer quando ha ponteiro. 4.0.2
-        // codificada como o SDK a codifica: AEE_VER(4,0,2).
-        const std::uint32_t pver = cpu.Get(kR1);
-        const std::uint32_t ver = 0x00400002u;
-        if (pver != 0) mem_.Escrever32(pver, ver);
-        cpu.Set(kR0, ver);
+        // `uint32 GetAEEVersion(byte *pszFormatted, int nSize, uint16 wFlags)`
+        // -- `AEEStdLib.h:115-116`, descrito em `:4908-4954`.
+        //
+        // DOIS DEFEITOS, os dois medidos contra o cabecalho do SDK:
+        //
+        // 1. O `r1` era tratado como `uint32 *pVer` e levava um `Escrever32`.
+        //    O `r1` e um INTEIRO -- o TAMANHO do buffer. Escrevia-se quatro
+        //    bytes no endereco que por acaso fosse igual ao tamanho pedido
+        //    (um `nSize` de 16 escrevia em 0x00000010, dentro da imagem do
+        //    titulo), e o buffer do `r0` -- o unico que o chamador vai ler --
+        //    nunca era tocado. Um jogo que imprima a versao lia o que la
+        //    estivesse.
+        //
+        // 2. O valor era `0x00400002`. A regra esta em `AEEStdLib.h:4948-4954`:
+        //    byte alto da palavra alta = versao MAIOR, byte baixo da palavra
+        //    alta = menor, byte alto da palavra baixa = sub, byte baixo =
+        //    build. `0x00400002` le-se "0.64.0.2", que nao e versao nenhuma.
+        //    O Zeebo corre BREW 4.0.2: `0x04000200`. E o valor do zeebx
+        //    (`src/machine/helper.rs:695-705`, `AEE_VERSION`) e do zeebulator
+        //    (`core/brew/mod_runtime.cpp:747-775`), os dois independentes.
+        //
+        // `GAV_LATIN1` (0x0001, `AEEStdLib.h:35`) pede a cadeia em BYTES; sem
+        // ele e AECHAR (UTF-16). O `nSize` e em BYTES nos dois casos
+        // (`:4930`), e por isso o ramo AECHAR divide por dois.
+        constexpr std::uint32_t kGavLatin1 = 0x0001u;
+        constexpr std::uint32_t kAeeVersao = 0x04000200u;
+        static const char kAeeVersaoTexto[] = "4.0.2.0";
+        const std::uint32_t buf = r0;
+        const std::int32_t tam = static_cast<std::int32_t>(cpu.Get(kR1));
+        const std::uint32_t flags = cpu.Get(kR2) & 0xFFFFu;
+        const std::size_t letras = sizeof(kAeeVersaoTexto) - 1;
+        if (buf != 0 && tam > 0) {
+          if ((flags & kGavLatin1) != 0) {
+            const std::size_t n = std::min(static_cast<std::size_t>(tam - 1), letras);
+            for (std::size_t k = 0; k < n; ++k) {
+              mem_.Escrever8(buf + static_cast<std::uint32_t>(k),
+                             static_cast<std::uint8_t>(kAeeVersaoTexto[k]));
+            }
+            mem_.Escrever8(buf + static_cast<std::uint32_t>(n), 0);
+          } else if (tam >= 2) {
+            const std::size_t cabem = static_cast<std::size_t>(tam) / 2;
+            const std::size_t n = std::min(cabem - 1, letras);
+            for (std::size_t k = 0; k < n; ++k) {
+              mem_.Escrever16(buf + static_cast<std::uint32_t>(k) * 2,
+                              static_cast<std::uint16_t>(kAeeVersaoTexto[k]));
+            }
+            mem_.Escrever16(buf + static_cast<std::uint32_t>(n) * 2, 0);
+          }
+        }
+        cpu.Set(kR0, kAeeVersao);
       } else if (idx == kSlotIdAeeGetRand) {
         // `aee_GetRand` -- gerador DETERMINISTA (principio P4). Um gerador do
         // sistema tornaria duas corridas diferentes, e o emulador deixaria de
