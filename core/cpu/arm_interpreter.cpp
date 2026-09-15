@@ -987,7 +987,11 @@ void ArmInterpreter::Bloco(std::uint32_t instr, std::uint32_t pc) {
   // registradores inclui o PC. Esquecer isto fez o `STM` correr duas vezes
   // seguidas no primeiro teste de push/pop: o despachante nao avancava o PC
   // depois dos blocos, e o passo seguinte reexecutava a mesma instrucao.
-  if ((lista & (1u << kPC)) == 0) Set(kPC, pc + 4);
+  //
+  // So o LDM com PC na lista NAO avanca (o PC vem da memoria). O STM com PC
+  // TEM de avancar: o prologo GCC `push {fp,ip,lr,pc}` (0xE92DD800) reexecutava
+  // para sempre e 13 titulos estouravam a carga (cluster 0x002b).
+  if (!l || (lista & (1u << kPC)) == 0) Set(kPC, pc + 4);
 }
 
 void ArmInterpreter::Bifurcar(std::uint32_t instr, std::uint32_t pc) {

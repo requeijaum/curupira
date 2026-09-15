@@ -500,6 +500,19 @@ TEST(Cpu, LdmESubDevolvemOsRegistradores) {
   EXPECT_EQ(b.R(0), 0x80092008u) << "o writeback avanca 8 bytes";
 }
 
+TEST(Cpu, StmComPcNaListaAvancaOPc) {
+  // O prologo GCC `push {fp,ip,lr,pc}` (0xE92DD800): STM com PC na lista TEM
+  // de avancar para a proxima instrucao, senao reexecuta para sempre (cluster
+  // 0x002b: 13 titulos estouravam a carga em 4M passos).
+  const std::uint32_t pilha = 0x800FF000u;
+  Bancada b(0x00100000u, pilha);
+  b.Instrucao(StmFdComWriteback(13, 0xD800));
+  b.Instrucao(0xE1A00000u);  // nop de destino
+  b.Terminar();
+  b.Correr(2);
+  EXPECT_EQ(b.R(15), 0x00100008u) << "STM com PC reexecutava a si mesmo";
+}
+
 TEST(Cpu, PushEPopUsamAPilha) {
   const std::uint32_t pilha = 0x800FF000u;
   Bancada b(0x00100000u, pilha);
