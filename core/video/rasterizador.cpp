@@ -105,6 +105,128 @@ double Aresta(double x0, double y0, double x1, double y1, double px, double py) 
 // baixo), e por isso "cima" e o lado do y menor.
 bool ArestaDeCanto(double dx, double dy) { return dy < 0.0 || (dy == 0.0 && dx > 0.0); }
 
+// --- as constantes do GL QUE O `.inc` GERADO NAO TEM -------------------------
+//
+// `tools/gl_slots.inc` e GERADO de `AEEGL.h` e do `gles/gl.h`, e uma linha
+// escrita a mao la faz a guarda `tools/verificar_slots_gl.sh` divergir do
+// cabecalho. Os factores de mistura e o `glColorMask` NAO sao servidos por esse
+// gerador (so os nomes de slot e um punhado de valores o sao), e por isso os
+// numeros ficam aqui, com a linha EXACTA de onde vieram:
+//
+//   BREW-4.0.2-SP19/sdk/inc/gles/gles_1_0/gl.h:112-124
+//     GL_SRC_COLOR 0x0300 | GL_ONE_MINUS_SRC_COLOR 0x0301 | GL_SRC_ALPHA 0x0302
+//     GL_ONE_MINUS_SRC_ALPHA 0x0303 | GL_DST_ALPHA 0x0304
+//     GL_ONE_MINUS_DST_ALPHA 0x0305 | GL_DST_COLOR 0x0306
+//     GL_ONE_MINUS_DST_COLOR 0x0307 | GL_SRC_ALPHA_SATURATE 0x0308
+constexpr std::uint32_t GL_SRC_COLOR = 0x0300u;
+constexpr std::uint32_t GL_ONE_MINUS_SRC_COLOR = 0x0301u;
+constexpr std::uint32_t GL_DST_ALPHA = 0x0304u;
+constexpr std::uint32_t GL_ONE_MINUS_DST_ALPHA = 0x0305u;
+constexpr std::uint32_t GL_DST_COLOR = 0x0306u;
+constexpr std::uint32_t GL_ONE_MINUS_DST_COLOR = 0x0307u;
+
+// --- a aritmetica da cor em [0,1] -------------------------------------------
+//
+// A MISTURA do GL e uma soma de produtos ponderados, e a ponderacao e um
+// produto de cores: fazer as duas contas em inteiros de 8 bits perde os bits
+// que decidem o resultado (o `GL_DST_COLOR` de um fundo quase preto, por
+// exemplo). As cores do fragmento e do destino passam a `float` em [0,1], a
+// soma e presa a [0,1] e so no fim volta a 8 bits -- como no zeebx
+// (`src/rasterizer.rs`, `pack`/`unpack`).
+float Apertar01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
+
+// O DESTINO, em [0,1]. A tela e RGB565 e NAO TEM ALFA: o alfa do destino e 1
+// (o valor que a especificacao da a um framebuffer sem bits de alfa), e nao um
+// zero. Um `GL_DST_ALPHA` de 0 por omissao apagaria o desenho em vez de o
+// misturar. A escala e a do numero de bits de cada canal: 31 e 63, e nao 255.
+void CorDoDestino(std::uint32_t rgb565, float* c) {
+  c[0] = static_cast<float>((rgb565 >> 11) & 0x1Fu) / 31.0f;
+  c[1] = static_cast<float>((rgb565 >> 5) & 0x3Fu) / 63.0f;
+  c[2] = static_cast<float>(rgb565 & 0x1Fu) / 31.0f;
+  c[3] = 1.0f;
+}
+
+// 8 bits por canal, com o arredondamento do `pack` do zeebx (`*255 + 0.5`).
+Rgba DeBits(float* c) {
+  Rgba r;
+  const auto canal = [](float v) {
+    return static_cast<std::uint8_t>(Apertar01(v) * 255.0f + 0.5f);
+  };
+  r.r = canal(c[0]);
+  r.g = canal(c[1]);
+  r.b = canal(c[2]);
+  r.a = canal(c[3]);
+  return r;
+}
+
+// Os nove factores do `glBlendFunc`, com o canal `c` (0..3). O resto vale 1.0,
+// que e o `GL_ONE` -- e o que o zeebx faz (`factor`, `rasterizer.rs:2000`).
+float FatorDeMistura(std::uint32_t tipo, const float origem[4], const float destino[4], int c) {
+  switch (tipo) {
+    case GL_ZERO: return 0.0f;
+    case GL_SRC_COLOR: return origem[c];
+    case GL_ONE_MINUS_SRC_COLOR: return 1.0f - origem[c];
+    case GL_SRC_ALPHA: return origem[3];
+    case GL_ONE_MINUS_SRC_ALPHA: return 1.0f - origem[3];
+    case GL_DST_ALPHA: return destino[3];
+    case GL_ONE_MINUS_DST_ALPHA: return 1.0f - destino[3];
+    case GL_DST_COLOR: return destino[c];
+    case GL_ONE_MINUS_DST_COLOR: return 1.0f - destino[c];
+    default: return 1.0f;  // GL_ONE, e o que nao esta nos nove
+  }
+}
+
+// --- os vectores da luz ------------------------------------------------------
+
+double Comprimento3(const double v[3]) {
+  return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+}
+
+void Normalizar3(double v[3]) {
+  const double n = Comprimento3(v);
+  if (n <= 0.0) return;
+  v[0] /= n;
+  v[1] /= n;
+  v[2] /= n;
+}
+
+double Ponto3(const double a[3], const double b[3]) {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+// O HOLOFOTE, com a formula do GL ES 1.x: o cosseno e medido entre a direccao do
+// cone e a direccao DA LUZ PARA O VERTICE (o contrario de `para_a_luz`).
+double Holofote(const EstadoDeRasterizacao::Luz& luz, const double para_a_luz[3]) {
+  if (luz.corte_do_holofote >= 180.0f) return 1.0;  // sem cone: luz como as outras
+  double direcao[3] = {static_cast<double>(luz.direcao_do_holofote[0]),
+                       static_cast<double>(luz.direcao_do_holofote[1]),
+                       static_cast<double>(luz.direcao_do_holofote[2])};
+  Normalizar3(direcao);
+  const double coseno = -(direcao[0] * para_a_luz[0] + direcao[1] * para_a_luz[1] +
+                          direcao[2] * para_a_luz[2]);
+  const double limite = std::cos(static_cast<double>(luz.corte_do_holofote) *
+                                 3.14159265358979323846 / 180.0);
+  if (coseno < limite) return 0.0;
+  const double base = std::max(0.0, coseno);
+  return std::pow(base, static_cast<double>(luz.exponente_do_holofote));
+}
+
+// UMA FUNCAO DE COMPARACAO DO GL. A mesma do teste de profundidade, e a mesma
+// dos dois usos do alpha test (`glAlphaFuncx` e o `compare` do zeebx,
+// `rasterizer.rs:1962`). O `default` e `true`: e o `GL_ALWAYS` da omissao.
+bool Comparar(std::uint32_t funcao, float valor, float referencia) {
+  switch (funcao) {
+    case GL_NEVER: return false;
+    case GL_LESS: return valor < referencia;
+    case GL_EQUAL: return valor == referencia;
+    case GL_LEQUAL: return valor <= referencia;
+    case GL_GREATER: return valor > referencia;
+    case GL_NOTEQUAL: return valor != referencia;
+    case GL_GEQUAL: return valor >= referencia;
+    default: return true;
+  }
+}
+
 }  // namespace
 
 // --- a cor ----------------------------------------------------------------
@@ -231,6 +353,9 @@ bool Rasterizador::LerVertice(const EstadoDeRasterizacao& e, std::uint32_t indic
   float clip2[4];
   AplicarMatriz(e.projection, clip, clip2);
   for (int k = 0; k < 4; ++k) v->clip[k] = clip2[k];
+  // A POSICAO NO ESPACO DO OLHO e o resultado da modelview (o `clip` desta
+  // linha), e nao uma segunda conta: a luz do GL vive em coordenadas de olho.
+  for (int k = 0; k < 4; ++k) v->olho[k] = clip[k];
 
   // --- a cor do vertice ---------------------------------------------------
   v->cor = e.cor;
@@ -265,6 +390,24 @@ bool Rasterizador::LerVertice(const EstadoDeRasterizacao& e, std::uint32_t indic
     v->cor = Rgba{canais[0], canais[1], canais[2], canais[3]};
   }
 
+  // --- a ILUMINACAO, que decide a cor do vertice ---------------------------
+  //
+  // A cor do vertice passa a ser calculada AQUI, e nao interpolada ate ao pixel
+  // e depois corrigida: no GL ES 1.x a luz e uma conta POR VERTICE, e o
+  // resultado e o que se interpola. Faze-la por fragmento daria outra imagem
+  // (mais lisa) e outra despesa.
+  v->normal[0] = 0.0f;
+  v->normal[1] = 0.0f;
+  v->normal[2] = 1.0f;  // a omissao do GL, quando nao ha array de normais
+  if (e.iluminacao_ligada) {
+    float normal_do_objeto[3] = {0.0f, 0.0f, 1.0f};
+    if (e.normais.ligado) {
+      if (!LerNormalDeObjeto(e, indice, normal_do_objeto, motivo)) return false;
+    }
+    TransformarNormal(e, normal_do_objeto, v->normal);
+    v->cor = CorIluminada(e, v->olho, v->normal, v->cor);
+  }
+
   // --- as coordenadas de textura ------------------------------------------
   v->u = 0.0f;
   v->v = 0.0f;
@@ -287,6 +430,200 @@ bool Rasterizador::LerVertice(const EstadoDeRasterizacao& e, std::uint32_t indic
     v->v = LerFloat(mem_, base_t + static_cast<Endereco>(bt), at.tipo);
   }
   return true;
+}
+
+void Rasterizador::TransformarNormal(const EstadoDeRasterizacao& e, const float n[3], float saida[3]) {
+  // A MATRIZ DAS NORMAIS E A TRANSPOSTA DA INVERSA da parte 3x3 da modelview, e
+  // NAO a modelview: com escala nao uniforme, uma normal transformada como se
+  // fosse uma direccao deixa de ser perpendicular a superficie e a luz escorrega
+  // pelo modelo (e o mesmo que o zeebx documenta em `matriz_de_normais`,
+  // `src/rasterizer.rs:1917`).
+  const float* m = e.modelview;
+  // (linha, coluna) = m[coluna * 4 + linha]: as matrizes sao COLUMN-MAJOR.
+  const double a[3][3] = {{m[0], m[4], m[8]}, {m[1], m[5], m[9]}, {m[2], m[6], m[10]}};
+  const double det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) -
+                     a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) +
+                     a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
+  double inversa[3][3];
+  if (std::fabs(det) <= 1e-12) {
+    // MATRIZ DEGENERADA: a parte 3x3 crua e o menos errado que se pode devolver
+    // (o mesmo que o zeebx faz). Inventar uma inversa seria pior.
+    for (int i = 0; i < 3; ++i) {
+      for (int j = 0; j < 3; ++j) inversa[i][j] = a[i][j];
+    }
+  } else {
+    for (int i = 0; i < 3; ++i) {
+      for (int j = 0; j < 3; ++j) {
+        // A adjunta e a transposta da matriz dos cofactores: `adj[i][j]` e o
+        // cofactor de `a[j][i]`, e a inversa e `adj / det`.
+        const int i1 = (i + 1) % 3, i2 = (i + 2) % 3;
+        const int j1 = (j + 1) % 3, j2 = (j + 2) % 3;
+        const double cofactor = a[j1][i1] * a[j2][i2] - a[j1][i2] * a[j2][i1];
+        inversa[i][j] = cofactor / det;
+      }
+    }
+  }
+  // `N = transposta(inversa)`: com `inversa` em (linha, coluna), o elemento
+  // (i, j) da transposta e `inversa[j][i]`.
+  double v[3] = {static_cast<double>(n[0]), static_cast<double>(n[1]), static_cast<double>(n[2])};
+  double r[3];
+  for (int i = 0; i < 3; ++i) {
+    r[i] = inversa[0][i] * v[0] + inversa[1][i] * v[1] + inversa[2][i] * v[2];
+  }
+  // O `GL_RESCALE_NORMAL`: a normal e escalada pelo inverso do comprimento da
+  // TERCEIRA LINHA da inversa da modelview -- a formula do `_mesa_rescale_normal`
+  // do Mesa, que usa `m[2], m[6], m[10]` da inversa (o que, em column-major, e a
+  // terceira LINHA). E o que impede uma escala nao uniforme de apagar a luz.
+  if (e.reescalar_normais) {
+    const double linha[3] = {inversa[2][0], inversa[2][1], inversa[2][2]};
+    const double n2 = Comprimento3(linha);
+    if (n2 > 1e-12) {
+      const double fator = 1.0 / n2;
+      r[0] *= fator;
+      r[1] *= fator;
+      r[2] *= fator;
+    }
+  }
+  if (e.normalizar_normais) Normalizar3(r);
+  saida[0] = static_cast<float>(r[0]);
+  saida[1] = static_cast<float>(r[1]);
+  saida[2] = static_cast<float>(r[2]);
+}
+
+bool Rasterizador::LerNormalDeObjeto(const EstadoDeRasterizacao& e, std::uint32_t indice,
+                                     float n[3], std::string* motivo) const {
+  const ArrayDoCliente& an = e.normais;
+  const int bytes = BytesDoTipo(an.tipo);
+  if (bytes == 0) {
+    *motivo = std::string("array de normais do tipo ") + NomeDoTipo(an.tipo) + " sem caminho";
+    return false;
+  }
+  const std::uint32_t passo = (an.passo != 0) ? an.passo
+                                             : static_cast<std::uint32_t>(an.tamanho * bytes);
+  const Endereco base = an.ponteiro + passo * indice;
+  for (int k = 0; k < 3 && k < an.tamanho; ++k) {
+    const Endereco onde = base + static_cast<Endereco>(k * bytes);
+    switch (an.tipo) {
+      case GL_FLOAT:
+      case GL_FIXED:
+        n[k] = LerFloat(mem_, onde, an.tipo);
+        break;
+      case GL_BYTE:
+        // AS CONVERSOES SAO AS DA ESPECIFICACAO: um componente guardado em N
+        // bits e lido como `c / (2^(N-1) - 1)`, o que poe 127 em 1 e -128 em
+        // -1.0078. E o que o Mesa faz (`_mesa_unpack_normal`), e sem isto uma
+        // normal em bytes ficaria com valores 100 vezes maiores que 1.
+        n[k] = static_cast<float>(static_cast<std::int8_t>(mem_.Ler8(onde))) / 127.0f;
+        break;
+      case GL_SHORT:
+        n[k] = static_cast<float>(static_cast<std::int16_t>(mem_.Ler16(onde))) / 32767.0f;
+        break;
+      default:
+        *motivo = std::string("array de normais do tipo ") + NomeDoTipo(an.tipo) + " sem caminho";
+        return false;
+    }
+  }
+  return true;
+}
+
+Rgba Rasterizador::CorIluminada(const EstadoDeRasterizacao& e, const float olho[4],
+                                const float normal[3], const Rgba& cor_do_vertice) {
+  const EstadoDeRasterizacao::Aparencia& material = e.material;
+  // O `GL_COLOR_MATERIAL`: a cor do vertice TOMA O LUGAR da ambiente e da difusa
+  // do material. E o unico caminho pelo qual um vector de cores continua a
+  // valer com a luz ligada -- sem ele, um titulo que pinte os vertices e ligue
+  // o `GL_LIGHTING` fica com a cor do material e o vector fica decorativo.
+  float ambiente[4];
+  float difusa[4];
+  if (e.cor_do_material) {
+    ambiente[0] = difusa[0] = static_cast<float>(cor_do_vertice.r) / 255.0f;
+    ambiente[1] = difusa[1] = static_cast<float>(cor_do_vertice.g) / 255.0f;
+    ambiente[2] = difusa[2] = static_cast<float>(cor_do_vertice.b) / 255.0f;
+    ambiente[3] = difusa[3] = static_cast<float>(cor_do_vertice.a) / 255.0f;
+  } else {
+    for (int k = 0; k < 4; ++k) {
+      ambiente[k] = material.ambiente[k];
+      difusa[k] = material.difusa[k];
+    }
+  }
+
+  //   cor = emissao + ambiente_do_material * ambiente_da_cena
+  //       + SOMA( atenuacao * holofote * ( ambiente_do_material * ambiente_da_luz
+  //                                     + difusa_do_material * difusa_da_luz * max(N.L, 0)
+  //                                     + especular_do_material * especular_da_luz * max(N.H, 0)^brilho ) )
+  // A NORMAL UNITARIA. A equacao do GL usa o vector unitario (`n̂`), e a normal
+  // que chega aqui e a que saiu da transposta da inversa da modelview -- com um
+  // comprimento que depende da escala do modelo. Normaliza-la AQUI e a escolha
+  // do zeebx (a receita verificada: `let normal = normaliza(gira_normal(...))`,
+  // `src/rasterizer.rs:1042`) e a razao pela qual o `GL_NORMALIZE` e o
+  // `GL_RESCALE_NORMAL` nao mudam nenhuma cor nesta implementacao -- os dois
+  // pedem uma normal unitaria a chegar a equacao, e ela chega sempre. Isso fica
+  // DITO, e nao maquilhado com um efeito que nao existe.
+  double n_unit[3] = {static_cast<double>(normal[0]), static_cast<double>(normal[1]),
+                      static_cast<double>(normal[2])};
+  Normalizar3(n_unit);
+
+  float saida[3];
+  for (int c = 0; c < 3; ++c) {
+    saida[c] = material.emissao[c] + ambiente[c] * e.ambiente_da_cena[c];
+  }
+  // A DIRECCAO PARA O OBSERVADOR: o observador esta na ORIGEM do espaco do
+  // olho, logo e o proprio ponto, negado e normalizado.
+  double para_o_olho[3] = {-static_cast<double>(olho[0]), -static_cast<double>(olho[1]),
+                           -static_cast<double>(olho[2])};
+  Normalizar3(para_o_olho);
+
+  for (const EstadoDeRasterizacao::Luz& luz : e.luzes) {
+    if (!luz.ligada) continue;
+    double para_a_luz[3];
+    // UMA LUZ DIRECCIONAL (w = 0) nao tem distancia: a posicao e uma direccao, e
+    // nao ha atenuacao que a multiplique.
+    const bool direccional = (luz.posicao[3] == 0.0f);
+    for (int c = 0; c < 3; ++c) {
+      para_a_luz[c] = direccional ? static_cast<double>(luz.posicao[c])
+                                  : static_cast<double>(luz.posicao[c]) - static_cast<double>(olho[c]);
+    }
+    const double distancia = Comprimento3(para_a_luz);
+    Normalizar3(para_a_luz);
+    double atenuacao = 1.0;
+    if (!direccional) {
+      const double divisor = static_cast<double>(luz.atenuacao[0]) +
+                             static_cast<double>(luz.atenuacao[1]) * distancia +
+                             static_cast<double>(luz.atenuacao[2]) * distancia * distancia;
+      atenuacao = (divisor <= 0.0) ? 1.0 : (1.0 / divisor);
+    }
+    const double peso = atenuacao * Holofote(luz, para_a_luz);
+    if (peso <= 0.0) continue;
+
+    const double n_l = std::max(0.0, Ponto3(n_unit, para_a_luz));
+    double brilho = 0.0;
+    if (n_l > 0.0 && material.brilho > 0.0f) {
+      // O MEIO-VECTOR DE BLINN, que e o que o GL ES 1.x usa no lugar da reflexao
+      // de Phong.
+      double meio[3] = {para_a_luz[0] + para_o_olho[0], para_a_luz[1] + para_o_olho[1],
+                        para_a_luz[2] + para_o_olho[2]};
+      Normalizar3(meio);
+      brilho = std::pow(std::max(0.0, Ponto3(n_unit, meio)),
+                        static_cast<double>(material.brilho));
+    }
+    for (int c = 0; c < 3; ++c) {
+      saida[c] += static_cast<float>(
+          peso * (static_cast<double>(ambiente[c]) * luz.ambiente[c] +
+                  static_cast<double>(difusa[c]) * luz.difusa[c] * n_l +
+                  static_cast<double>(material.especular[c]) * luz.especular[c] * brilho));
+    }
+  }
+
+  Rgba r;
+  const auto canal = [](float v) { return static_cast<std::uint8_t>(Apertar01(v) * 255.0f + 0.5f); };
+  r.r = canal(saida[0]);
+  r.g = canal(saida[1]);
+  r.b = canal(saida[2]);
+  // O ALFA VEM DA DIFUSA DO MATERIAL, e NAO da soma dos canais: todas as luzes
+  // tem alfa 1, e somar alfa de luz deixa tudo opaco -- que e o contrario do que
+  // um titulo que desenhe geometria iluminada com transparencia quer.
+  r.a = canal(difusa[3]);
+  return r;
 }
 
 Rasterizador::Vertice Rasterizador::InterpolarVertice(const Vertice& a, const Vertice& b, double t) {
@@ -373,6 +710,18 @@ Rgba Rasterizador::AmostrarTextura(const EstadoDeRasterizacao& e, float u, float
 
 void Rasterizador::EscreverPixel(const EstadoDeRasterizacao& e, int x, int y, float profundidade,
                                  Rgba cor) {
+  // 1. O ALPHA TEST. Vem ANTES de tudo (como no zeebx): o fragmento que ele
+  //    descarta nao escreve cor, nao escreve profundidade e nao chega a
+  //    mistura. O alfa do fragmento entra em [0,1] porque a referencia do
+  //    `glAlphaFuncx` e um GLfixed nessa faixa -- comparar um byte 0..255 com
+  //    uma referencia 0..1 seria comparar duas escalas diferentes.
+  if (e.teste_de_alfa) {
+    const float alfa = static_cast<float>(cor.a) / 255.0f;
+    if (!Comparar(e.funcao_de_alfa, alfa, e.alfa_de_referencia)) {
+      ++descartados_alfa_;
+      return;
+    }
+  }
   const int l = superficie_.Largura();
   const int a = superficie_.Altura();
   if (x < 0 || y < 0 || x >= l || y >= a) return;
@@ -397,7 +746,45 @@ void Rasterizador::EscreverPixel(const EstadoDeRasterizacao& e, int x, int y, fl
     // o `GL_DEPTH_TEST` desligado um `glDepthMask(GL_TRUE)` nao escreve nada.
     if (e.escrever_profundidade) profundidade_[indice] = profundidade;
   }
-  superficie_.Escrever(x, y, Para565(cor));
+
+  // 2. A MISTURA E A MASCARA DE COR, as duas contra o pixel que JA esta la.
+  //    A leitura do destino so acontece quando uma das duas a pede: um titulo
+  //    sem `GL_BLEND` e com a mascara por omissao escreve sem ler nada, e paga
+  //    o mesmo que pagava antes desta capacidade existir.
+  std::uint32_t escrito = Para565(cor);
+  const bool mascara_limpa = (e.mascara_de_cor == 0x0000000Fu);
+  if (e.mistura_ligada || !mascara_limpa) {
+    const std::uint32_t destino565 = superficie_.Ler(x, y);
+    if (e.mistura_ligada) {
+      float origem[4] = {static_cast<float>(cor.r) / 255.0f, static_cast<float>(cor.g) / 255.0f,
+                         static_cast<float>(cor.b) / 255.0f, static_cast<float>(cor.a) / 255.0f};
+      float destino[4];
+      CorDoDestino(destino565, destino);
+      float misturado[4];
+      for (int c = 0; c < 4; ++c) {
+        const float f_origem = FatorDeMistura(e.mistura_fonte, origem, destino, c);
+        const float f_destino = FatorDeMistura(e.mistura_destino, origem, destino, c);
+        misturado[c] = Apertar01(origem[c] * f_origem + destino[c] * f_destino);
+      }
+      // O CANAL ALFA DO RESULTADO NAO TEM ONDE SER GUARDADO (a tela e RGB565):
+      // ele fica calculado e e descartado na escrita, como o alfa do fragmento.
+      // Todos os quatro canais entram na conta porque um factor `GL_DST_ALPHA`
+      // le o alfa do DESTINO, e esse existe (vale 1).
+      escrito = Para565(DeBits(misturado));
+    }
+    if (!mascara_limpa) {
+      // A MASCARA DE COR. Os canais proibidos ficam com o que o destino ja
+      // tinha -- o que uma passada anterior deixou ali. A mascara e aplicada em
+      // BITS do RGB565, e nao num vaivem de 8 bits: um canal que fica tem de
+      // ficar EXACTAMENTE como estava, e nao arredondado por uma ida e volta.
+      std::uint32_t mascara = 0;
+      if ((e.mascara_de_cor & 0x1u) != 0) mascara |= 0xF800u;  // vermelho
+      if ((e.mascara_de_cor & 0x2u) != 0) mascara |= 0x07E0u;  // verde
+      if ((e.mascara_de_cor & 0x4u) != 0) mascara |= 0x001Fu;  // azul
+      escrito = (escrito & mascara) | (destino565 & ~mascara);
+    }
+  }
+  superficie_.Escrever(x, y, escrito);
   ++pixels_;
 }
 
@@ -497,7 +884,12 @@ void Rasterizador::RasterizarTriangulo(const EstadoDeRasterizacao& e, const Vert
         cor.r = static_cast<std::uint8_t>(std::min(255.0, pwa * a.cor.r + pwb * b.cor.r + pwc * c.cor.r + 0.5));
         cor.g = static_cast<std::uint8_t>(std::min(255.0, pwa * a.cor.g + pwb * b.cor.g + pwc * c.cor.g + 0.5));
         cor.b = static_cast<std::uint8_t>(std::min(255.0, pwa * a.cor.b + pwb * b.cor.b + pwc * c.cor.b + 0.5));
-        cor.a = 255;
+        // O ALFA E INTERPOLADO, e nao fixo a 255: a tela nao tem buffer de
+        // alfa (ponto 8 do cabecalho) e o pixel escrito continua opaco, mas a
+        // MISTURA e o ALPHA TEST leem ESTE alfa. Com o 255 de antes, um
+        // `GL_SRC_ALPHA` valia sempre 1 e o `GL_ALPHA_TEST` nunca descartava
+        // nada -- duas capacidades ligadas e inertes.
+        cor.a = static_cast<std::uint8_t>(std::min(255.0, pwa * a.cor.a + pwb * b.cor.a + pwc * c.cor.a + 0.5));
       }
       if (e.textura_ligada) {
         const float u = static_cast<float>(pwa * a.u + pwb * b.u + pwc * c.u);

@@ -1302,9 +1302,12 @@ TEST(FrenteIgl2, OMapaNovoServeOsSlotsQueFaltavamEOLerDaPilhaContinuaCerto) {
   b.cpu.Set(kR2, GL_ONE_MINUS_SRC_ALPHA);
   EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_BlendFunc, b.traco));
   EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
-  const auto* bf = EstadoDoIgles11()->Parametro(kIgl_BlendFunc, 0u);
-  ASSERT_NE(bf, nullptr);
-  EXPECT_EQ((*bf)[0], GL_SRC_ALPHA);
+  // O `glBlendFunc` DEIXOU DE SER "SO ACUMULADO": a frente rast2 deu-lhe um
+  // consumidor (o rasterizador mistura), e o que este teste tem de afirmar
+  // passou a ser o ESTADO, e nao um mapa que ninguem le. Um teste que
+  // continuasse a ler o `Parametro` passava a provar o caminho antigo.
+  EXPECT_EQ(EstadoDoIgles11()->MisturaFonte(), GL_SRC_ALPHA);
+  EXPECT_EQ(EstadoDoIgles11()->MisturaDestino(), GL_ONE_MINUS_SRC_ALPHA);
 }
 
 }  // namespace

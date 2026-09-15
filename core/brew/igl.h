@@ -267,6 +267,13 @@ class Igl {
   bool ArrayDeClienteLigado(std::uint32_t array) const;
   const ArrayDeVertices* Array(std::uint32_t array) const;
   std::uint32_t Viewport(int indice) const;
+  // A MISTURA E O ALPHA TEST, como o `glBlendFunc`/`glAlphaFuncx` os deixaram.
+  // Sao observaveis porque um estado que so existe dentro do retrato do
+  // desenho nao se pode testar sem desenhar.
+  std::uint32_t MisturaFonte() const { return mistura_fonte_; }
+  std::uint32_t MisturaDestino() const { return mistura_destino_; }
+  std::uint32_t FuncaoDeAlfa() const { return funcao_de_alfa_; }
+  float AlfaDeReferencia() const { return alfa_de_referencia_; }
   std::uint32_t CullFace() const { return cull_face_; }
   std::uint32_t FrontFace() const { return front_face_; }
   std::uint32_t ShadeModel() const { return shade_model_; }
@@ -283,6 +290,11 @@ class Igl {
   // SDK os entrega: converter para 16.16 era inventar precisao que o pedido nao
   // tem (o `Fixo` faz o contrario, e por isso nao se usa aqui).
   const std::vector<float>* ParametroDeLuz(std::uint32_t luz, std::uint32_t pname) const;
+  // A POSICAO (e a direccao do holofote) EM COORDENADAS DE OLHO, que e o que o
+  // `glLightfv(GL_POSITION)` guarda: o vector passa pela modelview do INSTANTE
+  // da chamada. Guardar as coordenadas de objecto e transformar na hora do
+  // desenho parece igual e nao e -- a luz andaria junto com cada modelo.
+  const std::vector<float>* ParametroDeLuzEmOlho(std::uint32_t luz, std::uint32_t pname) const;
   const std::vector<float>* ParametroDeMaterial(std::uint32_t face, std::uint32_t pname) const;
   std::uint64_t Limpezas() const { return limpezas_; }
   std::uint64_t Desenhos() const { return desenhos_; }
@@ -334,6 +346,16 @@ class Igl {
   std::uint32_t depth_func_ = gl_slots::GL_LESS;
   bool depth_mask_ = true;
   std::uint32_t color_mask_ = 0x0000000Fu;
+  // A MISTURA E O ALPHA TEST. As omissoes sao as do GL: `glBlendFunc(GL_ONE,
+  // GL_ZERO)` (copiar) e `glAlphaFuncx(GL_ALWAYS, 0)` (nao descartar). Sem
+  // estas duas linhas, um titulo que ligue o `GL_BLEND` e chame o
+  // `glBlendFunc` ficava com o pedido acumulado num `parametros_` que o
+  // rasterizador nao le -- foi o estado em que rmp e gof estavam: o pedido
+  // chegava, era aceite, e nenhum pixel mudava.
+  std::uint32_t mistura_fonte_ = gl_slots::GL_ONE;
+  std::uint32_t mistura_destino_ = gl_slots::GL_ZERO;
+  std::uint32_t funcao_de_alfa_ = gl_slots::GL_ALWAYS;
+  float alfa_de_referencia_ = 0.0f;
   std::map<std::uint32_t, std::uint32_t> interruptores_;
   std::map<std::uint32_t, bool> arrays_de_cliente_;
   std::map<std::uint32_t, ArrayDeVertices> arrays_;
@@ -345,6 +367,7 @@ class Igl {
   // (luz << 32) | pname e (face << 32) | pname. A chave e de 64 bits porque as
   // duas grandezas sao `AEEGLenum` de 32.
   std::map<std::uint64_t, std::vector<float>> luzes_;
+  std::map<std::uint64_t, std::vector<float>> luzes_em_olho_;
   std::map<std::uint64_t, std::vector<float>> materiais_;
   std::uint64_t limpezas_ = 0, desenhos_ = 0, vertices_ = 0;
   std::uint64_t chamadas_ = 0;

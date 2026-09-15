@@ -147,6 +147,9 @@ constexpr std::uint32_t GL_EMISSION = 0x1600u;
 constexpr std::uint32_t GL_SHININESS = 0x1601u;
 constexpr std::uint32_t GL_AMBIENT_AND_DIFFUSE = 0x1602u;
 constexpr std::uint32_t GL_LIGHT0 = 0x4000u;
+// A AMBIENTE DA CENA. Nao esta no `.inc` gerado, e o valor e o do cabecalho:
+//   gles_1_0/gl.h:255  GL_LIGHT_MODEL_AMBIENT 0x0B53
+constexpr std::uint32_t GL_LIGHT_MODEL_AMBIENT = 0x0B53u;
 // O GL ES 1.x garante OITO luzes (`GL_MAX_LIGHTS`, gl.h:223, e 8). O valor da
 // MAQUINA nao foi medido: o limite aqui e o que a especificacao garante, e um
 // indice acima dele recusa com essa razao escrita, em vez de inventar um numero.
@@ -185,6 +188,22 @@ const Pname* AcharPname(const Pname (&tabela)[N], std::uint32_t pname) {
   return nullptr;
 }
 
+// UM VECTOR DE 4 PASSADO PELA MODELVIEW CORRENTE. E o que o `glLightfv` faz com
+// a POSICAO da luz (e com a direccao do holofote, com w = 0): a luz passa a
+// viver em coordenadas de olho, onde o rasterizador a sabe usar.
+void AplicarNaMatriz(const float* m, const float* v, float* saida) {
+  for (int r = 0; r < 4; ++r) {
+    saida[r] = m[0 * 4 + r] * v[0] + m[1 * 4 + r] * v[1] + m[2 * 4 + r] * v[2] + m[3 * 4 + r] * v[3];
+  }
+}
+
+// Um valor guardado como GLfixed (16.16) para `float`. Os `xv` desta casa
+// guardam as palavras cruas do guest, e um deles e a unica fonte da ambiente da
+// cena (`glLightModelxv`).
+float RealDoFixo(std::uint32_t bits) {
+  return static_cast<float>(static_cast<std::int32_t>(bits)) / 65536.0f;
+}
+
 // A chave do estado de luz / material: (luz ou face) e o `pname`.
 std::uint64_t ChaveDoAlvo(std::uint32_t alvo, std::uint32_t pname) {
   return (static_cast<std::uint64_t>(alvo) << 32) | pname;
@@ -217,6 +236,19 @@ const Capacidade kCapacidades[] = {
     // As duas MEDIDAS no corpus (ver o bloco acima, com a linha do cabecalho).
     {GL_RESCALE_NORMAL, "GL_RESCALE_NORMAL"},
     {GL_COLOR_MATERIAL, "GL_COLOR_MATERIAL"},
+    // AS OITO LUZES. `glEnable(GL_LIGHT0)` NAO e uma capacidade desconhecida: e
+    // a luz 0, e sem estes nomes ela era RECUSADA -- medido, 299 recusas por
+    // corrida em rmp (`slot=28 args=[00004000 ...]`), que e uma luz que o
+    // titulo liga e o emulador diz nao conhecer.
+    //   gles/gles_1_0/gl.h:461-468  GL_LIGHT0 0x4000 ... GL_LIGHT7 0x4007
+    {GL_LIGHT0 + 0u, "GL_LIGHT0"},
+    {GL_LIGHT0 + 1u, "GL_LIGHT1"},
+    {GL_LIGHT0 + 2u, "GL_LIGHT2"},
+    {GL_LIGHT0 + 3u, "GL_LIGHT3"},
+    {GL_LIGHT0 + 4u, "GL_LIGHT4"},
+    {GL_LIGHT0 + 5u, "GL_LIGHT5"},
+    {GL_LIGHT0 + 6u, "GL_LIGHT6"},
+    {GL_LIGHT0 + 7u, "GL_LIGHT7"},
 };
 const char* NomeDaCapacidade(std::uint32_t cap) {
   for (const auto& c : kCapacidades) {
@@ -394,32 +426,115 @@ video::EstadoDeRasterizacao Igl::MontarEstado() const {
   e.descartar_face = cull_face_;
   e.orientacao_da_frente = front_face_;
 
+  // A MISTURA, O ALPHA TEST E A MASCARA DE COR. Os tres vao para o retrato
+  // porque os tres decidem pixel: a mistura soma contra o destino, o teste
+  // descarta o fragmento, a mascara preserva os canais que proibe.
+  e.mistura_ligada = InterruptorLigado(GL_BLEND);
+  e.mistura_fonte = mistura_fonte_;
+  e.mistura_destino = mistura_destino_;
+  e.teste_de_alfa = InterruptorLigado(GL_ALPHA_TEST);
+  e.funcao_de_alfa = funcao_de_alfa_;
+  e.alfa_de_referencia = alfa_de_referencia_;
+  e.mascara_de_cor = color_mask_;
+
+  // --- A LUZ, O MATERIAL E AS NORMAIS -------------------------------------
+  //
+  // O MATERIAL E UM SO: no GL ES 1.x nao ha iluminacao de dois lados, e a face
+  // do `glMaterialfv` nao muda a conta (guarda-se, e o pedido fica observavel em
+  // `ParametroDeMaterial`). As OITO luzes vao todas: um titulo que ligue a luz 3
+  // e nao a 0 tem de a ter ligada no retrato.
+  e.iluminacao_ligada = InterruptorLigado(GL_LIGHTING);
+  e.cor_do_material = InterruptorLigado(GL_COLOR_MATERIAL);
+  e.normalizar_normais = InterruptorLigado(GL_NORMALIZE);
+  e.reescalar_normais = InterruptorLigado(GL_RESCALE_NORMAL);
+  copiar(GL_NORMAL_ARRAY, &e.normais);
+  {
+    // A ORDEM DE PROCURA E `FRONT_AND_BACK`, `FRONT`, `BACK`: o GL escreve o
+    // material dos dois lados com o primeiro, e com material unico os tres sao o
+    // mesmo objecto.
+    const std::uint32_t faces[3] = {GL_FRONT_AND_BACK, GL_FRONT, GL_BACK};
+    const auto do_material = [&](std::uint32_t pname, float* destino) {
+      for (const std::uint32_t face : faces) {
+        const std::vector<float>* v = ParametroDeMaterial(face, pname);
+        if (v == nullptr) continue;
+        for (std::size_t k = 0; k < v->size() && k < 4; ++k) destino[k] = (*v)[k];
+        return;
+      }
+    };
+    // O `GL_AMBIENT_AND_DIFFUSE` escreve nos DOIS, e e aplicado PRIMEIRO: a
+    // ordem entre ele e os dois `pname` separados nao e guardada (o mapa guarda
+    // um valor por `pname`), e o valor explicito a ganhar e a leitura mais
+    // conservadora.
+    do_material(GL_AMBIENT_AND_DIFFUSE, e.material.ambiente);
+    do_material(GL_AMBIENT_AND_DIFFUSE, e.material.difusa);
+    do_material(GL_AMBIENT, e.material.ambiente);
+    do_material(GL_DIFFUSE, e.material.difusa);
+    do_material(GL_SPECULAR, e.material.especular);
+    do_material(GL_EMISSION, e.material.emissao);
+    do_material(GL_SHININESS, &e.material.brilho);
+  }
+  for (std::uint32_t i = 0; i < kLuzesDoGlEs; ++i) {
+    const std::uint32_t nome = GL_LIGHT0 + i;
+    video::EstadoDeRasterizacao::Luz& luz = e.luzes[i];
+    luz.ligada = InterruptorLigado(nome);
+    const auto valor = [&](std::uint32_t pname, float* destino, int quantos) {
+      // A POSICAO VEM DA COPIA EM COORDENADAS DE OLHO quando existe; as outras
+      // grandezas sao cores e numeros, e valem iguais nos dois espacos.
+      const std::vector<float>* em_olho = ParametroDeLuzEmOlho(nome, pname);
+      const std::vector<float>* v = (em_olho != nullptr) ? em_olho : ParametroDeLuz(nome, pname);
+      if (v == nullptr) return;  // sem pedido: fica a omissao do GL
+      for (int k = 0; k < quantos && k < static_cast<int>(v->size()); ++k) {
+        destino[k] = (*v)[static_cast<std::size_t>(k)];
+      }
+    };
+    valor(GL_AMBIENT, luz.ambiente, 4);
+    valor(GL_DIFFUSE, luz.difusa, 4);
+    valor(GL_SPECULAR, luz.especular, 4);
+    valor(GL_POSITION, luz.posicao, 4);
+    valor(GL_SPOT_DIRECTION, luz.direcao_do_holofote, 3);
+    valor(GL_SPOT_EXPONENT, &luz.exponente_do_holofote, 1);
+    valor(GL_SPOT_CUTOFF, &luz.corte_do_holofote, 1);
+    valor(GL_CONSTANT_ATTENUATION, &luz.atenuacao[0], 1);
+    valor(GL_LINEAR_ATTENUATION, &luz.atenuacao[1], 1);
+    valor(GL_QUADRATIC_ATTENUATION, &luz.atenuacao[2], 1);
+  }
+  // A AMBIENTE DA CENA (`glLightModelxv(GL_LIGHT_MODEL_AMBIENT, ...)`, valores
+  // em GLfixed). Sem pedido fica a omissao do GL que o retrato ja tem.
+  //
+  // AS VARIANTES `x`/`xv` DE LUZ E MATERIAL (`glLightxv`, `glMaterialxv`) NAO
+  // ALIMENTAM ESTE RETRATO, e isso fica dito: elas guardam palavras CRUAS do
+  // guest num mapa diferente, e nenhum dos titulos medidos deste corpus as
+  // chama (o traco de gof, rmp, pbc, pacmania e tekken2 nao tem uma linha
+  // `glLightxv`/`glMaterialxv`). Implementa-las as cegas seria adivinhar a
+  // escala dos valores.
+  if (const std::vector<std::uint32_t>* v = Parametro(kIgl_LightModelxv, GL_LIGHT_MODEL_AMBIENT);
+      v != nullptr) {
+    for (std::size_t k = 0; k < v->size() && k < 4; ++k) {
+      e.ambiente_da_cena[k] = RealDoFixo((*v)[k]);
+    }
+  }
+
   // O QUE OS TITULOS LIGARAM E O RASTERIZADOR NAO FAZ. Cada nome vai para o
   // traco (uma vez, no `RegistarRessalvas`), com o nome do que falta -- e nao em
   // silencio, que foi o que o `glCullFace` fez 86 377 vezes na arvore antiga.
+  // A TABELA ENCOLHEU (frente rast2): `GL_BLEND`, `GL_ALPHA_TEST` e a mascara de
+  // cor, e depois `GL_LIGHTING`, `GL_NORMALIZE`, `GL_RESCALE_NORMAL` e
+  // `GL_COLOR_MATERIAL`, SAIRAM dela porque o rasterizador passou a faze-las.
+  // Uma capacidade que deixa de faltar TEM de sair desta lista: uma linha a
+  // dizer que falta, com o codigo a faze-la, e a mentira simetrica do stub mudo.
   const struct { std::uint32_t cap; const char* nome; } por_fazer[] = {
-      {GL_BLEND, "blending_de_GL_sem_rasterizador"},
-      {GL_LIGHTING, "iluminacao_de_GL_sem_rasterizador"},
       {GL_FOG, "nevoa_de_GL_sem_rasterizador"},
-      {GL_ALPHA_TEST, "alpha_test_de_GL_sem_rasterizador"},
-      {GL_NORMALIZE, "normalizacao_de_normais_sem_rasterizador"},
       {GL_POLYGON_OFFSET_FILL, "polygon_offset_sem_rasterizador"},
       {GL_SCISSOR_TEST, "scissor_sem_rasterizador"},
       {GL_DITHER, "dithering_sem_rasterizador"},
-      // AS DUAS QUE O TITULO LIGA E O RASTERIZADOR NAO FAZ (medidas: gof, rmp e
-      // pbc ligam GL_RESCALE_NORMAL; tekken2 DESLIGA GL_COLOR_MATERIAL). Ficam
-      // nomeadas como as outras: uma capacidade ligada que nao muda nenhum pixel
-      // tem de ficar dita, e nao em silencio -- foi o silencio do `glCullFace`
-      // que descartou 86 377 chamadas na arvore antiga.
-      {GL_RESCALE_NORMAL, "rescaling_de_normais_sem_iluminacao"},
-      {GL_COLOR_MATERIAL, "cor_do_material_sem_iluminacao"},
   };
   for (const auto& f : por_fazer) {
     if (InterruptorLigado(f.cap)) e.capacidades_por_fazer.push_back(f.nome);
   }
-  if (color_mask_ != 0x0000000Fu) {
-    e.capacidades_por_fazer.push_back("glColorMask_de_GL_sem_rasterizador");
-  }
+  // A MASCARA DE COR SAIU DA LISTA DAS FALTAS: o rasterizador aplica-a contra o
+  // pixel que ja esta la (`EscreverPixel`), e por isso um titulo que proiba um
+  // canal ja nao precisa de ser avisado de que o pedido dele nao vale nada.
+
   // O FILTRO DA TEXTURA. O rasterizador amostra sempre o texel mais proximo; um
   // titulo que peca GL_LINEAR fica com essa diferenca escrita, e nao silenciosa.
   for (const std::uint32_t pname : {GL_TEXTURE_MIN_FILTER, GL_TEXTURE_MAG_FILTER}) {
@@ -536,6 +651,11 @@ const std::vector<std::uint32_t>* Igl::Parametro(std::uint32_t slot, std::uint32
 const std::vector<float>* Igl::ParametroDeLuz(std::uint32_t luz, std::uint32_t pname) const {
   const auto it = luzes_.find(ChaveDoAlvo(luz, pname));
   return it == luzes_.end() ? nullptr : &it->second;
+}
+
+const std::vector<float>* Igl::ParametroDeLuzEmOlho(std::uint32_t luz, std::uint32_t pname) const {
+  const auto it = luzes_em_olho_.find(ChaveDoAlvo(luz, pname));
+  return it == luzes_em_olho_.end() ? nullptr : &it->second;
 }
 
 const std::vector<float>* Igl::ParametroDeMaterial(std::uint32_t face, std::uint32_t pname) const {
@@ -1055,8 +1175,23 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
       parametros_[ChaveDeParametro(slot, a.reg[0])] = {a.reg[1]};
       return feito(2);
     }
-    case kIgl_BlendFunc:
-    case kIgl_AlphaFuncx:
+    // O `glBlendFunc(fonte, destino)` e o `glAlphaFuncx(funcao, referencia)`.
+    // Estes DOIS nao ficam so acumulados: o rasterizador tem caminho para os
+    // dois (a mistura e o alpha test), e um pedido guardado num mapa que
+    // ninguem le e indistinguivel de um pedido perdido.
+    case kIgl_BlendFunc: {
+      mistura_fonte_ = a.reg[0];
+      mistura_destino_ = a.reg[1];
+      return feito(2);
+    }
+    case kIgl_AlphaFuncx: {
+      // A REFERENCIA E GLfixed (16.16) e entra em [0,1]: e a faixa em que o
+      // alfa do fragmento vive, e era por comparar duas escalas diferentes que
+      // o teste do alpha test passava verde com a guarda arrancada.
+      funcao_de_alfa_ = a.reg[0];
+      alfa_de_referencia_ = Apertar(Fixo(1, a), 0.0f, 1.0f);
+      return feito(2);
+    }
     case kIgl_DepthRangex:
     case kIgl_Hint:
     case kIgl_PolygonOffsetx:
@@ -1138,6 +1273,21 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
         valores.push_back(RealDaMemoria(params + 4u * static_cast<std::uint32_t>(k)));
       }
       (e_luz ? luzes_ : materiais_)[ChaveDoAlvo(alvo, pname)] = valores;
+      if (e_luz && valores.size() >= 3) {
+        // A POSICAO E A DIRECCAO DO HOLOFOTE SAO GUARDADAS EM COORDENADAS DE
+        // OLHO, e nao na coordenada em que o titulo as escreveu: e a definicao
+        // do `glLight` (a transformacao e feita pela modelview do instante da
+        // chamada), e e a razao por que uma luz de cena fica parada enquanto o
+        // carro anda. So estes dois `pname` a levam; os outros sao cores.
+        if (pname == GL_POSITION || pname == GL_SPOT_DIRECTION) {
+          const float w = (pname == GL_POSITION && valores.size() >= 4) ? valores[3] : 0.0f;
+          const float v[4] = {valores[0], valores[1], valores[2], w};
+          float em_olho[4];
+          AplicarNaMatriz(mv_.m[mv_.topo], v, em_olho);
+          luzes_em_olho_[ChaveDoAlvo(alvo, pname)] =
+              std::vector<float>(em_olho, em_olho + 4);
+        }
+      }
       std::string texto;
       for (std::size_t k = 0; k < valores.size(); ++k) {
         char v[32];

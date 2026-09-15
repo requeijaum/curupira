@@ -70,6 +70,14 @@ struct Gravador final : public Superficie {
     limpou = true;
     cor_da_limpeza = c;
   }
+  // A LEITURA DO DESTINO. Devolve o que foi escrito (e zero, preto, onde nada
+  // foi): e o que a mistura e a mascara de cor leem. Sem ela nao haveria como
+  // afirmar o pixel MISTURADO, e um teste do `GL_DST_COLOR` sobre um destino
+  // preto nao distingue "leu o destino" de "nao leu nada".
+  std::uint32_t Ler(int x, int y) const override {
+    const auto it = pixels.find({x, y});
+    return it == pixels.end() ? 0u : it->second;
+  }
 
   bool SoEstePixel(int x, int y, std::uint32_t cor) const {
     const auto it = pixels.find({x, y});
@@ -347,14 +355,25 @@ struct Bancada {
   }
 
   // O TRIANGULO DO PRIMEIRO TESTE, montado pelos slots do IGL como um titulo
-  // faria: o array de vertices, o estado de cliente e a cor.
-  void PrepararTriangulo(Endereco vertices) {
+  // faria: o array de vertices, o estado de cliente e a cor. O alfa e um
+  // argumento com omissao OPACA porque e ele que o alpha test e a mistura leem:
+  // um titulo que o mude tem de o poder dizer por este mesmo caminho.
+  void PrepararTriangulo(Endereco vertices, float alfa = 1.0f) {
     Ch(kIgl_Viewport, 0, 0, 8, 8);
     PorVertices(mem, vertices, {{-1.0f, 0.75f}, {-1.0f, 0.0f}, {0.0f, 0.0f}});
     EXPECT_EQ(Ch(kIgl_VertexPointer, 3, GL_FLOAT, 12, vertices), zb2::brew::ResultadoGl::Feito);
     EXPECT_EQ(Ch(kIgl_EnableClientState, GL_VERTEX_ARRAY), zb2::brew::ResultadoGl::Feito);
-    EXPECT_EQ(Ch(kIgl_Color4x, Fixo(1.0f), Fixo(0.0f), Fixo(0.0f), Fixo(1.0f)),
+    EXPECT_EQ(Ch(kIgl_Color4x, Fixo(1.0f), Fixo(0.0f), Fixo(0.0f), Fixo(alfa)),
               zb2::brew::ResultadoGl::Feito);
+  }
+
+  // As faltas registadas no traco. Uma capacidade que passa a ser feita TEM de
+  // sair da lista: "nao ha falta" e a outra metade do teste, e a metade que
+  // apanha a tabela `por_fazer` a mentir.
+  std::size_t Faltas(const std::string& nome) const {
+    const auto& f = traco.ContagemFaltas();
+    const auto it = f.find(nome);
+    return it == f.end() ? 0 : static_cast<std::size_t>(it->second);
   }
 };
 
@@ -739,15 +758,17 @@ TEST(Rasterizador, CapacidadeLigadaSemCaminhoEntraNasFaltasUmaVezSo) {
   b.igl.DefinirTela(&b.tela);
   constexpr Endereco kV = 0x00100000;
   b.PrepararTriangulo(kV);
-  EXPECT_EQ(b.Ch(kIgl_Enable, GL_BLEND), zb2::brew::ResultadoGl::Feito);
-  EXPECT_EQ(b.Ch(kIgl_BlendFunc, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA),
-            zb2::brew::ResultadoGl::Feito);
+  // A CAPACIDADE DESTE TESTE PASSOU A SER O `GL_FOG`: ele continua por fazer,
+  // e um teste que continuasse a ligar o `GL_BLEND` passaria a provar o
+  // contrario do que diz -- a lista `por_fazer` do `igl.cpp` ja nao tem o
+  // blending, porque o rasterizador passou a misturar (frente rast2).
+  EXPECT_EQ(b.Ch(kIgl_Enable, GL_FOG), zb2::brew::ResultadoGl::Feito);
   EXPECT_EQ(b.Ch(kIgl_DrawArrays, GL_TRIANGLES, 0, 3), zb2::brew::ResultadoGl::Feito);
   EXPECT_EQ(b.Ch(kIgl_DrawArrays, GL_TRIANGLES, 0, 3), zb2::brew::ResultadoGl::Feito);
   // UMA VEZ, e nao uma por desenho: um titulo de 60 quadros escreveria a mesma
-  // linha 60 vezes. Mas UMA vez, e nao zero: o blending nao existe, e isso tem
-  // de aparecer.
-  EXPECT_EQ(b.traco.ContagemFaltas().at("blending_de_GL_sem_rasterizador"), 1u);
+  // linha 60 vezes. Mas UMA vez, e nao zero: a nevoa nao existe, e isso tem de
+  // aparecer.
+  EXPECT_EQ(b.traco.ContagemFaltas().at("nevoa_de_GL_sem_rasterizador"), 1u);
   // E o desenho ACONTECE na mesma: a cor sai opaca no lugar de nada.
   EXPECT_EQ(b.tela.Escritos(), 12u);
 }
@@ -885,6 +906,535 @@ TEST(Rasterizador, OTrianguloTotalmenteAtrasDoPlanoProximoEDescartado) {
   EXPECT_EQ(r.Pixels(), 0u);
   EXPECT_EQ(r.TriangulosRecortados(), 0u);
   EXPECT_EQ(r.TriangulosDescartados(), 1u);
+}
+
+// ---------------------------------------------------------------------------
+// 7. A FRENTE rast2: A MISTURA, O ALPHA TEST E A MASCARA DE COR
+// ---------------------------------------------------------------------------
+//
+// A DEMANDA MEDIDA (`/tmp/corrida_igl2.json`, ZB2_QUADROS=300
+// ZB2_EVT_START=1, 62 titulos): `blending_de_GL_sem_rasterizador` em gof,
+// pacmania e rmp. Os tres DESENHAM (gof 90 316 800 pixels, rmp 91 852 800,
+// pacmania 1 454 944 807) e a Tela tem UMA cor: o rasterizador escrevia a cor
+// calculada e mais nada, e um jogo que desenha tudo por cima de um fundo com
+// `GL_SRC_ALPHA` sai chapado.
+//
+// O QUE OS TITULOS PEDEM, contado no traco (ZB2_TRACE=1, um titulo por vez):
+//
+//   rmp: glEnable(GL_BLEND) 1 196x, glBlendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA)
+//        897x, glBlendFunc(ONE, ONE) 897x, glBlendFunc(ZERO,
+//        ONE_MINUS_SRC_COLOR) 299x
+//   gof: glEnable(GL_BLEND) 294x, glBlendFunc(SRC_ALPHA,
+//        ONE_MINUS_SRC_ALPHA) 294x
+//
+// Os pedidos CHEGAVAM (a chamada respondia `feito`) e nao mudavam pixel nenhum:
+// o estado ia para um mapa que o rasterizador nao le. **Um estado acumulado que
+// ninguem consome e indistinguivel de um pedido perdido.**
+
+// O `gl_slots.inc` GERADO nao tem os factores de mistura: o bloco que os
+// justifica esta em `core/video/rasterizador.cpp`, com a linha do cabecalho do
+// SDK (`gles/gles_1_0/gl.h:112-124`). Aqui fica so o que estes testes usam.
+constexpr std::uint32_t kGlOneMinusSrcColor = 0x0301u;  // gl.h:113
+
+// O TRIANGULO DE SEIS PIXELS, o das outras secoes: (0,1) (0,2) (1,2) (0,3)
+// (1,3) (2,3) da janela 8x8. A COR DA ORIGEM e um argumento porque cada teste
+// mistura uma cor diferente, e a conta esta escrita em cada um.
+void DesenharSeisPixels(Rasterizador* r, Memoria& mem, const EstadoDeRasterizacao& e) {
+  constexpr Endereco kV = 0x00100000;
+  PorVertices(mem, kV, {{-1.0f, 0.75f}, {-1.0f, 0.0f}, {0.0f, 0.0f}});
+  EstadoDeRasterizacao est = e;
+  est.vertices = {true, 3, GL_FLOAT, 12, kV};
+  PedidoDeDesenho p;
+  p.primitiva = GL_TRIANGLES;
+  p.quantos = 3;
+  std::string motivo;
+  ASSERT_TRUE(r->Desenhar(est, p, &motivo)) << motivo;
+}
+
+TEST(Rasterizador, AMisturaSomaOrigemEDestinoComOsFactoresDoGL) {
+  Memoria mem(nullptr);
+  Gravador g;
+  Rasterizador r(mem, g);
+  EstadoDeRasterizacao e = EstadoBase();
+
+  // O DESTINO JA ESCRITO: o pixel (0,1) e VERDE (0x07E0 -> (0, 1, 0)); os
+  // outros cinco continuam a preto. Um destino so num pixel e de proposito: se
+  // a mistura lesse sempre o mesmo valor (ou zero), os dois casos davam o mesmo
+  // numero e o teste nao dizia onde.
+  g.pixels[{0, 1}] = 0x07E0u;
+  // A ORIGEM: vermelho com alfa 128 -- 128/255 = 0.5019608.
+  e.cor = Rgba{255, 0, 0, 128};
+  e.mistura_ligada = true;
+  e.mistura_fonte = GL_SRC_ALPHA;              // 0x0302
+  e.mistura_destino = GL_ONE_MINUS_SRC_ALPHA;  // 0x0303
+  DesenharSeisPixels(&r, mem, e);
+
+  // A CONTA DO PIXEL (0,1), a mao, com origem (1,0,0,0.5019608) e destino
+  // (0,1,0,1):
+  //   f_origem  = alfa da origem = 0.5019608
+  //   f_destino = 1 - alfa       = 0.4980392
+  //   vermelho = 1 * 0.5019608 + 0 * 0.4980392 = 0.5019608
+  //              -> 0.5019608 * 255 + 0.5 = 128.5 -> 128 -> 128 >> 3 = 16
+  //              -> 16 << 11 = 0x8000
+  //   verde    = 0 * 0.5019608 + 1 * 0.4980392 = 0.4980392
+  //              -> 0.4980392 * 255 + 0.5 = 127.5 -> 127 -> 127 >> 2 = 31
+  //              -> 31 << 5 = 0x03E0
+  //   azul     = 0
+  //   = 0x83E0. (Sem a mistura, o pixel seria 0xF800 -- vermelho chapado -- e a
+  //   comparacao com o verde do destino desaparecia.)
+  EXPECT_EQ(g.pixels.at({0, 1}), 0x83E0u) << "o pixel misturado do destino verde";
+  // SOBRE PRETO sobra a origem, com o mesmo alfa:
+  //   vermelho = 0.5019608 -> 128 -> 0x8000 | verde = 0 | azul = 0
+  EXPECT_EQ(g.pixels.at({0, 2}), 0x8000u);
+  EXPECT_EQ(g.pixels.at({1, 2}), 0x8000u);
+  EXPECT_EQ(g.pixels.at({0, 3}), 0x8000u);
+  EXPECT_EQ(g.pixels.at({1, 3}), 0x8000u);
+  EXPECT_EQ(g.pixels.at({2, 3}), 0x8000u);
+  // E os seis pixels foram escritos UMA vez cada: a mistura nao inventa pixels.
+  EXPECT_EQ(g.escritas.size(), 6u);
+  EXPECT_EQ(g.total, 6u);
+}
+
+TEST(Rasterizador, OFactorOneMinusSrcColorMultiplicaODestino) {
+  // O TERCEIRO `glBlendFunc` medido em rmp: `(GL_ZERO, GL_ONE_MINUS_SRC_COLOR)`.
+  // E o caso que prova que o DESTINO e mesmo lido: a origem nao contribui nada
+  // (factor zero) e o resultado e o destino pesado por `(1 - cor da origem)`.
+  Memoria mem(nullptr);
+  Gravador g;
+  Rasterizador r(mem, g);
+  EstadoDeRasterizacao e = EstadoBase();
+
+  g.pixels[{0, 1}] = 0xFFFFu;  // destino BRANCO (1, 1, 1)
+  e.cor = Rgba{0, 255, 0, 255};  // origem VERDE opaco
+  e.mistura_ligada = true;
+  e.mistura_fonte = GL_ZERO;  // 0x0000
+  e.mistura_destino = kGlOneMinusSrcColor;
+  DesenharSeisPixels(&r, mem, e);
+
+  //   vermelho = 0 + 1 * (1 - 0) = 1 -> 255 -> 31 << 11 = 0xF800
+  //   verde    = 0 + 1 * (1 - 1) = 0
+  //   azul     = 0 + 1 * (1 - 0) = 1 -> 31        -> 0x001F
+  //   = 0xF81F (o verde do destino foi APAGADO pelo verde da origem).
+  EXPECT_EQ(g.pixels.at({0, 1}), 0xF81Fu);
+  // Sobre preto o destino vale (0,0,0) e o resultado e preto.
+  EXPECT_EQ(g.pixels.at({0, 2}), 0x0000u);
+  // O pixel escrito sobre preto continua a contar como escrita: a mistura nao
+  // se recusa a escrever quando a conta da zero.
+  EXPECT_EQ(g.escritas.size(), 6u);
+}
+
+TEST(Rasterizador, OAlphaTestDescartaOFragmentoAntesDeEscrever) {
+  Memoria mem(nullptr);
+  Gravador g;
+  Rasterizador r(mem, g);
+  EstadoDeRasterizacao e = EstadoBase();
+
+  // O ALFA DA ORIGEM E 64: 64/255 = 0.2509804, e o teste e `GL_GREATER` com a
+  // referencia em 0.5. O fragmento NAO passa:
+  e.cor = Rgba{255, 0, 0, 64};
+  e.teste_de_alfa = true;
+  e.funcao_de_alfa = GL_GREATER;  // 0x0204
+  e.alfa_de_referencia = 0.5f;
+  DesenharSeisPixels(&r, mem, e);
+  EXPECT_EQ(g.escritas.size(), 0u) << "o alpha test tem de descartar os seis";
+  EXPECT_EQ(g.total, 0u);
+  EXPECT_EQ(r.Pixels(), 0u);
+  // O DESCARTE E CONTADO, e nao confundido com "nao havia geometria": e a unica
+  // forma de distinguir um alpha test a funcionar de um alpha test inerte.
+  EXPECT_EQ(r.FragmentosDescartados(), 6u);
+
+  // A OUTRA DIRECCAO, com a MESMA funcao e a MESMA referencia: o alfa a 255
+  // passa, escreve os seis, e nao descarta mais nenhum. Sem esta metade, um
+  // rasterizador que nao escrevesse nada por outra razao passava no teste.
+  EstadoDeRasterizacao passa = e;
+  passa.cor = Rgba{255, 0, 0, 255};
+  DesenharSeisPixels(&r, mem, passa);
+  EXPECT_EQ(g.escritas.size(), 6u);
+  EXPECT_EQ(g.total, 6u);
+  EXPECT_EQ(r.FragmentosDescartados(), 6u) << "o segundo desenho nao descarta nada";
+}
+
+TEST(Rasterizador, AMascaraDeCorPreservaOCanalQueProibe) {
+  Memoria mem(nullptr);
+  Gravador g;
+  Rasterizador r(mem, g);
+  EstadoDeRasterizacao e = EstadoBase();
+
+  // O destino do pixel (0,1) e VERDE; a origem e VERMELHO opaco; a mascara
+  // proibe o canal VERDE (bit 1 a zero: `glColorMask(1, 0, 1, 1)`).
+  g.pixels[{0, 1}] = 0x07E0u;
+  e.cor = Rgba{255, 0, 0, 255};
+  e.mascara_de_cor = 0x5u;  // vermelho e azul sim, verde nao
+  DesenharSeisPixels(&r, mem, e);
+
+  // O CANAL PROIBIDO FICA COM O QUE LA ESTAVA: o verde do destino (0x07E0 &
+  // 0x07E0) junta-se ao vermelho que a origem escreveu (0xF800) e da 0xFFE0.
+  // Sem a mascara o pixel seria 0xF800 -- o verde de uma passada anterior
+  // apagado por um desenho que so queria mexer no vermelho.
+  EXPECT_EQ(g.pixels.at({0, 1}), 0xFFE0u);
+  // Nos outros cinco o destino e preto: a mascara nao muda nada.
+  EXPECT_EQ(g.pixels.at({0, 2}), 0xF800u);
+  EXPECT_EQ(g.pixels.at({2, 3}), 0xF800u);
+
+  // A MASCARA POR OMISSAO E A OUTRA METADE DA PROVA: o mesmo desenho com
+  // `glColorMask(1,1,1,1)` escreve 0xF800 no pixel do destino verde.
+  Gravador g2;
+  Rasterizador r2(mem, g2);
+  g2.pixels[{0, 1}] = 0x07E0u;
+  EstadoDeRasterizacao sem_mascara = e;
+  sem_mascara.mascara_de_cor = 0x0000000Fu;
+  DesenharSeisPixels(&r2, mem, sem_mascara);
+  EXPECT_EQ(g2.pixels.at({0, 1}), 0xF800u);
+}
+
+// ---------------------------------------------------------------------------
+// 8. A ILUMINACAO (`GL_LIGHTING`) E AS DUAS REGRAS QUE A DECIDEM
+// ---------------------------------------------------------------------------
+//
+// A DEMANDA MEDIDA (`/tmp/corrida_igl2.json`): `rescaling_de_normais_sem_iluminacao`
+// em gof e rmp, e um `glEnable(GL_LIGHT0)` RECUSADO 299 vezes por corrida em rmp
+// ("capacidade desconhecida") -- uma luz que o titulo liga e o emulador diz nao
+// conhecer. O rmp faz o setup completo (GL_LIGHTING, GL_LIGHT0, a posicao da
+// luz, o material com SHININESS 128 e a cor especular a 0.6) e o rasterizador
+// ignorava tudo: a cor saia do `glColor4x`, sem uma contribuicao de luz.
+
+// A NORMAIS DE UM TRIANGULO: 3 GL_FLOAT por vertice, passo 12. A normal
+// (1, 1, 0) e a mesma nos tres vertices; ela nao e normalizada no array (o
+// `GL_NORMALIZE` e que trata disso), e o comprimento de sqrt(2) fica dito.
+void PorNormais(Memoria& mem, Endereco onde, float x, float y, float z, int quantos) {
+  for (int k = 0; k < quantos; ++k) {
+    const Endereco base = onde + static_cast<Endereco>(k * 12);
+    EscreverFloat(mem, base, x);
+    EscreverFloat(mem, base + 4, y);
+    EscreverFloat(mem, base + 8, z);
+  }
+}
+
+// O ESTADO DA ILUMINACAO dos testes: UMA luz direccional (w = 0) ao longo de
+// +y, branca; material com a difusa branca e o resto a zero; a ambiente da cena
+// a zero. Com estes numeros a cor iluminada de um vertice e `N.L` em cada canal
+// -- e o teste diz o valor que isso da em RGB565.
+void LuzDireccionalEmY(EstadoDeRasterizacao* e) {
+  e->iluminacao_ligada = true;
+  e->ambiente_da_cena[0] = e->ambiente_da_cena[1] = e->ambiente_da_cena[2] = 0.0f;
+  EstadoDeRasterizacao::Aparencia& m = e->material;
+  m.ambiente[0] = m.ambiente[1] = m.ambiente[2] = 0.0f;
+  m.difusa[0] = m.difusa[1] = m.difusa[2] = 1.0f;
+  m.difusa[3] = 1.0f;
+  m.especular[0] = m.especular[1] = m.especular[2] = 0.0f;
+  m.emissao[0] = m.emissao[1] = m.emissao[2] = 0.0f;
+  m.brilho = 0.0f;
+  EstadoDeRasterizacao::Luz& l0 = e->luzes[0];
+  l0.ligada = true;
+  l0.ambiente[0] = l0.ambiente[1] = l0.ambiente[2] = 0.0f;
+  l0.difusa[0] = l0.difusa[1] = l0.difusa[2] = 1.0f;
+  l0.especular[0] = l0.especular[1] = l0.especular[2] = 0.0f;
+  l0.posicao[0] = 0.0f;
+  l0.posicao[1] = 1.0f;
+  l0.posicao[2] = 0.0f;
+  l0.posicao[3] = 0.0f;  // DIRECCIONAL: a posicao e uma direccao
+}
+
+TEST(Rasterizador, ALuzDecideACorDoVerticePeloCossenoDaNormal) {
+  Memoria mem(nullptr);
+  Gravador g;
+  Rasterizador r(mem, g);
+  EstadoDeRasterizacao e = EstadoBase();  // a cor do estado e VERMELHO opaco
+
+  // A NORMAL E (1, 1, 0), e o teste usa-a SEM a normalizar (o `GL_NORMALIZE`
+  // esta DESLIGADO neste teste): o cosseno tem de ser calculado com o vector
+  // como ele esta -- e por isso a normal e normalizada pela propria equacao da
+  // luz, que e o que o GL faz com o vector transformado.
+  constexpr Endereco kV = 0x00100000, kNormais = 0x00102000;
+  PorVertices(mem, kV, {{-1.0f, 0.75f}, {-1.0f, 0.0f}, {0.0f, 0.0f}});
+  PorNormais(mem, kNormais, 1.0f, 1.0f, 0.0f, 3);
+  e.vertices = {true, 3, GL_FLOAT, 12, kV};
+  e.normais = {true, 3, GL_FLOAT, 12, kNormais};
+  LuzDireccionalEmY(&e);
+  DesenharSeisPixels(&r, mem, e);
+
+  // A CONTA, a mao. A luz e direccional ao longo de +y, logo
+  // `para_a_luz = (0, 1, 0)`. A normal do vertice e (1, 1, 0), e a equacao
+  // normaliza os dois vectores ANTES do produto interno:
+  //   N = (1, 1, 0) / sqrt(2) = (0.70710678, 0.70710678, 0)
+  //   N . L = 0.70710678 * 0 + 0.70710678 * 1 + 0 = 0.70710678
+  //   cor   = emissao(0) + ambiente(0)*cena(0) + 1 * (0 + difusa(1) * difusa_da_luz(1) * 0.70710678)
+  //         = 0.70710678 em cada canal
+  //   8 bits: 0.70710678 * 255 + 0.5 = 180.81 -> 180 (0xB4)
+  //   565: 180 >> 3 = 22 -> 0xB000 | 180 >> 2 = 45 -> 0x05A0 | 22 -> 0x0016
+  //   = 0xB5B6
+  //
+  // SEM ILUMINACAO o mesmo desenho da 0xF800 (o vermelho do `glColor4x`): e a
+  // diferenca que este teste fixa. Com a normal A ZERO (a omissao do GL,
+  // (0,0,1), contra esta luz) a cor seria 0x0000 -- preto.
+  for (int y = 1; y <= 3; ++y) {
+    for (int x = 0; x < 3; ++x) {
+      const auto it = g.pixels.find({x, y});
+      if (it == g.pixels.end()) continue;
+      EXPECT_EQ(it->second, 0xB5B6u) << "pixel " << x << "," << y;
+    }
+  }
+  EXPECT_EQ(g.escritas.size(), 6u);
+}
+
+TEST(Rasterizador, OAlfaIluminadoVemDaDifusaDoMaterial) {
+  // A PRIMEIRA REGRA: o alfa NAO vem da soma das luzes. Todas as luzes tem alfa
+  // 1, e somar alfa de luz deixa tudo opaco -- um titulo que desenhe geometria
+  // iluminada com transparencia perde-a toda. O alfa e o da DIFUSA DO MATERIAL.
+  //
+  // A PROVA E PELO ALPHA TEST, e nao pelo canal: o alfa do fragmento nao tem
+  // onde ser guardado (a tela e RGB565), e o que se pode afirmar e o que ele
+  // DECIDE. A cor do vertice tem alfa ZERO (o `glColor4x` com o quarto
+  // argumento a zero, que e o que rmp e pacmania fazem), e o material tem a
+  // difusa com alfa 1:
+  //   - com o alfa da difusa do material, 1.0 > 0.5 -> o fragmento PASSA;
+  //   - com o alfa do vertice (0), o fragmento era descartado.
+  Memoria mem(nullptr);
+  Gravador g;
+  Rasterizador r(mem, g);
+  EstadoDeRasterizacao e = EstadoBase();
+  e.cor = Rgba{255, 255, 255, 0};  // branco com alfa ZERO
+  LuzDireccionalEmY(&e);
+  e.material.difusa[3] = 1.0f;
+  e.teste_de_alfa = true;
+  e.funcao_de_alfa = GL_GREATER;
+  e.alfa_de_referencia = 0.5f;
+  DesenharSeisPixels(&r, mem, e);
+  EXPECT_EQ(r.FragmentosDescartados(), 0u) << "o alfa da difusa do material e 1: nao descarta";
+  EXPECT_EQ(g.escritas.size(), 6u);
+
+  // E A OUTRA METADE: com a difusa do material TRANSPARENTE (alfa 0.25), o
+  // mesmo desenho e descartado. Sem esta metade, um rasterizador que nunca
+  // descartasse passava no teste de cima.
+  Gravador g2;
+  Rasterizador r2(mem, g2);
+  EstadoDeRasterizacao opaco = e;
+  opaco.material.difusa[3] = 0.25f;
+  DesenharSeisPixels(&r2, mem, opaco);
+  EXPECT_EQ(r2.FragmentosDescartados(), 6u);
+  EXPECT_EQ(g2.escritas.size(), 0u);
+}
+
+TEST(Rasterizador, OColorMaterialPoeACorDoVerticeNoLugarDaAmbienteEDaDifusa) {
+  // A SEGUNDA REGRA: com `GL_COLOR_MATERIAL` ligado, a cor do vertice toma o
+  // lugar da ambiente e da difusa do material. E o unico caminho pelo qual um
+  // vector de cores continua a valer com a luz ligada.
+  Memoria mem(nullptr);
+  Gravador g;
+  Rasterizador r(mem, g);
+  EstadoDeRasterizacao e = EstadoBase();
+  e.cor = Rgba{255, 0, 0, 255};  // VERMELHO
+  e.vertices = {true, 3, GL_FLOAT, 12, 0x00100000};
+  LuzDireccionalEmY(&e);  // material difusa BRANCA
+  // A luz passa a ser paralela a NORMAL (a omissao do GL, (0,0,1)): assim o
+  // cosseno e 1 e o que resta na cor e o MATERIAL, e mais nada.
+  e.luzes[0].posicao[0] = 0.0f;
+  e.luzes[0].posicao[1] = 0.0f;
+  e.luzes[0].posicao[2] = 1.0f;
+  EstadoDeRasterizacao sem_cor_do_material = e;
+  sem_cor_do_material.cor_do_material = false;
+  DesenharSeisPixels(&r, mem, sem_cor_do_material);
+  // SEM `GL_COLOR_MATERIAL`: manda a difusa do material, que e BRANCA ->
+  // 0.8? NAO: a difusa do material deste teste e (1, 1, 1), logo 1.0 em cada
+  // canal -> 0xFFFF.
+  EXPECT_EQ(g.pixels.at({0, 1}), 0xFFFFu);
+
+  // COM `GL_COLOR_MATERIAL`: manda a cor do vertice, VERMELHA -> 0xF800. O
+  // material branco deixa de decidir nada.
+  Gravador g2;
+  Rasterizador r2(mem, g2);
+  EstadoDeRasterizacao com = e;
+  com.cor_do_material = true;
+  DesenharSeisPixels(&r2, mem, com);
+  EXPECT_EQ(g2.pixels.at({0, 1}), 0xF800u);
+}
+
+TEST(Rasterizador, ONormalizarEReescalonarNaoMudamACorPorqueAEquacaoNormaliza) {
+  // O QUE ESTE TESTE PROVA, e o que ele NAO prova, dito por inteiro: o
+  // `GL_NORMALIZE` e o `GL_RESCALE_NORMAL` pedem que a normal que chega a
+  // equacao da luz seja UNITARIA. Nesta implementacao ela e sempre -- a equacao
+  // normaliza o vector (a receita verificada do zeebx), e por isso os dois
+  // interruptores NAO MUDAM NENHUMA COR. O que os torna observaveis e o estado
+  // (o retrato leva-os) e a SAIDA DELES DA TABELA `por_fazer` do `igl.cpp`: a
+  // falta existia porque o rasterizador nao tinha transformacao de normais
+  // nenhuma, e isso acabou.
+  //
+  // A PROVA E COM UMA NORMAL OBLIQUA E UM MODELO ESCALADO, que e o caso em que
+  // o GL define as duas correccoes:
+  //   modelview = diag(2, 2, 2) -> inversa = diag(0.5, 0.5, 0.5)
+  //   a terceira linha da inversa e (0, 0, 0.5) -> o factor de reescalonamento
+  //   e 1 / 0.5 = 2, e a normal (1, 1, 0) chega a equacao como (1, 0.5, 0) * 2
+  //   -> normalizada outra vez -> (0.7071, 0.7071, 0) -> N.L = 0.7071 com a luz
+  //   em +y, o mesmo valor do teste da iluminacao -> 0xB5B6.
+  //
+  // (Os vertices entram a METADE do tamanho porque a modelview os multiplica por
+  // dois: e a mesma janela do resto da seccao, e o que se quer medir e a cor.)
+  Memoria mem(nullptr);
+  Gravador sem_correccao;
+  Rasterizador r_sem(mem, sem_correccao);
+  EstadoDeRasterizacao e = EstadoBase();
+  e.cor = Rgba{255, 255, 255, 255};
+  for (int k = 0; k < 16; ++k) e.modelview[k] = 0.0f;
+  e.modelview[0] = 2.0f;
+  e.modelview[5] = 2.0f;
+  e.modelview[10] = 2.0f;
+  e.modelview[15] = 1.0f;
+  constexpr Endereco kV = 0x00100000, kN = 0x00102000;
+  PorVertices(mem, kV, {{-0.5f, 0.375f}, {-0.5f, 0.0f}, {0.0f, 0.0f}});
+  PorNormais(mem, kN, 1.0f, 1.0f, 0.0f, 3);
+  e.vertices = {true, 3, GL_FLOAT, 12, kV};
+  e.normais = {true, 3, GL_FLOAT, 12, kN};
+  LuzDireccionalEmY(&e);  // luz ao longo de +y, difusa e material brancos
+  DesenharSeisPixels(&r_sem, mem, e);
+  EXPECT_EQ(sem_correccao.pixels.at({0, 1}), 0xB5B6u);
+  EXPECT_EQ(sem_correccao.escritas.size(), 6u);
+
+  Gravador com_correccao;
+  Rasterizador r_com(mem, com_correccao);
+  EstadoDeRasterizacao com = e;
+  com.normalizar_normais = true;
+  com.reescalar_normais = true;
+  DesenharSeisPixels(&r_com, mem, com);
+  EXPECT_EQ(com_correccao.pixels.at({0, 1}), 0xB5B6u);
+  EXPECT_EQ(com_correccao.pixels.at({2, 3}), 0xB5B6u);
+  EXPECT_EQ(com_correccao.escritas.size(), 6u);
+}
+
+// --- a cablagem: do estado do IGL ate a Tela que a bateria le ---------------
+
+TEST(Rasterizador, OMisturaChegaATelaPelaCablagemDoIglesSemFalta) {
+  Bancada b;
+  b.igl.DefinirTela(&b.tela);
+  // O DESTINO E VERDE NO ECRA INTEIRO, pelo caminho do guest (`glClearColorx` +
+  // `glClear`): e o estado real em que um sprite transparente e desenhado.
+  ASSERT_EQ(b.Ch(kIgl_ClearColorx, Fixo(0.0f), Fixo(1.0f), Fixo(0.0f), Fixo(1.0f)),
+            zb2::brew::ResultadoGl::Feito);
+  ASSERT_EQ(b.Ch(kIgl_Clear, GL_COLOR_BUFFER_BIT), zb2::brew::ResultadoGl::Feito);
+
+  // O PEDIDO DO TITULO: ligar a mistura e escolher os factores que rmp e gof
+  // escolhem.
+  EXPECT_EQ(b.Ch(kIgl_Enable, GL_BLEND), zb2::brew::ResultadoGl::Feito);
+  EXPECT_EQ(b.Ch(kIgl_BlendFunc, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA),
+            zb2::brew::ResultadoGl::Feito);
+
+  constexpr Endereco kV = 0x00100000;
+  b.PrepararTriangulo(kV, 128.0f / 255.0f);  // alfa 128 -> 0.5019608
+  EXPECT_EQ(b.Ch(kIgl_DrawArrays, GL_TRIANGLES, 0, 3), zb2::brew::ResultadoGl::Feito);
+
+  // O PIXEL NA TELA, com a conta do teste da mistura: origem vermelha a 0.5019608
+  // sobre o verde do fundo -> 0x83E0. E o valor que um rasterizador sem mistura
+  // NAO pode dar (daria 0xF800).
+  EXPECT_EQ(b.tela.PixelEm(0, 1), 0x83E0u);
+  EXPECT_EQ(b.tela.PixelEm(2, 3), 0x83E0u);
+  // E A CAPACIDADE SAIU DA LISTA DAS FALTAS: a tabela `por_fazer` do `igl.cpp`
+  // nao pode continuar a dizer que falta o que ja se faz.
+  EXPECT_EQ(b.Faltas("blending_de_GL_sem_rasterizador"), 0u);
+}
+
+// Os valores que o `.inc` gerado NAO tem, com a linha do cabecalho do SDK (os
+// blocos que os justificam estao em `core/brew/igl.cpp` e em
+// `core/video/rasterizador.cpp`):
+//   gles_1_0/gl.h:180 GL_RESCALE_NORMAL 0x803A | :461 GL_LIGHT0 0x4000
+//   :259 GL_POSITION 0x1203
+constexpr std::uint32_t kGlRescaleNormal = 0x803Au;
+constexpr std::uint32_t kGlLight0DoTeste = 0x4000u;
+constexpr std::uint32_t kGlPosition = 0x1203u;
+// `AEEGLfloat` (32 bits): os bits da palavra SAO o `float`.
+std::uint32_t Real2(float v) {
+  std::uint32_t u = 0;
+  std::memcpy(&u, &v, sizeof(u));
+  return u;
+}
+
+TEST(Rasterizador, ALuzChegaAoMotorPelaCablagemEAPosicaoVaiParaOEspacoDoOlho) {
+  Bancada b;
+  b.igl.DefinirTela(&b.tela);
+  constexpr Endereco kVector = 0x00103000;
+
+  // 1. A LUZ 0 PASSA A SER UMA CAPACIDADE CONHECIDA. Antes desta frente o
+  //    `glEnable(GL_LIGHT0)` era RECUSADO -- medido, 299 vezes por corrida em
+  //    rmp, com `slot=28 args=[00004000 ...]`: uma luz que o titulo liga e o
+  //    emulador diz nao conhecer.
+  EXPECT_EQ(b.Ch(kIgl_Enable, kGlLight0DoTeste), zb2::brew::ResultadoGl::Feito);
+  EXPECT_TRUE(b.igl.InterruptorLigado(kGlLight0DoTeste));
+  EXPECT_EQ(b.Faltas("glEnable"), 0u);
+
+  // 2. A POSICAO DA LUZ E GUARDADA EM COORDENADAS DE OLHO. Com a modelview
+  //    transladada para (0, 0, -5), o `glLightfv(GL_LIGHT0, GL_POSITION,
+  //    (0, 0, 1, 1))` fica em (0, 0, -4, 1). As DUAS leituras dizem coisas
+  //    diferentes de proposito: o valor cru e o que o titulo escreveu, o de
+  //    olho e o que a luz usa -- e um emulador que guardasse so o primeiro
+  //    deixaria a luz a andar com cada modelo.
+  EXPECT_EQ(b.Ch(kIgl_Translatex, 0, 0, Fixo(-5.0f)), zb2::brew::ResultadoGl::Feito);
+  b.mem.Escrever32(kVector + 0u, Real2(0.0f));
+  b.mem.Escrever32(kVector + 4u, Real2(0.0f));
+  b.mem.Escrever32(kVector + 8u, Real2(1.0f));
+  b.mem.Escrever32(kVector + 12u, Real2(1.0f));
+  EXPECT_EQ(b.Ch(zb2::brew::kIgl_Lightfv, kGlLight0DoTeste, kGlPosition, kVector),
+            zb2::brew::ResultadoGl::Feito);
+  const auto* cru = b.igl.ParametroDeLuz(kGlLight0DoTeste, kGlPosition);
+  ASSERT_NE(cru, nullptr);
+  EXPECT_FLOAT_EQ((*cru)[2], 1.0f);
+  EXPECT_FLOAT_EQ((*cru)[3], 1.0f);
+  const auto* em_olho = b.igl.ParametroDeLuzEmOlho(kGlLight0DoTeste, kGlPosition);
+  ASSERT_NE(em_olho, nullptr) << "a posicao nao foi levada para o espaco do olho";
+  EXPECT_FLOAT_EQ((*em_olho)[2], -4.0f);
+  EXPECT_FLOAT_EQ((*em_olho)[3], 1.0f) << "o w decide se a luz e posicional";
+}
+
+TEST(Rasterizador, OQueSeImplementouSaiuDaTabelaDasFaltas) {
+  // O SINAL HONESTO: uma capacidade que passa a ser feita TEM de sair da lista
+  // `por_fazer` do `igl.cpp`. Um teste que so afirmasse o pixel passava com a
+  // tabela a dizer que falta o que ja se faz -- a mentira simetrica do stub
+  // mudo, e a razao deste teste existir.
+  Bancada b;
+  b.igl.DefinirTela(&b.tela);
+  constexpr Endereco kV = 0x00100000;
+  b.PrepararTriangulo(kV);
+  for (const std::uint32_t cap : {GL_BLEND, GL_ALPHA_TEST, GL_LIGHTING, GL_NORMALIZE,
+                                  kGlRescaleNormal, 0x0B57u /* GL_COLOR_MATERIAL */}) {
+    EXPECT_EQ(b.Ch(kIgl_Enable, cap), zb2::brew::ResultadoGl::Feito) << "cap 0x" << std::hex << cap;
+  }
+  b.Ch(kIgl_ColorMask, 1, 1, 1, 1);
+  EXPECT_EQ(b.Ch(kIgl_DrawArrays, GL_TRIANGLES, 0, 3), zb2::brew::ResultadoGl::Feito);
+  for (const char* nome :
+       {"blending_de_GL_sem_rasterizador", "alpha_test_de_GL_sem_rasterizador",
+        "iluminacao_de_GL_sem_rasterizador", "normalizacao_de_normais_sem_rasterizador",
+        "rescaling_de_normais_sem_iluminacao", "cor_do_material_sem_iluminacao",
+        "glColorMask_de_GL_sem_rasterizador"}) {
+    EXPECT_EQ(b.Faltas(nome), 0u) << nome;
+  }
+  // E O DESENHO CONTINUA A ACONTECER (com a luz ligada e sem normais definidas,
+  // a normal e a omissao do GL, (0, 0, 1)): seis pixels na Tela.
+  EXPECT_EQ(b.tela.Escritos(), 6u);
+}
+
+TEST(Rasterizador, OAlphaTestEAMascaraDeCorChegamAoTelaPelaCablagem) {
+  Bancada b;
+  b.igl.DefinirTela(&b.tela);
+  constexpr Endereco kV = 0x00100000;
+  // A TELA E LIMPA PRIMEIRO, para o "nao escreveu" ser observavel: com a tela a
+  // zero, `Escritos() == 0` tambem seria o resultado de um desenho que nao
+  // tivesse chegado la.
+  ASSERT_EQ(b.Ch(kIgl_ClearColorx, Fixo(0.0f), Fixo(1.0f), Fixo(0.0f), Fixo(1.0f)),
+            zb2::brew::ResultadoGl::Feito);
+  ASSERT_EQ(b.Ch(kIgl_Clear, GL_COLOR_BUFFER_BIT), zb2::brew::ResultadoGl::Feito);
+  const std::uint64_t limpos = b.tela.Escritos();
+
+  // O ALPHA TEST: `GL_GREATER` com a referencia em 0.5 (GLfixed 16.16) e um
+  // alfa de origem a 0.25 -> os seis fragmentos sao descartados.
+  EXPECT_EQ(b.Ch(kIgl_Enable, GL_ALPHA_TEST), zb2::brew::ResultadoGl::Feito);
+  EXPECT_EQ(b.Ch(kIgl_AlphaFuncx, GL_GREATER, Fixo(0.5f)), zb2::brew::ResultadoGl::Feito);
+  b.PrepararTriangulo(kV, 0.25f);
+  EXPECT_EQ(b.Ch(kIgl_DrawArrays, GL_TRIANGLES, 0, 3), zb2::brew::ResultadoGl::Feito);
+  EXPECT_EQ(b.tela.Escritos(), limpos) << "o alpha test descartou os seis, e nada foi escrito";
+  EXPECT_EQ(b.igl.RasterizadorRef().FragmentosDescartados(), 6u);
+
+  // A MASCARA DE COR, no mesmo caminho: `glColorMask(1, 0, 1, 1)` e um pedido
+  // observavel pelo estado, e nao uma falta.
+  EXPECT_EQ(b.Ch(kIgl_ColorMask, 1, 0, 1, 1), zb2::brew::ResultadoGl::Feito);
+  EXPECT_EQ(b.Faltas("glColorMask_de_GL_sem_rasterizador"), 0u);
+  EXPECT_EQ(b.Faltas("alpha_test_de_GL_sem_rasterizador"), 0u);
 }
 
 

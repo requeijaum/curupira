@@ -27,6 +27,40 @@
 //   - teste de profundidade, quando `GL_DEPTH_TEST` esta ligado;
 //   - descarte de faces por orientacao (`glCullFace`/`glFrontFace`).
 //
+// O QUE A FRENTE rast2 ACRESCENTOU (e a demanda medida que a pediu):
+//
+//   - MISTURA (`GL_BLEND`), com os nove factores do `glBlendFunc` e a conta
+//     `origem*f_origem + destino*f_destino` presa a [0,1] em `float`, contra o
+//     pixel que JA esta na superficie (`Superficie::Ler`). Pedida por gof
+//     (`glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)`, 294x), rmp (a mesma
+//     897x, mais `(ONE, ONE)` 897x e `(ZERO, ONE_MINUS_SRC_COLOR)` 299x) e
+//     pacmania;
+//   - ALPHA TEST (`GL_ALPHA_TEST` + `glAlphaFuncx`): o fragmento reprovado nao
+//     escreve cor nem profundidade, e o descarte e contado
+//     (`FragmentosDescartados()`);
+//   - MASCARA DE COR (`glColorMask`): os canais proibidos ficam com o que o
+//     destino ja tinha -- escrever o valor calculado neles apagaria o que uma
+//     passada anterior deixou;
+//   - ILUMINACAO (`GL_LIGHTING`), por vertice, com a equacao do GL ES 1.x:
+//     `emissao + ambiente_m*ambiente_da_cena + SOMA(atenuacao*holofote *
+//     (ambiente_m*ambiente_l + difusa_m*difusa_l*max(N.L,0) +
+//     especular_m*especular_l*max(N.H,0)^brilho))`. O material e um so (a face e
+//     ignorada, como no ES 1.x), com o `GL_COLOR_MATERIAL` a pôr a cor do
+//     vertice no lugar da ambiente e da difusa, e O ALFA A VIR DA DIFUSA DO
+//     MATERIAL (somar alfa de luz deixa tudo opaco). A normal vem do
+//     `GL_NORMAL_ARRAY` (ou da omissao do GL, `(0,0,1)`) e e transformada pela
+//     TRANSPOSTA DA INVERSA da modelview; a posicao do vertice e guardada no
+//     espaco do olho, que e onde a luz do GL vive.
+//   - AS LUZES LIGAM-SE COM `glEnable(GL_LIGHT0 + i)`: o estado tem as oito, e
+//     ate esta frente o `glEnable(GL_LIGHT0)` era RECUSADO por capacidade
+//     desconhecida (299 recusas por corrida em rmp).
+//
+// O `GL_NORMALIZE` E O `GL_RESCALE_NORMAL` NAO MUDAM NENHUMA COR, e isso fica
+// dito por inteiro: os dois pedem uma normal UNITARIA a chegar a equacao, e ela
+// chega sempre (a equacao normaliza o vector, que e a receita verificada no
+// zeebx). O pedido esta satisfeito -- o que nao existe e um efeito separado
+// deles.
+//
 // O QUE FICOU DE FORA, ESCRITO AQUI PORQUE E A UNICA FORMA DE NAO SER LIDO COMO
 // FEITO (P2). Cada linha nomeia o que nao existe, e nao "o que falta":
 //
@@ -37,13 +71,12 @@
 //      de 3 ou 4 vertices com atributos interpolados. Triangulos totalmente atras sao
 //      descartados (contados em `TriangulosDescartados()`). Os outros 5 planos do frustum
 //      continuam tratados por descarte de caixa delimitadora no viewport.
-//   3. SEM BLENDING (`GL_BLEND`), SEM ALPHA TEST, SEM STENCIL, SEM DITHER,
-//      SEM POLYGON OFFSET, SEM SCISSOR, SEM COLOR MASK por canal: o pixel
-//      escrito e a cor calculada, opaca. As capacidades que os titulos ligarem
-//      vao para o traco, uma vez cada (`CapacidadesPorFazer()`), e nao em
-//      silencio.
-//   4. SEM ILUMINACAO e SEM NEVOA (`GL_LIGHTING`, `GL_FOG`): a cor vem do
-//      `glColor4x` ou do array de cores, sem nenhuma contribuicao de luz.
+//   3. SEM STENCIL, SEM DITHER, SEM POLYGON OFFSET e SEM SCISSOR: as quatro
+//      ficam nomeadas no traco, uma vez cada (`CapacidadesPorFazer()`), e nao em
+//      silencio. A MISTURA, O ALPHA TEST E A MASCARA DE COR SAIRAM desta lista
+//      -- sao feitas (ver a frente rast2 acima).
+//   4. SEM NEVOA (`GL_FOG`): a cor vem do `glColor4x`, do array de cores ou da
+//      ILUMINACAO. O `GL_LIGHTING` SAIU desta lista -- e feito.
 //   5. SEM MIPMAPS e SEM FILTRAGEM BILINEAR: um texel por pixel, o do canto
 //      inferior esquerdo da celula (`floor(u * largura)`), com CLAMP nas
 //      bordas. O wrap `GL_REPEAT` nao existe: uma coordenada fora de [0,1] e
@@ -58,7 +91,16 @@
 //      regra do "vertice provocador" das strips e fans nao foi implementada.
 //   8. RGBA EM 8 BITS POR CANAL e convertido para RGB565 na ESCRITA (a tela e
 //      RGB565: `tela.h:void CorAtual(std::uint32_t rgb565)`), e o alfa nao tem
-//      onde ser guardado: `Alpha` e descartado.
+//      onde ser guardado: `Alpha` e DESCARTADO NA ESCRITA. Ele NAO e descartado
+//      antes disso: e interpolado por vertice e e o alfa do fragmento que a
+//      MISTURA e o ALFA TEST leem. Com o alfa fixo a 255 (o que se fazia antes
+//      desta frente), um `GL_SRC_ALPHA` valia sempre 1 e o `GL_ALPHA_TEST`
+//      nunca descartava nada -- duas capacidades ligadas e inertes.
+//   9. O `glColorMaterial(face, modo)` NAO E SERVIDO e nao esta entre os slots do
+//      `AEEGL.h`: com o `GL_COLOR_MATERIAL` ligado admite-se o MODO POR OMISSAO
+//      do GL, `GL_AMBIENT_AND_DIFFUSE` (a cor do vertice toma o lugar da
+//      ambiente E da difusa). Um titulo que peca outro modo fica com o
+//      por-omissao, e nao com um modo inventado.
 //
 // A SUPERFICIE. A escrita passa por uma interface pequena (`Superficie`) porque
 // um teste tem de poder afirmar OS PIXELS EXACTOS -- coordenada e cor, um a um --
@@ -83,6 +125,20 @@ class Superficie {
   virtual int Largura() const = 0;
   virtual int Altura() const = 0;
   virtual void Escrever(int x, int y, std::uint32_t rgb565) = 0;
+  // LER O PIXEL QUE JA LA ESTA. Existe por causa de DUAS capacidades que o GL
+  // define contra o destino, e nao contra um valor calculado:
+  //
+  //   - a MISTURA (`GL_BLEND`): os factores `GL_DST_*` sao o destino, e a soma
+  //     `origem*f_origem + destino*f_destino` precisa dele;
+  //   - a MASCARA DE COR (`glColorMask`): os canais proibidos ficam com o que
+  //     uma passada ANTERIOR deixou ali -- escrever o valor calculado neles
+  //     apagaria o desenho que se queria preservar.
+  //
+  // Sem uma leitura, a alternativa era um segundo framebuffer dentro do
+  // rasterizador -- e esse diverge da Tela no primeiro pixel que o guest
+  // escreva (`Tela::AbsorverDe565`), o que daria uma medida e um desenho
+  // diferentes da tela que a bateria le.
+  virtual std::uint32_t Ler(int x, int y) const = 0;
   // O `glClear` cobre a superficie TODA, e nao o clip corrente: no GL o
   // `glClear` nao e limitado pelo clip (`glScissor` e que o limita, e o scissor
   // nao esta implementado -- ver o ponto 3 acima).
@@ -101,6 +157,11 @@ class DestinoTela final : public Superficie {
   int Altura() const override { return tela_ == nullptr ? 0 : zb2::brew::Tela::kAltura; }
   void Escrever(int x, int y, std::uint32_t rgb565) override;
   void Limpar(std::uint32_t rgb565) override;
+  // A LEITURA DO PIXEL E A PROPRIA `Tela` (`Tela::PixelEm`): uma segunda copia
+  // do estado dos pixels seria uma segunda verdade (ver `Ler` na `Superficie`).
+  std::uint32_t Ler(int x, int y) const override {
+    return tela_ == nullptr ? 0u : tela_->PixelEm(x, y);
+  }
 
  private:
   zb2::brew::Tela* tela_ = nullptr;
@@ -176,6 +237,72 @@ struct EstadoDeRasterizacao {
   std::uint32_t orientacao_da_frente = 0x0901u;    // GL_CCW
   float profundidade_de_limpeza = 1.0f;
 
+  // --- A MISTURA (`GL_BLEND`) ----------------------------------------------
+  //
+  // A OMISSAO DO GL E A COPIA: `glBlendFunc(GL_ONE, GL_ZERO)`. Um titulo que
+  // ligue o `GL_BLEND` sem chamar o `glBlendFunc` fica com o pixel da origem, e
+  // e isso que um rasterizador que so sabe copiar ja fazia.
+  bool mistura_ligada = false;
+  std::uint32_t mistura_fonte = 0x0001u;    // GL_ONE
+  std::uint32_t mistura_destino = 0x0000u;  // GL_ZERO
+
+  // --- O ALPHA TEST --------------------------------------------------------
+  //
+  // A omissao do GL e `GL_ALWAYS`, com a referencia a zero: um titulo que ligue
+  // o `GL_ALPHA_TEST` sem chamar o `glAlphaFunc` nao descarta nada -- e o teste
+  // que prova o descarte tem de por a funcao e a referencia, ou passaria com a
+  // guarda arrancada (foi o caso medido do `GetNextButtonEvent`).
+  bool teste_de_alfa = false;
+  std::uint32_t funcao_de_alfa = 0x0207u;  // GL_ALWAYS
+  float alfa_de_referencia = 0.0f;         // [0,1], como o `glAlphaFuncx` o da
+
+  // --- A MASCARA DE COR ----------------------------------------------------
+  //
+  // Um bit por canal, na ordem dos argumentos do `glColorMask(red, green,
+  // blue, alpha)`: bit 0 vermelho, 1 verde, 2 azul, 3 alfa. A omissao e `0xF`
+  // (escreve tudo). O bit do ALFA nao tem onde ser guardado (a tela e RGB565 e
+  // nao ha buffer de alfa) e por isso nao muda nenhum pixel -- fica dito.
+  std::uint32_t mascara_de_cor = 0x0000000Fu;
+
+  // --- A ILUMINACAO --------------------------------------------------------
+  //
+  // O material e a luz ficam AQUI, e nao uma referencia ao `Igl`: o retrato tem
+  // de ser imune a uma mudanca de estado a meio do desenho, como o resto.
+  struct Aparencia {
+    float ambiente[4] = {0.2f, 0.2f, 0.2f, 1.0f};
+    float difusa[4] = {0.8f, 0.8f, 0.8f, 1.0f};
+    float especular[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    float emissao[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    float brilho = 0.0f;  // GL_SHININESS
+  };
+  struct Luz {
+    bool ligada = false;  // `glEnable(GL_LIGHT0 + i)`
+    float ambiente[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    float difusa[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    float especular[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    // EM COORDENADAS DE OLHO: e assim que o `glLightfv(GL_POSITION)` as guarda
+    // (a posicao passa pela modelview do instante da chamada). O w diz se a luz
+    // e direccional (0) ou posicional (1).
+    float posicao[4] = {0.0f, 0.0f, 1.0f, 0.0f};
+    float direcao_do_holofote[3] = {0.0f, 0.0f, -1.0f};
+    float exponente_do_holofote = 0.0f;
+    float corte_do_holofote = 180.0f;
+    float atenuacao[3] = {1.0f, 0.0f, 0.0f};  // constante, linear, quadratica
+  };
+  bool iluminacao_ligada = false;
+  bool cor_do_material = false;     // GL_COLOR_MATERIAL
+  bool normalizar_normais = false;  // GL_NORMALIZE
+  bool reescalar_normais = false;   // GL_RESCALE_NORMAL
+  // A luz DO MATERIAL (uma so: a face e ignorada, como no ES 1.x) e as OITO
+  // luzes que a especificacao garante. A omissao da ambiente da cena e a do GL.
+  Aparencia material;
+  Luz luzes[8];
+  float ambiente_da_cena[4] = {0.2f, 0.2f, 0.2f, 1.0f};
+  // O ARRAY DE NORMAIS. Sem ele o GL usa o vector (0, 0, 1) por vertice -- e
+  // essa a omissao, e nao um valor inventado (medido: gof e rmp ligam o
+  // `GL_LIGHTING` e NUNCA chamam o `glNormalPointer` nem o `glNormal3x`).
+  ArrayDoCliente normais;
+
   // As capacidades que os titulos LIGARAM e que este rasterizador nao faz (o
   // ponto 3 do topo). Cada nome entra uma vez no traco: e o oposto do stub mudo
   // do `glCullFace`, que descartou 86 377 chamadas sem deixar rasto.
@@ -219,12 +346,24 @@ class Rasterizador {
   std::uint64_t TriangulosDescartados() const { return descartados_; }
   std::uint64_t TriangulosRecortados() const { return recortados_; }
   std::uint64_t PrimitivasRecusadas() const { return recusadas_; }
+  // Quantos fragmentos o ALPHA TEST descartou. E um contador proprio porque o
+  // efeito dele e a AUSENCIA de escrita: sem ele, um alpha test que descarta
+  // tudo e um alpha test que nao existe dao o mesmo `Pixels()`.
+  std::uint64_t FragmentosDescartados() const { return descartados_alfa_; }
 
  private:
   struct Vertice {
     float clip[4] = {0, 0, 0, 1};  // depois de P * M * v
     float x = 0, y = 0, z = 0;     // em coordenadas de janela
+    // A POSICAO NO ESPACO DO OLHO (M * v). E la que a luz do GL vive: as
+    // posicoes das luzes sao guardadas em coordenadas de olho, o observador
+    // esta na origem, e a atenuacao e o holofote medem-se daqui. Sem este
+    // vector nao ha iluminacao possivel -- so uma cor de fantasia.
+    float olho[4] = {0, 0, 0, 1};
     Rgba cor;
+    // A NORMAL, ja transformada para o espaco do olho (e normalizada, se o
+    // `GL_NORMALIZE` estiver ligado). A omissao do GL e (0, 0, 1).
+    float normal[3] = {0.0f, 0.0f, 1.0f};
     float u = 0, v = 0;
   };
 
@@ -234,6 +373,18 @@ class Rasterizador {
   void RasterizarTriangulo(const EstadoDeRasterizacao& e, const Vertice& a, const Vertice& b,
                            const Vertice& c);
   void EscreverPixel(const EstadoDeRasterizacao& e, int x, int y, float profundidade, Rgba cor);
+  // A cor de um vertice com o `GL_LIGHTING` ligado, na equacao do GL ES 1.x.
+  static Rgba CorIluminada(const EstadoDeRasterizacao& e, const float olho[4],
+                           const float normal[3], const Rgba& cor_do_vertice);
+  // A normal em coordenadas de OLHO: `transposta_da_inversa(M3x3) * n`, com o
+  // reescalonamento (`GL_RESCALE_NORMAL`) e a normalizacao (`GL_NORMALIZE`)
+  // aplicados na ordem do GL.
+  static void TransformarNormal(const EstadoDeRasterizacao& e, const float n[3], float saida[3]);
+  // A normal do vertice, EM COORDENADAS DE OBJECTO: do array ligado, ou a
+  // omissao do GL (0, 0, 1) quando nao ha array. Um array com um tipo sem
+  // caminho RECUSA com o nome -- nao se inventa o valor de uma normal.
+  bool LerNormalDeObjeto(const EstadoDeRasterizacao& e, std::uint32_t indice, float n[3],
+                         std::string* motivo) const;
   Rgba AmostrarTextura(const EstadoDeRasterizacao& e, float u, float v) const;
   void PrepararProfundidade();
 
@@ -245,6 +396,7 @@ class Rasterizador {
   std::vector<float> profundidade_;
   int largura_ = 0, altura_ = 0;
   std::uint64_t pixels_ = 0, triangulos_ = 0, descartados_ = 0, recortados_ = 0, recusadas_ = 0;
+  std::uint64_t descartados_alfa_ = 0;
 };
 
 }  // namespace zb2::video

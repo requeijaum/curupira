@@ -16,6 +16,14 @@ O QUE ESTAS VIOLACOES PROVAM, uma a uma:
   V8  o `glClear` que poe o clip de lado
   V9  a recusa de uma primitiva sem caminho
   V10 a recusa de desenhar sem tela (`Igl::DefinirTela`)
+  V11 a mistura olha para o destino (o `GL_BLEND` com os factores do GL)
+  V12 o alpha test descarta o fragmento
+  V13 a mascara de cor preserva o canal que proibe
+  V14 a iluminacao decide a cor do vertice
+  V15 o alfa iluminado vem da difusa do material
+  V16 o `GL_COLOR_MATERIAL` troca a cor do material pela do vertice
+  V17 a posicao da luz e guardada no espaco do olho
+  V18 a tabela `por_fazer` nao fica com o que ja se faz
 
 Uso: python3 tools/provar_guardas_raster.py <raiz_da_arvore>
 """
@@ -82,6 +90,47 @@ VIOLACOES = [
      """      if (false) {
         return recusa_com(3, "geometria submetida (" + std::to_string(quantos) +""",
      "Rasterizador.SemTelaODesenhoERecusadoEComOMotivoEscrito"),
+    ("V11 a mistura deixa de ler o destino (escreve a origem)",
+     "core/video/rasterizador.cpp",
+     "  if (e.mistura_ligada || !mascara_limpa) {",
+     "  if (false && !mascara_limpa) {",
+     "Rasterizador.AMisturaSomaOrigemEDestinoComOsFactoresDoGL:Rasterizador.OMisturaChegaATelaPelaCablagemDoIglesSemFalta"),
+    ("V12 o alpha test deixa de descartar",
+     "core/video/rasterizador.cpp",
+     "    if (!Comparar(e.funcao_de_alfa, alfa, e.alfa_de_referencia)) {",
+     "    if (false) {",
+     "Rasterizador.OAlphaTestDescartaOFragmentoAntesDeEscrever"),
+    ("V13 a mascara de cor deixa de preservar o canal que proibe",
+     "core/video/rasterizador.cpp",
+     "      if ((e.mascara_de_cor & 0x2u) != 0) mascara |= 0x07E0u;  // verde",
+     "      mascara |= 0x07E0u;  // verde",
+     "Rasterizador.AMascaraDeCorPreservaOCanalQueProibe"),
+    ("V14 a iluminacao deixa de decidir a cor do vertice",
+     "core/video/rasterizador.cpp",
+     "  if (e.iluminacao_ligada) {",
+     "  if (false) {",
+     "Rasterizador.ALuzDecideACorDoVerticePeloCossenoDaNormal"),
+    ("V15 o alfa iluminado passa a ser 1 em vez da difusa do material",
+     "core/video/rasterizador.cpp",
+     "  r.a = canal(difusa[3]);",
+     "  r.a = 255;",
+     "Rasterizador.OAlfaIluminadoVemDaDifusaDoMaterial"),
+    ("V16 o GL_COLOR_MATERIAL deixa de trocar a cor do material",
+     "core/video/rasterizador.cpp",
+     "  if (e.cor_do_material) {",
+     "  if (false) {",
+     "Rasterizador.OColorMaterialPoeACorDoVerticeNoLugarDaAmbienteEDaDifusa"),
+    ("V17 a posicao da luz deixa de ir para o espaco do olho",
+     "core/brew/igl.cpp",
+     "        if (pname == GL_POSITION || pname == GL_SPOT_DIRECTION) {",
+     "        if (false) {",
+     "Rasterizador.ALuzChegaAoMotorPelaCablagemEAPosicaoVaiParaOEspacoDoOlho"),
+    ("V18 a tabela `por_fazer` volta a dizer que falta o que ja se faz",
+     "core/brew/igl.cpp",
+     """      {GL_FOG, "nevoa_de_GL_sem_rasterizador"},""",
+     """      {GL_FOG, "nevoa_de_GL_sem_rasterizador"},
+      {GL_BLEND, "blending_de_GL_sem_rasterizador"},""",
+     "Rasterizador.OQueSeImplementouSaiuDaTabelaDasFaltas"),
 ]
 
 
