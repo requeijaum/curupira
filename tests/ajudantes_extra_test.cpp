@@ -277,9 +277,16 @@ TEST(AjudantesExtra, Utf8ToWstrEscreveParDeSubstitutos) {
   EXPECT_EQ(b.mem.Ler16(kTexto2 + 4), 0u);
 }
 
-TEST(AjudantesExtra, Utf8ToWstrRecusaQuandoNaoCabeENaoEscreveFora) {
-  // A guarda: nao cabe -> FALSE e REGISTO. E a violacao deliberada do limite --
-  // o destino tem 4 bytes (2 AECHAR: um caracter e o NUL) e a entrada tem tres.
+TEST(AjudantesExtra, Utf8ToWstrEncheODestinoAteAoFimENaoEscreveFora) {
+  // O LIMITE, com a regra MEDIDA no proprio SDK. O destino tem 4 bytes (2
+  // AECHAR) e a entrada tem tres caracteres: cabem DOIS, e a conversao diz
+  // FALSE sem escrever um byte para la dos 38 (aqui, dos 4).
+  //
+  // PORQUE NAO SE RESERVA O TERMINADOR: o chamador medido (a Z-Wheel,
+  // `tectoy` 0x7af24) faz `len = strlen(psz)`, `malloc((len+1)*2)` e chama
+  // `utf8towstr(psz, len, buf, len*2)` -- o `nSize` e EXACTAMENTE o numero de
+  // unidades dos caracteres, e a unidade do terminador fica FORA dele. Com a
+  // reserva, "http://www.ats.com/" perdia o ultimo caracter.
   Bancada b;
   b.EscreverCadeia(kTexto, "abc");
   for (std::uint32_t i = 0; i < 8; ++i) b.mem.Escrever8(kTexto2 + i, 0xAA);
@@ -288,13 +295,63 @@ TEST(AjudantesExtra, Utf8ToWstrRecusaQuandoNaoCabeENaoEscreveFora) {
   b.cpu.Set(kR2, kTexto2);
   b.cpu.Set(kR3, 4);
   EXPECT_EQ(b.Atender(0x050), Atendimento::Implementado);
-  EXPECT_EQ(b.cpu.Get(kR0), 0u) << "nao cabe tem de ser FALSE";
+  EXPECT_EQ(b.cpu.Get(kR0), 0u) << "nao cabe tudo tem de ser FALSE";
   EXPECT_EQ(b.mem.Ler16(kTexto2), static_cast<std::uint16_t>('a'));
-  EXPECT_EQ(b.mem.Ler16(kTexto2 + 2), 0u) << "o que coube fica terminado em NUL";
+  EXPECT_EQ(b.mem.Ler16(kTexto2 + 2), static_cast<std::uint16_t>('b'))
+      << "o destino enche-se ate ao fim, e nao se reserva a unidade do NUL";
   for (std::uint32_t i = 4; i < 8; ++i) {
     EXPECT_EQ(b.mem.Ler8(kTexto2 + i), 0xAAu) << "escreveu depois do fim do destino";
   }
   EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x050] utf8towstr"), 1u);
+}
+
+TEST(AjudantesExtra, Utf8ToWstrDaOCasoMedidoDaZWheel) {
+  // O caso REAL, com os numeros do traco: `tectoy` (274755), a Z-Wheel, pede
+  // `utf8towstr(r0="http://www.ats.com/", r1=19, r2=buf, r3=38)`.
+  //
+  // `r1=19` e o `strlen` (SEM o terminador) e `r3=38 = 2*19` e o numero de
+  // unidades dos caracteres; o `malloc` do guest pede `(19+1)*2 = 40` bytes, e
+  // a unidade do terminador (bytes 38-39) fica FORA do `nSize`.
+  //
+  // Com a reserva do terminador, esta chamada -- medida -- perdia o ultimo
+  // caracter e dizia FALSE. O resultado certo tem os 19 caracteres todos.
+  Bancada b;
+  const std::string url = "http://www.ats.com/";
+  ASSERT_EQ(url.size(), 19u);
+  b.EscreverCadeia(kTexto, url);
+  for (std::uint32_t i = 0; i < 8; ++i) b.mem.Escrever8(kTexto2 + 38 + i, 0xAA);
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, 19);
+  b.cpu.Set(kR2, kTexto2);
+  b.cpu.Set(kR3, 38);
+  EXPECT_EQ(b.Atender(0x050), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), 1u) << "coube tudo: a chamada da Z-Wheel tem de dar TRUE";
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x050] utf8towstr"), 0u);
+  for (std::uint32_t i = 0; i < 19; ++i) {
+    EXPECT_EQ(b.mem.Ler16(kTexto2 + i * 2), static_cast<std::uint16_t>(url[i]))
+        << "caracter " << i;
+  }
+  for (std::uint32_t i = 38; i < 46; ++i) {
+    EXPECT_EQ(b.mem.Ler8(kTexto2 + i), 0xAAu)
+        << "o terminador NAO cabe no nSize: escreve-lo e escrever memoria do guest";
+  }
+}
+
+TEST(AjudantesExtra, Utf8ToWstrEscreveOTerminadorQuandoEleCabe) {
+  // A outra metade da mesma regra: quando SOBRA a unidade do terminador, ele e
+  // escrito -- e o que deixa a cadeia larga do guest terminada.
+  Bancada b;
+  b.EscreverCadeia(kTexto, "abc");
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, 3);
+  b.cpu.Set(kR2, kTexto2);
+  b.cpu.Set(kR3, 8);
+  EXPECT_EQ(b.Atender(0x050), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), 1u);
+  EXPECT_EQ(b.mem.Ler16(kTexto2), static_cast<std::uint16_t>('a'));
+  EXPECT_EQ(b.mem.Ler16(kTexto2 + 2), static_cast<std::uint16_t>('b'));
+  EXPECT_EQ(b.mem.Ler16(kTexto2 + 4), static_cast<std::uint16_t>('c'));
+  EXPECT_EQ(b.mem.Ler16(kTexto2 + 6), 0u) << "o terminador cabe no nSize de 8 bytes";
 }
 
 TEST(AjudantesExtra, Utf8ToWstrRecusaEntradaInvalida) {
@@ -333,6 +390,130 @@ TEST(AjudantesExtra, Utf8ToWstrRecusaPonteiroNuloENSizeZero) {
   b.Atender(0x050);
   EXPECT_EQ(b.cpu.Get(kR0), 0u);
   EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x050] utf8towstr"), 2u);
+}
+
+// --- 3b. wstrtoutf8 (0x054) ------------------------------------------------
+TEST(AjudantesExtra, WstrToUtf8ConverteAsciiEAcimaDe0x80) {
+  // Contrato do cabecalho (`AEEStdLib.h:84-85` e a doc do `aee_WStrToUTF8`,
+  // `AEEStdLib_static.h:494-510`): r0=wide, r1=nLen em AECHARs, r2=destino de
+  // BYTES, r3=bytes do destino. "FALSE if fails ( if pSrc or pDst is NULL; if
+  // nSize is zero or lesser )".
+  //
+  // O `nLen` e em AECHARs e o `nSize` em BYTES -- a assimetria e do cabecalho, e
+  // e o contrario do `utf8towstr`, onde o `nLen` e em BYTES.
+  Bancada b;
+  b.EscreverLarga(kTexto, {'c', 0x00E7, 'o'});  // "c" + U+00E7 + "o"
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, 3);
+  b.cpu.Set(kR2, kTexto2);
+  b.cpu.Set(kR3, 16);
+  EXPECT_EQ(b.Atender(0x054), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), 1u);
+  EXPECT_EQ(b.mem.Ler8(kTexto2), static_cast<std::uint8_t>('c'));
+  EXPECT_EQ(b.mem.Ler8(kTexto2 + 1), 0xC3u);
+  EXPECT_EQ(b.mem.Ler8(kTexto2 + 2), 0xA7u);
+  EXPECT_EQ(b.mem.Ler8(kTexto2 + 3), static_cast<std::uint8_t>('o'));
+}
+
+TEST(AjudantesExtra, WstrToUtf8EscreveTresBytesParaAcimaDe0x800) {
+  // O medido no texto do `pbc`: U+2122 (0x2122) e U+00AE (0x00AE) aparecem no
+  // texto de creditos. A regra do SDK (`BREWSim`, `aee_WStrToUTF8`): 1 byte
+  // abaixo de 0x80, 2 abaixo de 0x800, 3 acima -- e NUNCA 4.
+  Bancada b;
+  b.EscreverLarga(kTexto, {0x2122, 0x00AE});
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, 2);
+  b.cpu.Set(kR2, kTexto2);
+  b.cpu.Set(kR3, 16);
+  EXPECT_EQ(b.Atender(0x054), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), 1u);
+  EXPECT_EQ(b.mem.Ler8(kTexto2), 0xE2u);
+  EXPECT_EQ(b.mem.Ler8(kTexto2 + 1), 0x84u);
+  EXPECT_EQ(b.mem.Ler8(kTexto2 + 2), 0xA2u);
+  EXPECT_EQ(b.mem.Ler8(kTexto2 + 3), 0xC2u);
+  EXPECT_EQ(b.mem.Ler8(kTexto2 + 4), 0xAEu);
+}
+
+TEST(AjudantesExtra, WstrToUtf8NaoEscreveTerminadorQueNaoCabe) {
+  // O caso medido da Z-Wheel (`tectoy`, 0x7673c): `len = wstrlen(wide)`,
+  // `malloc(len*10 + 1)` e `wstrtoutf8(wide, len, buf, len*10)` -- o `nLen` e em
+  // AECHARs, SEM o terminador, e o destino nao tem obrigacao de o levar.
+  Bancada b;
+  b.EscreverLarga(kTexto, {'o', 'l', 'a'});
+  for (std::uint32_t i = 0; i < 8; ++i) b.mem.Escrever8(kTexto2 + 3 + i, 0xAA);
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, 3);
+  b.cpu.Set(kR2, kTexto2);
+  b.cpu.Set(kR3, 3);
+  EXPECT_EQ(b.Atender(0x054), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), 1u) << "coube: o SDK so diz FALSE com ponteiro nulo ou nSize<=0";
+  EXPECT_EQ(b.LerCadeia(kTexto2, 3), "ola");
+  for (std::uint32_t i = 3; i < 11; ++i) {
+    EXPECT_EQ(b.mem.Ler8(kTexto2 + i), 0xAAu) << "escreveu depois do fim do destino";
+  }
+}
+
+TEST(AjudantesExtra, WstrToUtf8ParaQuandoODestinoNaoTemEspacoERegista) {
+  // O SDK (`BREWSim`, `aee_WStrToUTF8`) PARA no caracter que nao cabe e devolve
+  // TRUE -- o valor de retorno e o que o guest espera. A truncagem nao fica
+  // muda (P2): vai para o registo da corrida.
+  Bancada b;
+  b.EscreverLarga(kTexto, {'a', 0x00E7, 'b'});
+  for (std::uint32_t i = 0; i < 8; ++i) b.mem.Escrever8(kTexto2 + i, 0xAA);
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, 3);
+  b.cpu.Set(kR2, kTexto2);
+  b.cpu.Set(kR3, 1);
+  EXPECT_EQ(b.Atender(0x054), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), 1u);
+  EXPECT_EQ(b.mem.Ler8(kTexto2), static_cast<std::uint8_t>('a'));
+  for (std::uint32_t i = 1; i < 8; ++i) {
+    EXPECT_EQ(b.mem.Ler8(kTexto2 + i), 0xAAu) << "o caracter de 2 bytes nao cabe: nao se escreve";
+  }
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x054] wstrtoutf8"), 1u);
+}
+
+TEST(AjudantesExtra, WstrToUtf8RecusaPonteiroNuloENSizeZero) {
+  Bancada b;
+  b.EscreverLarga(kTexto, {'a'});
+  b.cpu.Set(kR0, 0);
+  b.cpu.Set(kR1, 1);
+  b.cpu.Set(kR2, kTexto2);
+  b.cpu.Set(kR3, 8);
+  b.Atender(0x054);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u);
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR2, 0);
+  b.Atender(0x054);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u);
+  b.cpu.Set(kR2, kTexto2);
+  b.cpu.Set(kR3, 0);
+  b.Atender(0x054);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u);
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x054] wstrtoutf8"), 3u);
+}
+
+TEST(AjudantesExtra, WstrToUtf8EUtf8ToWstrFazemIdaEVolta) {
+  // A ida e a volta com o par de substitutos: o `wstrtoutf8` escreve 3 bytes por
+  // unidade (o par fica em CESU-8, que e o que o SDK escreve) e o `utf8towstr`
+  // le cada grupo de 3 bytes como uma unidade -- o par volta igual.
+  Bancada b;
+  b.EscreverLarga(kTexto, {0xD83D, 0xDE00});
+  b.cpu.Set(kR0, kTexto);
+  b.cpu.Set(kR1, 2);
+  b.cpu.Set(kR2, kTexto2);
+  b.cpu.Set(kR3, 16);
+  b.Atender(0x054);
+  EXPECT_EQ(b.mem.Ler8(kTexto2), 0xEDu);
+  EXPECT_EQ(b.mem.Ler8(kTexto2 + 3), 0xEDu);
+  b.cpu.Set(kR0, kTexto2);
+  b.cpu.Set(kR1, 6);
+  b.cpu.Set(kR2, kTexto + 0x100);
+  b.cpu.Set(kR3, 8);
+  b.Atender(0x050);
+  EXPECT_EQ(b.cpu.Get(kR0), 1u);
+  EXPECT_EQ(b.mem.Ler16(kTexto + 0x100), 0xD83Du);
+  EXPECT_EQ(b.mem.Ler16(kTexto + 0x102), 0xDE00u);
 }
 
 // --- 4. GetRAMFree (0x138) -------------------------------------------------
@@ -487,15 +668,18 @@ TEST(AjudantesExtra, OffsetForaDaTabelaNaoERecusadoAqui) {
   EXPECT_TRUE(b.traco.ContagemFaltas().empty());
 }
 
-TEST(AjudantesExtra, ImplementadosSaoVinteEATodosNoCatalogo) {
+TEST(AjudantesExtra, ImplementadosSaoVinteETresEATodosNoCatalogo) {
   // 7 da etapa anterior + os 6 da frente io2 (wstrlen, wstrncopyn, strtoul,
   // snprintf, strlcpy, strlcat) + o stricmp (0x0d0) da frente park + os 4 da
   // frente ajud2 (atoi, strends, aee_GetTimeMS, wsprintf) + o memcmp (0x0dc),
   // que 8 titulos pediam e que estava na tabela do cabecalho SEM implementacao
-  // + o SetupNativeImage (0x064) da frente setup, que e o `CONVERTBMP`.
-  EXPECT_EQ(AjudantesExtra::Implementados(), 20u);
-  for (std::uint32_t off : {0x0D8u, 0x044u, 0x050u, 0x0E8u, 0x138u, 0x0F4u, 0x0CCu, 0x0D0u,
-                            0x090u, 0x0FCu, 0x0ACu, 0x03Cu, 0x0DCu}) {
+  // + o SetupNativeImage (0x064) da frente setup, que e o `CONVERTBMP`
+  // + os 3 da frente zhelp (wstrtoutf8 0x054, aee_GetSeconds 0x0b4,
+  // aee_GetJulianDate 0x0b8). O `utf8towstr` (0x050) ja estava nesta lista: o
+  // que a frente zhelp lhe mudou foi a REGRA do destino cheio, nao o offset.
+  EXPECT_EQ(AjudantesExtra::Implementados(), 23u);
+  for (std::uint32_t off : {0x0D8u, 0x044u, 0x050u, 0x054u, 0x0E8u, 0x138u, 0x0F4u, 0x0CCu,
+                            0x0D0u, 0x090u, 0x0FCu, 0x0ACu, 0x0B4u, 0x0B8u, 0x03Cu, 0x0DCu}) {
     EXPECT_NE(DeclaracaoDoOffset(off), nullptr) << "0x" << std::hex << off;
   }
 }
@@ -936,6 +1120,130 @@ TEST(AjudantesExtra, AeeGetTimeMSDeclaraAMeiaNoite) {
   EXPECT_EQ(it->second, 1u);
 }
 
+// --- 3c. aee_GetSeconds (0x0b4) e aee_GetJulianDate (0x0b8) -----------------
+TEST(AjudantesExtra, AeeGetSecondsDeclaraAEpocaDe1980) {
+  // `uint32 (*aee_GetSeconds)(void)` (`AEEStdLib.h:137`). Doc (`AEEStdLib.h:4853`):
+  // "seconds since 1980/01/06 00:00:00 UTC, incluindo os ajustes de segundo
+  // intercalar e AJUSTADO ao fuso local e a hora de verao".
+  //
+  // E o MESMO relogio de calendario do `aee_GetTimeMS` (0x0ac), que esta tabela
+  // ja serve: aquela frente devolve 0 ms como valor DECLARADO, porque o aparelho
+  // emulado nunca adquiriu hora de sistema. A mesma regra, aplicada a mesma
+  // grandeza: 0 segundos depois das 00:00:00 locais de 1980/01/06 -- o que faz
+  // `GetTimeMS()/1000 == GetSeconds() % 86400`, e as duas contas nunca se
+  // contradizem.
+  Bancada b;
+  EXPECT_EQ(b.Atender(0x0B4), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u);
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x0b4] aee_GetSeconds"), 0u);
+  const auto& p = b.traco.ContagemPressupostos();
+  const auto it = p.find("aee_GetSeconds_sem_relogio");
+  ASSERT_NE(it, p.end()) << "um valor nao medido tem de aparecer no registo";
+  EXPECT_EQ(it->second, 1u);
+}
+
+TEST(AjudantesExtra, JulianDateDoInstanteBaseE1980) {
+  // Os valores do teste do PROPRIO SDK (`OATStdLib_Time.c`,
+  // `OATStdLib_JULIANTOSECONDS_GETJULIANDATE`): "00:00:00 1/6/1980 <--> 0" com
+  // `wWeekDay = 6`. E o que fixa a convencao do dia da semana: 0=segunda ...
+  // 6=domingo (`AEEShell.h:2954`), e nao o domingo a zero.
+  Bancada b;
+  for (std::uint32_t i = 0; i < 20; ++i) b.mem.Escrever8(kTexto2 + i, 0xAA);
+  b.cpu.Set(kR0, 0);
+  b.cpu.Set(kR1, kTexto2);
+  EXPECT_EQ(b.Atender(0x0B8), Atendimento::Implementado);
+  EXPECT_EQ(b.mem.Ler16(kTexto2 + 0), 1980u);
+  EXPECT_EQ(b.mem.Ler16(kTexto2 + 2), 1u);
+  EXPECT_EQ(b.mem.Ler16(kTexto2 + 4), 6u);
+  EXPECT_EQ(b.mem.Ler16(kTexto2 + 6), 0u);
+  EXPECT_EQ(b.mem.Ler16(kTexto2 + 8), 0u);
+  EXPECT_EQ(b.mem.Ler16(kTexto2 + 10), 0u);
+  EXPECT_EQ(b.mem.Ler16(kTexto2 + 12), 6u) << "1980/01/06 foi um domingo";
+  for (std::uint32_t i = 14; i < 20; ++i) {
+    EXPECT_EQ(b.mem.Ler8(kTexto2 + i), 0xAAu) << "escreveu depois dos 7 uint16";
+  }
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x0b8] aee_GetJulianDate"), 0u);
+}
+
+TEST(AjudantesExtra, JulianDateDoAnoBissextoE1981) {
+  // "00:00:00 1/6/1981 <--> 366*24*60*60" com `wWeekDay = 1` (terca) -- o mesmo
+  // teste do SDK, e a prova de que 1980 conta 366 dias.
+  Bancada b;
+  b.cpu.Set(kR0, 366u * 86400u);
+  b.cpu.Set(kR1, kTexto2);
+  EXPECT_EQ(b.Atender(0x0B8), Atendimento::Implementado);
+  EXPECT_EQ(b.mem.Ler16(kTexto2 + 0), 1981u);
+  EXPECT_EQ(b.mem.Ler16(kTexto2 + 2), 1u);
+  EXPECT_EQ(b.mem.Ler16(kTexto2 + 4), 6u);
+  EXPECT_EQ(b.mem.Ler16(kTexto2 + 12), 1u);
+}
+
+TEST(AjudantesExtra, JulianDateComHoraEMes) {
+  // 31 dias + 01:01:01 -> 1980/02/06 01:01:01, quarta-feira (o terceiro valor do
+  // teste do SDK: "00:00:00 2/6/1980 <--> 31*24*60*60", `wWeekDay = 2`).
+  Bancada b;
+  b.cpu.Set(kR0, 31u * 86400u + 3661u);
+  b.cpu.Set(kR1, kTexto2);
+  b.Atender(0x0B8);
+  EXPECT_EQ(b.mem.Ler16(kTexto2 + 0), 1980u);
+  EXPECT_EQ(b.mem.Ler16(kTexto2 + 2), 2u);
+  EXPECT_EQ(b.mem.Ler16(kTexto2 + 4), 6u);
+  EXPECT_EQ(b.mem.Ler16(kTexto2 + 6), 1u);
+  EXPECT_EQ(b.mem.Ler16(kTexto2 + 8), 1u);
+  EXPECT_EQ(b.mem.Ler16(kTexto2 + 10), 1u);
+  EXPECT_EQ(b.mem.Ler16(kTexto2 + 12), 2u);
+}
+
+TEST(AjudantesExtra, JulianDateComDwSecsZeroUsaORelogioDeclarado) {
+  // Doc (`AEEStdLib.h:4938-4941`): "If the input value is 0, GETTIMESECONDS()
+  // is used." O "agora" desta arvore e o instante declarado -- e o caminho passa
+  // a mesma vez pelo registo do pressuposto, e nao por uma falta.
+  Bancada b;
+  b.cpu.Set(kR0, 0);
+  b.cpu.Set(kR1, kTexto2);
+  EXPECT_EQ(b.Atender(0x0B8), Atendimento::Implementado);
+  EXPECT_EQ(b.mem.Ler16(kTexto2 + 0), 1980u);
+  EXPECT_EQ(b.mem.Ler16(kTexto2 + 4), 6u);
+  const auto& p = b.traco.ContagemPressupostos();
+  EXPECT_EQ(p.at("aee_GetSeconds_sem_relogio"), 1u);
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x0b8] aee_GetJulianDate"), 0u);
+}
+
+TEST(AjudantesExtra, JulianDateComPonteiroNuloRecusa) {
+  // A funcao e `void`: nao ha valor de erro para devolver. Recusa-se em voz alta
+  // (P2) e NAO se escreve nada. O `Atendimento` e `Implementado` -- a TABELA
+  // tomou conta do offset, como em qualquer funcao implementada que recusa
+  // dentro; o que diz o que se passou e o registo, com a razao.
+  Bancada b;
+  b.cpu.Set(kR0, 100u);
+  b.cpu.Set(kR1, 0);
+  EXPECT_EQ(b.Atender(0x0B8), Atendimento::Implementado);
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x0b8] aee_GetJulianDate"), 1u);
+  EXPECT_NE(b.DetalheDaFalta("AEEHelperFuncs[0x0b8] aee_GetJulianDate").find("pDate nulo"),
+            std::string::npos);
+}
+
+TEST(AjudantesExtra, JulianDateNaoEstouraComOSegundoMaximo) {
+  // `dwSecs` e `uint32` e a conta e feita em 64 bits: o valor maximo tem de dar
+  // uma data de calendario valida, e nao lixo. (O proprio teste do SDK regista
+  // que o valor -1 NAO volta a 1980/01/05 -- ver o relatorio.)
+  Bancada b;
+  b.cpu.Set(kR0, 0xFFFFFFFFu);
+  b.cpu.Set(kR1, kTexto2);
+  EXPECT_EQ(b.Atender(0x0B8), Atendimento::Implementado);
+  const std::uint16_t ano = b.mem.Ler16(kTexto2 + 0);
+  const std::uint16_t mes = b.mem.Ler16(kTexto2 + 2);
+  const std::uint16_t dia = b.mem.Ler16(kTexto2 + 4);
+  const std::uint16_t semana = b.mem.Ler16(kTexto2 + 12);
+  EXPECT_GE(ano, 1980u);
+  EXPECT_LE(ano, 2116u);
+  EXPECT_GE(mes, 1u);
+  EXPECT_LE(mes, 12u);
+  EXPECT_GE(dia, 1u);
+  EXPECT_LE(dia, 31u);
+  EXPECT_LE(semana, 6u);
+}
+
 TEST(AjudantesExtra, WsprintfFormataLargoComLimiteEmBytes) {
   // O medido no tekken2: r0=dest, r1=0x40 (64 BYTES = 32 AECHARs), r2=formato.
   // `%s` come um AECHAR* (o exemplo do SDK, c_SystemTaskApp.c:3555+3643, passa
@@ -1109,7 +1417,7 @@ TEST(AjudantesExtra, SetupNativeImageEDescodificadoPorEstaTabela) {
   EXPECT_STREQ(DeclaracaoDoOffset(0x064)->assinatura,
                "void *(*SetupNativeImage)(AEECLSID cls, void *pBuffer, AEEImageInfo *pii, "
                "boolean *pbRealloc)");
-  EXPECT_EQ(AjudantesExtra::Implementados(), 20u) << "o 0x064 entrou na tabela";
+  EXPECT_EQ(AjudantesExtra::Implementados(), 23u) << "o 0x064 entrou na tabela";
 }
 
 TEST(AjudantesExtra, SetupNativeImageDescodificaBmpDe8BitsComPaleta) {

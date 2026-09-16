@@ -151,12 +151,59 @@ void FazerWstrToStr(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
 // linhas 466-482 (doc do `aee_UTF8ToWStr`): "FALSE if fails ( if pSrc or pDst is
 // NULL; if nSize is zero or lesser )".
 //
-// O QUE O CABECALHO NAO DEFINE, e a decisao fica escrita: o que fazer quando a
-// conversao NAO CABE no destino. Nao truncar em silencio e a regra desta arvore
-// (P2): devolve FALSE, termina em NUL o que ja estava convertido (quando ha
-// espaco para o NUL) e REGISTA. Custo se estiver errado: um titulo que conte com
-// truncagem perde a conversao inteira -- e o registo diz qual e o tamanho que
-// faltou, que e o que permite corrigir sem adivinhar.
+// O QUE O CABECALHO NAO DEFINE -- e o que a MEDICAO fixou: o que fazer quando a
+// conversao NAO CABE no destino.
+//
+// A REGRA ERRADA ESTAVA AQUI, e ela custava uma chamada REAL: reservar a unidade
+// do terminador dentro do `nSize`. O chamador medido e a Z-Wheel (`tectoy`,
+// 274755, funcao `0x7af24`), que faz exactamente isto:
+//
+//     len = strlen(psz);                 // 19, para "http://www.ats.com/"
+//     buf = malloc((len + 1) * 2);       // 40 bytes: 19 unidades + a do NUL
+//     utf8towstr(psz, len, buf, len*2);  // nSize = 38 = 19 unidades
+//
+// O `nSize` e o numero de unidades dos CARACTERES, e a unidade do terminador
+// fica FORA dele -- dentro da alocacao, mas fora do que a funcao pode escrever.
+// Com a reserva, o decimo-nono caracter -- "http://www.ats.com/" tem 19 -- era
+// recusado: o ultimo (`/`) perdia-se, a chamada dizia FALSE e o erro ficava
+// registado como falta na corrida.
+//
+// A REGRA MEDIDA, e a que o proprio SDK executa. Desmontado o simulador do SDK
+// (`BrewMPSDK-7.12.5 ... platform/system/mod/BREWSim/BREWSim.dll1`, export
+// `aee_UTF8ToWStr`, ordinal 115, RVA 0x00050ba0): o laco escreve um AECHAR
+// enquanto o byte ainda couber (`cmp $0x2,%edx; jb FALSE` com `edx` = bytes que
+// restam), consome o `nLen` que o chamador deu, e NAO reserva nada para o
+// terminador. Devolve TRUE quando gastou o `nLen` todo, e FALSE quando o destino
+// encheu primeiro. O terminador, escreve-o quem o converte (se o `nLen` o
+// incluir) e mais ninguem.
+//
+// O QUE ESTA ARVORE FAZ, das duas uma:
+//   - enche o destino ate ao fim -- todas as unidades que o `nSize` declara --
+//     e devolve TRUE se gastou o `nLen` todo;
+//   - se o `nLen` nao couber, devolve FALSE e REGISTA a truncagem (P2: a
+//     truncagem nao pode ser muda). O registo leva o `nSize` e quantas unidades
+//     entraram, que e o que permite corrigir sem adivinhar.
+// A UNICA DIFERENCA para o SDK, declarada: o SDK nao termina a cadeia do destino,
+// e esta tabela escreve o NUL QUANDO ELE CABE no `nSize`. Escrever o NUL fora do
+// `nSize` era escrever memoria do guest -- e o chamador medido acabou de mostrar
+// que o `nSize` e um numero que ele conta (a unidade extra esta la, mas nao e
+// nossa).
+//
+// DUAS DIVERGENCIAS DO SDK QUE SE MANTEM, as duas a favor do guest:
+//   - a sequencia de 4 bytes (0xF0..0xF7) e DEScodificada para um par de
+//     substitutos. O SDK testa o bit 5 e trata-a como se fosse de 3, o que
+//     produz um caracter errado e deixa um byte solto a seguir; nada no corpus
+//     dos 62 manda 4 bytes para aqui (medido: as 6 chamadas dos 62 titulos sao
+//     ASCII e Latin-1 de 2 e 3 bytes).
+//   - uma sequencia de 2 ou 3 bytes CORTADA pelo fim do `nLen` e RECUSADA em vez
+//     de se ler o byte seguinte, que esta fora do que o chamador disse ter. O SDK
+//     le-o. Ler fora do `nLen` e um defeito do SDK, e nao um contrato.
+//   - um NUL DENTRO do `nLen` termina a conversao aqui (o SDK converte-o e
+//     continua). O cabecalho diz que o `pSrc` e uma "Null terminated Input
+//     string" (`AEEStdLib.h:3672`); as seis chamadas medidas dos 62 titulos levam
+//     o NUL exactamente no fim do `nLen` (o `pbc` passa 21 bytes para 20
+//     caracteres + NUL), e ai os dois fazem o mesmo: o NUL do SDK e o NUL que
+//     esta tabela escreve no fim sao o mesmo AECHAR 0 no mesmo sitio.
 //
 // CESU-8: um par de substitutos escrito como dois grupos de 3 bytes passa por
 // dois AECHAR, que e exactamente o que o destino espera. Nao se recusa.
@@ -173,10 +220,17 @@ void FazerUtf8ToWstr(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
     return;
   }
 
+  std::uint32_t i = 0;
+  // O BOM (`EF BB BF`) e saltado pelo SDK quando o `nLen` o leva. A condicao
+  // `nLen > 3` e a do SDK, e nao `>= 3`: uma cadeia que seja SO o BOM
+  // converte-o, em vez de a saltar.
+  if (n_len > 3 && mem.Ler8(p_in) == 0xEFu && mem.Ler8(p_in + 1) == 0xBBu &&
+      mem.Ler8(p_in + 2) == 0xBFu) {
+    i = 3;
+  }
   const std::uint32_t max_bytes = std::min<std::uint32_t>(
       static_cast<std::uint32_t>(n_len), kLimiteDeCadeia);
   std::uint32_t escritos = 0;  // AECHAR escritos
-  std::uint32_t i = 0;
   bool caber = true;
   bool invalido = false;
 
@@ -234,8 +288,10 @@ void FazerUtf8ToWstr(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
       saida[1] = static_cast<std::uint16_t>(0xDC00u + (v & 0x3FFu));
       quantos_saida = 2;
     }
-    // O NUL tambem conta para o que cabe: e preciso 2 bytes para ele.
-    if ((escritos + quantos_saida + 1) * 2 > static_cast<std::uint32_t>(n_size)) {
+    // SO O CARACTER CONTA PARA O QUE CABE. O terminador NAO se reserva: e o
+    // `nSize` do chamador medido (a Z-Wheel passa `len*2` para `len` caracteres,
+    // com a unidade do NUL FORA dele). Ver o cabecalho deste bloco.
+    if ((escritos + quantos_saida) * 2 > static_cast<std::uint32_t>(n_size)) {
       caber = false;
       break;
     }
@@ -250,13 +306,19 @@ void FazerUtf8ToWstr(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
     }
   }
 
+  // O TERMINADOR, QUANDO ELE CABE. O SDK nao escreve nenhum (desmontado acima);
+  // esta tabela escreve-o se a `nSize` ainda o levar, porque o cabecalho diz que
+  // a entrada e uma "Null terminated Input string" e o guest conta com a cadeia
+  // terminada. Fora da `nSize` NAO se escreve: e memoria que nao e nossa.
   if (escritos * 2 + 2 <= static_cast<std::uint32_t>(n_size)) {
     mem.Escrever16(p_dest + escritos * 2, 0);
   }
   char det[160];
   if (!caber) {
-    std::snprintf(det, sizeof(det), "nao cabe: nSize=%d, convertidos=%u AECHAR", n_size,
-                  escritos);
+    std::snprintf(det, sizeof(det),
+                  "nao cabe: nSize=%d bytes (%d AECHAR), convertidos=%u AECHAR; o chamador "
+                  "medido (Z-Wheel 0x7af24) passa nSize = 2*len",
+                  n_size, n_size / 2, escritos);
     RegistarRecusa(traco, brew_ajudantes::kAjudante_utf8towstr, "destino pequeno de mais", det);
     cpu.Set(kR0, 0);
     return;
@@ -269,6 +331,136 @@ void FazerUtf8ToWstr(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
   }
   std::snprintf(det, sizeof(det), "nLen=%d convertidos=%u AECHAR", n_len, escritos);
   EmitirChamada(traco, brew_ajudantes::kAjudante_utf8towstr, det);
+  cpu.Set(kR0, 1);
+}
+
+
+// `JulianType` -- sete `uint16`, na ordem do cabecalho (`AEEShell.h:2935-2944`).
+// `AECHAR`/`uint16` = 2 bytes (`AEEStdDef.h:114`), logo 14 bytes no total, e o
+// guest recebe-os escritos a partir do ponteiro que passou no r1.
+struct CamposDoJulianType {
+  static constexpr std::uint32_t kWYear = 0;     // 4 digitos (1980..)
+  static constexpr std::uint32_t kWMonth = 2;    // 1..12
+  static constexpr std::uint32_t kWDay = 4;      // 1..31
+  static constexpr std::uint32_t kWHour = 6;     // 0..23
+  static constexpr std::uint32_t kWMinute = 8;   // 0..59
+  static constexpr std::uint32_t kWSecond = 10;  // 0..59
+  static constexpr std::uint32_t kWWeekDay = 12; // 0=segunda .. 6=domingo
+  static constexpr std::uint32_t kTamanho = 14;
+};
+static_assert(CamposDoJulianType::kWWeekDay == 12 && CamposDoJulianType::kTamanho == 14,
+              "o JulianType do SDK sao 7 uint16 = 14 bytes, e o dia da semana e o setimo");
+
+// ---------------------------------------------------------------------------
+// 0x054 -- `boolean (*wstrtoutf8)(const AECHAR *pszIn, int nLen, byte *pszDest,
+//                                 int nSizeDestBytes)`
+// ---------------------------------------------------------------------------
+//
+// ASSINATURA, de `AEEStdLib.h` linhas 80-81:
+//   r0 = pszIn          : AECHAR* -- UTF-16, terminado em 0
+//   r1 = nLen           : int     -- comprimento do que entra, em AECHARs
+//   r2 = pszDest        : byte*   -- destino
+//   r3 = nSizeDestBytes : int     -- bytes do destino
+//   devolve: TRUE (1) ou FALSE (0)
+//
+// A ASSIMETRIA E DO CABECALHO, e e a armadilha desta funcao: aqui o `nLen` e em
+// AECHARs (`AEEStdLib.h:3706`: "nLen: Length of input string in AECHARs"), e no
+// `utf8towstr` (0x050) o mesmo campo e em BYTES (`AEEStdLib.h:3673`). Trocar os
+// dois nao rebenta -- le metade, ou o dobro, e devolve TRUE na mesma.
+//
+// O QUE O CABECALHO DEFINE (`AEEStdLib_static.h:494-510`, doc do
+// `aee_WStrToUTF8`): "FALSE if fails ( if pSrc or pDst is NULL; if nSize is zero
+// or lesser )". Um destino pequeno de mais NAO esta nesta lista.
+//
+// A REGRA MEDIDA -- o SDK executa-a, e o simulador mostra-a. Desmontado
+// `BrewMPSDK-7.12.5 .../BREWSim/BREWSim.dll1`, export `aee_WStrToUTF8`, ordinal
+// 117, RVA 0x00050cb0:
+//   - os tres argumentos sao testados e o FALSE sai so deles (0x10050d53);
+//   - o laco corre sobre as `nLen` UNIDADES (`cmp %edx,%edi; jl`), e nao para num
+//     zero: quem quer o terminador converte-o, passando um `nLen` que o inclua;
+//   - cada unidade vale 1 byte abaixo de 0x80, 2 abaixo de 0x800 e 3 acima
+//     (0x10050d15) -- NUNCA 4, nem para um par de substitutos, que sai em CESU-8;
+//   - quando a proxima unidade nao cabe, salta fora do laco e devolve **TRUE**
+//     (0x10050d4c: `pop`s e `mov $0x1,%al`). O FALSE nao existe nesse caminho.
+//   - o destino NAO leva terminador nenhum.
+//
+// O CHAMADOR MEDIDO, que e quem manda no tamanho: a Z-Wheel (`tectoy` 274755,
+// funcao `0x7673c`) faz `len = wstrlen(wide)`, `malloc(len*10 + 1)` e
+// `wstrtoutf8(wide, len, buf, len*10)`. Ou seja: `nLen` sem o terminador, e um
+// destino dez vezes maior que o pior caso de 3 bytes por unidade. Mais um byte
+// alem do `nSize` -- que a funcao NAO escreve (o SDK tambem nao), e que fica
+// como o alocador o deixou.
+//
+// UMA DIVERGENCIA DECLARADA, e e a unica: a truncagem nao fica muda. O valor de
+// retorno e o do SDK (TRUE), porque e o que o guest le, e o registo da corrida
+// leva o numero de bytes e o tamanho que faltou. Escrever o resultado e registar
+// tem precedente nesta tabela: o `wsprintf` faz o mesmo com o especificador que
+// nao sabe formatar.
+void FazerWstrToUtf8(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
+  const std::uint32_t p_in = cpu.Get(kR0);
+  const std::int32_t n_len = static_cast<std::int32_t>(cpu.Get(kR1));
+  const std::uint32_t p_dest = cpu.Get(kR2);
+  const std::int32_t n_size = static_cast<std::int32_t>(cpu.Get(kR3));
+
+  if (p_in == 0 || p_dest == 0 || n_size <= 0) {
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_wstrtoutf8,
+                   "argumento invalido (ponteiro nulo ou nSize < 1)", DetalheDosRegistos(cpu));
+    cpu.Set(kR0, 0);
+    return;
+  }
+
+  const std::uint32_t unidades = std::min<std::uint32_t>(
+      (n_len < 0) ? 0u : static_cast<std::uint32_t>(n_len), kLimiteDeCaracteres);
+  if (n_len < 0) {
+    // Um comprimento negativo nao e um contrato: o SDK le-o como contador sem
+    // sinal e nao converte nada, devolvendo TRUE. Aqui diz-se o que se fez.
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_wstrtoutf8, "nLen negativo",
+                   DetalheDosRegistos(cpu));
+  }
+
+  std::uint32_t escritos = 0;
+  std::uint32_t i = 0;
+  bool truncou = false;
+  for (; i < unidades; ++i) {
+    const std::uint16_t u = mem.Ler16(p_in + i * 2);
+    std::uint8_t saida[3];
+    std::uint32_t quantos;
+    if (u < 0x80u) {
+      saida[0] = static_cast<std::uint8_t>(u);
+      quantos = 1;
+    } else if (u < 0x800u) {
+      saida[0] = static_cast<std::uint8_t>(0xC0u | (u >> 6));
+      saida[1] = static_cast<std::uint8_t>(0x80u | (u & 0x3Fu));
+      quantos = 2;
+    } else {
+      saida[0] = static_cast<std::uint8_t>(0xE0u | (u >> 12));
+      saida[1] = static_cast<std::uint8_t>(0x80u | ((u >> 6) & 0x3Fu));
+      saida[2] = static_cast<std::uint8_t>(0x80u | (u & 0x3Fu));
+      quantos = 3;
+    }
+    if (escritos + quantos > static_cast<std::uint32_t>(n_size)) {
+      truncou = true;
+      break;
+    }
+    for (std::uint32_t k = 0; k < quantos; ++k) {
+      mem.Escrever8(p_dest + escritos + k, saida[k]);
+    }
+    escritos += quantos;
+  }
+
+  char det[160];
+  if (truncou) {
+    std::snprintf(det, sizeof(det),
+                  "destino pequeno de mais: nSize=%d bytes, escritos=%u, unidades lidas=%u de "
+                  "%u (r0=0x%08x)",
+                  n_size, escritos, i, unidades, p_in);
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_wstrtoutf8,
+                   "destino pequeno de mais (o SDK para e devolve TRUE)", det);
+  } else {
+    std::snprintf(det, sizeof(det), "nLen=%u AECHAR convertidos=%u bytes", unidades, escritos);
+  }
+  // O VALOR DE RETORNO E O DO SDK NESTE CAMINHO: TRUE mesmo com truncagem.
+  EmitirChamada(traco, brew_ajudantes::kAjudante_wstrtoutf8, det);
   cpu.Set(kR0, 1);
 }
 
@@ -1027,6 +1219,144 @@ void FazerAeeGetTimeMS(Memoria&, Alocador&, ICpu& cpu, Traco& traco) {
   EmitirChamada(traco, brew_ajudantes::kAjudante_aee_GetTimeMS, "0 ms (declarado)");
 }
 
+
+// ---------------------------------------------------------------------------
+// 0x0B4 -- `uint32 (*aee_GetSeconds)(void)`
+// ---------------------------------------------------------------------------
+//
+// ASSINATURA, de `AEEStdLib.h:137`: sem argumentos, devolve `uint32`.
+//
+// SEMANTICA, do proprio cabecalho (`AEEStdLib.h:4853-4860`): "the number of
+// seconds since 1980/01/06 00:00:00 UTC, including UTC leap second adjustments
+// and adjusted for local time zone and daylight savings time", e
+// `GETTIMESECONDS() = GETUTCSECONDS() + LOCALTIMEOFFSET()`.
+//
+// A MESMA REGRA E O MESMO PRESSUPOSTO DO `aee_GetTimeMS` (0x0ac), e por uma
+// razao: sao o MESMO relogio. Aquele devolve 0 ms como valor DECLARADO -- o
+// aparelho emulado nunca adquiriu hora de sistema (`AEEStdLib.h:4786-4790` manda
+// usar o `ISTIMEVALID()` para o saber) -- e o relogio virtual do `Despacho` nao e
+// alcancavel desta tabela (`AtenderAjudanteExtra` recebe `cpu`, `memoria`,
+// `alocador` e `traco`, e mais nada). Aqui, a mesma grandeza de calendario:
+//
+//   0 segundos desde 1980/01/06 00:00:00 -> 00:00:00 locais.
+//
+// AS DUAS CONTAS TEM DE CONCORDAR, e concordam: `GetTimeMS()` e "ms desde as
+// ultimas 00:00:00 locais", logo `GetTimeMS()/1000 == GetSeconds() % 86400`. Com
+// os dois a zero, o instante e o mesmo -- e e o que o `GetJulianDate` (0x0b8)
+// tambem devolve. Um teste (`AeeGetSecondsDeclaraAEpocaDe1980`) fixa esta conta,
+// para as tres nunca se contradizerem.
+//
+// PORQUE NAO SE COPIA O ZEEBX AQUI: aquele emulador responde ao `GetSeconds` com
+// o relogio do HOST capturado no arranque (`src/machine/time.rs:136`), o que faz
+// um jogo que pergunta a data receber uma data que existe. Este projecto tem a
+// regra oposta para valores que nao mediu -- devolve o instante declarado e
+// REGISTA o pressuposto. Um valor plausivel e inventado e pior do que um zero
+// declarado: o jogo que se comporta mal com a data de 1980 tem de se comportar
+// mal aqui tambem, ou o defeito esconde-se.
+void FazerAeeGetSeconds(Memoria&, Alocador&, ICpu& cpu, Traco& traco) {
+  cpu.Set(kR0, 0);
+  traco.RegistarPressuposto(
+      Area::Brew, "aee_GetSeconds_sem_relogio",
+      "0 s desde 1980/01/06 00:00:00 locais: o aparelho emulado nao adquiriu relogio de "
+      "sistema (AEEStdLib.h:4862-4866) e o relogio virtual do despacho nao e alcancavel desta "
+      "tabela -- o mesmo instante que o `aee_GetTimeMS_meia_noite` de 0x0ac declara");
+  EmitirChamada(traco, brew_ajudantes::kAjudante_aee_GetSeconds, "0 s (declarado)");
+}
+
+// ---------------------------------------------------------------------------
+// 0x0B8 -- `void (*aee_GetJulianDate)(uint32 dwSecs, JulianType *pDate)`
+// ---------------------------------------------------------------------------
+//
+// ASSINATURA, de `AEEStdLib.h:138`:
+//   r0 = dwSecs : uint32     -- segundos desde 1980/01/06 00:00:00 UTC
+//   r1 = pDate  : JulianType* -- recebe os SETE `uint16` (`AEEShell.h:2935-2944`:
+//                                wYear, wMonth, wDay, wHour, wMinute, wSecond,
+//                                wWeekDay)
+//   devolve: NADA
+//
+// A CONVERSAO E ARITMETICA EXACTA sobre o valor que o guest deu, e nao um
+// pressuposto: 1 dia = 86400 s, sem segundos intercalares. Que nao ha
+// intercalares e o que o proprio SDK mede -- o teste do SDK conta o ano de 1980
+// como 366 dias exactos (`OATStdLib_Time.c`, "00:00:00 1/6/1981 <--> 366*24*60*60").
+// O "including UTC leap second adjustments" da doc e sobre a procedencia do
+// valor no aparelho (vem da estacao base), e nao sobre esta aritmetica.
+//
+// O DIA DA SEMANA, QUE E O CAMPO ONDE DOIS EMULADORES ERRAM: 0 = segunda-feira
+// ... 6 = domingo (`AEEShell.h:2954` e `AEESMS.h:1682`), e a ancora e 1980/01/06
+// = **6**. As quatro ancoras do teste do SDK, todas conferidas contra o
+// calendario: 1980/01/06 (6, domingo), 1981/01/06 (1, terca), 1982/01/06 (2,
+// quarta) e 1980/02/06 (2, quarta). O zeebx usa domingo a zero
+// (`src/machine/mod.rs:1663`: "o dia da semana começa em domingo valendo 0, que é
+// a convenção do BREW", com `semana = dias % 7`) -- **esta errado**, e a
+// divergencia e de um dia em toda a semana. Ver o relatorio desta frente.
+//
+// O `dwSecs = 0` QUER DIZER "AGORA" (`AEEStdLib.h:4938-4941`: "If the input value
+// is 0, GETTIMESECONDS() is used"), e o "agora" desta arvore e o instante
+// declarado -- o mesmo caminho e o mesmo registo do `FazerAeeGetSeconds`.
+void FazerAeeGetJulianDate(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
+  const std::uint32_t dw_secs = cpu.Get(kR0);
+  const std::uint32_t p_date = cpu.Get(kR1);
+
+  if (p_date == 0) {
+    // `void`: nao ha valor de erro. Recusa-se em voz alta e NAO se escreve nada.
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_aee_GetJulianDate, "pDate nulo",
+                   DetalheDosRegistos(cpu));
+    cpu.Set(kR0, 0);
+    return;
+  }
+
+  std::uint32_t segundos = dw_secs;
+  if (dw_secs == 0) {
+    segundos = 0;  // o "agora" declarado desta arvore == o instante da epoca
+    traco.RegistarPressuposto(
+        Area::Brew, "aee_GetSeconds_sem_relogio",
+        "GetJulianDate com dwSecs=0 usa o 'agora', que nesta arvore e o instante declarado "
+        "(1980/01/06 00:00:00 locais)");
+  }
+
+  const std::uint32_t dias = segundos / 86400u;
+  const std::uint32_t resto = segundos % 86400u;
+
+  // O CALENDARIO CIVIL a partir dos dias desde 1970/01/01 (algoritmo de Howard
+  // Hinnant): o ano comeca em marco, o que poe o bissexto no fim e evita as
+  // tabelas de meses, e as constantes 146097 (= 400 anos) e 719468 (= dias de
+  // 0000-03-01 a 1970-01-01) sao as do algoritmo. 3657 e a distancia de
+  // 1970/01/01 a 1980/01/06, a epoca do BREW -- e nao a do Unix.
+  constexpr std::int64_t kDiasDe1970AEpoca1980 = 3657;
+  static_assert(kDiasDe1970AEpoca1980 == 3652 + 5, "3652 dias de 1970 a 1980 + 5 ate 6 de janeiro");
+  const std::int64_t z = static_cast<std::int64_t>(dias) + kDiasDe1970AEpoca1980 + 719468;
+  const std::int64_t era = z / 146097;
+  const std::int64_t doe = z - era * 146097;
+  const std::int64_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  const std::int64_t ano = yoe + era * 400;
+  const std::int64_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  const std::int64_t mp = (5 * doy + 2) / 153;
+  const std::int64_t dia = doy - (153 * mp + 2) / 5 + 1;
+  const std::int64_t mes = (mp < 10) ? mp + 3 : mp - 9;
+  const std::int64_t ano_final = ano + ((mes <= 2) ? 1 : 0);
+
+  using C = CamposDoJulianType;
+  mem.Escrever16(p_date + C::kWYear, static_cast<std::uint16_t>(ano_final));
+  mem.Escrever16(p_date + C::kWMonth, static_cast<std::uint16_t>(mes));
+  mem.Escrever16(p_date + C::kWDay, static_cast<std::uint16_t>(dia));
+  mem.Escrever16(p_date + C::kWHour, static_cast<std::uint16_t>(resto / 3600u));
+  mem.Escrever16(p_date + C::kWMinute, static_cast<std::uint16_t>((resto % 3600u) / 60u));
+  mem.Escrever16(p_date + C::kWSecond, static_cast<std::uint16_t>(resto % 60u));
+  // 1980/01/06 foi um domingo, e domingo e 6. Como segunda e zero, o dia da
+  // semana e `(dias + 6) % 7` -- a ancora `6` e o que poe o 6 de janeiro de 1980
+  // no 6.
+  mem.Escrever16(p_date + C::kWWeekDay, static_cast<std::uint16_t>((dias + 6u) % 7u));
+
+  char det[160];
+  std::snprintf(det, sizeof(det), "dwSecs=%u -> %04u-%02u-%02u %02u:%02u:%02u semana=%u", dw_secs,
+                static_cast<unsigned>(ano_final), static_cast<unsigned>(mes),
+                static_cast<unsigned>(dia), static_cast<unsigned>(resto / 3600u),
+                static_cast<unsigned>((resto % 3600u) / 60u), static_cast<unsigned>(resto % 60u),
+                static_cast<unsigned>((dias + 6u) % 7u));
+  EmitirChamada(traco, brew_ajudantes::kAjudante_aee_GetJulianDate, det);
+  cpu.Set(kR0, 0);
+}
+
 // ---------------------------------------------------------------------------
 // 0x03C -- `void (*wsprintf)(AECHAR *pDest, int nSize, const AECHAR *pFormat, ...)`
 // ---------------------------------------------------------------------------
@@ -1703,6 +2033,9 @@ constexpr Implementacao kImplementados[] = {
     {brew_ajudantes::kAjudante_strends, "strends", FazerStrends},
     {brew_ajudantes::kAjudante_aee_GetTimeMS, "aee_GetTimeMS", FazerAeeGetTimeMS},
     {brew_ajudantes::kAjudante_wsprintf, "wsprintf", FazerWsprintf},
+    {brew_ajudantes::kAjudante_wstrtoutf8, "wstrtoutf8", FazerWstrToUtf8},
+    {brew_ajudantes::kAjudante_aee_GetSeconds, "aee_GetSeconds", FazerAeeGetSeconds},
+    {brew_ajudantes::kAjudante_aee_GetJulianDate, "aee_GetJulianDate", FazerAeeGetJulianDate},
     {brew_ajudantes::kAjudante_SetupNativeImage, "SetupNativeImage", FazerSetupNativeImage},
 };
 
@@ -1735,9 +2068,14 @@ static_assert(brew_ajudantes::kAjudante_atoi == 0x090, "0x090 e atoi");
 static_assert(brew_ajudantes::kAjudante_strends == 0x0FC, "0x0fc e strends");
 static_assert(brew_ajudantes::kAjudante_aee_GetTimeMS == 0x0AC, "0x0ac e aee_GetTimeMS");
 static_assert(brew_ajudantes::kAjudante_wsprintf == 0x03C, "0x03c e wsprintf");
+// As tres da frente zhelp. O `utf8towstr` (0x050) ja estava na lista: a frente
+// mudou-lhe a REGRA do destino cheio, nao o offset.
+static_assert(brew_ajudantes::kAjudante_wstrtoutf8 == 0x054, "0x054 e wstrtoutf8");
+static_assert(brew_ajudantes::kAjudante_aee_GetSeconds == 0x0B4, "0x0b4 e aee_GetSeconds");
+static_assert(brew_ajudantes::kAjudante_aee_GetJulianDate == 0x0B8, "0x0b8 e aee_GetJulianDate");
 static_assert(
     sizeof(kImplementados) / sizeof(kImplementados[0]) ==
-        20,
+        23,
     "a lista das implementacoes mudou: actualiza o numero e o teste");
 
 }  // namespace
