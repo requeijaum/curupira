@@ -933,6 +933,43 @@ TEST(Png, OsCincoColorTypesQueSeServemDaoOsPixelsCertos) {
     }
   }
 }
+TEST(Png, CinzaDe1BitLargaNaoEscreveForaDasAmostras) {
+  // DEFEITO MEDIDO (ASan, corrida do `peggle`): o buffer das amostras de uma
+  // linha e dimensionado em BYTES da linha (`passo`) e INDEXADO em PIXELS
+  // (`amostras_da_linha[x]`, x < largura). Os dois numeros so coincidem com
+  // profundidade 8; com bd 1/2/4 o passo e `ceil(largura * bd / 8)` e o laco dos
+  // pixels escreve `largura` entradas -- `largura - passo` bytes DEPOIS do fim.
+  //
+  // MEDIDO: `AddressSanitizer: heap-buffer-overflow ... WRITE of size 1` em
+  // `core/carga/png.cpp:350`, sobre uma regiao de 2 bytes criada em
+  // `png.cpp:339` -- heap do HOSPEDEIRO, e nao memoria do guest. As larguras
+  // pequenas escapam porque o `malloc` arredonda o bloco (um vector de 2 bytes
+  // tem ~32 utilizaveis); a partir de `largura > passo + folga` o glibc aborta a
+  // corrida ("corrupted size vs. prev_size" / "free(): invalid pointer").
+  //
+  // 64 pixels de 1 bit = 8 bytes de linha; o laco dos pixels escreve 64.
+  const std::vector<std::uint8_t> linhas = {0, 0x80u, 0x00u, 0xFFu, 0xAAu,
+                                           0x55u, 0x0Fu, 0xF0u, 0x81u};
+  const std::vector<std::uint8_t> png = MontarPng(64, 1, 0, 1, linhas);
+  zb2::ImagemPng img;
+  std::string motivo;
+  ASSERT_TRUE(zb2::DescodificarPng(png.data(), png.size(), &img, &motivo)) << motivo;
+  ASSERT_EQ(img.pixels.size(), 64u);
+  const std::uint16_t esperado[64] = {
+      0xFFFFu, 0x0000u, 0x0000u, 0x0000u, 0x0000u, 0x0000u, 0x0000u, 0x0000u,
+      0x0000u, 0x0000u, 0x0000u, 0x0000u, 0x0000u, 0x0000u, 0x0000u, 0x0000u,
+      0xFFFFu, 0xFFFFu, 0xFFFFu, 0xFFFFu, 0xFFFFu, 0xFFFFu, 0xFFFFu, 0xFFFFu,
+      0xFFFFu, 0x0000u, 0xFFFFu, 0x0000u, 0xFFFFu, 0x0000u, 0xFFFFu, 0x0000u,
+      0x0000u, 0xFFFFu, 0x0000u, 0xFFFFu, 0x0000u, 0xFFFFu, 0x0000u, 0xFFFFu,
+      0x0000u, 0x0000u, 0x0000u, 0x0000u, 0xFFFFu, 0xFFFFu, 0xFFFFu, 0xFFFFu,
+      0xFFFFu, 0xFFFFu, 0xFFFFu, 0xFFFFu, 0x0000u, 0x0000u, 0x0000u, 0x0000u,
+      0xFFFFu, 0x0000u, 0x0000u, 0x0000u, 0x0000u, 0x0000u, 0x0000u, 0xFFFFu,
+  };
+  for (std::size_t k = 0; k < 64u; ++k) {
+    EXPECT_EQ(img.pixels[k], esperado[k]) << "pixel " << k;
+  }
+}
+
 
 TEST(Png, OsCincoFiltrosPorLinhaDaoOMesmoQueSemFiltro) {
   // O MESMO 1x5 de cinza, gravado com cada um dos cinco filtros. As linhas

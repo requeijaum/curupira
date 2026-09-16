@@ -336,7 +336,26 @@ bool DescodificarPng(const std::uint8_t* dados, std::size_t tamanho, ImagemPng* 
   // pixel) desempacota-se MSB primeiro, e na escala de cinza o valor e ESTICADO
   // para 0..255 -- e o que o PNG manda (15948, 12.5: "the sample is scaled"), e
   // sem o esticar o cinza de 1 bit sairia a preto em tudo menos no branco.
-  std::vector<std::uint8_t> amostras_da_linha(static_cast<std::size_t>(passo), 0u);
+  // O TAMANHO E EM AMOSTRAS, E NAO EM BYTES DA LINHA. O laco dos pixels abaixo
+  // indexa `amostras_da_linha[x]` com `x` em PIXELS (x < largura) e le
+  // `p[0..canais-1]`, logo o buffer tem de ter `largura * canais` entradas -- e
+  // nao `passo`, que e o numero de BYTES de uma linha.
+  //
+  // MEDIDO (ASan, corrida do `peggle` com a forma `0xA000-0xAFFF` do Thumb
+  // servida): `heap-buffer-overflow ... WRITE of size 1` em `png.cpp:350` sobre
+  // um vector de 2 bytes criado aqui. As duas contas so coincidem com
+  // profundidade 8; com bd 1/2/4, `passo = ceil(largura * bd / 8) < largura`, e o
+  // laco escrevia `largura - passo` bytes DEPOIS do fim do vector -- heap do
+  // HOSPEDEIRO. As larguras pequenas escapavam por folga do `malloc` (o caso
+  // `cinza-1bit` desta suite tem largura 2 e `passo` 1, e passava); a partir de
+  // `largura > passo + folga` o glibc aborta a corrida com "corrupted size vs.
+  // prev_size" ou "free(): invalid pointer".
+  //
+  // O `max` cobre as duas leituras: `passo` para o `memcpy` do caminho de 8 bits,
+  // e `largura * canais` para o caminho dos 1/2/4 bits.
+  const std::size_t amostras_necessarias = std::max<std::size_t>(
+      static_cast<std::size_t>(passo), static_cast<std::size_t>(largura) * canais);
+  std::vector<std::uint8_t> amostras_da_linha(amostras_necessarias, 0u);
   for (std::uint32_t y = 0; y < altura; ++y) {
     const std::uint8_t* linha = cru.data() + static_cast<std::size_t>(y) * (passo + 1u) + 1u;
     if (profundidade == 8u) {
