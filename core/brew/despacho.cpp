@@ -2477,6 +2477,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
       }
       if (continuar_no_laco) { continuar_no_laco = false; continue; }
       resultado.motivo = "retornou";
+      DespejarPcHot("retornou");
       return resultado;
     }
     std::uint32_t idx = 0;
