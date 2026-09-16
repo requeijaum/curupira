@@ -22,6 +22,7 @@ add_library(zb2_core STATIC
   core/carga/png.cpp
   core/carga/pack.cpp
   core/carga/pakz.cpp
+  core/carga/aez.cpp
   core/brew/ajudantes.cpp
   core/brew/ajudantes_extra.cpp
   core/brew/formato.cpp
@@ -85,6 +86,7 @@ add_executable(zb2_tests
   tests/classes_test.cpp
   tests/pack_test.cpp
   tests/pakz_test.cpp
+  tests/aez_test.cpp
   tests/ecra_test.cpp
   tests/recusas_test.cpp
   tests/ecra_guest_test.cpp
@@ -203,6 +205,9 @@ add_test(NAME comparar_guardas COMMAND zb2_tests --gtest_filter=Comparar.*)
 # dizer "nao correu", como nos `RecursosDeVerdade`.
 add_test(NAME pack COMMAND zb2_tests --gtest_filter=Pack.*)
 add_test(NAME pakz COMMAND zb2_tests --gtest_filter=Pakz.*)
+# O AEZ (os recursos dos titulos BREW 3D). Os testes que abrem os `.aez` REAIS
+# SALTAM quando a midia do corpus nao esta nesta maquina, como o `pakz`.
+add_test(NAME aez COMMAND zb2_tests --gtest_filter=Aez.*)
 add_test(NAME comparar_shell
   COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/comparar_guarda.sh $<TARGET_FILE:zb2_comparar>)
 

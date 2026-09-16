@@ -94,9 +94,31 @@ std::int32_t Arquivos::Posicionar(std::uint32_t id, std::uint32_t tipo, std::int
   if (a == nullptr) return -1;
   const std::int64_t tamanho = static_cast<std::int64_t>(a->dados.size());
   std::int64_t novo = -1;
-  if (tipo == 0) novo = posicao;                                              // SEEK_SET
-  else if (tipo == 1) novo = static_cast<std::int64_t>(a->pos) + posicao;     // SEEK_CUR
-  else if (tipo == 2) novo = tamanho + posicao;                               // SEEK_END
+  // OS TRES VALORES SAO OS DO SDK, e nao os do `SEEK_SET/CUR/END` do `stdio`.
+  //
+  // `AEEFile.h:363-374` (SDK 4.0.2 SP19, o da consola) e explicito:
+  //
+  //     typedef enum { _SEEK_START, _SEEK_END, _SEEK_CURRENT } FileSeekType;
+  //
+  // ou seja `_SEEK_START = 0`, `_SEEK_END = 1`, `_SEEK_CURRENT = 2` (a lista de
+  // valores esta tambem em `AEEFile.h:39-41`). A ordem do `stdio` do C e OUTRA
+  // (`SET = 0`, `CUR = 1`, `END = 2`) e usar essa aqui troca DOIS dos tres.
+  //
+  // MEDIDO no gof (`ZB2_QUADROS=3`, sonda no `Ler`/`Posicionar`), e e o defeito
+  // que apagava TODA a leitura de ficheiros do emulador: o jogo faz
+  // `OpenFile` -> `Seek(2, 0)` -> `Read(8)`. O 2 e `_SEEK_CURRENT` ("onde
+  // estou?", a posicao continua onde estava, 0); lido como o `END` do stdio, a
+  // posicao saltava para o FIM do ficheiro (`pos=1051871 tam=1051871`) e o
+  // `Read` devolvia 0 bytes -- o jogo imprimia "Failed to load" para o
+  // `main_menu.aei` e "Data could not be read from file" para 32 `.wav`, com o
+  // FICHEIRO TODA INTEIRO no `Arquivos` (o mesmo sintoma com o ficheiro solto na
+  // pasta, e nao so dentro de um recipiente: medido).
+  switch (tipo) {
+    case 0: novo = posicao; break;                                      // _SEEK_START
+    case 1: novo = tamanho + posicao; break;                            // _SEEK_END
+    case 2: novo = static_cast<std::int64_t>(a->pos) + posicao; break;  // _SEEK_CURRENT
+    default: return -1;
+  }
   if (novo < 0 || novo > tamanho) return -1;
   a->pos = static_cast<std::uint32_t>(novo);
   return static_cast<std::int32_t>(a->pos);

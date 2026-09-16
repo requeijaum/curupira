@@ -51,9 +51,11 @@ std::string Lista(const std::set<std::string>& v) {
 void Vfs::Registar(const std::string& pasta) {
   pasta_ = pasta;
   nomes_.clear();
+  nomes_por_caixa_.clear();
   pacotes_.clear();
   conteudo_.clear();
   conteudo_pakz_.clear();
+  conteudo_aez_.clear();
   alias_.clear();
   nomes_de_entrada_.clear();
   diretorios_.clear();
@@ -67,6 +69,9 @@ void Vfs::Registar(const std::string& pasta) {
     if (!entrada.is_regular_file(ec)) continue;
     const std::string nome = entrada.path().filename().string();
     nomes_.insert(nome);
+    // O mapa da caixa ignorada: o PRIMEIRO na ordem do `std::set` fica (a
+    // insercao de uma chave que ja existe nao faz nada).
+    nomes_por_caixa_.insert({Minusculas(nome), nome});
     ficheiros.push_back(nome);
   }
   std::sort(ficheiros.begin(), ficheiros.end());
@@ -153,6 +158,43 @@ void Vfs::Registar(const std::string& pasta) {
     conteudo_pakz_.push_back(std::move(recipiente));
   }
 
+  // O MESMO PASSO para os `.aez`. O recipiente e o terceiro (`Aez`, registos
+  // com caminho absoluto e payload gzip ou cru) e o indice vai para o vector
+  // proprio, pela mesma razao que os dois anteriores: os indices nao sao o
+  // mesmo numero.
+  for (const std::string& f : ficheiros) {
+    if (!TerminaComIgnorandoCaixa(f, ".aez")) continue;
+    PacoteRegistado registo;
+    registo.ficheiro = f;
+    registo.aez = true;
+
+    std::ifstream entrada(pasta + "/" + f, std::ios::binary);
+    if (!entrada) {
+      registo.motivo = "nao consegui abrir o ficheiro";
+      pacotes_.push_back(registo);
+      continue;
+    }
+    std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(entrada)),
+                                    std::istreambuf_iterator<char>());
+    Aez recipiente;
+    std::string porque;
+    if (!recipiente.Parse(std::move(bytes), &porque)) {
+      registo.motivo = porque;
+      pacotes_.push_back(registo);
+      continue;
+    }
+
+    // O directorio do proprio ficheiro entra (o stem, como nos outros dois): e
+    // o que faz `res/res.aez` e `tracks/tracks.aez` existirem como nomes. As
+    // ENTRADAS nao se servem debaixo dele -- o caminho delas ja e absoluto e e
+    // esse que o guest pede (ver `core/brew/vfs.h`).
+    diretorios_.insert(SemExtensao(f));
+    registo.entradas = recipiente.NumeroDeEntradas();
+    registo.indice_no_conteudo_aez = conteudo_aez_.size();
+    pacotes_.push_back(registo);
+    conteudo_aez_.push_back(std::move(recipiente));
+  }
+
   // A UNIAO SO DEPOIS DE TODOS OS PACOTES LIDOS -- e nao durante a leitura de
   // cada um.
   //
@@ -166,24 +208,50 @@ void Vfs::Registar(const std::string& pasta) {
   // E OS DOIS INDICES NAO SAO O MESMO NUMERO: `pacotes_` inclui os pacotes
   // recusados e `conteudo_` nao. Aqui percorrem-se os VALIDOS, com o indice de
   // `conteudo_` no campo proprio.
+  // Os TRES recipientes nao tem o mesmo tipo de entrada, logo o numero de
+  // entradas e o nome da entrada `i` saem de duas funcoes com o `if` num so
+  // sitio -- e nao de ternarios espalhados, que foi como a primeira versao
+  // deste passo ficou a ler o `conteudo_` errado.
+  const auto quantas_entradas = [this](std::size_t p) -> std::size_t {
+    const PacoteRegistado& r = pacotes_[p];
+    if (r.aez) return conteudo_aez_[r.indice_no_conteudo_aez].NumeroDeEntradas();
+    if (r.pakz) return conteudo_pakz_[r.indice_no_conteudo_pakz].NumeroDeEntradas();
+    return conteudo_[r.indice_no_conteudo].NumeroDeEntradas();
+  };
+  const auto nome_da_entrada = [this](std::size_t p, std::size_t i) -> const std::string& {
+    const PacoteRegistado& r = pacotes_[p];
+    if (r.aez) return conteudo_aez_[r.indice_no_conteudo_aez].ListaDeEntradas()[i].nome;
+    if (r.pakz) return conteudo_pakz_[r.indice_no_conteudo_pakz].ListaDeEntradas()[i].nome;
+    return conteudo_[r.indice_no_conteudo].ListaDeEntradas()[i].nome;
+  };
+
   for (std::size_t p = 0; p < pacotes_.size(); ++p) {
     if (!pacotes_[p].motivo.empty()) continue;
-    const std::size_t n = pacotes_[p].pakz
-                              ? conteudo_pakz_[pacotes_[p].indice_no_conteudo_pakz].NumeroDeEntradas()
-                              : conteudo_[pacotes_[p].indice_no_conteudo].NumeroDeEntradas();
+    const std::size_t n = quantas_entradas(p);
     for (std::size_t i = 0; i < n; ++i) {
-      const std::string nome =
-          pacotes_[p].pakz
-              ? conteudo_pakz_[pacotes_[p].indice_no_conteudo_pakz].ListaDeEntradas()[i].nome
-              : conteudo_[pacotes_[p].indice_no_conteudo].ListaDeEntradas()[i].nome;
+      const std::string nome = nome_da_entrada(p, i);
       nomes_de_entrada_.insert(nome);
+      if (pacotes_[p].aez) {
+        // O CAMINHO DO PROPRIO REGISTO e o que o guest pede, e ele traz a barra
+        // inicial (`/data/tracks/t1.w3t`). A normalizacao do BREW tira essa
+        // barra antes de casar (`Vfs::Normalizar`), logo a chave e o caminho
+        // SEM ela. Um nome sem barra nenhuma (`pt.lang`) entra CRU, e nao
+        // debaixo de um directorio: e assim que o `gof` o pede.
+        const std::string sem_barra =
+            !nome.empty() && nome.front() == '/' ? nome.substr(1) : nome;
+        const std::string chave = Minusculas(sem_barra);
+        if (!chave.empty() && alias_.count(chave) == 0) {
+          alias_[chave] = {p, 0, 0, pacotes_[p].indice_no_conteudo_aez, false, true, i};
+        }
+        continue;
+      }
       for (const std::string& dir : diretorios_) {
         const std::string chave = Chave(dir, nome);
         // O PRIMEIRO GANHA, e a ordem e a dos nomes dos ficheiros: um nome que
         // apareca em dois pacotes da a mesma resposta em todas as corridas.
         if (alias_.count(chave) == 0) {
           alias_[chave] = {p, pacotes_[p].pakz ? 0 : pacotes_[p].indice_no_conteudo,
-                           pacotes_[p].indice_no_conteudo_pakz, pacotes_[p].pakz, i};
+                           pacotes_[p].indice_no_conteudo_pakz, 0, pacotes_[p].pakz, false, i};
         }
       }
       // O CAMINHO DA ENTRADA DO `.pakz` E O CAMINHO que o motor TTD pede:
@@ -196,7 +264,7 @@ void Vfs::Registar(const std::string& pasta) {
       if (pacotes_[p].pakz && nome.find('/') != std::string::npos) {
         const std::string chave = Minusculas(nome);
         if (alias_.count(chave) == 0) {
-          alias_[chave] = {p, 0, pacotes_[p].indice_no_conteudo_pakz, true, i};
+          alias_[chave] = {p, 0, pacotes_[p].indice_no_conteudo_pakz, 0, true, false, i};
         }
       }
     }
@@ -212,6 +280,9 @@ std::string Vfs::CaminhoDePacote(const std::string& limpo) const {
   if (limpo.rfind("roms/neogeo/", 0) == 0) candidatos.push_back(limpo.substr(12));
   if (limpo.rfind("roms/", 0) == 0) candidatos.push_back(limpo.substr(5));
 
+  // As entradas do `.aez` estao na uniao pelo CAMINHO DO PROPRIO REGISTO (sem a
+  // barra inicial), e nao por `<dir>/<nome>` -- ver `core/brew/vfs.h`.
+  //
   // A UNIAO E UMA LISTA DE CAMINHOS COMPLETOS: cada directorio servido x cada
   // entrada (e as entradas do `.pakz` trazem o caminho inteiro delas, que pode
   // ter mais do que uma barra -- 4 470 das 7 487 medidas tem duas, como
@@ -222,6 +293,12 @@ std::string Vfs::CaminhoDePacote(const std::string& limpo) const {
     if (alias_.count(Minusculas(c)) != 0) return c;
   }
   return {};
+}
+
+std::string Vfs::NomeReal(const std::string& limpo) const {
+  if (nomes_.count(limpo) != 0) return limpo;  // a caixa EXATA ganha sempre
+  const auto it = nomes_por_caixa_.find(Minusculas(limpo));
+  return it == nomes_por_caixa_.end() ? std::string() : it->second;
 }
 
 std::string Vfs::Normalizar(const std::string& bruto) const {
@@ -238,12 +315,23 @@ std::string Vfs::Normalizar(const std::string& bruto) const {
 
   const std::size_t barra = limpo.rfind('/');
   if (barra == std::string::npos) {
-    return nomes_.count(limpo) != 0 ? limpo : std::string();
+    const std::string solto = NomeReal(limpo);
+    if (!solto.empty()) return solto;
+    // UM NOME SEM BARRA NENHUMA (`pt.lang`, `gb.lang`): o ficheiro SOLTO manda
+    // (a linha acima), e so depois a UNIAO -- que so tem nomes crus quando um
+    // `.aez` os traz (`/pt.lang` e um registo do `res.aez` do gof, e e assim,
+    // cru, que o jogo o pede). Nos `.pkg`/`.pakz` a uniao e `<dir>/<nome>` e
+    // isto continua a nao resolver nada: e o que o `Pakz.VfsServeOAlicePakz`
+    // prova do outro lado (`z1.lua` so existe como `alice/z1.lua`).
+    return CaminhoDePacote(limpo);
   }
-  // "pasta/ficheiro" para recursos soltos na pasta do titulo.
-  if (nomes_.count(limpo) != 0) return limpo;
-  const std::string so_nome = limpo.substr(barra + 1);
-  if (nomes_.count(so_nome) != 0) return so_nome;
+  // "pasta/ficheiro" para recursos soltos na pasta do titulo. O CAMINHO
+  // INTEIRO nao existe no disco (a pasta do titulo e plana), logo o casamento
+  // util e pelo nome final -- e com a caixa ignorada, como a consola.
+  const std::string inteiro = NomeReal(limpo);
+  if (!inteiro.empty()) return inteiro;
+  const std::string so_nome = NomeReal(limpo.substr(barra + 1));
+  if (!so_nome.empty()) return so_nome;
   // E, por fim, a UNIAO DOS PACOTES: `<dir>/<nome>`, com os prefixos `roms\` e
   // `roms\neogeo\` retirados.
   return CaminhoDePacote(limpo);
@@ -267,6 +355,26 @@ bool Vfs::Ler(const std::string& caminho, std::vector<std::uint8_t>* bytes, std:
   if (barra != std::string::npos) {
     const auto it = alias_.find(Chave(canonico.substr(0, barra), canonico.substr(barra + 1)));
     if (it != alias_.end()) {
+      if (it->second.aez) {
+        return conteudo_aez_[it->second.conteudo_aez].Extrair(it->second.entrada, bytes, motivo);
+      }
+      if (it->second.pakz) {
+        return conteudo_pakz_[it->second.conteudo_pakz].Extrair(it->second.entrada, bytes, motivo);
+      }
+      return conteudo_[it->second.conteudo].Extrair(it->second.entrada, bytes, motivo);
+    }
+  } else if (nomes_.count(canonico) == 0) {
+    // UM NOME SEM BARRA NENHUMA (`pt.lang`, `gb.lang`) nao chega aqui pelo
+    // `Chave(dir, nome)` -- nao ha directorio. So o `.aez` serve entradas
+    // assim, e o guest pede-as CRUAS (`/pt.lang`, medido no gof). O ficheiro
+    // SOLTO tem prioridade: e a mesma ordem que o `Normalizar` ja segue, e
+    // quem esta no disco da pasta nao passa a vir de dentro de um recipiente
+    // por causa desta linha.
+    const auto it = alias_.find(Minusculas(canonico));
+    if (it != alias_.end()) {
+      if (it->second.aez) {
+        return conteudo_aez_[it->second.conteudo_aez].Extrair(it->second.entrada, bytes, motivo);
+      }
       if (it->second.pakz) {
         return conteudo_pakz_[it->second.conteudo_pakz].Extrair(it->second.entrada, bytes, motivo);
       }
@@ -285,8 +393,10 @@ bool Vfs::Ler(const std::string& caminho, std::vector<std::uint8_t>* bytes, std:
 bool Vfs::OrigemDe(const std::string& caminho, std::size_t* pacote, std::size_t* entrada) const {
   const std::string canonico = Normalizar(caminho);
   const std::size_t barra = canonico.rfind('/');
-  if (barra == std::string::npos) return false;
-  const auto it = alias_.find(Chave(canonico.substr(0, barra), canonico.substr(barra + 1)));
+  // O nome CRU (sem barra) e o caso do `.aez` -- ver `Ler`.
+  const auto it = barra == std::string::npos
+                      ? alias_.find(Minusculas(canonico))
+                      : alias_.find(Chave(canonico.substr(0, barra), canonico.substr(barra + 1)));
   if (it == alias_.end()) return false;
   if (pacote != nullptr) *pacote = it->second.pacote;
   if (entrada != nullptr) *entrada = it->second.entrada;
@@ -304,9 +414,9 @@ void Vfs::DeclararNoTraco(Traco* traco) {
                     " entradas=" + Dez(entradas) + " caminhos=" + Dez(alias_.size()));
   for (const PacoteRegistado& p : pacotes_) {
     if (p.motivo.empty()) {
+      const char* tipo = p.aez ? " (aez/gzip)" : (p.pakz ? " (pakz/LZMA)" : " (pkg/zlib)");
       traco->Emitir(Area::Brew, Nivel::Informacao, "VFS_PACOTE",
-                    p.ficheiro + ": " + Dez(p.entradas) + " entradas no indice" +
-                        (p.pakz ? " (pakz/LZMA)" : " (pkg/zlib)"));
+                    p.ficheiro + ": " + Dez(p.entradas) + " entradas no indice" + tipo);
     } else {
       // Um pacote que NAO entrou fica dito, e nao em silencio: sem isto, "o
       // jogo nao encontra o ficheiro" e "o pacote foi recusado" davam o mesmo
@@ -316,8 +426,11 @@ void Vfs::DeclararNoTraco(Traco* traco) {
   }
   traco->Emitir(Area::Brew, Nivel::Informacao, "VFS_ALIAS",
                 "<dir>/<nome> servido da UNIAO dos pacotes; dirs aceites: " + Lista(diretorios_) +
-                    "; entradas do pakz servem tambem pelo caminho inteiro delas; prefixos aceitos "
-                    "antes do casamento: roms/, roms/neogeo/; nome sem distinguir maiusculas");
+                    "; entradas do pakz servem tambem pelo caminho inteiro delas; entradas do aez "
+                    "servem pelo caminho do REGISTO sem a barra inicial (e o nome cru quando nao tem "
+                    "barra nenhuma); prefixos aceitos antes do casamento: roms/, roms/neogeo/; nome "
+                    "sem distinguir maiusculas, nas entradas E nos ficheiros soltos (a caixa exata "
+                    "ganha; a ignorada e a segunda tentativa)");
 }
 
 }  // namespace zb2::brew

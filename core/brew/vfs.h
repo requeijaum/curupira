@@ -61,6 +61,42 @@
 // que se perde em silencio. Um `.pakz` que nao parseia e um evento de ERRO com
 // o motivo, como um `.pkg` recusado.
 //
+// ---------------------------------------------------------------------------
+// OS RECIPIENTES `.aez` (os recursos dos titulos BREW 3D -- gof, rmp, pbc)
+// ---------------------------------------------------------------------------
+// O `.aez` (formato em `core/carga/aez.h`) e o terceiro recipiente, e o unico
+// cujo indice traz CAMINHOS ABSOLUTOS: cada registo guarda o caminho que o guest
+// pede (`/data/tracks/t1.w3t`, `/data/textures/main_menu.aei`, `/pt.lang`), e
+// nao um nome relativo debaixo de um directorio servido como o `.pakz`.
+//
+// A REGRA E UMA SO, e sai da medicao do traco (300 quadros, `ZB2_TRACE=1`): o
+// `gof` e o `rmp` pedem esses caminhos pelo `OpenFile` e o ficheiro NAO existe
+// solto na pasta -- existe dentro de um `.aez` dela. O `OpenFile` pede
+// `/data/textures/main_menu.aei` e o registo do `res.aez` diz exactamente
+// `/data/textures/main_menu.aei` (medido: 30 dos 37 caminhos recusados do `gof`
+// e 71 dos 71 do `rmp` estao num `.aez` da propria pasta). Logo:
+//
+//   **a uniao das entradas de TODOS os `.aez` da pasta e servida pelo caminho
+//   DA PROPRIA ENTRADA, com a barra inicial retirada** (que e o que a
+//   normalizacao do BREW ja fazia: `\` vira `/`, a barra inicial cai), sem
+//   distinguir maiusculas de minusculas. Um nome de registo sem barra nenhuma
+//   (`pt.lang`, `gb.lang`) serve-se pelo nome CRU, exactamente como o guest o
+//   pede.
+//
+// As formas `<dir>/<caminho>` do `.pakz` NAO se inventam aqui: nenhum dos dois
+// titulos medidos pede `gof/data/tracks/t1.w3t`, e uma ligacao inventada que
+// ninguem pede e uma ligacao que so aparece no dia em que colide com outra.
+// O `.aez` nao e aberto pelo jogo: nos 300 quadros do `gof` e do `rmp` o UNICO
+// `OpenFile` aceite e o `config.cfg` solto (medido) -- quem le `/data/...` do
+// `.aez` e o `IFileMgr` DA CONSOLA, e e isso que a VFS passa a fazer.
+//
+// E A CAIXA DOS NOMES: a pasta do titulo e FAT (insensivel), o disco desta
+// maquina nao e. Um pedido com a caixa trocada (`/GalaxyOnFire1_Won.mp3` para
+// `galaxyonfire1_won.mp3`) recusava por uma razao que nao existe na consola --
+// medido no gof, 7 pedidos. A caixa EXATA ganha sempre; a ignorada e a segunda
+// tentativa, e so para os ficheiros SOLTOS (as entradas de um recipiente ja
+// eram casadas sem caixa).
+//
 // A VFS CONTINUA SO DE LEITURA. Nada aqui escreve na pasta do titulo, e o
 // `IFileMgr` recusa os modos que mudam o ficheiro (ver `core/brew/arquivo.h`).
 
@@ -72,6 +108,7 @@
 #include <utility>
 #include <vector>
 
+#include "core/carga/aez.h"
 #include "core/carga/pack.h"
 #include "core/carga/pakz.h"
 
@@ -90,6 +127,7 @@ class Vfs {
   struct PacoteRegistado {
     std::string ficheiro;
     bool pakz = false;  // `.pakz` (LZMA) em vez de `.pkg` (zlib)
+    bool aez = false;   // `.aez` (registos gzip) em vez de `.pkg`/`.pakz`
     std::size_t entradas = 0;
     std::string motivo;
     // Os indices do conteudo lido, ou `kPacoteRecusado`. Os dois indices existem
@@ -97,8 +135,9 @@ class Vfs {
     // nao (ver `Origem`) -- e sao dois porque os dois recipientes vivem em
     // vectores separados (`conteudo_` para `.pkg`, `conteudo_pakz_` para
     // `.pakz`).
-    std::size_t indice_no_conteudo = kPacoteRecusado;      // em `conteudo_`
+    std::size_t indice_no_conteudo = kPacoteRecusado;       // em `conteudo_`
     std::size_t indice_no_conteudo_pakz = kPacoteRecusado;  // em `conteudo_pakz_`
+    std::size_t indice_no_conteudo_aez = kPacoteRecusado;   // em `conteudo_aez_`
   };
 
   // Regista o conteudo de uma pasta: os ficheiros SOLTOS (so os nomes
@@ -124,9 +163,9 @@ class Vfs {
   // servido por um pacote.
   std::string Normalizar(const std::string& bruto) const;
 
-  // Le o ficheiro virtual: solto na pasta, ou uma entrada de um `.pkg` (que e
-  // descomprimida). Recusa com motivo quando nao existe ou quando o pacote
-  // recusa a entrada.
+  // Le o ficheiro virtual: solto na pasta, ou uma entrada de um `.pkg`/`.pakz`/
+  // `.aez` (que e descomprimida). Recusa com motivo quando nao existe ou quando
+  // o pacote recusa a entrada.
   bool Ler(const std::string& caminho, std::vector<std::uint8_t>* bytes, std::string* motivo) const;
 
   // --- o que veio dos pacotes, para o Traco e para os testes ---
@@ -138,7 +177,8 @@ class Vfs {
   // Quantos caminhos `<dir>/<nome>` a uniao dos pacotes serve.
   std::size_t CaminhosServidos() const { return alias_.size(); }
   // De que pacote (indice em `Pacotes()`) e de que entrada vem este caminho.
-  // O pacote sabe dizer se e `.pakz` (`Pacotes()[pacote].pakz`).
+  // O pacote sabe dizer qual dos tres recipientes e (`Pacotes()[pacote].pakz`
+  // e `Pacotes()[pacote].aez`).
   bool OrigemDe(const std::string& caminho, std::size_t* pacote, std::size_t* entrada) const;
 
 
@@ -151,11 +191,24 @@ class Vfs {
   // vazio. Aceita e retira os prefixos `roms/` e `roms/neogeo/`.
   std::string CaminhoDePacote(const std::string& limpo) const;
 
+  // O nome REAL de um ficheiro solto da pasta, com a caixa dele, ou vazio. A
+  // caixa exata ganha (a 1.a tentativa e o `nomes_`); so depois a caixa
+  // ignorada -- ver `Vfs::Normalizar`.
+  std::string NomeReal(const std::string& limpo) const;
+
   std::string pasta_;
   std::set<std::string> nomes_;
+  // `nomes_` com a caixa ignorada: minusculas -> o nome REAL. Existe porque a
+  // pasta do titulo e um sistema de ficheiros de CONSOLA (FAT, insensivel a
+  // caixa) e o guest pede `/GalaxyOnFire1_Won.mp3` a um ficheiro que em Linux
+  // se chama `galaxyonfire1_won.mp3` -- medido no gof, 7 pedidos recusados so
+  // por isso. Quando dois nomes so diferem na caixa, ganha o PRIMEIRO da ordem
+  // do `std::set` (deterministico por construcao, como o resto da VFS).
+  std::map<std::string, std::string> nomes_por_caixa_;
   std::vector<PacoteRegistado> pacotes_;
   std::vector<Pacote> conteudo_;      // os `.pkg` que parsearam
   std::vector<Pakz> conteudo_pakz_;   // os `.pakz` que parsearam
+  std::vector<Aez> conteudo_aez_;     // os `.aez` que parsearam
   // De onde vem um caminho servido por um pacote.
   //
   // OS DOIS INDICES NAO SAO O MESMO NUMERO, e confundi-los foi um defeito real
@@ -166,10 +219,12 @@ class Vfs {
   // erro que uma excecao a escapar transforma em processo morto. Com os dois
   // indices guardados e NOMEADOS, nao ha o que trocar.
   struct Origem {
-    std::size_t pacote = 0;         // indice em `Pacotes()`
-    std::size_t conteudo = 0;       // indice em `conteudo_` (.pkg)
-    std::size_t conteudo_pakz = 0;  // indice em `conteudo_pakz_` (.pakz)
-    bool pakz = false;              // qual dos dois vectores guarda a entrada
+    std::size_t pacote = 0;        // indice em `Pacotes()`
+    std::size_t conteudo = 0;      // indice em `conteudo_` (.pkg)
+    std::size_t conteudo_pakz = 0; // indice em `conteudo_pakz_` (.pakz)
+    std::size_t conteudo_aez = 0;  // indice em `conteudo_aez_` (.aez)
+    bool pakz = false;             // qual dos vectores guarda a entrada
+    bool aez = false;              // (e o `pakz` fica falso quando este e)
     std::size_t entrada = 0;
   };
   std::map<std::string, Origem> alias_;

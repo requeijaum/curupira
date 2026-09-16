@@ -177,16 +177,42 @@ TEST_F(ArquivosTeste, LeOPedidoEEncurtaNoFim) {
   EXPECT_EQ(a.Ler(id, mem_, kDest, 10), 0);
 }
 
-TEST_F(ArquivosTeste, PosicionaEmRelacaoAoInicioEaoFim) {
+TEST_F(ArquivosTeste, PosicionaComOsTresValoresDoSDK) {
   Arquivos a(&vfs_);
   const std::uint32_t id = a.Abrir("dados.bin", 0x0001u, pasta_.string());
   ASSERT_NE(id, 0u);
-  EXPECT_EQ(a.Posicionar(id, 0, 10), 10);
-  EXPECT_EQ(a.Posicionar(id, 1, 5), 15);
-  EXPECT_EQ(a.Posicionar(id, 2, 0), 256);
+  // OS TRES VALORES SAO OS DO SDK (`AEEFile.h:363-374`, SDK 4.0.2 SP19):
+  //   _SEEK_START = 0, _SEEK_END = 1, _SEEK_CURRENT = 2
+  // e NAO a ordem do `stdio` (`SET = 0`, `CUR = 1`, `END = 2`). Este teste
+  // afirmava a ordem do stdio -- provava a regra errada.
+  EXPECT_EQ(a.Posicionar(id, 0, 10), 10);   // _SEEK_START, 10
+  EXPECT_EQ(a.Posicionar(id, 2, 5), 15);    // _SEEK_CURRENT, +5
+  EXPECT_EQ(a.Posicionar(id, 1, 0), 256);   // _SEEK_END, 0: o tamanho
+  EXPECT_EQ(a.Posicionar(id, 2, 0), 256);   // _SEEK_CURRENT, 0: "onde estou?"
   // Fora do ficheiro: -1, e a posicao NAO muda.
   EXPECT_EQ(a.Posicionar(id, 0, 999), -1);
   EXPECT_EQ(a.Posicionar(id, 0, 256), 256);
+  // Um tipo que o SDK nao define nao se adivinha: -1 (e nao "END").
+  EXPECT_EQ(a.Posicionar(id, 7, 0), -1);
+}
+
+TEST_F(ArquivosTeste, OIdiomaDoGuestAbreEDepoisLe) {
+  // O IDIOMA MEDIDO no gof (`ZB2_QUADROS=3`, sonda em `Posicionar`/`Ler`):
+  //   OpenFile -> Seek(2, 0) -> Read(8)
+  // O 2 e `_SEEK_CURRENT` com distancia 0, ou seja "onde estou?": a posicao
+  // fica onde estava (0, logo apos o `OpenFile`). Lido como o `END` do stdio,
+  // o 2 saltava para o FIM do ficheiro e o `Read(8)` devolvia 0 bytes -- o
+  // sintoma medido foi o gof a imprimir "Failed to load <ficheiro>" e o rmp
+  // "Data could not be read from file" para os 32 `.wav`, com o ficheiro
+  // INTEIRO dentro do `Arquivos`.
+  Arquivos a(&vfs_);
+  const std::uint32_t id = a.Abrir("dados.bin", 0x0001u, pasta_.string());
+  ASSERT_NE(id, 0u);
+  EXPECT_EQ(a.Posicionar(id, 2, 0), 0);
+  constexpr Endereco kDest = 0x00100000;
+  EXPECT_EQ(a.Ler(id, mem_, kDest, 8), 8);
+  EXPECT_EQ(mem_.Ler8(kDest), 0);
+  EXPECT_EQ(mem_.Ler8(kDest + 7), 7);
 }
 
 TEST_F(ArquivosTeste, InformacaoTrazOTamanho) {

@@ -649,7 +649,11 @@ TEST_F(VfsComPacotes, OIFileDoGuestLeOPacote) {
   constexpr Endereco kInfo = 0x00100200;
   ASSERT_TRUE(a.Informacao(id, mem_, kInfo));
   EXPECT_EQ(mem_.Ler32(kInfo + 8), 8192u);
-  EXPECT_EQ(a.Posicionar(id, 2, 0), 8192);
+  // `_SEEK_END` e 1 no SDK (`AEEFile.h:363-374`), e nao o 2 do `SEEK_END` do
+  // stdio: com o 2 o pedido era lido como `_SEEK_CURRENT` e a posicao nao ia ao
+  // fim. O idioma do guest (medido no gof) e `Seek(_SEEK_CURRENT, 0)` antes de
+  // ler, e esse e o caso que o `OIdiomaDoGuestAbreEDepoisLe` prova.
+  EXPECT_EQ(a.Posicionar(id, 1, 0), 8192);
   a.Fechar(id);
   EXPECT_EQ(a.Abertos(), 0u);
 
