@@ -668,7 +668,7 @@ TEST(AjudantesExtra, OffsetForaDaTabelaNaoERecusadoAqui) {
   EXPECT_TRUE(b.traco.ContagemFaltas().empty());
 }
 
-TEST(AjudantesExtra, ImplementadosSaoVinteETresEATodosNoCatalogo) {
+TEST(AjudantesExtra, ImplementadosSaoVinteEQuatroEATodosNoCatalogo) {
   // 7 da etapa anterior + os 6 da frente io2 (wstrlen, wstrncopyn, strtoul,
   // snprintf, strlcpy, strlcat) + o stricmp (0x0d0) da frente park + os 4 da
   // frente ajud2 (atoi, strends, aee_GetTimeMS, wsprintf) + o memcmp (0x0dc),
@@ -677,9 +677,13 @@ TEST(AjudantesExtra, ImplementadosSaoVinteETresEATodosNoCatalogo) {
   // + os 3 da frente zhelp (wstrtoutf8 0x054, aee_GetSeconds 0x0b4,
   // aee_GetJulianDate 0x0b8). O `utf8towstr` (0x050) ja estava nesta lista: o
   // que a frente zhelp lhe mudou foi a REGRA do destino cheio, nao o offset.
-  EXPECT_EQ(AjudantesExtra::Implementados(), 23u);
+  // + o `sysfree` (0x0bc), que o `allstarcards` pedia 3x e que estava na tabela
+  // do cabecalho SEM implementacao (e o par do heap: liberta o buffer que o
+  // `SetupNativeImage` entrega).
+  EXPECT_EQ(AjudantesExtra::Implementados(), 24u);
   for (std::uint32_t off : {0x0D8u, 0x044u, 0x050u, 0x054u, 0x0E8u, 0x138u, 0x0F4u, 0x0CCu,
-                            0x0D0u, 0x090u, 0x0FCu, 0x0ACu, 0x0B4u, 0x0B8u, 0x03Cu, 0x0DCu}) {
+                            0x0D0u, 0x090u, 0x0FCu, 0x0ACu, 0x0B4u, 0x0B8u, 0x03Cu, 0x0DCu,
+                            0x0BCu}) {
     EXPECT_NE(DeclaracaoDoOffset(off), nullptr) << "0x" << std::hex << off;
   }
 }
@@ -1417,7 +1421,7 @@ TEST(AjudantesExtra, SetupNativeImageEDescodificadoPorEstaTabela) {
   EXPECT_STREQ(DeclaracaoDoOffset(0x064)->assinatura,
                "void *(*SetupNativeImage)(AEECLSID cls, void *pBuffer, AEEImageInfo *pii, "
                "boolean *pbRealloc)");
-  EXPECT_EQ(AjudantesExtra::Implementados(), 23u) << "o 0x064 entrou na tabela";
+  EXPECT_EQ(AjudantesExtra::Implementados(), 24u) << "o 0x064 entrou na tabela";
 }
 
 TEST(AjudantesExtra, SetupNativeImageDescodificaBmpDe8BitsComPaleta) {
@@ -1814,6 +1818,28 @@ TEST(AjudantesExtra, VsprintfDaTabelaUsaOMesmoVaLists) {
 }
 
 }  // namespace
+
+TEST(AjudantesExtra, OSysfreeLibertaOBlocoDoHeapDoGuest) {
+  // O `sysfree` (0x0BC) e o par do alocador do SISTEMA -- e nesta arvore esse alocador e
+  // o MESMO do heap do guest. E por isso que o `SetupNativeImage` entrega o buffer pelo
+  // heap: o jogo liberta-o por aqui (medido: 3 chamadas no `allstarcards`).
+  Bancada b;
+  const std::uint32_t p = b.alocador.Malloc(64);
+  ASSERT_NE(p, 0u);
+  const std::uint32_t antes = b.alocador.Alocado();
+  b.cpu.Set(kR0, p);
+  EXPECT_EQ(b.Atender(brew_ajudantes::kAjudante_sysfree), Atendimento::Implementado);
+  EXPECT_LT(b.alocador.Alocado(), antes) << "o bloco voltou ao heap";
+  EXPECT_EQ(b.alocador.Falhas(), 0u) << "era um endereco NOSSO";
+  // `sysfree(0)` e legal e nao faz nada (como o `free(0)` do C).
+  b.cpu.Set(kR0, 0);
+  EXPECT_EQ(b.Atender(brew_ajudantes::kAjudante_sysfree), Atendimento::Implementado);
+  EXPECT_EQ(b.alocador.Falhas(), 0u);
+  // E um endereco que NAO e do heap nao se engole: conta.
+  b.cpu.Set(kR0, 0x12345678u);
+  b.Atender(brew_ajudantes::kAjudante_sysfree);
+  EXPECT_EQ(b.alocador.Falhas(), 1u) << "um free de fora do heap tem de ficar visivel";
+}
 
 TEST(AjudantesExtra, OMemcmpNaoTerminaNoNulo) {
   // A DIFERENCA PARA O `strncmp` E O QUE ESTE TESTE MEDE: o `memcmp` compara os n

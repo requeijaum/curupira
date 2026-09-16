@@ -699,6 +699,22 @@ void FazerStrncmp(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
 //
 // O valor devolvido segue a convencao do C: o sinal da diferenca do PRIMEIRO byte que
 // difere, e zero quando os n bytes sao iguais.
+// 0x0BC -- `void (*sysfree)(void *pb)` (`AEEStdLib.h:140`, `#define SYSFREE
+// GET_HELPER()->sysfree`). Liberta um bloco do alocador do SISTEMA, que nesta arvore e o
+// MESMO `Alocador` do heap do guest -- e e por isso que o `SetupNativeImage` (frente
+// setup) entrega o buffer pelo caminho do heap do guest: o jogo liberta-o por aqui
+// (medido: 3 chamadas no `allstarcards`, e era o unico ajudante pedido e nao servido).
+//
+// O `Alocador::Free` ja faz o que o C manda: `sysfree(0)` nao faz nada, e um endereco
+// que NAO e do heap nao se engole -- conta em `falhas_` e emite `FREE_FORA_DO_HEAP`.
+void FazerSysFree(Memoria&, Alocador& al, ICpu& cpu, Traco& traco) {
+  const std::uint32_t pb = cpu.Get(kR0);
+  if (pb != 0) al.Free(pb);
+  char det[64];
+  std::snprintf(det, sizeof(det), "pb=0x%08x", pb);
+  EmitirChamada(traco, brew_ajudantes::kAjudante_sysfree, det);
+}
+
 void FazerMemcmp(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
   const std::uint32_t a = cpu.Get(kR0);
   const std::uint32_t b = cpu.Get(kR1);
@@ -2028,6 +2044,7 @@ constexpr Implementacao kImplementados[] = {
     {brew_ajudantes::kAjudante_strdup, "strdup", FazerStrdup},
     {brew_ajudantes::kAjudante_strncmp, "strncmp", FazerStrncmp},
     {brew_ajudantes::kAjudante_memcmp, "memcmp", FazerMemcmp},
+    {brew_ajudantes::kAjudante_sysfree, "sysfree", FazerSysFree},
     {brew_ajudantes::kAjudante_stricmp, "stricmp", FazerStricmp},
     {brew_ajudantes::kAjudante_atoi, "atoi", FazerAtoi},
     {brew_ajudantes::kAjudante_strends, "strends", FazerStrends},
@@ -2057,6 +2074,7 @@ static_assert(brew_ajudantes::kAjudante_GetRAMFree == 0x138, "0x138 e GetRAMFree
 static_assert(brew_ajudantes::kAjudante_strdup == 0x0F4, "0x0f4 e strdup");
 static_assert(brew_ajudantes::kAjudante_strncmp == 0x0CC, "0x0cc e strncmp");
 static_assert(brew_ajudantes::kAjudante_memcmp == 0x0DC, "0x0dc e memcmp");
+static_assert(brew_ajudantes::kAjudante_sysfree == 0x0BC, "0x0bc e sysfree");
 static_assert(brew_ajudantes::kAjudante_stricmp == 0x0D0, "0x0d0 e stricmp");
 static_assert(brew_ajudantes::kAjudante_wstrlen == 0x030, "0x030 e wstrlen");
 static_assert(brew_ajudantes::kAjudante_wstrncopyn == 0x080, "0x080 e wstrncopyn, nao strncpy");
@@ -2075,7 +2093,7 @@ static_assert(brew_ajudantes::kAjudante_aee_GetSeconds == 0x0B4, "0x0b4 e aee_Ge
 static_assert(brew_ajudantes::kAjudante_aee_GetJulianDate == 0x0B8, "0x0b8 e aee_GetJulianDate");
 static_assert(
     sizeof(kImplementados) / sizeof(kImplementados[0]) ==
-        23,
+        24,
     "a lista das implementacoes mudou: actualiza o numero e o teste");
 
 }  // namespace
