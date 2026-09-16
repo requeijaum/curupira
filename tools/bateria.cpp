@@ -1117,6 +1117,26 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   for (const auto& par : traco.ContagemPressupostos()) e.pressupostos[par.first] = par.second;
   e.pixels = g_despacho->TelaRef().Escritos();
   e.cores = g_despacho->TelaRef().CoresDistintas();
+  // ZB2_TELA=<pasta>: despeja o ecra final do titulo em RGB565 cru. E o instrumento
+  // que faltava ao lado do `cores` e do `ZB2_HIST`: um numero de cores nao diz o que
+  // esta DESENHADO, e "viu-se a imagem" e a unica prova de que um ecra esta certo.
+  if (const char* pasta = std::getenv("ZB2_TELA")) {
+    if (pasta[0] != '\0') {
+      const int l = zb2::brew::Tela::kLargura, h = zb2::brew::Tela::kAltura;
+      std::vector<std::uint16_t> cena(static_cast<std::size_t>(l) * h);
+      for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < l; ++x) {
+          cena[static_cast<std::size_t>(y) * l + x] =
+              static_cast<std::uint16_t>(g_despacho->TelaRef().PixelEm(x, y) & 0xFFFFu);
+        }
+      }
+      const std::string caminho = std::string(pasta) + "/" + t.mod + ".565";
+      if (std::FILE* f = std::fopen(caminho.c_str(), "wb")) {
+        std::fwrite(cena.data(), sizeof(std::uint16_t), cena.size(), f);
+        std::fclose(f);
+      }
+    }
+  }
   // O HISTOGRAMA -- o instrumento que responde a "QUAL cor mudou".
   //
   // `cores` e um numero so: quando ele sobe ou desce, o comparador diz que houve
