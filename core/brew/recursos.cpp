@@ -226,17 +226,44 @@ ResultadoDoRecurso Recursos::Atender(const PedidoDeRecurso& pedido) {
     r.ponteiro = kSoOTamanho;
     ++medicao_.de_tamanho;
   } else if (pedido.buffer != 0) {
-    // FORMA 2: copiar para o buffer do chamador. Na entrada, `*pnBufSize` e o
-    // TAMANHO DESSE BUFFER (AEEIShell.h:2449) e, se nao couber, a funcao devolve
-    // NULL sem escrever nada. Nao se escreve meio recurso: isso seria entregar
-    // ao jogo um buffer com lixo no fim, sem nada a acusar.
-    const std::uint32_t cabem = mem_.Ler32(pedido.pn_tamanho);
-    if (cabem < tamanho) {
+    // FORMA 2: copiar para o buffer do chamador. O cabecalho diz que `*pnBufSize`
+    // de entrada e o TAMANHO DESSE BUFFER (AEEIShell.h:2449) e que, se nao
+    // couber, a funcao devolve NULL sem escrever nada. Nao se escreve meio
+    // recurso: isso seria entregar ao jogo um buffer com lixo no fim.
+    //
+    // **E O NUMERO DECLARADO NAO E SEMPRE A VERDADE.** MEDIDO (base `97086eb`, 62
+    // titulos): TRES titulos trazem um `*pnBufSize` menor que o recurso E menor
+    // que o BLOCO que eles proprios alocaram --
+    //   peggle           resources.bar id=5000 tipo=6    declara 0x6   para 0xfc75 (64 629 B)
+    //   torkandkral      data.bar (19 ids)               declara 0x83  para 0x8020..0x100020
+    //   heavyweaponbrew  heavyweapon.bar id=9317         declara 0x449 para 0x3030
+    // O `peggle` e o caso claro: perguntou o tamanho (forma 1), alocou os 64 629
+    // bytes que a resposta deu, e chamou de novo com o `*pnBufSize` a valer 6 --
+    // o numero do TIPO, que ficou na variavel. Medir o BLOCO e a leitura honesta:
+    // nao e o numero que o jogo disse, e o que ele de facto reservou, e a copia
+    // continua limitada ao que existe.
+    //
+    // ISTO CONTRADIZ O TEXTO LITERAL DO CABECALHO, que manda julgar pelo numero
+    // declarado. A contradicao fica escrita de proposito: o que sustenta o ramo e
+    // a medicao dos tres titulos, e cada servico por esta via regista o
+    // pressuposto para o relatorio o mostrar -- se um titulo piorar na bateria, a
+    // leitura literal volta.
+    const std::uint32_t declarado = mem_.Ler32(pedido.pn_tamanho);
+    const std::uint32_t bloco = al_.TamanhoDoBloco(pedido.buffer);
+    const std::uint32_t capacidade = declarado > bloco ? declarado : bloco;
+    if (capacidade < tamanho) {
       Recusar(pedido.ficheiro + " id=" + std::to_string(pedido.id) + " tipo=" +
-                  std::to_string(pedido.tipo) + ": buffer do chamador com " + Hex(cabem) +
-                  " bytes para um recurso de " + Hex(tamanho) + " (o SDK devolve NULL e nao escreve)",
+                  std::to_string(pedido.tipo) + ": buffer do chamador com " + Hex(declarado) +
+                  " bytes (bloco " + Hex(bloco) + ") para um recurso de " + Hex(tamanho) +
+                  " (o SDK devolve NULL e nao escreve)",
               &r);
       return r;
+    }
+    if (bloco > declarado && traco_ != nullptr) {
+      traco_->RegistarPressuposto(
+          Area::Brew, "IShell::LoadResDataEx serviu pelo BLOCO, nao pelo *pnBufSize declarado",
+          pedido.ficheiro + " id=" + std::to_string(pedido.id) + " declara " + Hex(declarado) +
+              " e o bloco tem " + Hex(bloco) + ", recurso de " + Hex(tamanho));
     }
     mem_.EscreverBloco(pedido.buffer, recurso.dados, tamanho);
     mem_.Escrever32(pedido.pn_tamanho, tamanho);

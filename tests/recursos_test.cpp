@@ -276,6 +276,67 @@ TEST(Recursos, BufferPequenoRecusaENaoEscreveNada) {
   }
 }
 
+// --- V11: o buffer do chamador mede-se pelo BLOCO, nao pelo numero declarado -
+//
+// A MEDICAO QUE ESTE TESTE COPIA, da corrida base desta frente (`97086eb`, 62
+// titulos): TRES titulos trazem um `*pnBufSize` menor que o recurso e menor que
+// o bloco que eles proprios alocaram (peggle: declara 6 para 64 629; torkandkral:
+// declara 131 para 8192..1048576; heavyweaponbrew: declara 1097 para 12336).
+// Aqui o caso e montado em pequeno: o jogo aloca 0x100 bytes e declara 6.
+TEST(Recursos, BufferDeclaradoMenorQueOBloqueEOServidoPeloBloco) {
+  Banco b;
+  {
+    Recursos r = b.Servico();
+    const std::uint32_t tamanho = b.TamanhoDoRecurso(0);
+    // O bloco tem de ser desta alocador e caber o recurso inteiro.
+    const std::uint32_t buffer = b.alocador.Malloc(tamanho + 64u);
+    ASSERT_NE(buffer, 0u);
+    for (std::uint32_t k = 0; k < tamanho; ++k) b.mem.Escrever8(buffer + k, 0xAA);
+    b.mem.Escrever32(kEnderecoDoPonteiro, 6u);  // o numero do TIPO, que ficou na variavel
+    const ResultadoDoRecurso s = r.Atender(Pedido(5001, buffer));
+    // V12: voltar a julgar so pelo `declarado` -- o `s.ok` fica falso e o
+    // `peggle`/`torkandkral`/`heavyweaponbrew` voltam a receber o buffer vazio.
+    ASSERT_TRUE(s.ok) << s.motivo;
+    EXPECT_EQ(s.forma, FormaDoRecurso::Copia);
+    EXPECT_EQ(s.ponteiro, buffer);
+    for (std::uint32_t k = 0; k < tamanho; ++k) {
+      EXPECT_EQ(b.Ler8(buffer + k), b.bar.recursos[0][k]) << "byte " << k;
+    }
+    EXPECT_EQ(b.Ler32(kEnderecoDoPonteiro), tamanho);
+    // E O CAMINHO FICA DITO: servir pelo bloco e uma DECISAO, e nao um acidente.
+    EXPECT_EQ(b.traco.ContagemPressupostos().count(
+                  "IShell::LoadResDataEx serviu pelo BLOCO, nao pelo *pnBufSize declarado"),
+              1u);
+  }
+}
+
+// --- V13: o bloco REALMENTE pequeno continua a recusar ----------------------
+//
+// A outra metade da guarda: a leitura pelo bloco alarga o que e servido, e nao
+// transforma "nao cabe" em "cabe". Sem este teste, bastaria devolver sempre
+// sucesso para o V12 passar -- e um buffer de 8 bytes receberia um recurso de 34
+// com o jogo a acreditar que tem espaco.
+TEST(Recursos, BlocoRealmentePequenoContinuaARecusar) {
+  Banco b;
+  {
+    Recursos r = b.Servico();
+    const std::uint32_t tamanho = b.TamanhoDoRecurso(0);
+    ASSERT_GT(tamanho, 8u);
+    const std::uint32_t buffer = b.alocador.Malloc(8u);  // o bloco e mesmo curto
+    ASSERT_NE(buffer, 0u);
+    for (std::uint32_t k = 0; k < 8; ++k) b.mem.Escrever8(buffer + k, 0xAA);
+    b.mem.Escrever32(kEnderecoDoPonteiro, 8u);
+    const ResultadoDoRecurso s = r.Atender(Pedido(5001, buffer));
+    EXPECT_FALSE(s.ok);
+    EXPECT_EQ(s.forma, FormaDoRecurso::Recusado);
+    EXPECT_NE(s.motivo.find("bloco 0x00000008"), std::string::npos) << s.motivo;
+    for (std::uint32_t k = 0; k < 8; ++k) {
+      EXPECT_EQ(b.Ler8(buffer + k), 0xAA) << "byte " << k;
+    }
+    EXPECT_EQ(r.Contagem().servidos, 0u);
+  }
+}
+
 // --- V4: a forma "alocar" aloca no heap do GUEST ---------------------------
 TEST(Recursos, AlocarUsaOAlocadorDoGuestEDevolveORecursoInteiro) {
   Banco b;

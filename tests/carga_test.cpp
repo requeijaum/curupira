@@ -320,6 +320,33 @@ TEST(Alocador, MallocDevolveBlocosDistintosEAlinhados) {
   EXPECT_GE(p2, p1 + 16u) << "nao se sobrepoem";
 }
 
+TEST(Alocador, TamanhoDoBlocoRespondePeloCabecalhoEZeroNoQueNaoEBloco) {
+  // A consulta existe para o `LoadResDataEx` poder medir a CAPACIDADE REAL do
+  // buffer do chamador quando o `*pnBufSize` declarado nao e a verdade (medido:
+  // o `peggle` declara 6 para um bloco de 64 629 bytes). O QUE ESTE TESTE
+  // PROTEGE e o zero: um endereco que NAO e um bloco vivo tem de devolver
+  // "nao sei" -- se devolvesse um numero inventado por leitura de cabecalho
+  // alheio, essa invencao viraria guarda de memoria no servico de recursos.
+  Memoria mem;
+  Alocador a(mem, kHeapInicio, 0x1000u, nullptr);
+  const std::uint32_t p = a.Malloc(0x200);
+  ASSERT_NE(p, 0u);
+  EXPECT_EQ(a.TamanhoDoBloco(p), 0x200u);
+  // V11a: devolver `c.tamanho` (com o cabecalho dentro) em vez de `tamanho -
+  // kCabecalho` -- a capacidade sairia 16 bytes maior do que a verdade, que e
+  // exactamente o erro que a guarda existe para nao cometer.
+  EXPECT_LT(a.TamanhoDoBloco(p), 0x210u);
+  // V11b: aceitar o endereco sem conferir que ele E o inicio de um bloco --
+  // `p + 8` cairia a meio e devolveria um numero do lixo do proprio dado.
+  EXPECT_EQ(a.TamanhoDoBloco(p + 8u), 0u);
+  EXPECT_EQ(a.TamanhoDoBloco(0u), 0u);
+  EXPECT_EQ(a.TamanhoDoBloco(kHeapInicio - 0x100u), 0u) << "antes do heap";
+  EXPECT_EQ(a.TamanhoDoBloco(kHeapInicio + 0x9000u), 0u) << "depois do heap";
+  // E DEPOIS DE LIBERTADO nao e um bloco vivo: a resposta volta a ser "nao sei".
+  a.Free(p);
+  EXPECT_EQ(a.TamanhoDoBloco(p), 0u);
+}
+
 TEST(Alocador, EscreverNumBlocoNaoTocaNoSeguinte) {
   Memoria mem;
   Alocador a(mem, kHeapInicio, kHeapTamanho, nullptr);

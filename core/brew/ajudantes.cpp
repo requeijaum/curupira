@@ -76,6 +76,25 @@ std::uint32_t Alocador::Malloc(std::uint32_t tamanho) {
   return 0;
 }
 
+std::uint32_t Alocador::TamanhoDoBloco(std::uint32_t endereco) const {
+  if (endereco == 0) return 0;
+  const std::uint32_t procurado = endereco - kCabecalho;
+  if (procurado < inicio_) return 0;
+  std::uint32_t atual = inicio_;
+  const std::uint32_t fim = inicio_ + tamanho_;
+  while (atual + kCabecalho <= fim) {
+    const Cabecalho c = Ler(atual);
+    if (c.tamanho < kCabecalho || atual + c.tamanho > fim) return 0;  // corrompido
+    if (atual == procurado) {
+      if (c.livre != 0) return 0;  // livre: nao e um bloco vivo
+      return c.tamanho - kCabecalho;
+    }
+    if (atual > procurado) return 0;  // a lista anda por ordem de endereco
+    atual += c.tamanho;
+  }
+  return 0;
+}
+
 void Alocador::Free(std::uint32_t endereco) {
   if (endereco == 0) return;  // `free(0)` e legal e nao faz nada
   const std::uint32_t bloco = endereco - kCabecalho;

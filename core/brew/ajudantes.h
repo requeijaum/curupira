@@ -77,6 +77,26 @@ class Alocador {
   // nao diz nada recebe a regra, e nao o contrario.
   std::uint32_t Realloc(std::uint32_t endereco, std::uint32_t tamanho, bool zerar = true);
 
+  // O TAMANHO UTIL DE UM BLOCO VIVO deste alocador, pelo cabecalho, ou 0.
+  //
+  // EXISTE POR UMA MEDICAO, e nao por simetria: o `IShell::LoadResDataEx` recebe
+  // do chamador um `*pnBufSize` que nem sempre e a verdade -- o `peggle` declara
+  // 6 bytes e o bloco que ele proprio alocou (com o tamanho que a consulta
+  // anterior devolveu) tem 64 629; o `torkandkral` declara 131 e os blocos tem de
+  // 32 KiB a 1 MiB; o `heavyweaponbrew` declara 1097 para 12 336. Sem esta
+  // medida, a unica leitura possivel era o numero declarado, e os tres titulos
+  // ficavam com o buffer por servir.
+  //
+  // ZERO QUER DIZER "NAO SEI", e nao "cabem zero": nem todo ponteiro do guest e
+  // um bloco deste alocador (a pilha, um DIB, um objecto). Quem chama tem de
+  // tratar o zero como ausencia de medida.
+  //
+  // A LISTA E PERCORRIDA, e o cabecalho NAO se le num endereco de confianca: um
+  // `endereco - kCabecalho` que caia no meio de um bloco daria um cabecalho
+  // inventado, e um tamanho inventado a servir de guarda de memoria e pior do
+  // que nao ter guarda nenhuma.
+  std::uint32_t TamanhoDoBloco(std::uint32_t endereco) const;
+
   std::uint32_t Inicio() const { return inicio_; }
   std::uint32_t Tamanho() const { return tamanho_; }
   std::uint32_t Alocado() const { return alocado_; }
