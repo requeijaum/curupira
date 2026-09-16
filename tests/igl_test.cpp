@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 
 #include <cstring>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -2376,6 +2377,252 @@ TEST(FrenteMatriz, OFrontFaceChegaAoRasterizadorEPoeOMesmoTrianguloEmLadosOposto
   ASSERT_EQ(desenhar(), kAeeSuccess) << b.Detalhe("IGLES11::DrawElements");
   EXPECT_EQ(tela.Escritos(), 6u) << "nenhum pixel NOVO: o triangulo foi descartado";
   EXPECT_EQ(motor->RasterizadorRef().TriangulosDescartados(), 1u);
+}
+
+// ---------------------------------------------------------------------------
+// A FRENTE textura: O BIND/TEXIMAGE DO IGLES11 TEM DE CHEGAR AO MOTOR DO IGL
+// ---------------------------------------------------------------------------
+//
+// O DEFEITO (medido em `/tmp/pesquisa/estudo-video.md`): o `IGLES11::BindTexture`
+// e o `IGLES11::TexImage2D` escreviam o bloco lateral `kEstadoIgles` e faziam
+// `return` ANTES do mapa `SlotIglesNoIgl` (`classes.cpp`). O motor do Igl -- o
+// que o `MontarEstado` leva ao rasterizador -- ficava com `textura_ligada_ == 0`
+// e com nenhuma textura; a guarda `igl.cpp:517` nunca punha textura no retrato
+// do desenho. Consequencia medida nos 62 titulos: **59 222 desenhos em 10
+// titulos, ZERO com textura ligada**, e esses 10 somam 1 882 689 500 px com 1 a
+// 3 cores.
+//
+// OS DOIS TESTES ENTRAM PELA TABELA (`kVtableIgles + slot`), que e a leitura do
+// despacho -- a armadilha 3 desta casa e um teste que chama o id interno do
+// motor e prova o motor e nao a cablagem.
+
+// O BLOCO LATERAL DO `glDrawTex*OES`. As constantes vivem no namespace anonimo
+// de `classes.cpp`; os numeros ficam escritos aqui com a linha ao lado, e sao
+// eles que o `glDrawTex*OES` le no guest.
+constexpr std::uint32_t kEstadoIgles = 0x8F030000u;
+constexpr std::uint32_t kIglesTexLigada = kEstadoIgles + 0u;
+constexpr std::uint32_t kIglesTexPonteiro = kEstadoIgles + 20u;
+
+// Um pedido do IGLES11 pela TABELA com a PILHA escrita a mao. O `glTexImage2D`
+// tem nove argumentos reais e a moldura do IGLES11 leva o `po` em r0: o quarto
+// argumento real e o primeiro lugar da pilha (`classes.cpp`,
+// `SlotIglesTemQuartoNaPilha`), e os nove caem em `sp+0..sp+20`.
+std::uint32_t PedirComPilhaNaTabela(BancoClasses& b, std::uint32_t slot, std::uint32_t r1,
+                                    std::uint32_t r2, std::uint32_t r3,
+                                    const std::uint32_t* pilha, std::size_t quantos) {
+  for (std::size_t k = 0; k < quantos; ++k) {
+    b.mem.Escrever32(kPilhaDoTeste + 4u * static_cast<std::uint32_t>(k), pilha[k]);
+  }
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, r1);
+  b.cpu.Set(kR2, r2);
+  b.cpu.Set(kR3, r3);
+  b.cpu.Set(kSP, kPilhaDoTeste);
+  if (!AtenderClasse(b.cpu, kVtableIgles + slot, b.traco)) return 0xDEADBEEFu;
+  return b.cpu.Get(kR0);
+}
+
+TEST(FrenteTextura, OBindTextureEOTexImage2DChegamAoMotorDoIgl) {
+  BancoClasses b;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+  constexpr std::uint32_t kTexels = 0x0002C000u;
+  b.mem.Escrever32(kTexels, 0xFF00FF00u);  // um texel verde (RGBA8, LE)
+  // width, height, border, format, type, pixels
+  const std::uint32_t pilha[6] = {2u, 2u, 0u, GL_RGBA, GL_UNSIGNED_BYTE, kTexels};
+
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_BindTexture, GL_TEXTURE_2D, 5u),
+            kAeeSuccess)
+      << b.Detalhe("IGLES11::BindTexture");
+  ASSERT_EQ(PedirComPilhaNaTabela(b, igles_slots::kIgles_TexImage2D, GL_TEXTURE_2D, 0u, GL_RGBA,
+                                  pilha, 6u),
+            kAeeSuccess)
+      << b.Detalhe("IGLES11::TexImage2D");
+
+  // 1. O BLOCO LATERAL CONTINUA ESCRITO, e nao pode desaparecer com esta
+  // correccao: e dele que o `glDrawTex*OES` (`DesenharRectTexturaIgles`) le a
+  // textura que desenha.
+  EXPECT_EQ(b.mem.Ler32(kIglesTexLigada), 5u);
+  EXPECT_EQ(b.mem.Ler32(kIglesTexPonteiro), kTexels);
+
+  // 2. O MOTOR DO IGL. E este estado que o `MontarEstado` leva ao
+  // `EstadoDeRasterizacao` do desenho. Antes da correccao o `return` deixava-o
+  // a ZERO -- e nenhuma textura chegava a rasterizacao em titulo nenhum.
+  EXPECT_EQ(EstadoDoIgles11()->TexturaLigada(), 5u)
+      << "o BindTexture do IGLES11 nao chegou ao motor do Igl";
+  const EstadoDaTextura* t = EstadoDoIgles11()->Textura(5u);
+  ASSERT_NE(t, nullptr) << "o TexImage2D do IGLES11 nao chegou ao motor do Igl";
+  EXPECT_EQ(t->largura, 2u);
+  EXPECT_EQ(t->altura, 2u);
+  EXPECT_EQ(t->formato_do_pixel, GL_RGBA);
+  EXPECT_EQ(t->tipo, GL_UNSIGNED_BYTE);
+  EXPECT_EQ(t->ponteiro, kTexels);
+  EXPECT_EQ(t->uploade, 1u);
+  EXPECT_EQ(b.Faltas("IGLES11::BindTexture") + b.Faltas("IGLES11::TexImage2D"), 0u)
+      << b.Detalhe("IGLES11::BindTexture") << b.Detalhe("IGLES11::TexImage2D");
+}
+
+TEST(FrenteTextura, ODesenhoAmostraATexturaLigadaNoEcra) {
+  // A CABLAGEM ATE AO PIXEL, e nao o estado: um quadrilatero que ocupa a janela
+  // inteira (8x8), uma textura 2x2 com quatro cores distintas e a cor do vertice
+  // a VERMELHO. Com o caminho de textura morto o quadrilatero fica com UMA cor
+  // (a do `glColor4x`); com ele ligado os quatro quadrantes mostram os quatro
+  // texels. A medida e a mesma da bateria: CORES.
+  BancoClasses b;
+  Tela tela;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+  const_cast<Igl*>(EstadoDoIgles11())->DefinirTela(&tela);
+
+  constexpr std::uint32_t kTexels = 0x0002C000u;
+  constexpr std::uint32_t kV = 0x0002F500u;
+  constexpr std::uint32_t kI = 0x0002F600u;
+  constexpr std::uint32_t kT = 0x0002F700u;
+  // A textura 2x2, em RGBA8: fila 0 = vermelho, verde | fila 1 = azul, branco.
+  b.mem.Escrever32(kTexels + 0u, 0xFF0000FFu);
+  b.mem.Escrever32(kTexels + 4u, 0xFF00FF00u);
+  b.mem.Escrever32(kTexels + 8u, 0xFFFF0000u);
+  b.mem.Escrever32(kTexels + 12u, 0xFFFFFFFFu);
+  // O quadrilatero -1..1 em NDC cobre a janela 0..8: (x=-1,y=-1) -> (0,8).
+  const float v[4][2] = {{-1.0f, -1.0f}, {1.0f, -1.0f}, {1.0f, 1.0f}, {-1.0f, 1.0f}};
+  const float uv[4][2] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 1.0f}};
+  const std::uint16_t idx[6] = {0u, 1u, 2u, 0u, 2u, 3u};
+  for (std::uint32_t k = 0; k < 4u; ++k) {
+    b.mem.Escrever32(kV + 8u * k, Real(v[k][0]));
+    b.mem.Escrever32(kV + 8u * k + 4u, Real(v[k][1]));
+    b.mem.Escrever32(kT + 8u * k, Real(uv[k][0]));
+    b.mem.Escrever32(kT + 8u * k + 4u, Real(uv[k][1]));
+  }
+  for (std::uint32_t k = 0; k < 6u; ++k) b.mem.Escrever16(kI + 2u * k, idx[k]);
+
+  const std::uint32_t pilha[6] = {2u, 2u, 0u, GL_RGBA, GL_UNSIGNED_BYTE, kTexels};
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_Viewport, 0u, 0u, 8u, 8u), kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_BindTexture, GL_TEXTURE_2D, 5u),
+            kAeeSuccess);
+  ASSERT_EQ(PedirComPilhaNaTabela(b, igles_slots::kIgles_TexImage2D, GL_TEXTURE_2D, 0u, GL_RGBA,
+                                  pilha, 6u),
+            kAeeSuccess)
+      << b.Detalhe("IGLES11::TexImage2D");
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_Enable, GL_TEXTURE_2D), kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_EnableClientState, GL_VERTEX_ARRAY),
+            kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_VertexPointer, 2u, GL_FLOAT, 8u, kV),
+            kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_EnableClientState, GL_TEXTURE_COORD_ARRAY),
+            kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_TexCoordPointer, 2u, GL_FLOAT, 8u, kT),
+            kAeeSuccess);
+  // A COR DO VERTICE: vermelho opaco (`glColor4x(1, 0, 0, 1)`), o unico dado de
+  // cor que existe quando a textura nao chega ao rasterizador.
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_Color4x, Fixo(1.0f), 0u, 0u, Fixo(1.0f)),
+            kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_DrawElements, GL_TRIANGLES, 6u,
+                                 GL_UNSIGNED_SHORT, kI),
+            kAeeSuccess)
+      << b.Detalhe("IGLES11::DrawElements");
+  ASSERT_EQ(tela.Escritos(), 64u) << "o quadrilatero nao cobriu a janela 8x8";
+
+  // A PROVA: os quatro texels aparecem, e nao uma so cor. Sem o caminho de
+  // textura a janela fica com o vermelho do `glColor4x` (0xF800) e mais nada.
+  std::set<std::uint32_t> cores;
+  for (int y = 0; y < 8; ++y) {
+    for (int x = 0; x < 8; ++x) cores.insert(tela.PixelEm(x, y));
+  }
+  EXPECT_EQ(tela.CoresEm(0, 0, 8, 8), 4u) << "uma so cor = a textura nao foi amostrada";
+  EXPECT_TRUE(cores.count(0xF800u) == 1u) << "falta o vermelho da textura";
+  EXPECT_TRUE(cores.count(0x07E0u) == 1u) << "falta o verde da textura";
+  EXPECT_TRUE(cores.count(0x001Fu) == 1u) << "falta o azul da textura";
+  EXPECT_TRUE(cores.count(0xFFFFu) == 1u) << "falta o branco da textura";
+}
+
+TEST(FrenteTextura, AReservaDeTexturaServeOSDesenhoENaoORecusa) {
+  // O PONTO 2: `glTexImage2D(..., pixels = NULL)` e RESERVA, e nao recusa. E o
+  // par que o `ridgeracer` e o `pacmania` fazem (medido no traco: 2 reservas e 4
+  // `glTexSubImage2D` cada um, e as faltas `IGLES11::TexImage2D` e
+  // `IGLES11::TexSubImage2D` passam de 2 a 0 por titulo).
+  //
+  // DUAS METADES, e a segunda e a que interessa:
+  //   (a) com a reserva e SEM texels, o desenho NAO recusa -- segue com a cor do
+  //       vertice e a reserva fica nomeada (`textura_reservada_sem_texels`). Uma
+  //       recusa aqui apagaria os 307 200 px do `ridgeracer` e os 1,45 G px do
+  //       `pacmania`, que a corrida de referencia TEM;
+  //   (b) com os texels a chegar pelo `glTexSubImage2D`, a MESMA textura passa a
+  //       ser amostrada -- as quatro cores aparecem.
+  BancoClasses b;
+  Tela tela;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+  const_cast<Igl*>(EstadoDoIgles11())->DefinirTela(&tela);
+
+  constexpr std::uint32_t kTexels = 0x0002C000u;
+  constexpr std::uint32_t kV = 0x0002F500u;
+  constexpr std::uint32_t kI = 0x0002F600u;
+  constexpr std::uint32_t kT = 0x0002F700u;
+  b.mem.Escrever32(kTexels + 0u, 0xFF0000FFu);
+  b.mem.Escrever32(kTexels + 4u, 0xFF00FF00u);
+  b.mem.Escrever32(kTexels + 8u, 0xFFFF0000u);
+  b.mem.Escrever32(kTexels + 12u, 0xFFFFFFFFu);
+  const float v[4][2] = {{-1.0f, -1.0f}, {1.0f, -1.0f}, {1.0f, 1.0f}, {-1.0f, 1.0f}};
+  const float uv[4][2] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 1.0f}};
+  const std::uint16_t idx[6] = {0u, 1u, 2u, 0u, 2u, 3u};
+  for (std::uint32_t k = 0; k < 4u; ++k) {
+    b.mem.Escrever32(kV + 8u * k, Real(v[k][0]));
+    b.mem.Escrever32(kV + 8u * k + 4u, Real(v[k][1]));
+    b.mem.Escrever32(kT + 8u * k, Real(uv[k][0]));
+    b.mem.Escrever32(kT + 8u * k + 4u, Real(uv[k][1]));
+  }
+  for (std::uint32_t k = 0; k < 6u; ++k) b.mem.Escrever16(kI + 2u * k, idx[k]);
+
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_Viewport, 0u, 0u, 8u, 8u), kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_BindTexture, GL_TEXTURE_2D, 5u),
+            kAeeSuccess);
+  // A RESERVA: duas por duas, interior RGBA, pixels NULL.
+  const std::uint32_t reserva[6] = {2u, 2u, 0u, GL_RGBA, GL_UNSIGNED_BYTE, 0u};
+  ASSERT_EQ(PedirComPilhaNaTabela(b, igles_slots::kIgles_TexImage2D, GL_TEXTURE_2D, 0u, GL_RGBA,
+                                  reserva, 6u),
+            kAeeSuccess)
+      << b.Detalhe("IGLES11::TexImage2D");
+  ASSERT_EQ(b.Faltas("IGLES11::TexImage2D"), 0u)
+      << "a reserva voltou a ser recusa: " << b.Detalhe("IGLES11::TexImage2D");
+  const EstadoDaTextura* t = EstadoDoIgles11()->Textura(5u);
+  ASSERT_NE(t, nullptr);
+  EXPECT_EQ(t->largura, 2u);
+  EXPECT_EQ(t->ponteiro, 0u) << "a reserva nao tem texels ate um glTexSubImage2D";
+
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_Enable, GL_TEXTURE_2D), kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_EnableClientState, GL_VERTEX_ARRAY),
+            kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_VertexPointer, 2u, GL_FLOAT, 8u, kV),
+            kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_EnableClientState, GL_TEXTURE_COORD_ARRAY),
+            kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_TexCoordPointer, 2u, GL_FLOAT, 8u, kT),
+            kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_Color4x, Fixo(1.0f), 0u, 0u, Fixo(1.0f)),
+            kAeeSuccess);
+
+  // (a) O DESENHO NAO E RECUSADO pela reserva.
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_DrawElements, GL_TRIANGLES, 6u,
+                                 GL_UNSIGNED_SHORT, kI),
+            kAeeSuccess)
+      << b.Detalhe("IGLES11::DrawElements");
+  EXPECT_EQ(tela.Escritos(), 64u) << "um desenho RECUSADO por causa da reserva";
+  EXPECT_EQ(tela.CoresEm(0, 0, 8, 8), 1u) << "sem texels nao ha textura para amostrar";
+  EXPECT_EQ(tela.PixelEm(0, 0), 0xF800u) << "a cor do vertice, e nao o endereco zero";
+  EXPECT_EQ(b.Faltas("textura_reservada_sem_texels"), 1u)
+      << "a reserva tem de ficar NOMEADA (uma vez, e nao uma por desenho)";
+
+  // (b) OS TEXELS CHEGAM pelo `glTexSubImage2D` e a MESMA textura passa a ser
+  // amostrada. A assinatura do slot: (alvo, nivel, x, y, larg, alt, formato,
+  // tipo, pixels) -- o quinto argumento real (o `y`) e o primeiro da pilha.
+  const std::uint32_t sub[6] = {0u, 2u, 2u, GL_RGBA, GL_UNSIGNED_BYTE, kTexels};
+  ASSERT_EQ(PedirComPilhaNaTabela(b, igles_slots::kIgles_TexSubImage2D, GL_TEXTURE_2D, 0u, 0u,
+                                  sub, 6u),
+            kAeeSuccess)
+      << b.Detalhe("IGLES11::TexSubImage2D");
+  tela.Limpar();
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_DrawElements, GL_TRIANGLES, 6u,
+                                 GL_UNSIGNED_SHORT, kI),
+            kAeeSuccess)
+      << b.Detalhe("IGLES11::DrawElements");
+  EXPECT_EQ(tela.CoresEm(0, 0, 8, 8), 4u) << "a textura reservada e depois preenchida nao foi amostrada";
 }
 
 }  // namespace

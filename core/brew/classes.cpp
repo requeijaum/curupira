@@ -881,6 +881,15 @@ std::uint32_t SlotIglesNoIgl(std::uint32_t slot) {
     // numero, porque as duas interfaces numeram os mesmos metodos em posicoes
     // diferentes.
     case igles_slots::kIgles_AlphaFuncx: return gl_slots::kIgl_AlphaFuncx;  // 32
+    // O `BindTexture` (33) -- O SEXTO BLOCO QUE MORRIA NESTE MAPA, e o unico dos
+    // tres da textura que NAO estava na tabela: o `TexImage2D` (103) e o
+    // `TexSubImage2D` (105) ja estavam aqui. Sem esta linha, tirar o `return` ao
+    // handler nao chegava: o pedido caia na recusa generica com nome e o motor
+    // ficava com `textura_ligada_` a ZERO (o `TexImage2D` seguinte escrevia os
+    // texels na textura 0, que nenhum desenho le). MEDIDO: o `BindTexture` e o
+    // PRIMEIRO dos tres que os dez titulos chamam (no traco do
+    // `heavyweaponbrew`, `ZB2_TRACE=1`, vem antes do `TexImage2D`).
+    case igles_slots::kIgles_BindTexture: return gl_slots::kIgl_BindTexture;  // 33
     case igles_slots::kIgles_BlendFunc: return gl_slots::kIgl_BlendFunc;  // 34
     case igles_slots::kIgles_Color4x: return gl_slots::kIgl_Color4x;  // 40
     case igles_slots::kIgles_CompressedTexImage2D:
@@ -2118,6 +2127,20 @@ bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
     // anunciada nao tem o que desenhar (e os dez titulos chamam estes tres logo
     // a seguir ao `InitGLExtensions`). O estado fica no bloco `kEstadoIgles`,
     // observavel e testavel como o resto das classes.
+    //
+    // **E OS DOIS PEDIDOS SEGUEM PARA O MOTOR DO IGL** (frente textura). Estes
+    // handlers escreviam o bloco lateral e faziam `return` ANTES do mapa
+    // `SlotIglesNoIgl`, logo `Igl::textura_ligada_` ficava a ZERO e a guarda do
+    // `MontarEstado` (`igl.cpp`) NUNCA punha textura no `EstadoDeRasterizacao`:
+    // nenhum desenho por geometria via textura, em titulo nenhum. MEDIDO com uma
+    // sonda neutra em `Rasterizador::Desenhar` (`ZB2_QUADROS=300
+    // ZB2_EVT_START=1`, os 62): **59 222 desenhos em 10 titulos, ZERO com textura
+    // ligada**; esses 10 somam 1 882 689 500 px e ficam com 1 a 3 cores. Um ramo
+    // que ESCREVE ESTADO e sai antes do caminho que o USA e o defeito P2 ao
+    // contrario: o estado ate e guardado, mas num sitio que ninguem le.
+    //
+    // O BLOCO LATERAL CONTINUA ESCRITO -- e dele que o `glDrawTex*OES`
+    // (`DesenharRectTexturaIgles`) le a textura que desenha.
     if (slot == igles_slots::kIgles_GenTextures) {
       // `int GenTextures(iname *pMe, GLsizei n, GLuint *textures)` (AEEGLES10.h:88).
       const std::uint32_t n = cpu.Get(kR1), lista = cpu.Get(kR2);
@@ -2146,8 +2169,9 @@ bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
       }
       Memoria& mem = cpu.Mem();
       mem.Escrever32(kIglesTexLigada, tex);
-      cpu.Set(kR0, kAeeSuccess);
-      return true;
+      // SEM `return`: o pedido desce ao mapa (`kIgles_BindTexture` -> o slot 5 do
+      // IGL) e o motor fica com o mesmo numero, que e o que o `MontarEstado` leva
+      // ao desenho. O `r0` e posto pelo mapa, e nao aqui.
     }
     if (slot == igles_slots::kIgles_TexImage2D) {
       // `int TexImage2D(iname *pMe, target, level, internalformat, width,
@@ -2173,19 +2197,24 @@ bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
         cpu.Set(kR0, kAeeUnsupported);
         return true;
       }
-      if (pixels == 0) {
-        traco.RegistarFalta(Area::Brew, "IGLES11::TexImage2D",
-                            "sem ponteiro para os texels");
-        cpu.Set(kR0, kAeeUnsupported);
-        return true;
-      }
+      // `glTexImage2D(..., pixels = NULL)` NAO E RECUSA: e RESERVA das dimensoes
+      // e do formato, com os texels a chegar depois pelo `glTexSubImage2D` -- e o
+      // par que o `ridgeracer` faz. MEDIDO: era a falta
+      // `IGLES11::TexImage2D: 2` daquela corrida
+      // (`pixels=0`, "sem ponteiro para os texels"), com 307 200 px e 1 cor. E a
+      // regra das duas referencias: o `zeebx` (`machine.rs`, `gles_tex_image`)
+      // enche a textura de branco quando o ponteiro e nulo e o `zeebulator`
+      // (`gl_backend.h:44-52`) diz "reserve storage". Aqui a reserva fica
+      // DECLARADA no motor (`EstadoDaTextura::ponteiro == 0`) e o `MontarEstado`
+      // diz o que ela vale enquanto nao houver texels -- nunca uma amostragem de
+      // lixo nem um desenho por recusar.
       mem.Escrever32(kIglesTexLargura, larg);
       mem.Escrever32(kIglesTexAltura, alt);
       mem.Escrever32(kIglesTexFormato, formato);
       mem.Escrever32(kIglesTexTipo, tipo);
       mem.Escrever32(kIglesTexPonteiro, pixels);
       cpu.Set(kR0, kAeeSuccess);
-      return true;
+      // SEM `return` (ver o comentario do `BindTexture` acima).
     }
 
     // A FRENTE GLBLOCO: os DOZE slots nomeados que 8 titulos pedem (medido na

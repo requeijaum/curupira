@@ -682,6 +682,11 @@ bool Rasterizador::Projetar(const EstadoDeRasterizacao& e, Vertice* v) const {
   return true;
 }
 
+bool TexturaAmostravel(std::uint32_t formato, std::uint32_t tipo) {
+  return (formato == GL_RGBA || formato == GL_RGB || formato == GL_LUMINANCE) &&
+         tipo == GL_UNSIGNED_BYTE;
+}
+
 Rgba Rasterizador::AmostrarTextura(const EstadoDeRasterizacao& e, float u, float v) const {
   const Textura& t = e.textura;
   if (!t.existe || t.largura == 0 || t.altura == 0) return e.cor;
@@ -1116,11 +1121,10 @@ bool Rasterizador::Desenhar(const EstadoDeRasterizacao& estado, const PedidoDeDe
     return false;
   }
   if (estado.textura_ligada && estado.textura.existe) {
-    const bool formato_conhecido =
-        (estado.textura.formato == GL_RGBA || estado.textura.formato == GL_RGB ||
-         estado.textura.formato == GL_LUMINANCE) &&
-        estado.textura.tipo == GL_UNSIGNED_BYTE;
-    if (!formato_conhecido) {
+    // A MESMA LISTA do `AmostrarTextura` (uma so, em `TexturaAmostravel`): o
+    // `Desenhar` recusa o que ele nao sabe amostrar, e nao desenha com a cor do
+    // vertice em silencio.
+    if (!TexturaAmostravel(estado.textura.formato, estado.textura.tipo)) {
       ++recusadas_;
       char d[128];
       std::snprintf(d, sizeof(d), "textura com formato 0x%04x e tipo 0x%04x sem caminho de amostragem",

@@ -514,17 +514,37 @@ video::EstadoDeRasterizacao Igl::MontarEstado() const {
 
   // A TEXTURA LIGADA SO CONTA COM O `GL_TEXTURE_2D` LIGADO: e o que o GL faz. Uma
   // textura com o alvo desligado nao e amostrada, e o desenho usa a cor.
+  //
+  // E SO ENTRA NO RETRATO SE O RASTERIZADOR A SOUBER AMOSTRAR. Cada uma das tres
+  // razoes para nao entrar fica NOMEADA em `capacidades_por_fazer` (registada uma
+  // vez, com o nome, por `RegistarRessalvas`) e o desenho segue com a cor do
+  // vertice -- em vez de RECUSAR o desenho inteiro. A diferenca e medida: o
+  // `Desenhar` recusa uma textura comprimida ou de formato desconhecido, e uma
+  // recusa dessas apagaria os 307 200 px do `ridgeracer` (a reserva do ponto 2) e
+  // os 91 852 828 px do `pbc` (ATC, sem descodificador nesta arvore) -- numeros
+  // que a corrida de referencia TEM. Perder um desenho inteiro por causa de uma
+  // textura e pior do que desenhar sem ela e dize-lo.
   if (InterruptorLigado(GL_TEXTURE_2D) && textura_ligada_ != 0) {
     const EstadoDaTextura* t = Textura(textura_ligada_);
     if (t != nullptr) {
-      e.textura_ligada = true;
-      e.textura.existe = true;
-      e.textura.comprimida = t->comprimida;
-      e.textura.largura = t->largura;
-      e.textura.altura = t->altura;
-      e.textura.formato = t->formato_do_pixel;
-      e.textura.tipo = t->tipo;
-      e.textura.ponteiro = t->ponteiro;
+      if (t->comprimida) {
+        e.capacidades_por_fazer.push_back("textura_comprimida_sem_descodificador");
+      } else if (t->ponteiro == 0) {
+        // A RESERVA: `glTexImage2D(..., pixels = NULL)` registou dimensoes e
+        // formato, e os texels ainda nao chegaram (`glTexSubImage2D`).
+        e.capacidades_por_fazer.push_back("textura_reservada_sem_texels");
+      } else if (!video::TexturaAmostravel(t->formato_do_pixel, t->tipo)) {
+        e.capacidades_por_fazer.push_back("formato_de_textura_sem_caminho_de_amostragem");
+      } else {
+        e.textura_ligada = true;
+        e.textura.existe = true;
+        e.textura.comprimida = t->comprimida;
+        e.textura.largura = t->largura;
+        e.textura.altura = t->altura;
+        e.textura.formato = t->formato_do_pixel;
+        e.textura.tipo = t->tipo;
+        e.textura.ponteiro = t->ponteiro;
+      }
     }
   }
 
@@ -1295,8 +1315,16 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
       t.tipo = c.args[7];
       t.ponteiro = c.args[8];
       ++t.uploade;
-      return feito_com(9, "os pixels ficam na memoria do guest e sao lidos na amostragem "
-                          "(nao ha copia no acto do glTexImage2D)");
+      // `pixels == 0` E RESERVA, e nao recusa: as dimensoes e o formato ficam
+      // registados e os texels chegam depois pelo `glTexSubImage2D` (e o par que
+      // o `ridgeracer` faz). Enquanto o ponteiro for 0, o `MontarEstado` di-lo
+      // pelo nome (`textura_reservada_sem_texels`) e o desenho segue com a cor do
+      // vertice -- nunca uma amostragem do endereco zero.
+      return feito_com(9, t.ponteiro == 0
+                              ? "reserva de textura (glTexImage2D com pixels NULL): dimensoes e "
+                                "formato registados, sem texels ate um glTexSubImage2D"
+                              : "os pixels ficam na memoria do guest e sao lidos na amostragem "
+                                "(nao ha copia no acto do glTexImage2D)");
     }
     case kIgl_TexSubImage2D: {
       if (!esp(9)) return recusa("argumentos na pilha sem sp valido");

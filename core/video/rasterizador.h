@@ -195,6 +195,16 @@ struct Rgba {
 Rgba Desempacotar(std::uint32_t rgba);
 std::uint32_t Para565(Rgba c);
 
+// O PAR (formato do texel, tipo do elemento) QUE O `AmostrarTextura` SABE LER.
+//
+// UMA LISTA, E NAO DUAS: o `Rasterizador::Desenhar` usa-a como guarda (uma
+// textura que ele nao saiba ler RECUSA o desenho, e nao o desenha com a cor do
+// vertice em silencio) e o `Igl::MontarEstado` usa-a para decidir se a textura
+// entra no retrato do desenho. Duas copias desta condicao divergiriam em
+// silencio, e o sintoma seria um titulo sem textura (ou com a textura errada)
+// sem nada a apontar para a causa.
+bool TexturaAmostravel(std::uint32_t formato, std::uint32_t tipo);
+
 // --- o estado que o rasterizador consome ----------------------------------
 
 // Um array de vertices ligado por `glVertexPointer` e companhia. Os quatro
