@@ -179,6 +179,31 @@ void Media::Recusar(const std::string& o_que, const std::string& porque) {
   traco_.RegistarFalta(Area::Audio, o_que, porque);
 }
 
+ResultadoCablagem Media::EscreverVtable(const SlotDoMedia* tabela, std::size_t quantas,
+                                       std::uint32_t quantos_slots, std::uint32_t base,
+                                       std::uint32_t vt) {
+  // A tabela declarada tem de cobrir TODOS os slots, sem repetir nenhum.
+  const ResultadoCablagem conferida = ConferirTabelaDeSlots(tabela, quantas, quantos_slots);
+  if (!conferida.ok) return conferida;
+
+  // Escrever, e CONFIRMAR com leitura de volta.
+  mem_.Escrever32(vt + 0, saidas_.Endereco(3));  // IBase::AddRef, do motor
+  mem_.Escrever32(vt + 4, saidas_.Endereco(4));  // IBase::Release, do motor
+  for (std::uint32_t s = 2; s < quantos_slots; ++s) {
+    mem_.Escrever32(vt + s * 4, saidas_.Endereco(base + s));
+  }
+  for (std::uint32_t s = 0; s < quantos_slots; ++s) {
+    const std::uint32_t esperado =
+        (s < 2) ? saidas_.Endereco(3 + s) : saidas_.Endereco(base + s);
+    const std::uint32_t lido = mem_.Ler32(vt + s * 4);
+    if (lido != esperado) {
+      return {false, std::string("cablagem perdida no slot ") + std::to_string(s) + " (" +
+                         tabela[s].nome + ")"};
+    }
+  }
+  return {true, ""};
+}
+
 ResultadoCablagem Media::Instalar() {
   // 0. A FAIXA DE SAIDA TEM DE ESTAR CONFIGURADA E COBRIR ESTES INDICES.
   //
@@ -188,37 +213,36 @@ ResultadoCablagem Media::Instalar() {
   // base ZERO. Nada acusou -- a leitura de volta confirmava o que se tinha
   // escrito. Uma cablagem num endereco que nao existe e o pior tipo de defeito:
   // passa na conferencia e nao serve para nada.
+  //
+  // AS DUAS FAIXAS SAO CONFERIDAS AQUI, e nao so a do IMedia: a do IMediaUtil foi
+  // acrescentada por cima (4200/4300) e uma faixa curta serviria a primeira e
+  // escreveria a segunda fora dela -- que e o defeito acima, outra vez.
   if (!saidas_.ativa || saidas_.quantos < kVtableDoMedia + kSlotsPorVtable ||
-      saidas_.quantos < kBaseDoMedia + kSlotsDoMedia) {
+      saidas_.quantos < kBaseDoMedia + kSlotsDoMedia ||
+      saidas_.quantos < kVtableDoMediaUtil + kSlotsPorVtable ||
+      saidas_.quantos < kBaseDoMediaUtil + kSlotsDoMediaUtil) {
     return {false, "faixa de saida nao configurada (ativa=" + std::to_string(saidas_.ativa) +
                        " quantos=" + std::to_string(saidas_.quantos) + ")"};
   }
 
-  // 1. A tabela declarada tem de cobrir TODOS os slots, sem repetir nenhum.
-  const ResultadoCablagem tabela = ConferirTabelaDeSlots(
-      kTabelaDeSlotsDoMedia, kQuantosSlotsDoMediaDeclarados, kSlotsDoMedia);
-  if (!tabela.ok) return tabela;
+  const ResultadoCablagem do_media = EscreverVtable(
+      kTabelaDeSlotsDoMedia, kQuantosSlotsDoMediaDeclarados, kSlotsDoMedia, kBaseDoMedia,
+      saidas_.Endereco(kVtableDoMedia));
+  if (!do_media.ok) return do_media;
 
-  // 2. Escrever, e CONFIRMAR com leitura de volta.
-  const std::uint32_t vt = saidas_.Endereco(kVtableDoMedia);
-  mem_.Escrever32(vt + 0, saidas_.Endereco(3));  // IBase::AddRef, do motor
-  mem_.Escrever32(vt + 4, saidas_.Endereco(4));  // IBase::Release, do motor
-  for (std::uint32_t s = 2; s < kSlotsDoMedia; ++s) {
-    mem_.Escrever32(vt + s * 4, saidas_.Endereco(kBaseDoMedia + s));
-  }
-  for (std::uint32_t s = 0; s < kSlotsDoMedia; ++s) {
-    const std::uint32_t esperado = (s < 2) ? saidas_.Endereco(3 + s)
-                                           : saidas_.Endereco(kBaseDoMedia + s);
-    const std::uint32_t lido = mem_.Ler32(vt + s * 4);
-    if (lido != esperado) {
-      return {false, std::string("cablagem perdida no slot ") + std::to_string(s) +
-                         " (" + kTabelaDeSlotsDoMedia[s].nome + ")"};
-    }
-  }
+  // A SEGUNDA vtable, a do `AEECLSID_MEDIAUTIL`: e a ausencia dela que deixava o
+  // slot 3 do pedido do jogo a responder `RegisterNotify` (ver o cabecalho).
+  const ResultadoCablagem do_util = EscreverVtable(
+      kTabelaDeSlotsDoMediaUtil, kQuantosSlotsDoMediaUtilDeclarados, kSlotsDoMediaUtil,
+      kBaseDoMediaUtil, saidas_.Endereco(kVtableDoMediaUtil));
+  if (!do_util.ok) return do_util;
+
   instalada_ = true;
   traco_.Emitir(Area::Audio, Nivel::Informacao, "IMEDIA_INSTALADO",
-                std::to_string(kSlotsDoMedia) + " slots, vtable na saida " +
-                    std::to_string(kVtableDoMedia));
+                std::to_string(kSlotsDoMedia) + " slots do IMedia (vtable na saida " +
+                    std::to_string(kVtableDoMedia) + ") e " +
+                    std::to_string(kSlotsDoMediaUtil) + " do IMediaUtil (vtable na saida " +
+                    std::to_string(kVtableDoMediaUtil) + ")");
   return {true, ""};
 }
 
@@ -349,7 +373,14 @@ std::int32_t Media::Criar(std::uint32_t cls, std::uint32_t pponovo) {
   livre->serie = proxima_serie_++;
   livre->classe = cls;
   livre->estado = kMmEstadoOcioso;
-  mem_.Escrever32(endereco + kOffObjVtable, saidas_.Endereco(kVtableDoMedia));
+  // A VTABLE VEM DO CLSID, e e o que faltava ao `AEECLSID_MEDIAUTIL`: o slot 3 de
+  // um `IMedia` e o `RegisterNotify` e o de um `IMediaUtil` e o `CreateMedia`.
+  // Com a vtable errada o slot 3 respondia SUCCESS sem escrever o `ppm`, e o jogo
+  // chamava pela primeira palavra do proprio modulo (a medicao das 106 recusas
+  // esta no cabecalho do `imedia.h`).
+  const bool e_util = (cls == kClsMediaUtil);
+  mem_.Escrever32(endereco + kOffObjVtable,
+                  saidas_.Endereco(e_util ? kVtableDoMediaUtil : kVtableDoMedia));
   mem_.Escrever32(endereco + kOffObjRefs, 1);  // quem recebe o objecto ja o detem
   mem_.Escrever32(endereco + kOffObjEstado, static_cast<std::uint32_t>(kMmEstadoOcioso));
   mem_.Escrever32(endereco + kOffObjClasse, cls);
@@ -687,6 +718,17 @@ std::int32_t Media::HandlerDeSlot(std::uint32_t slot, std::uint32_t objeto, ICpu
             "po=" + EmHex(objeto) + " nao e um IMedia vivo");
     return kAeeParametroErrado;
   }
+  if (o->classe == kClsMediaUtil) {
+    // O `this` e um IMediaUtil e o pedido chegou pela faixa do IMedia. Pela
+    // cablagem isto NAO acontece -- cada CLSID recebe a sua vtable --, e se
+    // acontecer e um defeito de cablagem e nao um metodo a servir: o slot 3 de um
+    // IMediaUtil NAO e o `RegisterNotify`. Recusar com o nome, em vez de
+    // interpretar o numero do slot.
+    Recusar("IMedia::" + std::string(slot < kQuantosSlotsDeclarados ? kTabelaDeSlotsDoMedia[slot].nome : "slot"),
+            "o objecto " + EmHex(objeto) + " e um IMediaUtil (0x0100550d): o slot " +
+                std::to_string(slot) + " nao e um metodo do IMedia");
+    return kAeeParametroErrado;
+  }
 
   switch (slot) {
     case 2: {  // QueryInterface(po, iid, ppo)
@@ -965,7 +1007,250 @@ std::int32_t Media::HandlerDeSlot(std::uint32_t slot, std::uint32_t objeto, ICpu
   }
 }
 
+// ---------------------------------------------------------------------------
+// O IMEDIAUTIL (`AEECLSID_MEDIAUTIL`, 0x0100550d)
+//
+// A SEGUNDA interface da familia de midia, e a razao de o `Criar` olhar para o
+// CLSID: este objecto NAO e um `IMedia`. O `allstarcards` cria-o pelo slot 2 do
+// `IShell` e chama o SLOT 3 dele -- `CreateMedia` -- com o `ppm` no r2; com a
+// vtable do IMedia o slot 3 respondia `RegisterNotify`, devolvia SUCCESS e nao
+// escrevia o `ppm` (a medicao esta no cabecalho do `imedia.h`).
+// ---------------------------------------------------------------------------
+
+Media::Objeto* Media::UtilPorEndereco(std::uint32_t objeto) {
+  Objeto* o = PorEndereco(objeto);
+  if (o == nullptr) return nullptr;
+  return (o->classe == kClsMediaUtil) ? o : nullptr;
+}
+
+std::uint32_t Media::ObjetosDeMediaUtilVivos() const {
+  std::uint32_t n = 0;
+  for (const auto& o : objetos_) {
+    if (o.vivo && o.classe == kClsMediaUtil) ++n;
+  }
+  return n;
+}
+
+std::int32_t Media::ClasseDe(std::uint32_t objeto) const {
+  const Objeto* o = PorEndereco(objeto);
+  return o != nullptr ? static_cast<std::int32_t>(o->classe) : 0;
+}
+
+std::int32_t Media::CriarMediaComDados(std::uint32_t pmd, std::uint32_t ppm,
+                                       bool definir_dados, const char* quem_chama) {
+  // O PONTEIRO DE SAIDA E ESCRITO SEMPRE, e comeca pelo ZERO: o SDK declara o
+  // `ppm` como [out], e o jogo CONFIA no codigo de retorno. Foi um `ppm` por
+  // escrever, com o retorno a SUCCESS, que fez o `allstarcards` tomar a primeira
+  // palavra do proprio modulo por vtable -- 2 recusas de CPU por quadro, 106 por
+  // corrida.
+  mem_.Escrever32(ppm, 0);
+
+  // UM `IMedia` NOVO, e nao o proprio MediaUtil: o SDK diz que o
+  // `CreateMedia` cria "an IMedia-based object"; e o `zeebx` faz o mesmo
+  // (`new_object(Interface::Media)` em `/tmp/zx-new/src/machine.rs:7257`). O
+  // lugar do conjunto e o MESMO (um lugar por objecto, servido pelo `Criar`) --
+  // um segundo registo de objectos seria duas listas a ter de concordar.
+  //
+  // A CLASSE: `AEECLSID_MEDIA`. O SDK escolhe a classe pelo MIME dos dados
+  // (`ISHELL_DetectType()`); esta arvore NAO tem descodificador nenhum, logo a
+  // classe que se pode servir com honestidade e a de BASE da familia. E a mesma
+  // escolha (e a mesma razao) do `zeebx`.
+  const std::int32_t criado = Criar(kClasseMultimidia, ppm);
+  if (criado != kAeeSucesso) return criado;
+
+  const std::uint32_t endereco = mem_.Ler32(ppm);
+  Objeto* novo = PorEndereco(endereco);
+  if (novo == nullptr) {
+    Recusar(quem_chama, "o objecto criado " + EmHex(endereco) + " nao ficou vivo");
+    mem_.Escrever32(ppm, 0);
+    return kAeeFalhou;
+  }
+  if (!definir_dados) {
+    // `MM_STATE_IDLE`: o SDK diz que assim o objecto NAO le os dados ("The user
+    // needs to set the media data"), e o estado que fica e o Ocioso que o `Criar`
+    // escreveu.
+    traco_.Emitir(Area::Audio, Nivel::Informacao, "IMEDIAUTIL_MEDIA_OCIOSO",
+                  std::string(quem_chama) + " -> *ppm=" + EmHex(endereco) + " (sem dados)");
+    return kAeeSucesso;
+  }
+
+  // O `AEEMediaData` (e o primeiro elemento de um `AEEMediaDataEx`, que tem os
+  // MESMOS tres campos de cabeca) e lido pelo `DefinirDados` -- o mesmo caminho
+  // que o `SetMediaParm(MM_PARM_MEDIA_DATA)` usa. Nao ha um segundo leitor de
+  // dados de midia nesta arvore, de proposito.
+  const std::int32_t leu = DefinirDados(*novo, static_cast<std::int32_t>(pmd), 0);
+  if (leu != kAeeSucesso) {
+    // O OBJECTO NAO FICA PENDURADO. O `Release` e do MOTOR (a IBase), logo o lugar
+    // devolve-se como ele o devolve: a contagem a zero no guest, e o recolhedor a
+    // le-la. Um lugar perdido por cada recusa acabaria por esgotar a regiao.
+    mem_.Escrever32(novo->endereco + kOffObjRefs, 0);
+    RecolherLibertados();
+    mem_.Escrever32(ppm, 0);
+    traco_.Emitir(Area::Audio, Nivel::Informacao, "IMEDIAUTIL_MEDIA_DESFEITO",
+                  std::string(quem_chama) +
+                      ": os dados nao foram lidos, o lugar do objecto voltou ao conjunto");
+    return leu;
+  }
+  traco_.Emitir(Area::Audio, Nivel::Informacao, "IMEDIAUTIL_MEDIA_CRIADO",
+                std::string(quem_chama) + ": pmd=" + EmHex(pmd) + " -> *ppm=" +
+                    EmHex(endereco) + " (" + std::to_string(novo->amostras.size()) +
+                    " amostras)");
+  return kAeeSucesso;
+}
+
+std::int32_t Media::CreateMediaPeloUtil(std::uint32_t util, std::uint32_t pmd,
+                                        std::uint32_t ppm) {
+  // `IMEDIAUTIL_CreateMedia(po, pmd, ppm)` -- `AEEMediaUtil.h`:
+  //   "Given AEEMediaData, this function analyzes media data and creates an
+  //    IMedia-based object (IMedia Interface object). / SUCCESS: IMedia object
+  //    successfully created; EBADPARM: Input parameter(s) is wrong".
+  if (UtilPorEndereco(util) == nullptr) {
+    Recusar("IMediaUtil::CreateMedia", "po=" + EmHex(util) + " nao e um IMediaUtil vivo");
+    return kAeeParametroErrado;
+  }
+  if (pmd == 0) {
+    Recusar("IMediaUtil::CreateMedia", "AEEMediaData nulo");
+    return kAeeParametroErrado;
+  }
+  if (ppm == 0) {
+    // Sem `ppm` nao ha onde escrever o objecto: criar um e nao o entregar seria
+    // alocar em silencio, que e o defeito que esta frente corrige.
+    Recusar("IMediaUtil::CreateMedia", "ppm nulo");
+    return kAeeParametroErrado;
+  }
+  return CriarMediaComDados(pmd, ppm, /*definir_dados=*/true, "IMediaUtil::CreateMedia");
+}
+
+std::int32_t Media::CreateMediaExPeloUtil(std::uint32_t util, std::uint32_t pcmi,
+                                          std::uint32_t ppm) {
+  if (UtilPorEndereco(util) == nullptr) {
+    Recusar("IMediaUtil::CreateMediaEx", "po=" + EmHex(util) + " nao e um IMediaUtil vivo");
+    return kAeeParametroErrado;
+  }
+  if (pcmi == 0) {
+    Recusar("IMediaUtil::CreateMediaEx", "AEEMediaCreateInfo nula");
+    return kAeeParametroErrado;
+  }
+  if (ppm == 0) {
+    Recusar("IMediaUtil::CreateMediaEx", "ppm nulo");
+    return kAeeParametroErrado;
+  }
+  const std::uint32_t tamanho = mem_.Ler32(pcmi + kOffCmiTamanho);
+  const std::int32_t estado = static_cast<std::int32_t>(mem_.Ler32(pcmi + kOffCmiEstado));
+  const std::int32_t quantos = static_cast<std::int32_t>(mem_.Ler32(pcmi + kOffCmiQuantos));
+  const std::uint32_t lista = mem_.Ler32(pcmi + kOffCmiLista);
+
+  // O `dwStructSize` existe para versionamento, e o guarda e o unico uso honesto
+  // dele: uma struct MENOR do que os campos que se vao ler nao se le. Zero e
+  // aceite (ha quem nao o preencha), porque recusar tudo o que nao traz o campo
+  // partiria um pedido que funciona.
+  if (tamanho != 0 && tamanho < kTamanhoDoCmi) {
+    Recusar("IMediaUtil::CreateMediaEx",
+            "dwStructSize=" + std::to_string(tamanho) + " e menor do que os " +
+                std::to_string(kTamanhoDoCmi) + " bytes da AEEMediaCreateInfo");
+    return kAeeParametroErrado;
+  }
+  if (quantos < 0) {
+    Recusar("IMediaUtil::CreateMediaEx", "nCount=" + std::to_string(quantos) + " negativo");
+    return kAeeParametroErrado;
+  }
+  if (quantos > 1) {
+    // RECUSA EM VOZ ALTA, e nao "usa a primeira e cala-se": o SDK usa esta lista
+    // para juntar fontes ("You can specify one or more AEEMediaDataEx", dois
+    // exemplos: um MPEG4 e um audio), e servir so a primeira seria dizer ao jogo
+    // que ele tocou o que nao tocou. NAO ha medicao de nenhum titulo do corpus
+    // que chame isto -- logo aqui nao se inventa um comportamento.
+    Recusar("IMediaUtil::CreateMediaEx",
+            "nCount=" + std::to_string(quantos) + ": so a primeira fonte esta implementada");
+    return kAeeNaoSuportado;
+  }
+  if (estado != kMmEstadoOcioso && estado != kMmEstadoPronto) {
+    Recusar("IMediaUtil::CreateMediaEx", "nState=" + std::to_string(estado) +
+                                             " nao e MM_STATE_IDLE (1) nem MM_STATE_READY (2)");
+    return kAeeParametroErrado;
+  }
+  if (estado == kMmEstadoPronto && quantos == 0) {
+    Recusar("IMediaUtil::CreateMediaEx", "MM_STATE_READY com a lista vazia: nao ha dados a ler");
+    return kAeeParametroErrado;
+  }
+  if (quantos == 1 && lista == 0) {
+    Recusar("IMediaUtil::CreateMediaEx", "nCount=1 com pmdList nula");
+    return kAeeParametroErrado;
+  }
+
+  return CriarMediaComDados(lista, ppm, /*definir_dados=*/quantos == 1,
+                            "IMediaUtil::CreateMediaEx");
+}
+
+std::int32_t Media::HandlerDoSlotDoMediaUtil(std::uint32_t slot, std::uint32_t objeto,
+                                             ICpu& cpu) {
+  Objeto* u = UtilPorEndereco(objeto);
+  if (u == nullptr) {
+    Recusar("IMediaUtil::" + std::string(slot < kQuantosSlotsDoMediaUtilDeclarados
+                                             ? kTabelaDeSlotsDoMediaUtil[slot].nome
+                                             : "slot"),
+            "po=" + EmHex(objeto) + " nao e um IMediaUtil vivo");
+    return kAeeParametroErrado;
+  }
+
+  switch (slot) {
+    case 2: {  // QueryInterface(po, clsReq, ppo)
+      // O SDK, `IMEDIAUTIL_QueryInterface`: "Get a pointer to an interface or
+      // data based on the input class ID. / If the value passed back is NULL,
+      // the interface or data that you query are not available. / If an interface
+      // is retrieved, then this function increments its reference count."
+      //
+      // O QUE SE ACEITA E O QUE SE E: a propria classe do objecto. Nao se
+      // devolve este ponteiro para qualquer CLSID (o `zeebx` devolve-o sempre,
+      // que e o modo mudo), nem se recusa o que o SDK manda aceitar.
+      const std::uint32_t cls = cpu.Get(kR1);
+      const std::uint32_t ppo = cpu.Get(kR2);
+      if (cls == kClsMediaUtil) {
+        if (ppo != 0) mem_.Escrever32(ppo, objeto);
+        const std::uint32_t n = mem_.Ler32(objeto + kOffObjRefs) + 1;
+        mem_.Escrever32(objeto + kOffObjRefs, n);
+        return kAeeSucesso;
+      }
+      if (ppo != 0) mem_.Escrever32(ppo, 0);
+      Recusar("IMediaUtil::QueryInterface",
+              "clsReq " + EmHex(cls) + " nao e AEECLSID_MEDIAUTIL (0x0100550d)");
+      return kAeeClasseNaoSuportada;
+    }
+    case kMediaUtil_CreateMedia: {  // CreateMedia(po, AEEMediaData *pmd, IMedia **ppm)
+      return CreateMediaPeloUtil(objeto, cpu.Get(kR1), cpu.Get(kR2));
+    }
+    case kMediaUtil_EncodeMedia: {  // EncodeMedia(po, per, clsDest, pei, pcb)
+      // NAO IMPLEMENTADO, e dito com o nome (P2). Codificar midia pede um
+      // codificador, e esta arvore nao tem descodificador nenhum -- aceitar o
+      // pedido e nao escrever o `per` seria o mesmo defeito que esta frente
+      // corrige no `CreateMedia`, com outro nome.
+      Recusar("IMediaUtil::EncodeMedia",
+              "codificacao de midia nao implementada (nao ha codificador nesta arvore)");
+      return kAeeNaoSuportado;
+    }
+    case kMediaUtil_CreateMediaEx: {  // CreateMediaEx(po, AEEMediaCreateInfo *pcmi, IMedia **ppm)
+      return CreateMediaExPeloUtil(objeto, cpu.Get(kR1), cpu.Get(kR2));
+    }
+    default:
+      Recusar("IMediaUtil::slot", std::to_string(slot) + " sem handler");
+      return kAeeNaoSuportado;
+  }
+}
+
+bool Media::AtenderMediaUtil(std::uint32_t indice, ICpu& cpu) {
+  if (indice < kBaseDoMediaUtil || indice >= kBaseDoMediaUtil + kSlotsDoMediaUtil) return false;
+  const std::uint32_t slot = indice - kBaseDoMediaUtil;
+  if (slot < 2) return false;  // IBase (AddRef/Release) e do motor
+  const std::int32_t r = HandlerDoSlotDoMediaUtil(slot, cpu.Get(kR0), cpu);
+  cpu.Set(kR0, static_cast<std::uint32_t>(r));
+  return true;
+}
+
 bool Media::Atender(std::uint32_t indice, ICpu& cpu) {
+  // AS DUAS FAIXAS DESTE MODULO. O indice JA diz a interface e o slot (4003 e o
+  // `RegisterNotify` do IMedia, 4203 e o `CreateMedia` do IMediaUtil), e por isso
+  // a ordem das duas perguntas nao esconde nada.
+  if (AtenderMediaUtil(indice, cpu)) return true;
   if (indice < kBaseDoMedia || indice >= kBaseDoMedia + kSlotsDoMedia) return false;
   const std::uint32_t slot = indice - kBaseDoMedia;
   if (slot < 2) return false;  // IBase (AddRef/Release) e do motor
@@ -995,6 +1280,23 @@ const SlotDoMedia kTabelaDeSlotsDoMedia[] = {
 };
 const std::size_t kQuantosSlotsDoMediaDeclarados =
     sizeof(kTabelaDeSlotsDoMedia) / sizeof(kTabelaDeSlotsDoMedia[0]);
+
+// A TABELA DECLARADA DO IMEDIAUTIL. Os nomes sao os do `AEEINTERFACE(IMediaUtil)`
+// do SDK 4.0.2, pela ordem em que ocupam a vtable -- e o `EncodeMedia` no 4 esta
+// aqui de proposito: e o slot que um pedido de trabalho desta sessao omitia
+// ("4 slots: IQI + CreateMedia + CreateMediaEx, o Ex no 4").
+const SlotDoMedia kTabelaDeSlotsDoMediaUtil[] = {
+    {0, "IBase::AddRef"},
+    {1, "IBase::Release"},
+    {2, "IMediaUtil::QueryInterface"},
+    {kMediaUtil_CreateMedia, "IMediaUtil::CreateMedia"},
+    {kMediaUtil_EncodeMedia, "IMediaUtil::EncodeMedia"},
+    {kMediaUtil_CreateMediaEx, "IMediaUtil::CreateMediaEx"},
+};
+const std::size_t kQuantosSlotsDoMediaUtilDeclarados =
+    sizeof(kTabelaDeSlotsDoMediaUtil) / sizeof(kTabelaDeSlotsDoMediaUtil[0]);
+static_assert(kQuantosSlotsDoMediaUtilDeclarados == kSlotsDoMediaUtil,
+              "a tabela declarada tem de ter os 6 slots do IMediaUtil");
 
 ResultadoCablagem ConferirTabelaDeSlots(const SlotDoMedia* slots, std::size_t quantas,
                                         std::uint32_t quantos_slots) {

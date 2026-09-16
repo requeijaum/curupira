@@ -220,6 +220,97 @@ static_assert(kBaseDoMedia + kSlotsDoMedia <= kVtableDoMedia,
 static_assert(kVtableDoMedia + kSlotsPorVtable <= 6000,
               "a vtable do media nao pode invadir o IDisplay");
 
+// --- IMediaUtil: a SEGUNDA interface da familia `AEECLSID_MULTIMEDIA` -------
+//
+// O QUE ESTA AQUI E UMA MEDICAO, e nao uma leitura de cabecalho. O `allstarcards`
+// (`mod/280173`) cria o `AEECLSID_MEDIAUTIL` (0x0100550d) pelo slot 2 do `IShell`
+// e chama o SLOT 3 do objecto que recebe. Desmonte do proprio modulo (base 0):
+//
+//   0000b9cc  add  r2, r4, #4       ; r2 = &[r4+4], o `ppo` do CreateInstance
+//   0000b9d0  ldr  r0, [r0, #12]    ; o objecto em [r4+0] + 12 = a IShell
+//   0000b9d4  ldr  r1, [r0]         ; a vtable da IShell
+//   0000b9d8  ldr  r3, [r1, #8]     ; slot 2 = IShell::CreateInstance
+//   0000b9dc  ldr  r1, [pc, #216]   ; 0x0100550d = AEECLSID_MEDIAUTIL
+//   0000b9e0  blx  r3
+//   ...
+//   0000f388  ldr  r0, [r8]         ; r8 = arg2 de 0xf2d0, o objecto criado acima
+//   0000f38c  add  r2, r4, #28      ; <- o `ppm` QUE A CHAMADA TEM DE ESCREVER
+//   0000f390  add  r1, sp, #4       ; o `AEEMediaData` da pilha (clsData = 1 = MMD_BUFFER)
+//   0000f394  ldr  r3, [r0, #12]    ; o SLOT 3 da vtable DELE
+//   0000f398  mov  r0, r8           ; this = o mesmo objecto
+//   0000f39c  blx  r3
+//   0000f3a0  cmp  r0, #0 / beq 0xf3e4   ; SUCCESS -> o jogo usa o `[r4+28]`
+//
+// O SLOT 3 DE UM `IMedia` E O `RegisterNotify` (`kMedia_RegisterNotify == 3`): era
+// essa a vtable que o `Criar` dava ao `0x0100550d`, logo o slot 3 respondia
+// SUCCESS e NAO escrevia o `ppm`. O `[r4+28]` ficava a ZERO, o jogo fazia
+// `ldr r2,[r0]` com r0 = 0, tomava a PRIMEIRA PALAVRA DO PROPRIO MODULO
+// (0xea00000e, uma instrucao ARM) por vtable e chamava `[r2,#12]` = 0xea00001a:
+// **53x em pc=0xf3f4 + 53x em pc=0xf428 = 106 recusas de CPU por corrida, 2 por
+// quadro** (`/tmp/pesquisa/setup.md`, que mediu a cadeia).
+//
+// OS SLOTS, de `AEEINTERFACE(IMediaUtil)` em `sdk/inc/AEEMediaUtil.h`:
+//   AddRef 0 | Release 1 | QueryInterface 2 |
+//   CreateMedia(po, AEEMediaData *pmd, IMedia **ppm)        3
+//   EncodeMedia(po, AEEMediaEncodeResult *, AEECLSID, ...)  4
+//   CreateMediaEx(po, AEEMediaCreateInfo *pcmi, IMedia **)  5
+//
+// ARMADILHA DECLARADA, e a razao de os numeros estarem escritos por extenso: o
+// `EncodeMedia` ocupa o SLOT 4, logo o `CreateMediaEx` e o 5 e NAO o 4. Havia um
+// pedido que dizia "4 slots: IQI + CreateMedia + CreateMediaEx (slot 4)"; o
+// cabecalho do SDK diz 6 slots e o `zeebx` concorda com o cabecalho
+// (`/tmp/zx-new/src/aee_slots.rs`: `MEDIAUTIL` = AddRef, Release, QueryInterface,
+// CreateMedia, EncodeMedia, CreateMediaEx). Com o `CreateMediaEx` no 4, um jogo
+// que chamasse o 4 receberia o `CreateMediaEx` no lugar do `EncodeMedia` -- e o
+// NOME no registo de faltas mentiria sobre o que o jogo pediu.
+constexpr std::uint32_t kClsMediaUtil = 0x0100550du;  // AEECLSID_MEDIAUTIL
+static_assert(kClsMediaUtil == kClasseMultimidia + 13u,
+              "AEECLSID_MEDIAUTIL = AEECLSID_MULTIMEDIA + 13 (AEEClassIDs.h:340)");
+constexpr std::uint32_t kSlotsDoMediaUtil = 6;  // 3 da IQI + 3 metodos
+constexpr std::uint32_t kMediaUtil_CreateMedia = 3;
+constexpr std::uint32_t kMediaUtil_EncodeMedia = 4;
+constexpr std::uint32_t kMediaUtil_CreateMediaEx = 5;
+static_assert(kMediaUtil_CreateMediaEx == kSlotsDoMediaUtil - 1,
+              "o CreateMediaEx e o ULTIMO dos seis slots, e nao o quarto");
+
+// A FAIXA DE SAIDA do IMediaUtil, ao lado da do IMedia. O 4200 e o primeiro
+// numero livre acima da pagina da vtable do IMedia (4100 + kSlotsPorVtable =
+// 4164), e o 4300 e a pagina da vtable dele. O intervalo 4164..6000 estava
+// LIVRE no mapa das saidas -- e por isso que se pode usar sem deslocar ninguem.
+constexpr std::uint32_t kBaseDoMediaUtil = 4200;
+constexpr std::uint32_t kVtableDoMediaUtil = 4300;
+static_assert(kBaseDoMediaUtil >= kVtableDoMedia + kSlotsPorVtable,
+              "as saidas do IMediaUtil nao podem cair na pagina da vtable do IMedia");
+static_assert(kBaseDoMediaUtil + kSlotsDoMediaUtil <= kVtableDoMediaUtil,
+              "as saidas do IMediaUtil nao podem invadir a propria vtable");
+static_assert(kVtableDoMediaUtil + kSlotsPorVtable <= 6000,
+              "a vtable do IMediaUtil nao pode invadir o IDisplay");
+
+// --- `AEEMediaCreateInfo`, o argumento do `CreateMediaEx` -------------------
+//   typedef struct AEEMediaCreateInfo {
+//     uint32          dwStructSize;   // o tamanho desta struct (versionamento)
+//     int             nState;         // MM_STATE_IDLE (1) ou MM_STATE_READY (2)
+//     int             nCount;         // quantos elementos tem a pmdList
+//     AEEMediaDataEx *pmdList;
+//     int            *pnCapsList;
+//   } (`AEEMediaUtil.h`)
+//
+// NAO SE COPIA A DOC: o bloco de documentacao do MESMO cabecalho escreve
+// `int16 nState; int16 nCount;` e a STRUCT declara `int` nos dois (32 bits). Vale
+// a struct -- e o unico dos dois que o compilador do SDK compila, e um campo de
+// 16 bits lido como 32 daria um estado que o jogo nunca pediu.
+//
+// O PRIMEIRO ELEMENTO de um `AEEMediaDataEx` tem os MESMOS tres campos de um
+// `AEEMediaData` (`clsData`, `pData`, `dwSize`; `AEEIMedia.h:287-291`), e e por
+// isso que o `DefinirDados` o le SEM uma segunda tabela de deslocamentos -- duas
+// tabelas que tem de concordar sao zero tabelas.
+constexpr std::uint32_t kOffCmiTamanho = 0;
+constexpr std::uint32_t kOffCmiEstado = 4;
+constexpr std::uint32_t kOffCmiQuantos = 8;
+constexpr std::uint32_t kOffCmiLista = 12;
+constexpr std::uint32_t kOffCmiCaps = 16;
+constexpr std::uint32_t kTamanhoDoCmi = 20;  // 5 campos de 32 bits
+
 // --- A REGIAO DE MEMORIA DESTE MODULO, declarada ---------------------------
 //
 // Os objectos de midia. As bases usadas pelas outras interfaces vao de
@@ -343,6 +434,13 @@ struct SlotDoMedia {
 extern const SlotDoMedia kTabelaDeSlotsDoMedia[];
 extern const std::size_t kQuantosSlotsDoMediaDeclarados;
 
+// A TABELA DECLARADA DO IMEDIAUTIL, a par da do IMedia e pela mesma razao: e UMA
+// lista que serve os nomes do registo, o que o `Instalar` escreve, e a
+// conferencia de que os seis slots estao preenchidos. Duas listas que tem de
+// concordar sao zero listas.
+extern const SlotDoMedia kTabelaDeSlotsDoMediaUtil[];
+extern const std::size_t kQuantosSlotsDoMediaUtilDeclarados;
+
 // A GUARDA, isolada do `Instalar` de proposito: assim o teste pode provar por
 // VIOLACAO que uma tabela com um slot por preencher -- ou com um slot repetido
 // -- e RECUSADA. Uma guarda que passa sem a mudanca nao e guarda.
@@ -383,6 +481,24 @@ class Media {
   // O ponto por onde o laco entrega os indices de saida desta faixa. Devolve
   // `false` quando o indice NAO e do IMedia -- e nesse caso nada foi tocado.
   bool Atender(std::uint32_t indice, ICpu& cpu);
+
+  // O MESMO ponto para a faixa do IMediaUtil (indices `kBaseDoMediaUtil..`).
+  //
+  // E um metodo proprio e nao um ramo escondido dentro do `Atender` porque o
+  // INDICE ja diz a interface E o slot: 4003 e `IMedia::RegisterNotify` e 4203 e
+  // `IMediaUtil::CreateMedia`, embora os dois sejam "o slot 3". Quem le o codigo
+  // ve as duas faixas; quem le o registo ve o nome certo.
+  bool AtenderMediaUtil(std::uint32_t indice, ICpu& cpu);
+
+  // Quantos IMediaUtil estao vivos AGORA. E o MESMO conjunto dos IMedia (um lugar
+  // por objecto, servido pelo `Criar` e devolvido pelo `Release`), logo este
+  // numero e do conjunto e nao de um segundo registo.
+  std::uint32_t ObjetosDeMediaUtilVivos() const;
+
+  // O `AEECLSID` com que o objecto foi criado (0 se nao existe). E por ele que
+  // cada handler sabe se o `this` que recebeu e um IMedia ou um IMediaUtil: os
+  // dois vivem na mesma regiao e a mesma vtable os distinguiria mal.
+  std::int32_t ClasseDe(std::uint32_t objeto) const;
 
   // O laco avanca o tempo EM AMOSTRAS (injectadas, P4). As amostras que cada
   // voz consome passam pelo misturador, que as CONTA, e uma voz que chega ao
@@ -535,7 +651,48 @@ class Media {
     std::uint32_t classe = 0;  // o AEECLSID com que o `Criar` o criou
   };
 
+  // Escreve UMA vtable a partir da tabela declarada e CONFIRMA-A com leitura de
+  // volta. Os slots 0 e 1 sao a IBase, que e do MOTOR (saidas 3 e 4), e nao
+  // metodos desta interface. Devolve o motivo quando a leitura nao bate com o
+  // que se acabou de escrever -- uma cablagem conferida contra si propria ja
+  // passou verde uma vez nesta arvore e nao servia para nada.
+  ResultadoCablagem EscreverVtable(const SlotDoMedia* tabela, std::size_t quantas,
+                                   std::uint32_t quantos_slots, std::uint32_t base,
+                                   std::uint32_t vt);
+
   std::int32_t HandlerDeSlot(std::uint32_t slot, std::uint32_t objeto, ICpu& cpu);
+  std::int32_t HandlerDoSlotDoMediaUtil(std::uint32_t slot, std::uint32_t objeto, ICpu& cpu);
+
+  // `IMediaUtil::CreateMedia(po, AEEMediaData *pmd, IMedia **ppm)`: cria um
+  // `IMedia` NOVO no conjunto deste modulo, LE o `AEEMediaData` para o estado
+  // dele e ESCREVE-o no `ppm`. E a receita que o `zeebx` mediu
+  // (`/tmp/zx-new/src/machine.rs:7257`, `media_call`): cria, le os dados,
+  // `if out != 0 { write_u32(out, media) }`, SUCCESS.
+  //
+  // O `ppm` E O QUE ESTAVA EM FALTA NO NOSSO EMULADOR, e nao um detalhe: sem ele
+  // o jogo fica com o ponteiro NULL e chama pela primeira palavra do proprio
+  // modulo (ver o cabecalho, a medicao das 106 recusas).
+  std::int32_t CreateMediaPeloUtil(std::uint32_t util, std::uint32_t pmd, std::uint32_t ppm);
+
+  // `IMediaUtil::CreateMediaEx(po, AEEMediaCreateInfo *pcmi, IMedia **ppm)`.
+  // Le a `AEEMediaCreateInfo` do guest: o `dwStructSize`, o `nState`, o `nCount`
+  // e a lista. UM so elemento e implementado (o `AEEMediaDataEx` tem os mesmos
+  // tres campos de cabeca de um `AEEMediaData`); mais do que um RECUSA em voz
+  // alta, porque misturar fontes nao esta implementado nesta arvore.
+  std::int32_t CreateMediaExPeloUtil(std::uint32_t util, std::uint32_t pcmi, std::uint32_t ppm);
+
+  // O lugar do conjunto onde o `endereco` vive, so se ele for um IMediaUtil vivo.
+  // `nullptr` caso contrario -- e quem chama RECUSA com o nome.
+  Objeto* UtilPorEndereco(std::uint32_t objeto);
+
+  // O CAMINHO COMUM do `CreateMedia` e do `CreateMediaEx`: cria um `IMedia` novo,
+  // escreve-o no `ppm` (ou poe o `ppm` a ZERO, em qualquer falha) e, quando
+  // `definir_dados`, le o `AEEMediaData`/`AEEMediaDataEx` apontado por `pmd` para
+  // o estado dele. UM so sitio escreve o `ppm`: foi um ponteiro por escrever que
+  // custou as 106 recusas, e um segundo caminho a faze-lo e a maneira de isso
+  // voltar.
+  std::int32_t CriarMediaComDados(std::uint32_t pmd, std::uint32_t ppm, bool definir_dados,
+                                  const char* quem_chama);
   // O endereco do BLOCO DE AVISO do objecto e o dos dados que ele aponta
   // (`pCmdData`, 4 bytes por objecto). UMA conta, para os dois sitios que dela
   // dependem (`EmitirAviso` e `GetTotalTime`).

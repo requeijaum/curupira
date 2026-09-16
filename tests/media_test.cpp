@@ -1143,5 +1143,292 @@ TEST(Media, CadaEntregaLevaUmAvisoEMaisNenhum) {
   EXPECT_EQ(b.OMedia().AvisosEntregues(), 2u) << "sem aviso na fila nao ha entrega";
 }
 
+
+// ---------------------------------------------------------------------------
+// O IMEDIAUTIL (`AEECLSID_MEDIAUTIL`, 0x0100550d): a SEGUNDA interface da
+// familia de midia, e a que este emulador servia com a vtable ERRADA.
+//
+// A MEDICAO QUE ISTO GUARDA (`/tmp/pesquisa/setup.md`): o `allstarcards` cria o
+// `AEECLSID_MEDIAUTIL` pelo slot 2 do `IShell` e chama o SLOT 3 do objecto que
+// recebe (`0000f394  ldr r3,[r0,#12]` / `0000f39c  blx r3`) com o `ppm` no r2
+// (`0000f38c  add r2,r4,#28`). O nosso emulador dava a esse CLSID a vtable do
+// `IMedia`, cujo slot 3 e o `RegisterNotify`: respondia SUCCESS, NAO escrevia o
+// `ppm`, o jogo ficava com o ponteiro a ZERO e chamava pela PRIMEIRA PALAVRA DO
+// PROPRIO MODULO -- 53x em pc=0xf3f4 + 53x em pc=0xf428, 2 recusas de CPU por
+// quadro, 106 por corrida.
+// ---------------------------------------------------------------------------
+namespace {
+constexpr std::uint32_t kPpm = 0x00100B00u;      // o `IMedia **ppm` de saida
+constexpr std::uint32_t kCmi = 0x00100C00u;      // uma `AEEMediaCreateInfo`
+constexpr std::uint32_t kListaEx = 0x00100C80u;  // a `pmdList` dela
+}
+
+TEST(Media, OMediaUtilTemOsSeisSlotsDoSDKEOCreateMediaExNaoESlot4) {
+  // A TABELA VEM DO CABECALHO, e o `EncodeMedia` esta NO MEIO dela:
+  //
+  //   AEEINTERFACE(IMediaUtil) {                       // sdk/inc/AEEMediaUtil.h
+  //     INHERIT_IQueryInterface(IMediaUtil);
+  //     int (*CreateMedia)(IMediaUtil*, AEEMediaData*, IMedia**);             // 3
+  //     int (*EncodeMedia)(IMediaUtil*, AEEMediaEncodeResult*, AEECLSID,
+  //                        AEEMediaEncodeInfo*, AEECallback*);                // 4
+  //     int (*CreateMediaEx)(IMediaUtil*, AEEMediaCreateInfo*, IMedia**);     // 5
+  //   }
+  //
+  // ESTE TESTE EXISTE POR CAUSA DE UMA DESCRICAO ERRADA: um pedido de trabalho
+  // desta sessao dizia "4 slots: IQI + CreateMedia + CreateMediaEx, o Ex no 4".
+  // Se alguem arrumar a tabela para bater com essa descricao, o slot 4 passa a
+  // responder `CreateMediaEx` a um jogo que pediu o `EncodeMedia` -- e o NOME no
+  // registo de faltas mente sobre o que o jogo pediu.
+  EXPECT_EQ(kClsMediaUtil, 0x0100550du);
+  EXPECT_EQ(kSlotsDoMediaUtil, 6u);
+  EXPECT_EQ(kMediaUtil_CreateMedia, 3u);
+  EXPECT_EQ(kMediaUtil_EncodeMedia, 4u);
+  EXPECT_EQ(kMediaUtil_CreateMediaEx, 5u);
+  EXPECT_EQ(kQuantosSlotsDoMediaUtilDeclarados, 6u);
+  EXPECT_STREQ(kTabelaDeSlotsDoMediaUtil[2].nome, "IMediaUtil::QueryInterface");
+  EXPECT_STREQ(kTabelaDeSlotsDoMediaUtil[3].nome, "IMediaUtil::CreateMedia");
+  EXPECT_STREQ(kTabelaDeSlotsDoMediaUtil[4].nome, "IMediaUtil::EncodeMedia");
+  EXPECT_STREQ(kTabelaDeSlotsDoMediaUtil[5].nome, "IMediaUtil::CreateMediaEx");
+  EXPECT_TRUE(ConferirTabelaDeSlots(kTabelaDeSlotsDoMediaUtil,
+                                    kQuantosSlotsDoMediaUtilDeclarados, kSlotsDoMediaUtil)
+                  .ok);
+  // A CONFUSAO QUE CUSTOU AS 106 RECUSAS, escrita: o slot 3 das duas interfaces
+  // sao metodos DIFERENTES.
+  EXPECT_STREQ(kTabelaDeSlotsDoMedia[3].nome, "IMedia::RegisterNotify");
+  // E o valor de slot 3 do IMedia esta fixado no cabecalho gerado do SDK.
+  EXPECT_EQ(brew_slots::kMedia_RegisterNotify, 3u);
+}
+
+TEST(Media, InstalarEscreveOsSeisSlotsDoMediaUtil) {
+  Bancada b;
+  ASSERT_TRUE(b.Instalacao().ok) << b.Instalacao().motivo;
+  const std::uint32_t vt = b.AsSaidas().Endereco(kVtableDoMediaUtil);
+  EXPECT_EQ(b.Mem().Ler32(vt + 0), b.AsSaidas().Endereco(3));  // IBase::AddRef, do motor
+  EXPECT_EQ(b.Mem().Ler32(vt + 4), b.AsSaidas().Endereco(4));  // IBase::Release, do motor
+  for (std::uint32_t s = 2; s < kSlotsDoMediaUtil; ++s) {
+    EXPECT_EQ(b.Mem().Ler32(vt + s * 4), b.AsSaidas().Endereco(kBaseDoMediaUtil + s))
+        << "slot " << s;
+  }
+  // AS DUAS VTBALES SAO PAGINAS DIFERENTES: se fossem a mesma, os dois objectos
+  // teriam os mesmos slots e a distincao nao existiria.
+  EXPECT_NE(b.AsSaidas().Endereco(kVtableDoMedia), b.AsSaidas().Endereco(kVtableDoMediaUtil));
+}
+
+TEST(Media, OMediaUtilNasceComAVtableDoMediaUtilENaoComADoIMedia) {
+  // O DEFEITO MEDIDO, fixado: o `Criar` dava ao `AEECLSID_MEDIAUTIL` a vtable do
+  // `IMedia` (`kVtableDoMedia`), e o slot 3 dela e o `RegisterNotify`.
+  Bancada b;
+  const std::uint32_t util = b.CriarMedia(kClsMediaUtil, kPponovo);
+  ASSERT_EQ(util, kObjMediaBase);
+  EXPECT_EQ(b.Mem().Ler32(util + kOffObjVtable), b.AsSaidas().Endereco(kVtableDoMediaUtil));
+  EXPECT_NE(b.Mem().Ler32(util + kOffObjVtable), b.AsSaidas().Endereco(kVtableDoMedia));
+  EXPECT_EQ(b.Mem().Ler32(util + kOffObjRefs), 1u);  // ROPI: [0] vtable, [4] referencias
+  // O SLOT 3 DELE E O `CreateMedia`: le-se a palavra que o trampolim do guest vai
+  // buscar (`[vtable+12]`), e nao um id interno.
+  const std::uint32_t slot3 = b.Mem().Ler32(b.AsSaidas().Endereco(kVtableDoMediaUtil) + 12);
+  EXPECT_EQ(slot3, b.AsSaidas().Endereco(kBaseDoMediaUtil + kMediaUtil_CreateMedia));
+  EXPECT_NE(slot3, b.AsSaidas().Endereco(kBaseDoMedia + brew_slots::kMedia_RegisterNotify));
+  EXPECT_EQ(b.OMedia().ClasseDe(util), static_cast<std::int32_t>(kClsMediaUtil));
+  EXPECT_EQ(b.OMedia().ObjetosDeMediaUtilVivos(), 1u);
+}
+
+TEST(Media, OCreateMediaDoMediaUtilEscreveOPpmEOCriaComOsDados) {
+  // A CHAMADA DO `allstarcards`, reduzida ao essencial: cria o MediaUtil, chama o
+  // SLOT 3 PELA VTABLE (o trampolim le `[po]` e `[vtable+12]` do proprio guest)
+  // com o `AEEMediaData` no r1 e o `ppm` no r2, e exige as tres coisas que o jogo
+  // exige: o retorno SUCCESS, o `ppm` ESCRITO e NAO nulo, e um objecto que
+  // responde como `IMedia` com os dados ja lidos.
+  Bancada b;
+  const std::uint32_t util = b.CriarMedia(kClsMediaUtil, kPponovo);
+  ASSERT_EQ(util, kObjMediaBase);
+  b.PorPcm(Onda(256, 3000));
+  b.Mem().Escrever32(kPpm, 0xDEADBEEFu);  // lixo: quem escreve o `ppm` e a chamada
+
+  const std::uint32_t r = b.Chamar(kMediaUtil_CreateMedia, util, kMediaData, kPpm);
+  EXPECT_EQ(r, kAeeSucesso);
+  const std::uint32_t po = b.Mem().Ler32(kPpm);
+  EXPECT_NE(po, 0u) << "o `ppm` ficou a ZERO: e este o defeito das 106 recusas";
+  EXPECT_NE(po, 0xDEADBEEFu);
+  // O objecto NOVO, no lugar seguinte do conjunto (o MediaUtil ocupa o primeiro).
+  ASSERT_EQ(po, kObjMediaBase + kPassoDoObjetoMedia);
+  EXPECT_EQ(b.Mem().Ler32(po + kOffObjVtable), b.AsSaidas().Endereco(kVtableDoMedia));
+  // O `SetMediaData` poe o objecto em Pronto, e as amostras ficam contadas no
+  // cabecalho do objecto -- que e o que o `GetState`/`GetTotalTime` leem.
+  EXPECT_EQ(b.OMedia().EstadoDe(po), kMmEstadoPronto);
+  EXPECT_EQ(b.Mem().Ler32(po + kOffObjAmostrasTotal), 256u);
+  EXPECT_EQ(b.OMedia().ObjetosDeMediaUtilVivos(), 1u);
+  EXPECT_EQ(b.OMedia().ObjetosVivos(), 2u);
+}
+
+TEST(Media, OCreateMediaDoMediaUtilRecusaODadoQueNaoSabeLerEPoeOPpmAZero) {
+  // A OUTRA METADE DA REGRA: quando nao se cria, o `ppm` fica a ZERO. Deixar la o
+  // que estava, com o retorno a SUCCESS, foi exatamente o que fez o jogo tomar a
+  // primeira palavra do modulo por vtable.
+  Bancada b;
+  const std::uint32_t util = b.CriarMedia(kClsMediaUtil, kPponovo);
+  b.Mem().Escrever8(kFicheiro, 's');
+  b.Mem().Escrever8(kFicheiro + 1, 'o');
+  b.Mem().Escrever8(kFicheiro + 2, 'm');
+  b.Mem().Escrever8(kFicheiro + 3, 0);
+  b.Mem().Escrever32(kMediaData + kOffMidiaClsData, kMmdNomeDeFicheiro);
+  b.Mem().Escrever32(kMediaData + kOffMidiaPData, kFicheiro);
+  b.Mem().Escrever32(kMediaData + kOffMidiaDwSize, 0);
+  b.Mem().Escrever32(kPpm, 0xDEADBEEFu);
+
+  const std::uint32_t r = b.Chamar(kMediaUtil_CreateMedia, util, kMediaData, kPpm);
+  EXPECT_NE(r, kAeeSucesso);
+  EXPECT_EQ(b.Mem().Ler32(kPpm), 0u);
+  // O LUGAR DO OBJECTO VOLTA AO CONJUNTO: so o MediaUtil fica vivo. Um lugar
+  // perdido por cada recusa acabaria por esgotar os 1024 da regiao.
+  EXPECT_EQ(b.OMedia().ObjetosVivos(), 1u);
+  EXPECT_EQ(b.OMedia().ObjetosDeMediaUtilVivos(), 1u);
+  // E a recusa NOMEIA a causa (o nome de ficheiro nao tem descodificador).
+  EXPECT_NE(b.OMedia().UltimoMotivoDeRecusa().find("MMD_FILE_NAME"), std::string::npos)
+      << b.OMedia().UltimoMotivoDeRecusa();
+}
+
+TEST(Media, OCreateMediaExLeAAEEMediaCreateInfo) {
+  // `AEEMediaCreateInfo`: `dwStructSize`, `nState`, `nCount`, `pmdList`,
+  // `pnCapsList` -- cinco campos de 32 bits. A doc do MESMO cabecalho escreve
+  // `int16 nState/int16 nCount`; vale a struct, que e o que o SDK compila.
+  //
+  // A LISTA traz um `AEEMediaDataEx`, cujos TRES PRIMEIROS campos sao os de um
+  // `AEEMediaData` (`AEEIMedia.h:287`), e por isso o mesmo leitor de dados os le.
+  Bancada b;
+  const std::uint32_t util = b.CriarMedia(kClsMediaUtil, kPponovo);
+  b.PorPcm(Onda(64, 1000));
+  b.Mem().Escrever32(kListaEx + kOffMidiaClsData, kMmdBuffer);
+  b.Mem().Escrever32(kListaEx + kOffMidiaPData, kBuffer);
+  b.Mem().Escrever32(kListaEx + kOffMidiaDwSize, 128u);
+  b.Mem().Escrever32(kCmi + kOffCmiTamanho, kTamanhoDoCmi);
+  b.Mem().Escrever32(kCmi + kOffCmiEstado, kMmEstadoPronto);
+  b.Mem().Escrever32(kCmi + kOffCmiQuantos, 1u);
+  b.Mem().Escrever32(kCmi + kOffCmiLista, kListaEx);
+  b.Mem().Escrever32(kCmi + kOffCmiCaps, 0u);
+  b.Mem().Escrever32(kPpm, 0u);
+
+  EXPECT_EQ(b.Chamar(kMediaUtil_CreateMediaEx, util, kCmi, kPpm), kAeeSucesso);
+  const std::uint32_t po = b.Mem().Ler32(kPpm);
+  ASSERT_NE(po, 0u);
+  EXPECT_EQ(b.OMedia().EstadoDe(po), kMmEstadoPronto);
+  EXPECT_EQ(b.Mem().Ler32(po + kOffObjAmostrasTotal), 64u);
+}
+
+TEST(Media, OCreateMediaExDoEstadoOciosoNaoLeDadosEORestoRecusa) {
+  Bancada b;
+  const std::uint32_t util = b.CriarMedia(kClsMediaUtil, kPponovo);
+  // MM_STATE_IDLE com a lista vazia: o SDK diz que assim NAO se chama o
+  // `SetMediaData` ("the user needs to set the media data"), logo o objecto nasce
+  // Ocioso e sem amostras.
+  b.Mem().Escrever32(kCmi + kOffCmiTamanho, kTamanhoDoCmi);
+  b.Mem().Escrever32(kCmi + kOffCmiEstado, kMmEstadoOcioso);
+  b.Mem().Escrever32(kCmi + kOffCmiQuantos, 0u);
+  b.Mem().Escrever32(kCmi + kOffCmiLista, 0u);
+  b.Mem().Escrever32(kPpm, 0u);
+  EXPECT_EQ(b.Chamar(kMediaUtil_CreateMediaEx, util, kCmi, kPpm), kAeeSucesso);
+  const std::uint32_t po = b.Mem().Ler32(kPpm);
+  ASSERT_NE(po, 0u);
+  EXPECT_EQ(b.OMedia().EstadoDe(po), kMmEstadoOcioso);
+  EXPECT_EQ(b.Mem().Ler32(po + kOffObjAmostrasTotal), 0u);
+
+  const std::uint32_t vivos = b.OMedia().ObjetosVivos();
+  // DUAS FONTES: RECUSA em voz alta. O SDK usa esta lista para JUNTAR midias, e
+  // servir so a primeira seria dizer ao jogo que ele tocou o que nao tocou.
+  b.Mem().Escrever32(kCmi + kOffCmiEstado, kMmEstadoPronto);
+  b.Mem().Escrever32(kCmi + kOffCmiQuantos, 2u);
+  b.Mem().Escrever32(kCmi + kOffCmiLista, kListaEx);
+  EXPECT_EQ(b.Chamar(kMediaUtil_CreateMediaEx, util, kCmi, kPpm), kAeeNaoSuportado);
+  EXPECT_NE(b.OMedia().UltimoMotivoDeRecusa().find("nCount=2"), std::string::npos)
+      << b.OMedia().UltimoMotivoDeRecusa();
+
+  // `pcmi` nulo: EBADPARM, e nada e criado.
+  EXPECT_EQ(b.Chamar(kMediaUtil_CreateMediaEx, util, 0u, kPpm), kAeeParametroErrado);
+
+  // `dwStructSize` que NAO cobre os campos que se vao ler: recusa, em vez de ler
+  // memoria que o jogo nao declarou ter.
+  b.Mem().Escrever32(kCmi + kOffCmiTamanho, 8u);
+  b.Mem().Escrever32(kCmi + kOffCmiQuantos, 0u);
+  b.Mem().Escrever32(kCmi + kOffCmiEstado, kMmEstadoOcioso);
+  EXPECT_EQ(b.Chamar(kMediaUtil_CreateMediaEx, util, kCmi, kPpm), kAeeParametroErrado);
+
+  // MM_STATE_READY sem fonte nenhuma: contradicao, recusa em voz alta.
+  b.Mem().Escrever32(kCmi + kOffCmiTamanho, kTamanhoDoCmi);
+  b.Mem().Escrever32(kCmi + kOffCmiEstado, kMmEstadoPronto);
+  b.Mem().Escrever32(kCmi + kOffCmiQuantos, 0u);
+  EXPECT_EQ(b.Chamar(kMediaUtil_CreateMediaEx, util, kCmi, kPpm), kAeeParametroErrado);
+  EXPECT_EQ(b.OMedia().ObjetosVivos(), vivos);  // nenhuma criacao a mais
+}
+
+TEST(Media, OEncodeMediaDoMediaUtilRecusaEmVozAlta) {
+  // NAO IMPLEMENTADO DIZ-SE COM O NOME (P2). Codificar pede um codificador, e
+  // esta arvore nao tem descodificador nenhum -- aceitar o pedido e nao escrever
+  // o `per` seria o MESMO defeito que esta frente corrige no `CreateMedia`.
+  Bancada b;
+  const std::uint32_t util = b.CriarMedia(kClsMediaUtil, kPponovo);
+  EXPECT_EQ(b.Chamar(kMediaUtil_EncodeMedia, util, 0u, 0u, 0u), kAeeNaoSuportado);
+  EXPECT_NE(b.OMedia().UltimoMotivoDeRecusa().find("EncodeMedia"), std::string::npos)
+      << b.OMedia().UltimoMotivoDeRecusa();
+  EXPECT_EQ(b.OMedia().ObjetosVivos(), 1u);
+}
+
+TEST(Media, OQueryInterfaceDoMediaUtilSoDaAPropriaClasse) {
+  // O SDK: "If the value passed back is NULL, the interface or data that you
+  // query are not available. / If an interface is retrieved, then this function
+  // increments its reference count." Devolver este ponteiro para QUALQUER CLSID
+  // seria o modo mudo; recusar tudo o que o SDK manda aceitar tambem esta errado.
+  Bancada b;
+  const std::uint32_t util = b.CriarMedia(kClsMediaUtil, kPponovo);
+  const std::uint32_t antes = b.Mem().Ler32(util + kOffObjRefs);
+  b.Mem().Escrever32(kSaida, 0u);
+  EXPECT_EQ(b.Chamar(2, util, kClsMediaUtil, kSaida), kAeeSucesso);
+  EXPECT_EQ(b.Mem().Ler32(kSaida), util);
+  EXPECT_EQ(b.Mem().Ler32(util + kOffObjRefs), antes + 1);
+
+  b.Mem().Escrever32(kSaida, 0xDEADBEEFu);
+  EXPECT_EQ(b.Chamar(2, util, 0x01001001u, kSaida), kAeeClasseNaoSuportada);
+  EXPECT_EQ(b.Mem().Ler32(kSaida), 0u);
+  EXPECT_NE(b.OMedia().UltimoMotivoDeRecusa().find("0x01001001"), std::string::npos);
+}
+
+TEST(Media, OCreateMediaDoMediaUtilSemLugarNaRegiaoRespondeSemMemoria) {
+  // O `MM_ENOMEDIAMEMORY` da doc do `IMEDIAUTIL_CreateMedia`. O VALOR NUMERICO
+  // dele NAO esta nos cabecalhos que temos, logo devolve-se o `AEE_ENOMEMORY` do
+  // `AEEStdErr.h` -- o que se pode citar -- e o motivo NOMEIA a regiao que
+  // acabou. Inventar um numero para "parecer do SDK" seria pior do que isto.
+  Bancada b;
+  for (std::uint32_t k = 0; k + 1 < kMaxObjetosDeMidia; ++k) {
+    ASSERT_EQ(b.CriarMedia(kClasseMultimidia, kPponovo), kObjMediaBase + k * kPassoDoObjetoMedia)
+        << "criacao " << k;
+  }
+  const std::uint32_t util = b.CriarMedia(kClsMediaUtil, kPponovo);
+  ASSERT_NE(util, 0u);
+  ASSERT_EQ(b.OMedia().ObjetosVivos(), kMaxObjetosDeMidia);
+
+  b.PorPcm(Onda(8, 100));
+  b.Mem().Escrever32(kPpm, 0xDEADBEEFu);
+  EXPECT_EQ(b.Chamar(kMediaUtil_CreateMedia, util, kMediaData, kPpm), kAeeSemMemoria);
+  EXPECT_EQ(b.Mem().Ler32(kPpm), 0u);
+}
+
+TEST(Media, OMediaUtilNaoERespondidoPelaFaixaDoIMedia) {
+  // GUARDA DEFENSIVA, e a razao de ela existir: era ESTE o defeito -- um
+  // IMediaUtil servido pela faixa do IMedia, onde o slot 3 e o `RegisterNotify`.
+  // Aqui chama-se o `Atender` com o ENDERECO do objecto E o indice da faixa do
+  // IMedia (o pior caso) e exige-se RECUSA com o nome, e nunca um SUCCESS mudo.
+  //
+  // Este teste chama o `Atender` de proposito: o que esta a ser provado e o
+  // comportamento do DESPACHO quando o `this` nao bate com a faixa -- a cablagem
+  // e o que os testes acima provam, lendo a palavra da vtable.
+  Bancada b;
+  const std::uint32_t util = b.CriarMedia(kClsMediaUtil, kPponovo);
+  const std::uint32_t vivos = b.OMedia().ObjetosVivos();
+  b.Cpu().Set(kR0, util);
+  EXPECT_TRUE(b.OMedia().Atender(kBaseDoMedia + brew_slots::kMedia_RegisterNotify, b.Cpu()));
+  EXPECT_EQ(b.Cpu().Get(kR0), static_cast<std::uint32_t>(kAeeParametroErrado));
+  EXPECT_EQ(b.OMedia().ObjetosVivos(), vivos);
+  EXPECT_NE(b.OMedia().UltimoMotivoDeRecusa().find("IMediaUtil"), std::string::npos)
+      << b.OMedia().UltimoMotivoDeRecusa();
+}
+
 }  // namespace
 }  // namespace zb2::brew
