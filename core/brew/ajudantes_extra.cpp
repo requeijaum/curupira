@@ -497,6 +497,37 @@ void FazerStrncmp(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
   EmitirChamada(traco, brew_ajudantes::kAjudante_strncmp, det);
 }
 
+// 0x0DC -- `int (*memcmp)(const void *a, const void *b, size_t length)` (AEEStdLib.h).
+// r0=a, r1=b, r2=n. Compara EXACTAMENTE n BYTES: **o NUL nao termina** -- e isso que
+// o distingue do `strncmp` (0x0CC) e e o que o corpus precisa: 8 titulos pedem-no
+// (cninja, darkseal, karnovr, ...) e nenhum deles estava servido.
+//
+// O valor devolvido segue a convencao do C: o sinal da diferenca do PRIMEIRO byte que
+// difere, e zero quando os n bytes sao iguais.
+void FazerMemcmp(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
+  const std::uint32_t a = cpu.Get(kR0);
+  const std::uint32_t b = cpu.Get(kR1);
+  const std::uint32_t n = cpu.Get(kR2);
+  std::int32_t r = 0;
+  if (a == 0 || b == 0) {
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_memcmp, "ponteiro nulo", DetalheDosRegistos(cpu));
+    cpu.Set(kR0, 0);
+    return;
+  }
+  for (std::uint32_t i = 0; i < n; ++i) {
+    const std::uint8_t ca = mem.Ler8(a + i);
+    const std::uint8_t cb = mem.Ler8(b + i);
+    if (ca != cb) {
+      r = static_cast<std::int32_t>(ca) - static_cast<std::int32_t>(cb);
+      break;
+    }
+  }
+  cpu.Set(kR0, static_cast<std::uint32_t>(r));
+  char det[96];
+  std::snprintf(det, sizeof(det), "n=%u -> %d", n, r);
+  EmitirChamada(traco, brew_ajudantes::kAjudante_memcmp, det);
+}
+
 
 // ---------------------------------------------------------------------------
 // 0x0D0 -- `int (*stricmp)(const char *a, const char *b)` (AEEStdLib.h)
@@ -1293,6 +1324,7 @@ constexpr Implementacao kImplementados[] = {
     {brew_ajudantes::kAjudante_GetRAMFree, "GetRAMFree", FazerGetRamFree},
     {brew_ajudantes::kAjudante_strdup, "strdup", FazerStrdup},
     {brew_ajudantes::kAjudante_strncmp, "strncmp", FazerStrncmp},
+    {brew_ajudantes::kAjudante_memcmp, "memcmp", FazerMemcmp},
     {brew_ajudantes::kAjudante_stricmp, "stricmp", FazerStricmp},
     {brew_ajudantes::kAjudante_atoi, "atoi", FazerAtoi},
     {brew_ajudantes::kAjudante_strends, "strends", FazerStrends},
@@ -1317,6 +1349,7 @@ static_assert(brew_ajudantes::kAjudante_utf8towstr == 0x050, "0x050 e utf8towstr
 static_assert(brew_ajudantes::kAjudante_GetRAMFree == 0x138, "0x138 e GetRAMFree");
 static_assert(brew_ajudantes::kAjudante_strdup == 0x0F4, "0x0f4 e strdup");
 static_assert(brew_ajudantes::kAjudante_strncmp == 0x0CC, "0x0cc e strncmp");
+static_assert(brew_ajudantes::kAjudante_memcmp == 0x0DC, "0x0dc e memcmp");
 static_assert(brew_ajudantes::kAjudante_stricmp == 0x0D0, "0x0d0 e stricmp");
 static_assert(brew_ajudantes::kAjudante_wstrlen == 0x030, "0x030 e wstrlen");
 static_assert(brew_ajudantes::kAjudante_wstrncopyn == 0x080, "0x080 e wstrncopyn, nao strncpy");
@@ -1330,7 +1363,7 @@ static_assert(brew_ajudantes::kAjudante_aee_GetTimeMS == 0x0AC, "0x0ac e aee_Get
 static_assert(brew_ajudantes::kAjudante_wsprintf == 0x03C, "0x03c e wsprintf");
 static_assert(
     sizeof(kImplementados) / sizeof(kImplementados[0]) ==
-        18,
+        19,
     "a lista das implementacoes mudou: actualiza o numero e o teste");
 
 }  // namespace

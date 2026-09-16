@@ -487,13 +487,14 @@ TEST(AjudantesExtra, OffsetForaDaTabelaNaoERecusadoAqui) {
   EXPECT_TRUE(b.traco.ContagemFaltas().empty());
 }
 
-TEST(AjudantesExtra, ImplementadosSaoDezoitoEATodosNoCatalogo) {
+TEST(AjudantesExtra, ImplementadosSaoDezanoveEATodosNoCatalogo) {
   // 7 da etapa anterior + os 6 da frente io2 (wstrlen, wstrncopyn, strtoul,
   // snprintf, strlcpy, strlcat) + o stricmp (0x0d0) da frente park + os 4 da
-  // frente ajud2 (atoi, strends, aee_GetTimeMS, wsprintf).
-  EXPECT_EQ(AjudantesExtra::Implementados(), 18u);
+  // frente ajud2 (atoi, strends, aee_GetTimeMS, wsprintf) + o memcmp (0x0dc),
+  // que 8 titulos pediam e que estava na tabela do cabecalho SEM implementacao.
+  EXPECT_EQ(AjudantesExtra::Implementados(), 19u);
   for (std::uint32_t off : {0x0D8u, 0x044u, 0x050u, 0x0E8u, 0x138u, 0x0F4u, 0x0CCu, 0x0D0u,
-                            0x090u, 0x0FCu, 0x0ACu, 0x03Cu}) {
+                            0x090u, 0x0FCu, 0x0ACu, 0x03Cu, 0x0DCu}) {
     EXPECT_NE(DeclaracaoDoOffset(off), nullptr) << "0x" << std::hex << off;
   }
 }
@@ -1267,3 +1268,36 @@ TEST(AjudantesExtra, VsprintfDaTabelaUsaOMesmoVaLists) {
 }
 
 }  // namespace
+
+TEST(AjudantesExtra, OMemcmpNaoTerminaNoNulo) {
+  // A DIFERENCA PARA O `strncmp` E O QUE ESTE TESTE MEDE: o `memcmp` compara os n
+  // BYTES e **o NUL nao termina**. Com o `strncmp` no lugar dele um bloco com um NUL
+  // no meio dava igualdade cedo demais -- e um jogo que compara magias de ficheiro
+  // aceitaria o que devia recusar.
+  Bancada b;
+  const std::uint32_t a = kTexto, c = kTexto2;
+  const std::uint8_t pa[5] = {'O', 'I', 0, 'z', 'z'};
+  const std::uint8_t pc[5] = {'O', 'I', 0, 'z', 'y'};
+  for (int i = 0; i < 5; ++i) {
+    b.mem.Escrever8(a + static_cast<std::uint32_t>(i), pa[i]);
+    b.mem.Escrever8(c + static_cast<std::uint32_t>(i), pc[i]);
+  }
+  b.cpu.Set(kR0, a);
+  b.cpu.Set(kR1, c);
+  b.cpu.Set(kR2, 5);
+  EXPECT_EQ(b.Atender(brew_ajudantes::kAjudante_memcmp), Atendimento::Implementado);
+  EXPECT_GT(b.cpu.Get(kR0), 0u) << "o 5.o byte difere ('z' contra 'y'): positivo";
+  // Com 4 bytes (NUL incluido) os dois sao iguais -- e o `strncmp` pararia aqui.
+  b.cpu.Set(kR0, a);
+  b.cpu.Set(kR1, c);
+  b.cpu.Set(kR2, 4);
+  b.Atender(brew_ajudantes::kAjudante_memcmp);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u) << "nos primeiros 4 (com o NUL) sao iguais";
+  // E o `strncmp` sobre os MESMOS 5 bytes para no NUL e diz igual -- a prova de que
+  // os dois NAO sao a mesma coisa.
+  b.cpu.Set(kR0, a);
+  b.cpu.Set(kR1, c);
+  b.cpu.Set(kR2, 5);
+  b.Atender(brew_ajudantes::kAjudante_strncmp);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u) << "o strncmp para no NUL: e a diferenca medida";
+}
