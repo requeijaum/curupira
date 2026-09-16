@@ -2281,3 +2281,27 @@ subiu de **11 para 16 titulos** -- o muro passou dos despachos para os PASSOS (8
    `pOut = 1`.
 3. O guiao de entrada na bateria (o `EntradaDoZeebo` ja o sabe ler; esta a zero).
 4. Blending + iluminacao no rasterizador (`core/video`), com a receita do `zeebx`.
+
+
+### 15/09 (fim) -- os 107 refusas de CPU do `allstarcards` sao CONSEQUENCIA, nao uma parede propria
+
+Desmonte do proprio modulo (`allstarcards.mod`, base 0, `159 824` bytes):
+
+    0000f3e4  ldr  r1, [pc, #240]     ; o literal do nome/caminho
+    0000f3e8  add  r1, pc, r1
+    0000f3ec  ldr  r0, [r4, #28]      ; o objecto -- FICA A ZERO, porque quem o devia
+                                      ; criar e o `SetupNativeImage` (0x064), que nao
+                                      ; temos (22 recusas nomeadas no mesmo titulo)
+    0000f3f0  ldr  r2, [r0]           ; r0 = 0 -> r2 = a PRIMEIRA PALAVRA DO MODULO
+    0000f3f4  ldr  r3, [r2, #12]      ; <- a recusa: le 4 bytes em 0xea00001a
+    0000f3fc  blx  r3
+
+O endereco `0xea00001a` e `0xea00000e + 12`, e `0xea00000e` e uma instrucao ARM (`b`) --
+a primeira do modulo. Ou seja: **a leitura "fora do mapa" e o jogo a tomar o codigo do
+proprio modulo por uma vtable**, porque o objecto nunca foi construido. As 107 recusas
+(1 por quadro) e as 22 `SetupNativeImage` sao a MESMA parede.
+
+Consequencia para o plano: nao ha duas frentes -- **servir o `SetupNativeImage` (0x064)
+deve apagar as duas**. O caminho ja existe: o descodificador PNG da frente `imgdec`
+(`core/carga/png.h/cpp`) + o servidor de bitmaps da frente `ibmap2`
+(`AtenderBitmapDaFamilia`), que constroi IDIBs com o cabecalho publico.
