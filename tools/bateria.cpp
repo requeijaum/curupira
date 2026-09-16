@@ -104,7 +104,7 @@ constexpr std::uint32_t kBaseDasEntradas = 20000;
 // Comprovado por segunda ferramenta: `zb2_sonda_mod <mod> 50000000` diz
 // "MALLOC(36) apos 5932046 instrucoes". As referencias dao muito mais folga
 // (zeebulator 64M em `game_probe.cpp:418`, zeemu 500M).
-constexpr std::uint64_t kLimite = 8000000ull;
+constexpr std::uint64_t kLimite = 16000000ull;
 
 // QUANTOS QUADROS DO LACO DE EVENTO CORRER DEPOIS DO `CreateInstance`.
 //
