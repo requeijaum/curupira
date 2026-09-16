@@ -218,6 +218,8 @@ constexpr std::uint32_t kClrUserBackground = 2, kClrUserLine = 3;
 // a comparar as duas. **Duas copias de um numero medido sao duas chances de ele
 // divergir.** (Medido em `platform/system/inc/AEEStdLib.h`, campos 10, 16, 36 e
 // 42; ver `tools/ajudantes_slots.inc`, gerado.)
+// O BIT ALTO DO TAMANHO DE UM `malloc`: "nao zeres" (`AEEStdLib.h:547`).
+constexpr std::uint32_t kAllocNoZmem = 0x80000000u;
 constexpr std::uint32_t kSlotDbgPrintf = brew_ajudantes::kAjudante_dbgprintf;
 constexpr std::uint32_t kSlotStrlen = brew_ajudantes::kAjudante_strlen;
 constexpr std::uint32_t kSlotMemset = brew_ajudantes::kAjudante_memset;
@@ -2455,7 +2457,30 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
       // contagem se decide; o fim so usa o numero.
       NotarEspera(cpu, idx);
       if (idx == 0) {
-        cpu.Set(kR0, al_.Malloc(r0));
+        // O `malloc` DO BREW TEM DUAS REGRAS, e as duas sao do cabecalho:
+        //
+        // 1. O BIT ALTO DO TAMANHO E UMA BANDEIRA, nao um tamanho. O
+        //    `AEEStdLib.h:547` define `#define ALLOC_NO_ZMEM (0x80000000L)` e o
+        //    `MALLOCREC_EX` (`:556`) usa-o como MASCARA (`(n) & ~ALLOC_NO_ZMEM`).
+        //    Um pedido com o bit posto pede o tamanho SEM ele.
+        //    MEDIDO no `quake2brew`: o codigo do titulo faz `orr r0, r5,
+        //    #0x80000000` (`0x000b0650`) antes de chamar o `malloc` do helper, e
+        //    o NOSSO servidor lia aquilo como 2 GiB -- **339 "MALLOC ERROR" do
+        //    proprio Quake** (`qcommon\cmd.cpp:733`, `cvar.cpp:199-201`) e as
+        //    `cvars` todas a NULL (e dai os 99 `atoi(NULL)`). Com o heap VAZIO
+        //    (`alocado=0,0 MiB`): nao era falta de memoria, era um tamanho mal
+        //    lido.
+        // 2. `malloc` ZERA POR OMISSAO (e o que o `NO_ZMEM` desliga). O nosso
+        //    `Alocador` devolve memoria de bloco novo -- que num heap folha ja e
+        //    zero -- mas um bloco REUTILIZADO traria os bytes do dono anterior.
+        //    A regra serve os dois casos.
+        const std::uint32_t pedido = r0;
+        const std::uint32_t tamanho = pedido & ~kAllocNoZmem;
+        const std::uint32_t bloco = al_.Malloc(tamanho);
+        if (bloco != 0 && (pedido & kAllocNoZmem) == 0) {
+          for (std::uint32_t k = 0; k < tamanho; ++k) mem_.Escrever8(bloco + k, 0);
+        }
+        cpu.Set(kR0, bloco);
       } else if (idx == 1) {
         al_.Free(r0);
         cpu.Set(kR0, kAeeSuccess);
