@@ -22,6 +22,19 @@
 //     delimitadora com teste de aresta (funcoes de aresta e a regra
 //     "top-left", que e o que impede dois triangulos vizinhos de escreverem o
 //     mesmo pixel da aresta -- ou de deixarem uma fenda);
+//   - LINES / LINE_LOOP / LINE_STRIP por DDA no eixo MAIOR, com o ponto final
+//     ABERTO em cada segmento (excepto na ultima ponta de uma faixa). A regra e
+//     a versao para segmentos da mesma convencao: um vertice partilhado por dois
+//     segmentos escreve UM pixel, e nenhum pixel se perde. O desvio declarado em
+//     relacao a `diamond-exit` exacta do GL esta nos EXTREMOS do segmento (ver
+//     `RasterizarSegmento` em rasterizador.cpp, e o teste
+//     `Rasterizador.DiagonalDeQuarentaECincoGraus`);
+//   - A LARGURA DA LINHA: `estado.largura_de_linha` (a omissao do GL e 1.0). A
+//     largura <= 1 e uma linha de um pixel; a largura > 1 RECUSA o desenho com o
+//     NOME ("largura de linha 2 sem rasterizador de linha grossa nesta etapa"),
+//     porque desenhar 2 px com 1 px seria uma mentira silenciosa. O valor
+//     continua a ficar guardado no `igl.cpp` (o pedido e observavel), e nao
+//     aplicado;
 //   - interpolacao de cor (por vertice) e de coordenadas de textura;
 //   - amostragem da textura ligada (GL_NEAREST, clamp);
 //   - teste de profundidade, quando `GL_DEPTH_TEST` esta ligado;
@@ -69,7 +82,10 @@
 //   2. RECORTE DO PLANO PROXIMO: triangulos que cruzam o plano proximo
 //      (clip.z + clip.w >= 0) sao recortados (Sutherland-Hodgman) gerando poligonos
 //      de 3 ou 4 vertices com atributos interpolados. Triangulos totalmente atras sao
-//      descartados (contados em `TriangulosDescartados()`). Os outros 5 planos do frustum
+//      descartados (contados em `TriangulosDescartados()`). Um SEGMENTO que cruza o
+//      plano proximo e cortado no ponto onde `z + w` passa por zero (a forma
+//      parametrizada, com a conta em `RasterizarSegmento`) e um segmento todo atras
+//      e descartado (`SegmentosDescartados()`). Os outros 5 planos do frustum
 //      continuam tratados por descarte de caixa delimitadora no viewport.
 //   3. SEM STENCIL, SEM DITHER, SEM POLYGON OFFSET e SEM SCISSOR: as quatro
 //      ficam nomeadas no traco, uma vez cada (`CapacidadesPorFazer()`), e nao em
@@ -237,6 +253,17 @@ struct EstadoDeRasterizacao {
   std::uint32_t orientacao_da_frente = 0x0901u;    // GL_CCW
   float profundidade_de_limpeza = 1.0f;
 
+  // --- A LARGURA DA LINHA (`glLineWidthx`) ---------------------------------
+  //
+  // A OMISSAO DO GL E 1.0, e o campo existe porque o pedido do guest TEM de
+  // chegar ao desenho: ate esta frente o `kIgl_LineWidthx` guardava o valor em
+  // `parametros_` e respondia "feito", e o rasterizador nao tinha onde o ler -- o
+  // pedido estava guardado e NAO era aplicado, sem o dizer (o padrao P2).
+  //
+  // LARGURA <= 1 -> linha de um pixel. LARGURA > 1 -> o desenho RECUSA com o
+  // nome: uma linha de 2 px desenhada com 1 px seria uma mentira silenciosa.
+  float largura_de_linha = 1.0f;
+
   // --- A MISTURA (`GL_BLEND`) ----------------------------------------------
   //
   // A OMISSAO DO GL E A COPIA: `glBlendFunc(GL_ONE, GL_ZERO)`. Um titulo que
@@ -345,6 +372,12 @@ class Rasterizador {
   std::uint64_t Triangulos() const { return triangulos_; }
   std::uint64_t TriangulosDescartados() const { return descartados_; }
   std::uint64_t TriangulosRecortados() const { return recortados_; }
+  // OS SEGMENTOS TEM CONTADORES PROPRIOS, e nao os dos triangulos: um contador
+  // chamado `Triangulos()` a contar linhas seria a contabilidade a mentir (o
+  // traco do fim diz qual dos dois conta, e o teste le-o).
+  std::uint64_t Segmentos() const { return segmentos_; }
+  std::uint64_t SegmentosDescartados() const { return segmentos_descartados_; }
+  std::uint64_t SegmentosRecortados() const { return segmentos_recortados_; }
   std::uint64_t PrimitivasRecusadas() const { return recusadas_; }
   // Quantos fragmentos o ALPHA TEST descartou. E um contador proprio porque o
   // efeito dele e a AUSENCIA de escrita: sem ele, um alpha test que descarta
@@ -372,6 +405,12 @@ class Rasterizador {
   bool Projetar(const EstadoDeRasterizacao& e, Vertice* v) const;
   void RasterizarTriangulo(const EstadoDeRasterizacao& e, const Vertice& a, const Vertice& b,
                            const Vertice& c);
+  // UM SEGMENTO: recorte do plano proximo, projeccao dos dois extremos e o DDA
+  // no eixo maior. `incluir_fim` diz se o pixel do PONTO FINAL e escrito: e falso
+  // em todos os segmentos menos na ultima ponta de uma `GL_LINE_STRIP` (ver o
+  // comentario da funcao, com a derivacao do recorte e o desvio declarado).
+  void RasterizarSegmento(const EstadoDeRasterizacao& e, const Vertice& a, const Vertice& b,
+                          bool incluir_fim);
   void EscreverPixel(const EstadoDeRasterizacao& e, int x, int y, float profundidade, Rgba cor);
   // A cor de um vertice com o `GL_LIGHTING` ligado, na equacao do GL ES 1.x.
   static Rgba CorIluminada(const EstadoDeRasterizacao& e, const float olho[4],
@@ -397,6 +436,7 @@ class Rasterizador {
   int largura_ = 0, altura_ = 0;
   std::uint64_t pixels_ = 0, triangulos_ = 0, descartados_ = 0, recortados_ = 0, recusadas_ = 0;
   std::uint64_t descartados_alfa_ = 0;
+  std::uint64_t segmentos_ = 0, segmentos_descartados_ = 0, segmentos_recortados_ = 0;
 };
 
 }  // namespace zb2::video

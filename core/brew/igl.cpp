@@ -471,6 +471,16 @@ video::EstadoDeRasterizacao Igl::MontarEstado() const {
   e.descartar_face = cull_face_;
   e.orientacao_da_frente = front_face_;
 
+  // A LARGURA DA LINHA. O `kIgl_LineWidthx` guarda o valor em `parametros_` desde
+  // sempre e respondia "feito"; ate esta frente o rasterizador nao tinha onde o
+  // ler, e o pedido estava guardado e NAO era aplicado. Agora ele chega ao
+  // estado: <= 1 desenha uma linha de um pixel, > 1 RECUSA o desenho com o nome
+  // (uma linha de 2 px desenhada com 1 px seria a mentira silenciosa).
+  if (const std::vector<std::uint32_t>* largura = Parametro(kIgl_LineWidthx, 0);
+      largura != nullptr && !largura->empty()) {
+    e.largura_de_linha = RealDoFixo((*largura)[0]);
+  }
+
   // A MISTURA, O ALPHA TEST E A MASCARA DE COR. Os tres vao para o retrato
   // porque os tres decidem pixel: a mistura soma contra o destino, o teste
   // descarta o fragmento, a mascara preserva os canais que proibe.
@@ -1238,7 +1248,15 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
     case kIgl_LineWidthx: {
       if (Fixo(0, a) <= 0.0f) return recusa("largura de linha nao positiva");
       parametros_[ChaveDeParametro(slot, 0)] = {a.reg[0]};
-      return feito(1);
+      // O VALOR E APLICADO, e o texto di-lo por inteiro. O `feito(1)` de antes
+      // prometia o que nao acontecia: o valor ficava guardado e nenhum rasterizador
+      // o lia (o padrao P2 -- o pedido guardado num mapa que ninguem le e
+      // indistinguivel de um pedido perdido). Agora o valor vai para o retrato do
+      // estado (`MontarEstado`), onde a largura <= 1 desenha uma linha de um pixel
+      // e a largura > 1 RECUSA o desenho com o nome.
+      return feito_com(1,
+                       "largura de linha guardada e aplicada: <= 1 desenha 1 px, > 1 RECUSA o "
+                       "desenho (nao ha rasterizador de linha grossa nesta etapa)");
     }
     case kIgl_PointSizex: {
       if (Fixo(0, a) <= 0.0f) return recusa("tamanho de ponto nao positivo");

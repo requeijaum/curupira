@@ -744,11 +744,19 @@ TEST(Rasterizador, PrimitivaSemCaminhoRecusaComONome) {
   PorVertices(mem, kV, {{-1.0f, 1.0f}, {-1.0f, -1.0f}, {1.0f, -1.0f}});
   e.vertices = {true, 3, GL_FLOAT, 12, kV};
   PedidoDeDesenho p;
-  p.primitiva = GL_LINE_LOOP;
+  // A PRIMITIVA DESTE TESTE PASSOU A SER O `GL_POINTS`: o `GL_LINE_LOOP` era a
+  // primitiva sem caminho ate a frente das linhas, e depois dela passa a ser
+  // DESENHADA (o teste do caminho das linhas e o
+  // `Rasterizador.OLoopVoltaAoPrimeiroPontoSemEscreverDuasVezes`). Um teste que
+  // continuasse a pedir a recusa de um `GL_LINE_LOOP` passaria a provar o
+  // contrario do que diz. O `GL_POINTS` continua sem rasterizador: nenhum titulo
+  // do corpus o pede (medido: e o unico motivo de recusa de primitiva e o
+  // `GL_LINE_STRIP`), e nao se inventa um caso de uso para ele.
+  p.primitiva = GL_POINTS;
   p.quantos = 3;
   std::string motivo;
   EXPECT_FALSE(r.Desenhar(e, p, &motivo));
-  EXPECT_NE(motivo.find("GL_LINE_LOOP"), std::string::npos) << motivo;
+  EXPECT_NE(motivo.find("GL_POINTS"), std::string::npos) << motivo;
   EXPECT_EQ(g.total, 0u);
   EXPECT_EQ(r.PrimitivasRecusadas(), 1u);
 }
@@ -1435,6 +1443,282 @@ TEST(Rasterizador, OAlphaTestEAMascaraDeCorChegamAoTelaPelaCablagem) {
   EXPECT_EQ(b.Ch(kIgl_ColorMask, 1, 0, 1, 1), zb2::brew::ResultadoGl::Feito);
   EXPECT_EQ(b.Faltas("glColorMask_de_GL_sem_rasterizador"), 0u);
   EXPECT_EQ(b.Faltas("alpha_test_de_GL_sem_rasterizador"), 0u);
+}
+
+
+
+// ---------------------------------------------------------------------------
+// 9. AS LINHAS (`GL_LINES`, `GL_LINE_LOOP` e `GL_LINE_STRIP`)
+// ---------------------------------------------------------------------------
+//
+// A DEMANDA MEDIDA, e o numero que a pede (corrida com `ZB2_QUADROS=300
+// ZB2_EVT_START=1`): `heavyweaponbrew` recusa 304 desenhos e o `pbc` 7, todos
+// com o mesmo motivo -- `GL_LINE_STRIP` sem rasterizador. E o UNICO motivo de
+// recusa de primitiva no corpus, e o `heavyweaponbrew` e o titulo que mais
+// desenha (116,8 M px). O `GL_POINTS` NAO e pedido por titulo nenhum e continua
+// recusado COM O NOME.
+//
+// A REGRA DA LINHA, e o desvio DECLARADO (a convencao da casa e a
+// `ArestaPartilhadaNaoEscreveDuasVezesNemDeixaFenda`, e esta e a versao dela
+// para segmentos):
+//
+//   - o tracado e um DDA no eixo MAIOR, com o ponto inicial INCLUIDO e o ponto
+//     final ABERTO em cada segmento. E o que faz um vertice partilhado por dois
+//     segmentos escrever UM pixel -- e nao dois;
+//   - a ULTIMA ponta de uma `GL_LINE_STRIP` e FECHADA (o vertice final escreve o
+//     seu pixel, e nenhum outro segmento o escreveria);
+//   - a `GL_LINES` mantem ABERTA a ponta de cada segmento (a mesma regra dos
+//     outros): uma linha de 6 px escreve 6 pixels, e nao 7;
+//   - o desvio em relacao a `diamond-exit` EXACTA do OpenGL esta nos EXTREMOS:
+//     um segmento cujo ponto final caia dentro do losango do pixel final nao
+//     escreve esse pixel. Fica dito AQUI, e o teste
+//     `DiagonalDeQuarentaECincoGraus` fixa-o.
+
+TEST(Rasterizador, LinhaHorizontalDeSeisPixelsEscreveSeisPixels) {
+  Memoria mem(nullptr);
+  Gravador g;
+  Rasterizador r(mem, g);
+  EstadoDeRasterizacao e = EstadoBase();  // janela (0,0,8,8), vermelho opaco
+
+  // OS DOIS VERTICES, com a conta que os poe na janela:
+  //   janela x = (x_ndc + 1) * 8 / 2   |   janela y = (1 - y_ndc) * 8 / 2
+  //   A = (-0.75, 0.25) -> (1, 3)      B = (0.75, 0.25) -> (7, 3)
+  // O segmento tem 6 px de comprimento entre os dois vertices, e a regra acima
+  // (ponta final ABERTA) escreve 6 pixels: x = 1..6 na linha y = 3.
+  constexpr Endereco kV = 0x00100000;
+  PorVertices(mem, kV, {{-0.75f, 0.25f}, {0.75f, 0.25f}});
+  e.vertices = {true, 3, GL_FLOAT, 12, kV};
+  PedidoDeDesenho p;
+  p.primitiva = GL_LINES;
+  p.quantos = 2;
+  std::string motivo;
+  ASSERT_TRUE(r.Desenhar(e, p, &motivo)) << motivo;
+
+  EXPECT_EQ(g.total, 6u);
+  EXPECT_EQ(g.escritas.size(), 6u);
+  for (int x = 1; x <= 6; ++x) {
+    EXPECT_EQ(g.Vezes(x, 3), 1) << "pixel " << x << ",3";
+    EXPECT_TRUE(g.SoEstePixel(x, 3, 0xF800u)) << "pixel " << x << ",3";
+  }
+  // A PONTA ABERTA, e o rasto negativo que o prova: o pixel do vertice final
+  // (7,3) NAO e escrito, e nenhum pixel fora da linha o e.
+  EXPECT_EQ(g.Vezes(7, 3), 0);
+  EXPECT_EQ(g.Vezes(1, 2), 0);
+  EXPECT_EQ(g.Vezes(1, 4), 0);
+  EXPECT_EQ(r.Pixels(), 6u);
+  EXPECT_EQ(r.Segmentos(), 1u);
+  EXPECT_EQ(r.PrimitivasRecusadas(), 0u);
+}
+
+TEST(Rasterizador, FaixaDeTresPontosColinearesNaoContaOPixelDuasVezes) {
+  Memoria mem(nullptr);
+  Gravador g;
+  Rasterizador r(mem, g);
+  EstadoDeRasterizacao e = EstadoBase();
+
+  // TRES PONTOS COLINEARES, e a conta que os poe na janela:
+  //   A = (-1, 0)    -> (0, 4)
+  //   B = (-0.5, 0)  -> (2, 4)
+  //   C = (0.25, 0)  -> (5, 4)
+  // Dois segmentos: A..B (pixels 0 e 1, ponta aberta) e B..C (pixels 2, 3 e 4),
+  // mais a ponta FECHADA da faixa (pixel 5). Sao 6 pixels, e o pixel 2 -- o
+  // vertice B, partilhado pelos dois segmentos -- e escrito UMA vez.
+  constexpr Endereco kV = 0x00100000;
+  PorVertices(mem, kV, {{-1.0f, 0.0f}, {-0.5f, 0.0f}, {0.25f, 0.0f}});
+  e.vertices = {true, 3, GL_FLOAT, 12, kV};
+  PedidoDeDesenho p;
+  p.primitiva = GL_LINE_STRIP;
+  p.quantos = 3;
+  std::string motivo;
+  ASSERT_TRUE(r.Desenhar(e, p, &motivo)) << motivo;
+
+  EXPECT_EQ(g.total, 6u);
+  EXPECT_EQ(g.escritas.size(), 6u);
+  for (int x = 0; x <= 5; ++x) {
+    EXPECT_EQ(g.Vezes(x, 4), 1) << "pixel " << x << ",4";
+  }
+  EXPECT_EQ(g.Vezes(6, 4), 0) << "a faixa nao chega ao pixel 6";
+  EXPECT_EQ(r.Pixels(), 6u);
+  EXPECT_EQ(r.Segmentos(), 2u);
+  // O TRACO DO FIM conta SEGMENTOS, e nao triangulos: um traco que dissesse
+  // "triangulos" com uma linha desenhada seria a contabilidade a mentir.
+  EXPECT_NE(motivo.find("2 segmentos"), std::string::npos) << motivo;
+  EXPECT_EQ(motivo.find("triangulos"), std::string::npos) << motivo;
+}
+
+TEST(Rasterizador, OLoopVoltaAoPrimeiroPontoSemEscreverDuasVezes) {
+  Memoria mem(nullptr);
+  Gravador g;
+  Rasterizador r(mem, g);
+  EstadoDeRasterizacao e = EstadoBase();
+
+  // UM TRIANGULO FECHADO EM LINHAS: (0,4) -> (4,4) -> (0,0) -> (0,4). O ULTIMO
+  // segmento volta ao PRIMEIRO vertice, cujo pixel ja foi escrito pelo primeiro
+  // segmento: com a ponta aberta em todos os segmentos de um `LINE_LOOP`, esse
+  // pixel nao e escrito duas vezes.
+  constexpr Endereco kV = 0x00100000;
+  PorVertices(mem, kV, {{-1.0f, 0.0f}, {0.0f, 0.0f}, {-1.0f, 1.0f}});
+  e.vertices = {true, 3, GL_FLOAT, 12, kV};
+  PedidoDeDesenho p;
+  p.primitiva = GL_LINE_LOOP;
+  p.quantos = 3;
+  std::string motivo;
+  ASSERT_TRUE(r.Desenhar(e, p, &motivo)) << motivo;
+  EXPECT_EQ(r.Segmentos(), 3u);
+  // O pixel do vertice (0,4) escreveu-se UMA vez -- e nao uma por cada um dos
+  // dois segmentos que o tem por ponta.
+  EXPECT_EQ(g.Vezes(0, 4), 1);
+  for (const auto& par : g.escritas) EXPECT_EQ(par.second, 1) << "pixel escrito duas vezes";
+}
+
+TEST(Rasterizador, DiagonalDeQuarentaECincoGraus) {
+  Memoria mem(nullptr);
+  Gravador g;
+  Rasterizador r(mem, g);
+  EstadoDeRasterizacao e = EstadoBase();
+
+  // A DIAGONAL (0,0) -> (4,4), ou seja A = (-1, 1) e B = (0, 0) em NDC. Com o
+  // passo igual nos dois eixos, o DDA no eixo maior tem de andar EM DIAGONAL:
+  // os pixels sao (0,0), (1,1), (2,2) e (3,3) -- e o (4,4) fica de fora pela
+  // ponta ABERTA (o desvio declarado).
+  constexpr Endereco kV = 0x00100000;
+  PorVertices(mem, kV, {{-1.0f, 1.0f}, {0.0f, 0.0f}});
+  e.vertices = {true, 3, GL_FLOAT, 12, kV};
+  PedidoDeDesenho p;
+  p.primitiva = GL_LINES;
+  p.quantos = 2;
+  std::string motivo;
+  ASSERT_TRUE(r.Desenhar(e, p, &motivo)) << motivo;
+  EXPECT_EQ(g.total, 4u);
+  for (int k = 0; k < 4; ++k) EXPECT_EQ(g.Vezes(k, k), 1) << "pixel " << k << "," << k;
+  EXPECT_EQ(g.Vezes(4, 4), 0);
+  EXPECT_EQ(g.Vezes(1, 0), 0);
+  EXPECT_EQ(g.Vezes(0, 1), 0);
+}
+
+TEST(Rasterizador, SegmentoTodoAtrasDoPlanoProximoEDescartado) {
+  Memoria mem(nullptr);
+  Gravador g;
+  Rasterizador r(mem, g);
+  EstadoDeRasterizacao e = EstadoBase();  // janela (0,0,8,8)
+  PorFrustum(&e);
+
+  // OS DOIS VERTICES ATRAS DA CAMARA: com `clip.w = -z` (ver o `PorFrustum`),
+  // z = +2 da w = -2 e `clip.z + clip.w` = -4.06 - 2 = -6.06 < 0 nos DOIS. Um
+  // ponto atras do plano proximo projetado DA lixo (o `Projetar` recusa-o), e
+  // por isso o segmento e DESCARTADO -- contado, e nao desenhado as cegas.
+  constexpr Endereco kV = 0x00100000;
+  PorVerticesZ(mem, kV, {{0.0f, 0.0f, 2.0f}, {2.0f, 0.0f, 2.0f}});
+  e.vertices = {true, 3, GL_FLOAT, 12, kV};
+  PedidoDeDesenho p;
+  p.primitiva = GL_LINES;
+  p.quantos = 2;
+  std::string motivo;
+  EXPECT_TRUE(r.Desenhar(e, p, &motivo)) << motivo;
+  EXPECT_EQ(g.total, 0u);
+  EXPECT_EQ(r.Pixels(), 0u);
+  EXPECT_EQ(r.Segmentos(), 0u);
+  EXPECT_EQ(r.SegmentosDescartados(), 1u);
+  EXPECT_EQ(r.SegmentosRecortados(), 0u);
+  // E O SEGMENTO QUE CRUZA O PLANO e RECORTADO, e nao descartado: os dois
+  // vertices com o mesmo (x, y) mas um a z = -2 (a frente) e outro a z = +2
+  // (atras) dao um segmento que sobrevive ao recorte.
+  PorVerticesZ(mem, kV, {{0.0f, 0.0f, -2.0f}, {0.0f, 0.0f, 2.0f}});
+  EXPECT_TRUE(r.Desenhar(e, p, &motivo)) << motivo;
+  EXPECT_EQ(r.SegmentosRecortados(), 1u);
+  EXPECT_EQ(r.SegmentosDescartados(), 1u);
+  EXPECT_GT(g.total, 0u);
+}
+
+TEST(Rasterizador, LarguraDeLinhaMaiorQueUmRecusaComONome) {
+  Memoria mem(nullptr);
+  Gravador g;
+  Rasterizador r(mem, g);
+  EstadoDeRasterizacao e = EstadoBase();
+  constexpr Endereco kV = 0x00100000;
+  PorVertices(mem, kV, {{-0.75f, 0.25f}, {0.75f, 0.25f}});
+  e.vertices = {true, 3, GL_FLOAT, 12, kV};
+  PedidoDeDesenho p;
+  p.primitiva = GL_LINES;
+  p.quantos = 2;
+  std::string motivo;
+
+  // A OMISSAO DO GL E 1: a largura 1 e uma linha de um pixel, e desenha.
+  EXPECT_FLOAT_EQ(e.largura_de_linha, 1.0f) << "a omissao do estado tem de ser 1";
+  ASSERT_TRUE(r.Desenhar(e, p, &motivo)) << motivo;
+  EXPECT_EQ(g.total, 6u);
+
+  // A LARGURA 2 RECUSA COM O NOME. Desenhar 2 px com 1 px seria uma mentira
+  // silenciosa -- e o valor continua a ficar guardado no estado (o pedido nao
+  // se perde: `kIgl_LineWidthx` entra em `parametros_`).
+  e.largura_de_linha = 2.0f;
+  const std::uint64_t antes = g.total;
+  EXPECT_FALSE(r.Desenhar(e, p, &motivo));
+  EXPECT_NE(motivo.find("largura de linha 2"), std::string::npos) << motivo;
+  EXPECT_NE(motivo.find("linha grossa"), std::string::npos) << motivo;
+  EXPECT_EQ(g.total, antes) << "recusou e escreveu na mesma";
+  EXPECT_EQ(r.PrimitivasRecusadas(), 1u);
+}
+
+TEST(Rasterizador, OPointsContinuaRecusadoEOsNomeadosPassamAListarAsLinhas) {
+  Memoria mem(nullptr);
+  Gravador g;
+  Rasterizador r(mem, g);
+  EstadoDeRasterizacao e = EstadoBase();
+  constexpr Endereco kV = 0x00100000;
+  PorVertices(mem, kV, {{-0.75f, 0.25f}, {0.75f, 0.25f}});
+  e.vertices = {true, 3, GL_FLOAT, 12, kV};
+  PedidoDeDesenho p;
+  p.primitiva = GL_POINTS;
+  p.quantos = 2;
+  std::string motivo;
+  EXPECT_FALSE(r.Desenhar(e, p, &motivo));
+  EXPECT_NE(motivo.find("GL_POINTS"), std::string::npos) << motivo;
+  EXPECT_EQ(g.total, 0u);
+  EXPECT_EQ(r.PrimitivasRecusadas(), 1u);
+  // O TEXTO DA RECUSA LISTA O QUE EXISTE, e nao o que existia antes das linhas:
+  // um texto a dizer "so TRIANGLES, TRIANGLE_STRIP e TRIANGLE_FAN" com as linhas
+  // ja desenhadas seria uma linha de log que nao pode ser verdadeira (P7).
+  EXPECT_NE(motivo.find("LINES"), std::string::npos) << motivo;
+  EXPECT_NE(motivo.find("LINE_LOOP"), std::string::npos) << motivo;
+  EXPECT_NE(motivo.find("LINE_STRIP"), std::string::npos) << motivo;
+  EXPECT_EQ(motivo.find("so TRIANGLES, TRIANGLE_STRIP e TRIANGLE_FAN"), std::string::npos) << motivo;
+}
+
+TEST(Rasterizador, AsLinhasChegamATelaPelaCablagemDoIglEALarguraEGuardada) {
+  Bancada b;
+  b.igl.DefinirTela(&b.tela);
+  constexpr Endereco kV = 0x00100000;
+  EXPECT_EQ(b.Ch(kIgl_Viewport, 0, 0, 8, 8), zb2::brew::ResultadoGl::Feito);
+  PorVertices(b.mem, kV, {{-0.75f, 0.25f}, {0.75f, 0.25f}});
+  EXPECT_EQ(b.Ch(kIgl_VertexPointer, 3, GL_FLOAT, 12, kV), zb2::brew::ResultadoGl::Feito);
+  EXPECT_EQ(b.Ch(kIgl_EnableClientState, GL_VERTEX_ARRAY), zb2::brew::ResultadoGl::Feito);
+  EXPECT_EQ(b.Ch(kIgl_Color4x, Fixo(1.0f), Fixo(0.0f), Fixo(0.0f), Fixo(1.0f)),
+            zb2::brew::ResultadoGl::Feito);
+
+  // A LARGURA 1 PEDIDA PELO SLOT, e a linha desenhada pelo slot: os seis pixels
+  // da Tela -- a mesma tela que a bateria le.
+  EXPECT_EQ(b.Ch(kIgl_LineWidthx, Fixo(1.0f)), zb2::brew::ResultadoGl::Feito);
+  EXPECT_EQ(b.Ch(kIgl_DrawArrays, GL_LINES, 0, 2), zb2::brew::ResultadoGl::Feito);
+  EXPECT_EQ(b.tela.Escritos(), 6u);
+  EXPECT_EQ(b.igl.RasterizadorRef().Segmentos(), 1u);
+
+  // A LARGURA 2: o valor FICA GUARDADO (o pedido e observavel) e o DESENHO
+  // RECUSA com o nome -- o defeito que esta frente corrige era o contrario:
+  // guardar o valor e nao o aplicar, sem o dizer.
+  EXPECT_EQ(b.Ch(kIgl_LineWidthx, Fixo(2.0f)), zb2::brew::ResultadoGl::Feito);
+  const std::vector<std::uint32_t>* largura = b.igl.Parametro(kIgl_LineWidthx, 0);
+  ASSERT_NE(largura, nullptr);
+  ASSERT_EQ(largura->size(), 1u);
+  EXPECT_EQ((*largura)[0], Fixo(2.0f));
+  const std::uint64_t antes = b.tela.Escritos();
+  EXPECT_EQ(b.Ch(kIgl_DrawArrays, GL_LINES, 0, 2), zb2::brew::ResultadoGl::Recusado);
+  EXPECT_EQ(b.tela.Escritos(), antes);
+  EXPECT_NE(b.igl.Ultimas().back().motivo.find("largura de linha 2"), std::string::npos)
+      << b.igl.Ultimas().back().motivo;
+
+  // E A LARGURA NAO POSITIVA CONTINUA A RECUSAR NO SLOT (nao e um estado).
+  EXPECT_EQ(b.Ch(kIgl_LineWidthx, 0u), zb2::brew::ResultadoGl::Recusado);
 }
 
 

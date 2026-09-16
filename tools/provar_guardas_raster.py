@@ -24,6 +24,10 @@ O QUE ESTAS VIOLACOES PROVAM, uma a uma:
   V16 o `GL_COLOR_MATERIAL` troca a cor do material pela do vertice
   V17 a posicao da luz e guardada no espaco do olho
   V18 a tabela `por_fazer` nao fica com o que ja se faz
+  V19 o recorte do plano proximo do SEGMENTO (o segmento que cruza e cortado, e nao descartado)
+  V20 a ponta final ABERTA de um segmento (o vertice partilhado escreve um pixel, e nao dois)
+  V21 a largura de linha > 1 recusa o desenho (e nao desenha 1 px a fingir 2)
+  V22 a largura de linha chega ao rasterizador pela cablagem (`Igl::MontarEstado`)
 
 Uso: python3 tools/provar_guardas_raster.py <raiz_da_arvore>
 """
@@ -80,7 +84,7 @@ VIOLACOES = [
      "Rasterizador.OGlClearPintaATelaTodaEIgnoraOClip"),
     ("V9 uma primitiva sem caminho passa a ser desenhada como leque",
      "core/video/rasterizador.cpp",
-     "  if (!triangulos) {\n    ++recusadas_;",
+     "  if (!triangulos && !linhas) {\n    ++recusadas_;",
      "  if (false) {\n    ++recusadas_;",
      "Rasterizador.PrimitivaSemCaminhoRecusaComONome"),
     ("V10 o desenho sem tela deixa de ser recusado",
@@ -131,6 +135,26 @@ VIOLACOES = [
      """      {GL_FOG, "nevoa_de_GL_sem_rasterizador"},
       {GL_BLEND, "blending_de_GL_sem_rasterizador"},""",
      "Rasterizador.OQueSeImplementouSaiuDaTabelaDasFaltas"),
+    ("V19 o recorte do plano proximo do SEGMENTO deixa de acontecer",
+     "core/video/rasterizador.cpp",
+     "  if (a_dentro != b_dentro) {\n    const double t = d0 / (d0 - d1);",
+     "  if (false) {\n    const double t = d0 / (d0 - d1);",
+     "Rasterizador.SegmentoTodoAtrasDoPlanoProximoEDescartado"),
+    ("V20 a ponta final dos segmentos passa a ser FECHADA (o pixel do vertice partilhado conta duas vezes)",
+     "core/video/rasterizador.cpp",
+     "    if (k == passos && !incluir_fim) break;",
+     "    if (false) break;",
+     "Rasterizador.LinhaHorizontalDeSeisPixelsEscreveSeisPixels:Rasterizador.FaixaDeTresPontosColinearesNaoContaOPixelDuasVezes"),
+    ("V21 a largura de linha > 1 deixa de ser recusada (desenha 1 px a fingir 2)",
+     "core/video/rasterizador.cpp",
+     "  if (linhas && estado.largura_de_linha > 1.0f) {",
+     "  if (false) {",
+     "Rasterizador.LarguraDeLinhaMaiorQueUmRecusaComONome"),
+    ("V22 a largura de linha deixa de chegar ao rasterizador (o valor fica guardado e nao aplicado)",
+     "core/brew/igl.cpp",
+     "    e.largura_de_linha = RealDoFixo((*largura)[0]);",
+     "    e.largura_de_linha = 1.0f;",
+     "Rasterizador.AsLinhasChegamATelaPelaCablagemDoIglEALarguraEGuardada"),
 ]
 
 

@@ -525,6 +525,29 @@ TEST(RegistoGl, ParametroAcumuladoEObservavel) {
   EXPECT_EQ((*v)[0], Fixo(0.25f));
 }
 
+TEST(RegistoGl, ALarguraDeLinhaDizOQueFazENaoPrometeOLinAlem) {
+  Banco b;
+  // O DEFEITO QUE ESTE TESTE APANHA (o padrao P2): o `kIgl_LineWidthx` guardava o
+  // valor e respondia "feito", e nenhum rasterizador o lia -- o pedido ficava
+  // guardado num mapa e NAO era aplicado, sem o dizer. O valor continua a ficar
+  // guardado (o pedido e observavel), e a mensagem passa a dizer AS DUAS METADES:
+  // <= 1 desenha um pixel, > 1 recusa o desenho.
+  EXPECT_EQ(b.igl.Executar(kIgl_LineWidthx, Args(Fixo(2.0f)), nullptr), ResultadoGl::Feito);
+  const std::vector<std::uint32_t>* v = b.igl.Parametro(kIgl_LineWidthx, 0);
+  ASSERT_NE(v, nullptr);
+  ASSERT_EQ(v->size(), 1u);
+  EXPECT_EQ((*v)[0], Fixo(2.0f));
+  const std::string motivo = b.igl.Ultimas().back().motivo;
+  EXPECT_NE(motivo.find("aplicada"), std::string::npos) << motivo;
+  EXPECT_NE(motivo.find("RECUSA"), std::string::npos) << motivo;
+  // A medicao que a mensagem tem de reflectir: o rasterizador so tem linha de um
+  // pixel (ver `RasterizarSegmento` e o teste
+  // `Rasterizador.LarguraDeLinhaMaiorQueUmRecusaComONome`).
+  EXPECT_NE(motivo.find("linha grossa"), std::string::npos) << motivo;
+  // E A LARGURA NAO POSITIVA CONTINUA A RECUSAR NO PROPRIO SLOT.
+  EXPECT_EQ(b.igl.Executar(kIgl_LineWidthx, Args(0u), nullptr), ResultadoGl::Recusado);
+}
+
 TEST(RegistoGl, QueryInterfaceDevolveOProprioObjeto) {
   Banco b;
   b.igl.Instalar(b.saidas);
