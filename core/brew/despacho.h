@@ -23,6 +23,7 @@
 #include "core/audio/misturador.h"
 #include "core/brew/ajudantes.h"
 #include "core/brew/recursos.h"
+#include "core/brew/sql.h"
 
 // A CABLAGEM DO GL (etapa 6): o IGL e o IEGL. Ver docs/rewrite/REMENDO-GL-DESPACHO.md.
 //
@@ -70,15 +71,42 @@ constexpr std::uint32_t kRascunhoDoShell = kObjShell + 0x800u;
 
 // --- O SQL (ISQLMgr + ISQLDatabase) -----------------------------------------
 //
-// A ZONA DE UMA LINHA DE CONSULTA. Vive na pagina do objecto do banco
+// O MOTOR DE SQL DO CONSOLE ESTA EM `core/brew/sql.{h,cpp}`: a ponte sobre o
+// SQLite de verdade (amalgamacao em `third_party/sqlite3/`). O que fica AQUI e a
+// ENTREGA DA LINHA ao callback do jogo, que precisa do nucleo e da memoria do
+// guest, e as zonas onde os textos dessa linha sao escritos.
+//
+// A ZONA DE UMA LINHA DE CONSULTA vive na pagina do objecto do banco
 // (`kObjSqlDb` = 0x81080000), como as cadeias do `DetectType` vivem na do shell e
 // pela mesma razao: uma cadeia que o guest le tem de estar num sitio que o guest
-// ve. Ate quatro colunas, 0x40 bytes de texto por coluna, e os DOIS vectores de
-// `char *` (valores e nomes) em 0x200/0x220 -- separados dos textos para uma
-// coluna comprida nao os pisar.
-constexpr std::uint32_t kZonaDeLinhasSql = kObjSqlDb + 0x400u;
-constexpr std::uint32_t kMaximoDeColunas = 4;
-constexpr std::uint32_t kZonaDosVectoresSql = kObjSqlDb + 0x600u;
+// ve. O `sqlite3_exec` chama o callback UMA VEZ POR LINHA, logo a zona so precisa
+// de UMA linha de cada vez -- e nao de uma tabela.
+//
+// O TAMANHO NAO E ESCOLHA LIVRE: e MEDIDO no dialecto do proprio modulo.
+//   - COLUNAS: a consulta mais larga que o `tectoy` manda e
+//     `SELECT * FROM GAMEINFO, TITLETEXT ...` = 8 + 3 = ONZE colunas (o `ASSETS`
+//     do catalogo tem NOVE, o `PREFSINFO` quatro). O tecto e 12 -- uma de folga, e
+//     nao um numero redondo escolhido a sorte;
+//   - TEXTO: o valor mais comprido dos quatro bancos REAIS da midia
+//     (`tt_prefs.db`, `asset_cache`, `tt_game_info`, `tt_dlqueue.db`, 502 valores
+//     de texto contados) tem 45 caracteres -- um URL em `PREFSINFO.strValue`. O
+//     passo e 0x40 (63 caracteres mais o NUL).
+//
+// UM VALOR QUE NAO CABE NAO SE TRUNCA EM SILENCIO: e uma FALTA com o nome da
+// coluna e o comprimento (ver `EntregarLinhaSql`). Truncar daria ao jogo um
+// caminho ou um titulo errados, e o defeito so apareceria no ecra.
+constexpr std::uint32_t kZonaDosNomesSql = kObjSqlDb + 0x100u;
+constexpr std::uint32_t kZonaDosValoresSql = kObjSqlDb + 0x400u;
+constexpr std::uint32_t kZonaDosVectoresSql = kObjSqlDb + 0x700u;
+constexpr std::uint32_t kPassoDoTextoDaColunaSql = 0x40u;
+constexpr std::uint32_t kMaximoDeColunasSql = 12u;
+constexpr std::uint32_t kMaximoDeTextoDaColunaSql = kPassoDoTextoDaColunaSql - 1u;
+// A ZONA TEM DE CABER ANTES DA VTABLE DO PROPRIO OBJECTO. Se as duas se
+// cruzarem, escrever uma linha de consulta estragava o slot que o jogo chama, e o
+// defeito apareceria mais tarde como "o `Exec` deixou de existir".
+static_assert(kZonaDosVectoresSql + 2u * (kMaximoDeColunasSql + 1u) * 4u <=
+                  kEnderecoDaVtableSqlDb,
+              "a zona da linha de consulta nao pode invadir a vtable do banco");
 
 // Um temporizador pedido pelo guest. UM so, porque e o que os titulos pedem: o
 // laco de quadro, re-armado pelo proprio callback.
@@ -551,25 +579,19 @@ class Despacho {
   // silencioso.
   bool sql_pronto_ = false;
   std::uint32_t sql_abertos_ = 0;
-  // O CONTEUDO desta base: os nomes das tabelas que o jogo CRIOU, e o `DBINFO`.
+  // A PONTE SOBRE O SQLITE DE VERDADE. O ESTADO DO BANCO NAO ESTA AQUI, e esse e
+  // o ponto: quem guarda as tabelas, os tipos e as transaccoes e o motor do
+  // console (`third_party/sqlite3/`, dominio publico), e nao uma tabela de nomes
+  // em C++ que crescia uma instrucao por vez.
+  PonteSqlite sql_;
+  // Entrega UMA linha ao callback do jogo, com a forma do `sqlite3_exec`
+  // (`int cb(void *ctx, int ncols, char **valores, char **nomes)`).
   //
-  // Nao ha aqui linha nenhuma de outra tabela -- ver `ExecutarSql`. Um `SELECT`
-  // de uma tabela que o jogo criou responde ZERO LINHAS, que e a resposta do
-  // SQLite para uma tabela vazia, e nao uma invencao: o catalogo de um console
-  // sem nada descarregado e vazio.
-  std::vector<std::string> tabelas_sql_;
-  bool tem_dbinfo_ = false;
-  std::uint32_t dbinfo_versao_ = 0;
-  std::uint32_t dbinfo_sub_ = 0;
-  // Uma linha entregue ao callback do `sqlite3_exec`: os valores e os nomes das
-  // colunas, ja em texto (e a forma que o `sqlite3_exec` entrega).
-  struct LinhaSql {
-    std::vector<std::string> valores;
-    std::vector<std::string> nomes;
-  };
-  std::uint32_t ExecutarSql(const std::string& sql, std::vector<LinhaSql>* linhas);
-  bool EntregarLinhasSql(ICpu& cpu, const std::vector<LinhaSql>& linhas, std::uint32_t cb,
-                         std::uint32_t ctx, std::uint32_t pp_saida);
+  // Devolve `false` quando o callback pediu PARAGEM (contrato do `sqlite3_exec`:
+  // um retorno diferente de zero aborta a instrucao) ou quando a linha nao pode
+  // ser entregue -- e nesse caso a falta ja ficou registada com o nome.
+  bool EntregarLinhaSql(ICpu& cpu, const PonteSqlite::Linha& linha, std::uint32_t cb,
+                        std::uint32_t ctx, std::uint32_t pp_saida);
 
   // A FRENTE io2: o estado dos objectos IUnzipAStream e IMemAStream, por
   // endereco de objecto. Os objectos nascem no `InstalarAjudantes` (kObjUnzip /

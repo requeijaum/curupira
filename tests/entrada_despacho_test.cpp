@@ -2044,17 +2044,56 @@ constexpr std::uint32_t kSqlNoGuest = 0x00094400u;
 constexpr std::uint32_t kPPDb = 0x00094500u;
 constexpr std::uint32_t kMarcadorDoSql = 0x00000320u;
 // A ROTINA DO CALLBACK, ARM, em `kRotina` (0x200): grava o `r1` (o numero de
-// colunas) e o `r2` (o vector de valores) no marcador, e devolve ZERO -- que e o
-// que diz ao `sqlite3_exec` para continuar.
+// colunas), o `r2` (o vector de valores) e o `r3` (o vector dos nomes) no marcador,
+// e devolve ZERO -- que e o que diz ao `sqlite3_exec` para continuar.
+//
+// OS TRES REGISTADORES SAO GUARDADOS. O vector dos nomes vem no `r3`, e uma rotina
+// que so guardasse o `r2` deixaria o teste a ler a zona da memoria por CONSTANTE em
+// vez de ler o que o callback recebeu -- um teste que prova que NOS escrevemos ali,
+// e nao o que o JOGO ve.
 void EscreverCallbackDoSql(Memoria& mem) {
-  mem.Escrever32(kRotina + 0x00, 0xE59F3010u);  // ldr r3, [pc, #0x10] -> 0x218
-  mem.Escrever32(kRotina + 0x04, 0xE5831000u);  // str r1, [r3]      (ncols)
-  mem.Escrever32(kRotina + 0x08, 0xE5832004u);  // str r2, [r3, #4]  (valores)
-  mem.Escrever32(kRotina + 0x0C, 0xE3A00000u);  // mov r0, #0
-  mem.Escrever32(kRotina + 0x10, 0xE12FFF1Eu);  // bx lr
+  mem.Escrever32(kRotina + 0x00, 0xE59FC010u);  // ldr ip, [pc, #0x10] -> 0x218
+  mem.Escrever32(kRotina + 0x04, 0xE58C1000u);  // str r1, [ip]      (ncols)
+  mem.Escrever32(kRotina + 0x08, 0xE58C2004u);  // str r2, [ip, #4]  (valores)
+  mem.Escrever32(kRotina + 0x0C, 0xE58C3008u);  // str r3, [ip, #8]  (nomes)
+  mem.Escrever32(kRotina + 0x10, 0xE3A00000u);  // mov r0, #0
+  mem.Escrever32(kRotina + 0x14, 0xE12FFF1Eu);  // bx lr
   mem.Escrever32(kRotina + 0x18, kMarcadorDoSql);
   mem.Escrever32(kMarcadorDoSql, 0);
   mem.Escrever32(kMarcadorDoSql + 4, 0);
+  mem.Escrever32(kMarcadorDoSql + 8, 0);
+}
+
+// O QUE O CALLBACK DO JOGO RECEBEU, lido dos PROPRIOS vectores que ele recebeu
+// (`char **`, com o `NULL` final do contrato do `sqlite3_exec`).
+struct LinhaRecebida {
+  std::uint32_t colunas = 0;
+  std::vector<std::string> valores;
+  std::vector<bool> nulos;
+  std::vector<std::string> nomes;
+  bool valores_terminados_em_nulo = false;
+  bool nomes_terminados_em_nulo = false;
+};
+
+LinhaRecebida LerLinhaRecebida(Bancada& b) {
+  LinhaRecebida r;
+  r.colunas = b.Mem().Ler32(kMarcadorDoSql);
+  const std::uint32_t pv = b.Mem().Ler32(kMarcadorDoSql + 4);
+  const std::uint32_t pn = b.Mem().Ler32(kMarcadorDoSql + 8);
+  for (std::uint32_t i = 0; i < r.colunas; ++i) {
+    const std::uint32_t v = b.Mem().Ler32(pv + i * 4);
+    r.nulos.push_back(v == 0);
+    std::string s;
+    if (v != 0) b.Mem().LerCadeia(v, &s, 256);
+    r.valores.push_back(s);
+    std::string n;
+    const std::uint32_t p = b.Mem().Ler32(pn + i * 4);
+    if (p != 0) b.Mem().LerCadeia(p, &n, 256);
+    r.nomes.push_back(n);
+  }
+  r.valores_terminados_em_nulo = (pv != 0) && (b.Mem().Ler32(pv + r.colunas * 4) == 0);
+  r.nomes_terminados_em_nulo = (pn != 0) && (b.Mem().Ler32(pn + r.colunas * 4) == 0);
+  return r;
 }
 
 void EscreverTexto(Memoria& mem, std::uint32_t onde, const std::string& s) {
@@ -2068,6 +2107,28 @@ std::uint32_t ChamaExec(Bancada& b, const std::string& sql, std::uint32_t cb = 0
                         std::uint32_t ctx = 0) {
   EscreverTexto(b.Mem(), kSqlNoGuest, sql);
   return b.ChamaSaida(kSaidaSqlExec, kObjSqlDb, kSqlNoGuest, cb, ctx);
+}
+
+// ABRE O BANCO DE TESTE pelo slot do `ISQLMgr` -- o mesmo caminho que o jogo usa.
+//
+// E OBRIGATORIO em todo o teste que chame o `Exec`: a PONTE TEM ESTADO (o banco
+// aberto), e o subconjunto a mao nao tinha nenhum -- era por isso que o `Exec` dele
+// respondia sem abertura nenhuma. A bancada nao registou VFS nenhuma, logo o banco
+// nasce VAZIO (e o caso de um console sem nada descarregado).
+std::uint32_t AbreOBanco(Bancada& b, const char* nome = "tt_prefs.db") {
+  EscreverTexto(b.Mem(), kNomeDoBanco, nome);
+  return b.ChamaSaida(kSaidaSqlOpen, 0x80060600u, kNomeDoBanco, kPPDb, 0u);
+}
+
+// O VALOR E O NOME DA COLUNA `i`, com o lugar vazio DITO em vez de um acesso fora
+// dos limites: um teste que le `valores[0]` de uma linha que nao chegou nao falha,
+// **estoura** -- e um estouro no meio de uma bateria de testes esconde os que
+// vinham a seguir.
+std::string ValorDaColuna(const LinhaRecebida& r, std::size_t i) {
+  return i < r.valores.size() ? r.valores[i] : std::string("(sem coluna)");
+}
+std::string NomeDaColuna(const LinhaRecebida& r, std::size_t i) {
+  return i < r.nomes.size() ? r.nomes[i] : std::string("(sem coluna)");
 }
 
 TEST(SqlDoZWheel, ACablagemDoBancoApontaParaOExecNaPropriaTabela) {
@@ -2107,21 +2168,35 @@ TEST(SqlDoZWheel, OOpenDevolveOBancoNoR2EInformaOSucesso) {
   EXPECT_EQ(b.ChamaSaida(kSaidaSqlOpen, 0x80060600u, kNomeDoBanco, kPPDb, 0u), kAeeSuccess);
   EXPECT_EQ(b.Mem().Ler32(kPPDb), kObjSqlDb) << "o banco vai no r2, e nao no r3";
   EXPECT_EQ(b.Faltas("ISQLMgr::Open"), 0u) << "servido nao e falta";
+  // O PRESSUposto DECLARADO: o banco do jogo e aberto numa COPIA, num scratch
+  // nosso, e nao na pasta da ROM do utilizador -- a VFS desta arvore e so de
+  // leitura por decisao (`core/brew/vfs.h`, `core/brew/sql.h`).
+  const auto& p = b.Tr().ContagemPressupostos();
+  EXPECT_NE(p.find("ISQLMgr::Open (ponte SQLite)"), p.end())
+      << "abrir numa copia e um pressuposto declarado, e nao silencioso";
 }
 
 TEST(SqlDoZWheel, OsPragmasEOsMarcadoresDeTransaccaoSaoServidos) {
   Bancada b;
-  // Os quatro `PRAGMA` que so AJUSTAM e o `BEGIN`/`END` que envolvem a criacao
-  // das tabelas: medidos no tectoy, e nenhum deles devolve linha.
+  ASSERT_EQ(AbreOBanco(b), kAeeSuccess);
+  // Os `PRAGMA` que so AJUSTAM e os marcadores de transaccao que envolvem a
+  // criacao das tabelas: medidos no tectoy, e nenhum deles devolve linha.
   for (const char* s : {"PRAGMA main.journal_mode = PERSIST;", "PRAGMA main.locking_mode = EXCLUSIVE;",
                         "PRAGMA main.synchronous = FULL;", "PRAGMA legacy_file_format = OFF;",
                         "PRAGMA encoding = \"UTF-16\";", "BEGIN TRANSACTION;", "END TRANSACTION;"}) {
     EXPECT_EQ(ChamaExec(b, s), kAeeSuccess) << s;
   }
-  // O `ROLLBACK` NAO esta na lista, e de proposito: ele promete DESFAZER, e aqui
-  // nao ha nada para desfazer. Recusa com o nome.
+  // O `ROLLBACK` DE DENTRO de uma transaccao e SERVIDO -- e agora pelo MOTOR, e
+  // nao por uma recusa nossa. O subconjunto a mao recusava-o com o nome porque
+  // "prometia desfazer" e nao havia nada para desfazer; o SQLite desfaz mesmo.
+  EXPECT_EQ(ChamaExec(b, "BEGIN TRANSACTION;"), kAeeSuccess);
+  EXPECT_EQ(ChamaExec(b, "ROLLBACK TRANSACTION;"), kAeeSuccess);
+  // E o `ROLLBACK` SEM transaccao aberta e um erro -- do SQLITE, com a mensagem
+  // dele (`cannot rollback - no transaction is active`), que e exactamente o que o
+  // console respondia. Antes era a NOSSA recusa, com o nome no registo.
   EXPECT_EQ(ChamaExec(b, "ROLLBACK;"), kAeeFailed);
-  EXPECT_EQ(b.Faltas("ISQLDatabase::Exec instrucao nao servida"), 1u);
+  EXPECT_EQ(b.Faltas("ISQLDatabase::Exec instrucao nao servida"), 0u)
+      << "nao ha aqui subconjunto nenhum: a instrucao CHEGA ao motor";
 }
 
 TEST(SqlDoZWheel, ODbinfoNasceVazioERecebeAVersaoQueOJogoGrava) {
@@ -2131,6 +2206,7 @@ TEST(SqlDoZWheel, ODbinfoNasceVazioERecebeAVersaoQueOJogoGrava) {
   //   INSERT OR REPLACE INTO DBINFO values (1, 0)
   //   SELECT version, subversion FROM DBINFO   -> uma linha
   Bancada b;
+  ASSERT_EQ(AbreOBanco(b), kAeeSuccess);
   EXPECT_EQ(ChamaExec(b, "SELECT version, subversion FROM DBINFO"), kAeeFailed)
       << "sem a tabela, o SQLite diz 'no such table' -- e e assim que o jogo sabe "
          "que tem de criar";
@@ -2144,65 +2220,123 @@ TEST(SqlDoZWheel, ODbinfoNasceVazioERecebeAVersaoQueOJogoGrava) {
   EscreverCallbackDoSql(b.Mem());
   EXPECT_EQ(ChamaExec(b, "SELECT version, subversion FROM DBINFO", kRotina, kContexto),
             kAeeSuccess);
-  // A LINHA FOI ENTREGUE AO CALLBACK: ele correu (gravou o numero de colunas) e
-  // o numero de colunas e DOIS.
-  EXPECT_EQ(b.Mem().Ler32(kMarcadorDoSql), 2u);
-  EXPECT_NE(b.Mem().Ler32(kMarcadorDoSql + 4), 0u) << "o vector de valores tem de vir preenchido";
-  // OS NOMES E OS VALORES estao na zona da linha, em texto -- e o contrato do
-  // `sqlite3_exec` (o callback recebe `char **`).
-  std::string nome0, valor0;
-  b.Mem().LerCadeia(kZonaDeLinhasSql, &nome0, 64);
-  b.Mem().LerCadeia(kZonaDeLinhasSql + 0x100u, &valor0, 64);
-  EXPECT_EQ(nome0, "version");
-  EXPECT_EQ(valor0, "1");
-  // E a coluna 1 e a subversao.
-  std::string nome1, valor1;
-  b.Mem().LerCadeia(kZonaDeLinhasSql + 0x40u, &nome1, 64);
-  b.Mem().LerCadeia(kZonaDeLinhasSql + 0x140u, &valor1, 64);
-  EXPECT_EQ(nome1, "subversion");
-  EXPECT_EQ(valor1, "0");
+  // A LINHA FOI ENTREGUE AO CALLBACK: ele correu e o numero de colunas e DOIS.
+  // O TESTE LE OS VECTORES QUE O CALLBACK RECEBEU (`r2`/`r3`), e nao a zona da
+  // memoria por constante: ler a zona provaria que NOS escrevemos ali, e o que
+  // interessa e o que o JOGO ve.
+  const LinhaRecebida r = LerLinhaRecebida(b);
+  EXPECT_EQ(r.colunas, 2u);
+  EXPECT_EQ(r.nomes, (std::vector<std::string>{"version", "subversion"}));
+  EXPECT_EQ(r.valores, (std::vector<std::string>{"1", "0"}));
+  EXPECT_TRUE(r.valores_terminados_em_nulo) << "o contrato do `sqlite3_exec` pede o NULL final";
+  EXPECT_TRUE(r.nomes_terminados_em_nulo);
 }
 
 TEST(SqlDoZWheel, OPragmaIntegrityCheckEntregaOKAoCallback) {
   Bancada b;
+  ASSERT_EQ(AbreOBanco(b), kAeeSuccess);
   EscreverCallbackDoSql(b.Mem());
   EXPECT_EQ(ChamaExec(b, "PRAGMA integrity_check", kRotina, kContexto), kAeeSuccess);
-  EXPECT_EQ(b.Mem().Ler32(kMarcadorDoSql), 1u);
-  std::string valor;
-  b.Mem().LerCadeia(kZonaDeLinhasSql + 0x100u, &valor, 64);
-  EXPECT_EQ(valor, "ok");
+  const LinhaRecebida r = LerLinhaRecebida(b);
+  EXPECT_EQ(r.colunas, 1u);
+  EXPECT_EQ(ValorDaColuna(r, 0), "ok") << "o motor responde `ok` a um banco integro";
 }
 
-TEST(SqlDoZWheel, AsTabelasSemArmazenamentoSaoUmaFaltaDeclarada) {
-  // O CAMINHO DO CATALOGO E DA FILA DE DESCARGAS. O Z-Wheel grava aqui
-  // (`PREFSINFO`, `ASSETS`, `DLITEMINFO`, `GAMEINFO`), e a instrucao e ACEITE com
-  // o conteudo a NAO ficar -- uma falta declarada com o nome da tabela, e nao um
-  // sucesso mudo: o `SELECT` seguinte a essa tabela le ZERO linhas de onde o jogo
-  // escreveu uma.
+TEST(SqlDoZWheel, OPrefsGravaTodoOTextoLidoDeVoltaComQuatroColunas) {
+  // A PECA QUE A FRENTE `zwheel` NOMEOU, palavra por palavra: *"INSERT sem
+  // armazenamento PREFSINFO 8x -- o app grava e volta a ler, e precisa de um
+  // `SELECT *` de 4 colunas com chave TEXT"*.
+  //
+  // Com o subconjunto a mao o `INSERT` era ACEITE e o conteudo NAO ficava: o
+  // `SELECT` seguinte lia ZERO linhas de onde o jogo escreveu uma, e a preferencia
+  // do utilizador perdia-se em silencio. Com a ponte quem guarda e o SQLite, e a
+  // chave TEXT e dele.
   Bancada b;
+  ASSERT_EQ(AbreOBanco(b), kAeeSuccess);
   EXPECT_EQ(ChamaExec(b, "INSERT OR REPLACE INTO PREFSINFO values ('Initialized', '', 1, 2)"),
             kAeeFailed) << "sem a tabela, e erro -- o SQLite nao a inventa";
-  EXPECT_EQ(ChamaExec(b, "CREATE TABLE PREFSINFO(name TEXT PRIMARY KEY, strValue TEXT, "
+  ASSERT_EQ(ChamaExec(b, "CREATE TABLE PREFSINFO(name TEXT PRIMARY KEY, strValue TEXT, "
                          "dwValue INTEGER, flags INTEGER)"),
             kAeeSuccess);
-  EXPECT_EQ(ChamaExec(b, "INSERT OR REPLACE INTO PREFSINFO values ('Initialized', '', 1, 2)"),
+  ASSERT_EQ(ChamaExec(b, "INSERT OR REPLACE INTO PREFSINFO values ('Initialized', '', 1, 2)"),
             kAeeSuccess);
-  EXPECT_EQ(b.Faltas("ISQLDatabase::Exec INSERT sem armazenamento"), 1u);
-  // A tabela existe e esta VAZIA: zero linhas, e nao uma recusa.
+  EXPECT_EQ(b.Faltas("ISQLDatabase::Exec INSERT sem armazenamento"), 0u)
+      << "o INSERT deixou de ser uma falta declarada: ele GUARDA";
+
   EscreverCallbackDoSql(b.Mem());
-  EXPECT_EQ(ChamaExec(b, "SELECT * FROM PREFSINFO", kRotina, kContexto), kAeeSuccess);
-  EXPECT_EQ(b.Mem().Ler32(kMarcadorDoSql), 0u) << "tabela vazia nao chama o callback";
-  // E uma consulta a uma tabela que NINGUEM criou e recusada com o nome dela.
-  EXPECT_EQ(ChamaExec(b, "SELECT * FROM GAMEINFO, TITLETEXT"), kAeeFailed);
-  EXPECT_EQ(b.Faltas("ISQLDatabase::Exec SELECT de tabela ausente"), 1u);
+  ASSERT_EQ(ChamaExec(b, "SELECT * FROM PREFSINFO", kRotina, kContexto), kAeeSuccess);
+  const LinhaRecebida r = LerLinhaRecebida(b);
+  EXPECT_EQ(r.colunas, 4u) << "quatro colunas, como o esquema que o proprio modulo manda";
+  EXPECT_EQ(r.nomes, (std::vector<std::string>{"name", "strValue", "dwValue", "flags"}));
+  EXPECT_EQ(r.valores, (std::vector<std::string>{"Initialized", "", "1", "2"}));
+  EXPECT_TRUE(r.valores_terminados_em_nulo);
+  EXPECT_TRUE(r.nomes_terminados_em_nulo);
+}
+
+TEST(SqlDoZWheel, OCatalogoDeNoveColunasChegaAoCallbackInteiro) {
+  // A LINHA MAIS LARGA do dialecto medido: o `ASSETS` do catalogo tem NOVE colunas
+  // (`INSERT OR REPLACE INTO ASSETS values (%d, %d, %d, %d, '%s', %d, '%s', %d, %d)`).
+  // O subconjunto a mao entregava QUATRO; nove era "linha com forma estranha".
+  Bancada b;
+  ASSERT_EQ(AbreOBanco(b), kAeeSuccess);
+  ASSERT_EQ(ChamaExec(b, "CREATE TABLE ASSETS(owner INTEGER, dslid INTEGER PRIMARY KEY, type "
+                         "INTEGER, version INTEGER, path TEXT, language INTEGER, title TEXT, "
+                         "startdate INTEGER, enddate INTEGER)"),
+            kAeeSuccess);
+  ASSERT_EQ(ChamaExec(b, "INSERT OR REPLACE INTO ASSETS values (0, 10001, 6, 1, "
+                         "'./assets/faq/en/setup.html', 538996325, 'Setup', 0, 0)"),
+            kAeeSuccess);
+  EscreverCallbackDoSql(b.Mem());
+  ASSERT_EQ(ChamaExec(b, "SELECT * FROM ASSETS", kRotina, kContexto), kAeeSuccess);
+  const LinhaRecebida r = LerLinhaRecebida(b);
+  EXPECT_EQ(r.colunas, 9u);
+  EXPECT_EQ(ValorDaColuna(r, 1), "10001");
+  EXPECT_EQ(ValorDaColuna(r, 4), "./assets/faq/en/setup.html");
+  EXPECT_EQ(ValorDaColuna(r, 6), "Setup");
+  EXPECT_EQ(NomeDaColuna(r, 4), "path");
+}
+
+TEST(SqlDoZWheel, OUmaTabelaQueNinguemCriouERespostaPeloMotor) {
+  // NAO HA AQUI SUBCONJUNTO NENHUM: a instrucao CHEGA ao SQLite e a resposta e a
+  // dele, com a mensagem dele no registo. O que este projecto conta como FALTA e
+  // uma capacidade nossa que nao existe -- e o motor existe. Contar a resposta do
+  // console como falta nossa poria o motor inteiro na lista do que falta fazer.
+  Bancada b;
+  DestinoMemoria dm;
+  b.Tr().JuntarDestino(&dm);
+  ASSERT_EQ(AbreOBanco(b), kAeeSuccess);
+  EXPECT_EQ(ChamaExec(b, "SELECT * FROM NAO_EXISTE"), kAeeFailed);
+  EXPECT_EQ(b.Faltas("ISQLDatabase::Exec SELECT de tabela ausente"), 0u);
+  EXPECT_EQ(b.Faltas("ISQLDatabase::Exec instrucao nao servida"), 0u);
+  bool disse = false;
+  for (const auto& ev : dm.eventos) {
+    if (ev.nome == "SQL_ERRO" && ev.detalhe.find("NAO_EXISTE") != std::string::npos) disse = true;
+  }
+  EXPECT_TRUE(disse) << "o motivo do motor tem de ficar no registo, com a tabela nomeada";
 }
 
 TEST(SqlDoZWheel, OCallbackForaDoModuloNaoSeChama) {
   // A MESMA GUARDA do `IShell::SendEvent` e do temporizador: um ponteiro de
-  // funcao fora da faixa do modulo poria o PC num endereco de dados.
+  // funcao fora da faixa do modulo poria o PC num endereco de dados. Sem poder
+  // entregar a linha, a INSTRUCAO ABORTA -- e o contrato do `sqlite3_exec` (um
+  // callback que devolve diferente de zero aborta), nao uma invencao nossa.
   Bancada b;
-  EXPECT_EQ(ChamaExec(b, "PRAGMA integrity_check", 0x50000000u, kContexto), kAeeSuccess);
+  ASSERT_EQ(AbreOBanco(b), kAeeSuccess);
+  EXPECT_EQ(ChamaExec(b, "PRAGMA integrity_check", 0x50000000u, kContexto), kAeeFailed);
   EXPECT_EQ(b.Faltas("ISQLDatabase::Exec callback fora do modulo"), 1u);
+}
+
+TEST(SqlDoZWheel, OExecDeclaraOPressupostoDaPonteENaoUmaFalta) {
+  // A REGRA DE FRONTEIRA do `Traco`: recusar e `RegistarFalta`; responder o que
+  // nao se mediu e `RegistarPressuposto`. A ponte responde com o motor do console
+  // -- capacidade que EXISTE -- e isso fica DECLARADO e contado, em vez de
+  // silencioso.
+  Bancada b;
+  ASSERT_EQ(AbreOBanco(b), kAeeSuccess);
+  ASSERT_EQ(ChamaExec(b, "PRAGMA integrity_check"), kAeeSuccess);
+  const auto& p = b.Tr().ContagemPressupostos();
+  EXPECT_NE(p.find("ISQLDatabase::Exec (ponte SQLite)"), p.end())
+      << "o motor de SQL usado tem de ficar declarado, e nao implicito";
 }
 
 }  // namespace zb2::brew

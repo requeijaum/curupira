@@ -4,13 +4,43 @@
 # Zeebulator da branch `new_ez_ui` fica intacto, e as duas podem ser construidas
 # e comparadas lado a lado. Ver docs/rewrite/DESIGN.md.
 cmake_minimum_required(VERSION 3.16)
-project(zeebulator2 CXX)
+# O `C` ESTA AQUI POR CAUSA DO SQLITE, e nao por gosto: a amalgamacao e C
+# (`third_party/sqlite3/sqlite3.c`) e um projecto so de C++ nao sabe compila-la --
+# o sintoma, que nao diz nada sobre a causa, e um `Error required internal CMake
+# variable not set: CMAKE_C_COMPILE_OBJECT` na geracao.
+project(zeebulator2 CXX C)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
+
+# ---------------------------------------------------------------------------
+# O SQLITE (a ponte do `ISQLDatabase` -- ver `core/brew/sql.h`).
+#
+# Vem do proprio projecto do SQLite (amalgamacao, dominio publico, 3.50.2) e esta
+# versionado em `third_party/sqlite3/`, com a origem e a licenca num `LEIA-ME.md`:
+# uma dependencia que se copia para dentro da arvore tem de dizer de onde veio, e
+# uma que nao esta versionada faz a construcao depender da maquina de quem a
+# corre. Ver `third_party/sqlite3/LEIA-ME.md`.
+#
+# AS FLAGS SAO AS MAGRAS, e cada uma e uma decisao:
+#   `SQLITE_THREADSAFE=0`        -- o despacho corre no fio que o chamou; um
+#                                   mutex por base de dados era peso sem uso.
+#   `SQLITE_OMIT_LOAD_EXTENSION` -- nada carrega `.so` de fora.
+#   `SQLITE_OMIT_DEPRECATED`     -- as APIs retiradas do SQLite ficam fora.
+#   `SQLITE_DEFAULT_MEMSTATUS=0` -- o contador de memoria do proprio motor, fora.
+add_library(zb2_sqlite3 STATIC third_party/sqlite3/sqlite3.c)
+target_compile_definitions(zb2_sqlite3 PRIVATE
+  SQLITE_THREADSAFE=0
+  SQLITE_OMIT_LOAD_EXTENSION
+  SQLITE_OMIT_DEPRECATED
+  SQLITE_DEFAULT_MEMSTATUS=0
+)
+# O AMALGAMADO NAO SE EDITA, e nao se avisa sobre ele: 9 MB de C de terceiros que
+# ninguem aqui mantem. Os avisos que interessam sao os da NOSSA arvore.
+target_compile_options(zb2_sqlite3 PRIVATE -w)
 
 add_library(zb2_core STATIC
   core/traco/traco.cpp
@@ -34,6 +64,7 @@ add_library(zb2_core STATIC
   core/brew/recursos.cpp
   core/brew/sha256.cpp
   core/brew/despacho.cpp
+  core/brew/sql.cpp
   core/brew/ihid_entrada.cpp
   core/brew/ihiddevice.cpp
   core/brew/egl.cpp
@@ -46,6 +77,10 @@ add_library(zb2_core STATIC
 )
 target_include_directories(zb2_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(zb2_core PRIVATE -Wall -Wextra)
+# O SQLite e uma dependencia PRIVADA do motor: o cabecalho dele nao entra num
+# `-I` publico (`core/brew/sql.cpp` inclui-o pelo caminho, `third_party/...`),
+# logo nada fora do motor fica a saber que ha SQLite aqui dentro.
+target_link_libraries(zb2_core PRIVATE zb2_sqlite3)
 # O LZMA do sistema (liblzma / xz-utils): o decodificador LZMA_ALONE com que o
 # censo em Python bateu byte a byte. Procurado e exigido, como o zlib do PACK.
 find_library(ZB2_LZMA NAMES lzma)
@@ -89,6 +124,7 @@ add_executable(zb2_tests
   tests/aez_test.cpp
   tests/ecra_test.cpp
   tests/recusas_test.cpp
+  tests/sql_test.cpp
   tests/ecra_guest_test.cpp
 )
 # A RAIZ DO REPOSITORIO, para os testes que abrem ficheiros reais (o
