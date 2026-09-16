@@ -432,7 +432,21 @@ class Igl {
   // `kIgl_ClearStencil` di-lo no detalhe e no traco.
   std::uint32_t stencil_limpeza_ = 0;
   std::uint32_t mascara_limpeza_ = 0;
-  std::uint32_t viewport_[4] = {0, 0, 0, 0};
+  // O VIEWPORT OMISSO E O ECRA INTEIRO, e nao `{0,0,0,0}`.
+  //
+  // Estava a zero e isso fazia o rasterizador DESCARTAR TODA A GEOMETRIA
+  // (`rasterizador.cpp:841`, "fora do viewport"): um titulo que desenhe sem chamar
+  // `glViewport` limpa o ecra e nao desenha nada. Era o caso medido dos CINCO
+  // TecToy (`Rolimaz`, `AirRacez`, `Bajaz`, `Boiaz`, `JetBoardz`): **nenhum deles
+  // chama `glViewport` em toda a corrida**.
+  //
+  // O valor certo nao e uma escolha nossa: e o estado inicial do GL -- "the initial
+  // viewport is set to the entire window" -- e o proprio rasterizador JA o declarava
+  // assim por omissao (`core/video/rasterizador.h:232-234`, "como o GL manda"). O
+  // motor do Igl e que tinha um segundo valor, e discordava do primeiro: **duas
+  // copias do mesmo estado inicial sao duas chances de ele divergir** (a licao do
+  // `strtowstr`/`aee_GetRand`, noutro sitio).
+  std::uint32_t viewport_[4] = {0, 0, zb2::brew::kLarguraDoEcra, zb2::brew::kAlturaDoEcra};
   std::uint32_t cull_face_ = gl_slots::GL_BACK;
   std::uint32_t front_face_ = gl_slots::GL_CCW;
   std::uint32_t shade_model_ = gl_slots::GL_SMOOTH;
