@@ -541,6 +541,38 @@ ordem explicita.
 
 ---
 
+## O heap do guest (o quarto limite do instrumento)
+
+O heap do guest tinha **12 MiB** e a familia TTD pede **20 a 23 MiB so no `CreateInstance`** --
+medido nos `Malloc` do proprio guest (`zeeboids` 23 MiB, `zeebotennis`/`dodgeball` 22, `funsoccer` 21,
+`activitycenter` 20+3). Com 12 MiB o motor do jogo **dizia-o pelos seus `dbgprintf`**: "Could not
+initialize the MemoryManager", erro 10, "TTDMM ASSERT" -- e o `footparty` dizia mesmo "The game will
+refuse beginning". 17 ASSERTs e **0 pixels** em 9 titulos.
+
+Medido nos dois eixos, porque so um podia ser a causa:
+
+| | heap | resultado |
+|---|---|---|
+| BASE | 12 MiB em `0x80200000` | 17 ASSERTs, 0 px |
+| so o ENDERECO | 12 MiB em `0x10000000` | 17 ASSERTs, 0 px -- **nao era o endereco** |
+| so o TAMANHO | 64 MiB em `0x80200000` | colide com a nossa banda de objectos; 2 titulos derrapam |
+| **o par certo** | **64 MiB em `0x10000000`** (layout do zeebx) | **0 regressoes, 8 melhorias** |
+
+`gof` **0 -> 90 316 800 px**; `dodgeball`/`zeebopeteca`/`footparty`/`zeeboids`/`alice`/`funsoccer`/
+`zeebotennis` de 0 a **307 200 px**. Titulos sem um pixel: 42 -> **34**.
+
+**Quarto limite do instrumento levantado nesta sessao**: os 200 despachos, as 20 000 saidas por fase,
+os 8 M passos e agora os 12 MiB de heap. O padrao e sempre o mesmo -- o instrumento a tapar trabalho
+legitimo, e o sintoma a aparecer como "o titulo nao faz nada".
+
+### O estado dos 62, depois de tudo isto
+
+**28/62 desenham** (era 20), e o total subiu a **2 272 866 620 px**. Os 34 restantes estao nomeados por
+causa, e a maior e a **re-entrada do modulo** (a veneer da ROPI a correr sobre um objecto NULO, 9
+titulos) -- o mecanismo que a frente `ropi2` mediu e para o qual ja ha teste.
+
+---
+
 ## O laco de trabalho
 
 1. **Um titulo de cada vez**, do mais simples ao mais complexo.
