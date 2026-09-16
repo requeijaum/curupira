@@ -1117,6 +1117,27 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   for (const auto& par : traco.ContagemPressupostos()) e.pressupostos[par.first] = par.second;
   e.pixels = g_despacho->TelaRef().Escritos();
   e.cores = g_despacho->TelaRef().CoresDistintas();
+  // O HISTOGRAMA -- o instrumento que responde a "QUAL cor mudou".
+  //
+  // `cores` e um numero so: quando ele sobe ou desce, o comparador diz que houve
+  // melhoria/regressao e nao diz QUAL tom apareceu ou desapareceu. Uma contagem
+  // distinta que se move sem se saber por que e uma medida que nao se pode usar
+  // numa decisao -- foi o caso do `allstarcards` (1406 -> 1405 ao ganhar o desenho
+  // 2D): 4,4 M pixeis de rectangulo opaco cobriram um dos tons, e so o histograma
+  // diz qual. `ZB2_HIST=<ficheiro>` escreve `cor565 contagem` por tom distinto.
+  if (const char* h = std::getenv("ZB2_HIST")) {
+    if (h[0] != '\0') {
+      std::map<std::uint32_t, std::uint32_t> hist;
+      for (int y = 0; y < zb2::brew::Tela::kAltura; ++y) {
+        for (int x = 0; x < zb2::brew::Tela::kLargura; ++x) ++hist[g_despacho->TelaRef().PixelEm(x, y)];
+      }
+      std::FILE* f = std::fopen(h, "w");
+      if (f != nullptr) {
+        for (const auto& par : hist) std::fprintf(f, "%04x %u\n", par.first, par.second);
+        std::fclose(f);
+      }
+    }
+  }
   // DO MOTOR, e nao de globais. As `g_*` nunca eram incrementadas: estas duas
   // colunas escreveram ZERO em todas as corridas desde que existem.
   e.textos = despacho.Textos();
