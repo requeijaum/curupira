@@ -1538,6 +1538,32 @@ void ArmInterpreter::ExecutarThumb(std::uint16_t instr, std::uint32_t pc) {
     Set(kPC, pc + 2);
     return;
   }
+  // FORMATO 12 DO THUMB (0xA000-0xAFFF): `ADD Rd, PC, #imm8*4` e
+  // `ADD Rd, SP, #imm8*4`. O bit 11 escolhe a base (0 = PC, 1 = SP) e o
+  // deslocamento e `imm8 * 4`.
+  //
+  // PORQUE EXISTE: era a UNICA forma de primeiro nivel do Thumb que faltava --
+  // `0xA000` nao tinha ramo em lado nenhum e caia na recusa final
+  // (`NomeDoFormatoThumb` so lhe dava nome). MEDIDO com a sonda do descodificador
+  // (3 palavras reais do `create` do `brainchallenge`, as tres que o `g5.md`
+  // nomeou -- 0xa804 `add r0, sp, #16`, 0xaa02 `add r2, sp, #8`, 0xa226
+  // `add r2, pc, #0x98`): as tres davam "forma Thumb NAO implementada".
+  //
+  // A BASE DO PC LEVA A MASCARA DE ALINHAMENTO A PALAVRA, e o valor e
+  // `pc + 4`: as duas referenciais fazem exactamente isto (zeemu
+  // `instructions-thumb.cpp:63-71` `(r(15) & ~3) + immediate * 4`, com
+  // `r(15) == pc + 4` em Thumb; zeebulator `arm_interpreter.cpp:818-826`
+  // `((regs_[kPC] + 4) & ~3u) + word8 * 4`). O `LDR` literal desta arvore ja
+  // usava a mesma mascara (`:1515`).
+  if ((instr & 0xF000u) == 0xA000u) {
+    const bool base_e_sp = (instr & 0x0800u) != 0;
+    const std::uint32_t rd = (instr >> 8) & 7u;
+    familia_ = "add";
+    const Reg base = base_e_sp ? Get(kSP) : ((pc + 4u) & ~3u);
+    Set(static_cast<int>(rd), base + ((instr & 0xFFu) << 2));
+    Set(kPC, pc + 2);
+    return;
+  }
   if ((instr & 0xE000u) == 0x6000u || (instr & 0xE000u) == 0x7000u ||
       (instr & 0xF000u) == 0x8000u) {  // LDR/STR, LDRB/STRB, LDRH/STRH
     // O `L` DESTAS FORMAS E O BIT 11, em todas elas: 0x6000/0x6800 (palavra),

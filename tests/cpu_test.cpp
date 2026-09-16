@@ -1365,6 +1365,38 @@ TEST(Cpu, ThumbStrbEStrDePalavraGuardamENaoCarregam) {
   EXPECT_EQ(b.Mem().Ler32(0x00110010u), 0x11223344u) << "e o str guardou a palavra";
 }
 
+TEST(Cpu, ThumbAddRdPcSpComImediato) {
+  // O FORMATO 12 DO THUMB (0xA000-0xAFFF): `ADD Rd, PC, #imm8*4` e
+  // `ADD Rd, SP, #imm8*4`. As DUAS referenciais implementam-no -- zeemu
+  // `cpu/arm7tdmi/instructions-thumb.cpp:63-71` (`(r(15) & ~3) + immediate * 4`),
+  // zeebulator `core/cpu/arm_interpreter.cpp:818-826` (`ExecuteThumbLoadAddress`,
+  // despacho em `:986-987`) -- e aqui FALTAVA: nao havia ramo para 0xA000, e as
+  // palavras caiam na recusa final do `ExecutarThumb`.
+  //
+  // MEDIDO com a sonda do descodificador em tres palavras reais do `create` do
+  // `brainchallenge` (as tres que o `g5.md` nomeou): 0xa804 `add r0, sp, #16`,
+  // 0xaa02 `add r2, sp, #8`, 0xa226 `add r2, pc, #0x98` -- as tres davam
+  // `thumb:formato10_add_rd_pc_sp|forma Thumb NAO implementada`, e sao exactamente
+  // as 3 `recusadas_create` do titulo na corrida da bateria.
+  Bancada b;
+  b.R(13, 0x80080000u);     // sp
+  b.R(7, 0x00100005u);      // `bx r7` com o bit 0 posto entra em Thumb
+  b.Instrucao(0xE12FFF17u); // bx r7
+  b.Thumb(0xA804u);         // add r0, sp, #16
+  b.Thumb(0xAA02u);         // add r2, sp, #8
+  b.Thumb(0xA226u);         // add r2, pc, #0x98
+  b.Correr(1);              // o `bx` entra em Thumb
+  b.Correr(1);
+  EXPECT_EQ(b.R(0), 0x80080010u) << "add r0, sp, #16";
+  b.Correr(1);
+  EXPECT_EQ(b.R(2), 0x80080008u) << "add r2, sp, #8";
+  b.Correr(1);
+  // `0xA226` esta em 0x00100008: pc + 4 = 0x0010000C, alinhado a palavra (ja esta)
+  // mais 0x98.
+  EXPECT_EQ(b.R(2), 0x001000A4u) << "add r2, pc, #0x98 -- a base e `(pc+4) & ~3`";
+  EXPECT_EQ(b.Cpu().InstruscoesRecusadas(), 0u) << "nenhuma das tres recusa";
+}
+
 TEST(Cpu, ThumbFormato5FazAsSeteFormasDeMemoriaComRegistrador) {
   // As sete formas que faltavam (LDRH/STRH/LDRSB/LDRSH e companhia) vivem no
   // formato 5. O STRH tem de escrever DOIS bytes e o LDRSH tem de estender o
