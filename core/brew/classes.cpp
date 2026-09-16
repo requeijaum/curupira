@@ -908,6 +908,22 @@ std::uint32_t SlotIglesNoIgl(std::uint32_t slot) {
     // rast2 implementou no rasterizador. O id devolvido e interno (`igl.h`),
     // porque nao ha slot nenhum com este nome na vtable do IGL.
     case igles_slots::kIgles_AlphaFunc: return kIgl_AlphaFunc;  // 3
+    // O `Color4f` (6) e a MESMA falta de mapa, com a MESMA escala em jogo: o
+    // `AEEGL.h` so declara o `glColor4x` (`:71`, `GLfixed`) e o IGLES11 tem as
+    // duas variantes (`AEEGLES10.h:30` float, `:64` fixed). A `x` (40) ja estava
+    // servida; a `f` nao tinha caminho nenhum.
+    //
+    // MEDIDO na corrida de base (`/tmp/corrida_slot32.json`, `ZB2_QUADROS=300
+    // ZB2_EVT_START=1`): 299 recusas `IGLES11::Color4f` no `abd` e 299 no
+    // `torkandkral` (`igles_slots.inc`: 6), uma por quadro -- e sao os DOIS
+    // unicos titulos que a pedem. Sao tambem os dois que passaram a desenhar com
+    // o `DrawArrays` (0 -> 107 750 948 e 107 740 737 px) e os dois com UMA SO
+    // COR: a cor do desenho ficava no valor por omissao do motor (branco), porque
+    // nenhum pedido de cor chegava la.
+    //
+    // O id devolvido e INTERNO (`igl.h`): nao ha slot nenhum com este nome na
+    // vtable do IGL de 80 slots.
+    case igles_slots::kIgles_Color4f: return kIgl_Color4f;  // 6
     default: return kSemSlotNoIgl;
   }
 }
@@ -923,7 +939,7 @@ std::uint32_t SlotIglesNoIgl(std::uint32_t slot) {
 // para cada slot (por exemplo o `Orthof`, `(iname *pMe, AEEGLfloat left, ...`
 // tem SEIS argumentos reais, e o `TexImage2D` tem NOVE). A lista abaixo e o
 // conjunto dos que TEM quatro ou mais:
-//   Color4x 4 (r,g,b,a) | DrawElements 4 (modo,quantos,tipo,indices) |
+//   Color4f 4 (r,g,b,a) | Color4x 4 (r,g,b,a) | DrawElements 4 (modo,quantos,tipo,indices) |
 //   Orthof 6 | Orthox 6 | Scissor 4 (x,y,largura,altura) | TexCoordPointer 4 |
 //   VertexPointer 4 | TexImage2D 9 | TexSubImage2D 9 |
 //   CompressedTexImage2D 8 | Viewport 4 | ClearColorx 4.
@@ -934,6 +950,7 @@ bool SlotIglesTemQuartoNaPilha(std::uint32_t slot) {
   switch (slot) {
     case igles_slots::kIgles_ClearColorx:
     case igles_slots::kIgles_CompressedTexImage2D:
+    case igles_slots::kIgles_Color4f:
     case igles_slots::kIgles_Color4x:
     case igles_slots::kIgles_DrawElements:
     case igles_slots::kIgles_Orthof:

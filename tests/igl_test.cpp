@@ -1557,5 +1557,161 @@ TEST(FrenteAlphafunc, OFragmentoEDescartadoPelaReferenciaEmFloatDoAlphaFunc) {
       << "o segundo desenho nao descarta nenhum";
 }
 
+// ---------------------------------------------------------------------------
+// 9. A FRENTE color4f: o `IGLES11::Color4f`, a variante `float`, e a COR
+// ---------------------------------------------------------------------------
+//
+// MEDIDO na corrida de base (`/tmp/corrida_slot32.json`, `ZB2_QUADROS=300
+// ZB2_EVT_START=1`, 62 titulos): o `IGLES11::Color4f` (slot 6 de
+// `tools/igles_slots.inc`, `int (*Color4f) (iname *pMe, AEEGLfloat red,
+// AEEGLfloat green, AEEGLfloat blue, AEEGLfloat alpha)`, `AEEGLES10.h:30`) e
+// pedido **299 vezes em CADA UM dos dois titulos que o chamam** -- `abd` e
+// `torkandkral`, uma por quadro, e e o UNICO pedido dos dois que o mapa
+// `SlotIglesNoIgl` nao tem depois do `DrawArrays` ter entrado. Sao os DOIS
+// titulos que passaram a desenhar com o `DrawArrays` (0 -> 107 750 948 e
+// 107 740 737 px) e os dois com UMA SO COR: a cor do desenho fica no valor por
+// omissao do motor (branco) porque nenhum pedido de cor chega la.
+//
+// O `AEEGL.h` (a vtable de 80 slots do IGL) so tem o `glColor4x`
+// (`AEEGL.h:71`, `GLfixed`); as DUAS variantes estao no `AEEGLES10.h:30`
+// (float) e `:64` (fixed), e a `x` (slot 40) ja esta no mapa. O id do motor e
+// portanto INTERNO (como os quatro de cima) e a leitura dos QUATRO argumentos e
+// `Real`, nunca `Fixo`: o `Fixo` sobre os bits de um `float` -- 0x3E800000 para
+// 0.25 -- daria 16256.0, que o `Apertar` levava a 1.0, isto e, 0xFF em vez de
+// 0x40, sem nenhum aviso.
+//
+// OS QUATRO ARGUMENTOS: o quarto (o alfa) vai na PILHA por causa do `pMe` em r0
+// (`classes.cpp`, `SlotIglesTemQuartoNaPilha`).
+//
+// COMO ESTES TESTES ENTRAM: pela TABELA. O endereco do slot 6 e lido da vtable
+// escrita na memoria do guest, e o indice de despacho sai desse endereco -- um
+// teste que chamasse o id interno do motor provava o motor e nao a cablagem.
+
+TEST(FrenteColor4f, OColor4fDoIglesServePelaTabelaEOEstadoGuardaACor) {
+  BancoClasses b;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+
+  const std::uint32_t entrada =
+      b.saidas.Endereco(kVtableIgles) + 4u * igles_slots::kIgles_Color4f;
+  const std::uint32_t alvo = b.mem.Ler32(entrada);
+  std::uint32_t indice = 0;
+  ASSERT_TRUE(b.saidas.Contem(alvo, &indice)) << "entrada 0x" << std::hex << entrada;
+  EXPECT_EQ(indice, kVtableIgles + igles_slots::kIgles_Color4f);
+
+  // (0.25, 0.5, 0.75, 0.5) em `float`; o QUARTO argumento vem da pilha.
+  b.mem.Escrever32(kPilhaDoTeste, Real(0.5f));  // alfa
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, Real(0.25f));  // vermelho
+  b.cpu.Set(kR2, Real(0.5f));   // verde
+  b.cpu.Set(kR3, Real(0.75f));  // azul
+  b.cpu.Set(kSP, kPilhaDoTeste);
+  ASSERT_TRUE(AtenderClasse(b.cpu, indice, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess) << b.Detalhe("IGLES11::Color4f");
+  EXPECT_EQ(b.Faltas("IGLES11::Color4f"), 0u) << b.Detalhe("IGLES11::Color4f");
+  // 64, 128, 191, 128 em 8 bits (`v * 255 + 0.5`), com o vermelho no BYTE 0.
+  EXPECT_EQ(EstadoDoIgles11()->Cor(), 0x80BF8040u);
+
+  // A OUTRA DIRECCAO: os MESMOS valores pela variante `x` (GLfixed 16.16) tem de
+  // deixar o MESMO RGBA8. As duas escalas, um so estado -- e e esta metade que
+  // falha se a `f` for apontada para o ramo da `x`.
+  b.mem.Escrever32(kPilhaDoTeste, Fixo(0.5f));
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, Fixo(0.25f));
+  b.cpu.Set(kR2, Fixo(0.5f));
+  b.cpu.Set(kR3, Fixo(0.75f));
+  b.cpu.Set(kSP, kPilhaDoTeste);
+  ASSERT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Color4x, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  EXPECT_EQ(EstadoDoIgles11()->Cor(), 0x80BF8040u);
+}
+
+TEST(FrenteColor4f, ACorDoColor4fChegaATelaNoDesenho) {
+  // A ARMADILHA 3 outra vez: "nao ha falta" prova o estado, nao prova que a COR
+  // sai do motor. Este desenha um triangulo depois do `Color4f` e le o PIXEL da
+  // tela -- a cor tem de ser a pedida, e nao o branco por omissao.
+  BancoClasses b;
+  Tela tela;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+  const_cast<Igl*>(EstadoDoIgles11())->DefinirTela(&tela);
+
+  constexpr std::uint32_t kV = 0x0002F100u;  // os vertices (2 floats, passo 8)
+  constexpr std::uint32_t kI = 0x0002F200u;  // os indices (GL_UNSIGNED_SHORT)
+
+  // Viewport(0, 0, 8, 8): o quarto argumento real (a altura) vem da PILHA.
+  b.mem.Escrever32(kPilhaDoTeste, 8u);
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, 0u);
+  b.cpu.Set(kR2, 0u);
+  b.cpu.Set(kR3, 8u);
+  b.cpu.Set(kSP, kPilhaDoTeste);
+  ASSERT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Viewport, b.traco));
+  ASSERT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+
+  // O MESMO triangulo de seis fragmentos dos testes de cablagem do rasterizador.
+  const float v[3][2] = {{-1.0f, 0.75f}, {-1.0f, 0.0f}, {0.0f, 0.0f}};
+  for (std::uint32_t k = 0; k < 3u; ++k) {
+    b.mem.Escrever32(kV + 8u * k, Real(v[k][0]));
+    b.mem.Escrever32(kV + 8u * k + 4u, Real(v[k][1]));
+    b.mem.Escrever16(kI + 2u * k, static_cast<std::uint16_t>(k));
+  }
+
+  b.mem.Escrever32(kPilhaDoTeste, kV);
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, 2u);
+  b.cpu.Set(kR2, GL_FLOAT);
+  b.cpu.Set(kR3, 8u);
+  b.cpu.Set(kSP, kPilhaDoTeste);
+  ASSERT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_VertexPointer, b.traco));
+  ASSERT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, GL_VERTEX_ARRAY);
+  ASSERT_TRUE(
+      AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_EnableClientState, b.traco));
+  ASSERT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+
+  // A COR VERMELHA OPACA, PELO SLOT 6 (e nao pelo id interno): (1, 0, 0, 1).
+  b.mem.Escrever32(kPilhaDoTeste, Real(1.0f));
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, Real(1.0f));
+  b.cpu.Set(kR2, Real(0.0f));
+  b.cpu.Set(kR3, Real(0.0f));
+  b.cpu.Set(kSP, kPilhaDoTeste);
+  ASSERT_TRUE(
+      AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Color4f, b.traco));
+  ASSERT_EQ(b.cpu.Get(kR0), kAeeSuccess) << b.Detalhe("IGLES11::Color4f");
+  ASSERT_EQ(EstadoDoIgles11()->Cor(), 0xFF0000FFu);
+
+  // DrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_SHORT, kI) -- os quatro
+  // argumentos, os tres primeiros em r1..r3 e o quarto (os indices) na pilha.
+  b.mem.Escrever32(kPilhaDoTeste, kI);
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, GL_TRIANGLES);
+  b.cpu.Set(kR2, 3u);
+  b.cpu.Set(kR3, GL_UNSIGNED_SHORT);
+  b.cpu.Set(kSP, kPilhaDoTeste);
+  ASSERT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_DrawElements, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess) << b.Detalhe("IGLES11::DrawElements");
+
+  // TODOS os pixels escritos dentro do viewport sao VERMELHOS (RGB565 0xF800), e
+  // ha mais de zero. O vermelho da tela e o mesmo desempacotamento do
+  // `rasterizador.cpp` (byte 0 = vermelho).
+  std::uint32_t vermelhos = 0, outras = 0;
+  for (int y = 0; y < 8; ++y) {
+    for (int x = 0; x < 8; ++x) {
+      const std::uint32_t p = tela.PixelEm(x, y);
+      if (p == 0xF800u) {
+        ++vermelhos;
+      } else if (p != 0u) {
+        ++outras;
+      }
+    }
+  }
+  EXPECT_EQ(outras, 0u) << "dentro do viewport so pode haver pixels vermelhos";
+  EXPECT_GT(vermelhos, 0u) << "sem pixel nenhum, 'nao ha falta' era o unico sinal";
+  EXPECT_EQ(vermelhos, tela.Escritos()) << "todos os escritos sao vermelhos";
+}
+
+
 }  // namespace
 }  // namespace zb2::brew

@@ -290,17 +290,18 @@ std::uint64_t ChaveDeParametro(std::uint32_t slot, std::uint32_t pname) {
   return (static_cast<std::uint64_t>(slot) << 32) | pname;
 }
 
-// O NOME DE CADA SLOT DO MOTOR. Os 80 do `AEEGL.h` vem da tabela gerada; os QUATRO
-// internos do IGLES11 (`kIgl_Lightfv`, `kIgl_Materialfv`, `kIgl_Orthof` e o
-// `kIgl_AlphaFunc`) NAO estao la -- e sem este mapa o traco escrevia
-// `slot_fora_da_tabela`, que e uma recusa que nao se pode ler. O nome e o do
-// metodo do GL, porque e esse o metodo que foi chamado.
+// O NOME DE CADA SLOT DO MOTOR. Os 80 do `AEEGL.h` vem da tabela gerada; os CINCO
+// internos do IGLES11 (`kIgl_Lightfv`, `kIgl_Materialfv`, `kIgl_Orthof`,
+// `kIgl_AlphaFunc` e o `kIgl_Color4f`) NAO estao la -- e sem este mapa o traco
+// escrevia `slot_fora_da_tabela`, que e uma recusa que nao se pode ler. O nome e
+// o do metodo do GL, porque e esse o metodo que foi chamado.
 const char* NomeDoSlotDoMotor(std::uint32_t slot) {
   switch (slot) {
     case kIgl_Lightfv: return "glLightfv";
     case kIgl_Materialfv: return "glMaterialfv";
     case kIgl_Orthof: return "glOrthof";
     case kIgl_AlphaFunc: return "glAlphaFunc";
+    case kIgl_Color4f: return "glColor4f";
     default: return NomeIgl(slot);
   }
 }
@@ -916,6 +917,39 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
       }
       cor_ = rgba;
       return feito(4);
+    }
+    case kIgl_Color4f: {
+      // O MESMO METODO NA OUTRA ESCALA: o `glColor4f` do IGLES11
+      // (`AEEGLES10.h:30`, `AEEGLES11.h:104`) leva QUATRO `AEEGLfloat`, e o IGL
+      // de `AEEGL.h` NAO o tem -- so o `glColor4x` (`:71`). O id e INTERNO ao
+      // motor (ver `igl.h`) e a leitura e o `Real`.
+      //
+      // O QUARTO ARGUMENTO VEM DA PILHA: a moldura leva `pMe` em r0, e o
+      // `AtenderClasse` le [sp] para `av.reg[3]` nos slots que a
+      // `SlotIglesTemQuartoNaPilha` lista -- este passou a estar la. Sem isso o
+      // alfa seria o `r3` (o azul) e a cor sairia com o alfa errado.
+      //
+      // MEDIDO na corrida de base: 299 pedidos no `abd` e 299 no `torkandkral`,
+      // uma por quadro, os dois titulos que ja desenham e que ficavam com UMA SO
+      // COR (o branco por omissao do motor). O `Fixo` sobre os bits de um
+      // `float` daria 16256.0 para 0.25 -- o `Apertar` levava-o a 1.0 e a cor
+      // sairia saturada, sem nenhum aviso.
+      std::uint32_t rgba = 0;
+      for (int k = 0; k < 4; ++k) {
+        const float v = Apertar(Real(static_cast<std::size_t>(k), a), 0.0f, 1.0f);
+        rgba |= static_cast<std::uint32_t>(v * 255.0f + 0.5f) << (8u * k);
+      }
+      cor_ = rgba;
+      // OS QUATRO VALORES VAO NO DETALHE: e a unica forma de VER no traco que a
+      // cor pedida pelo titulo chegou inteira (os tres primeiros argumentos em
+      // r1..r3 e o quarto na pilha). Um deslocamento errado daria uma cor
+      // plausivel e nenhum sintoma.
+      char det[160];
+      std::snprintf(det, sizeof(det),
+                    "glColor4f(%g, %g, %g, %g) -> RGBA8 0x%08x",
+                    static_cast<double>(Real(0, a)), static_cast<double>(Real(1, a)),
+                    static_cast<double>(Real(2, a)), static_cast<double>(Real(3, a)), rgba);
+      return feito_com(4, det);
     }
     case kIgl_ColorMask: {
       std::uint32_t mascara = 0;

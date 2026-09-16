@@ -149,6 +149,25 @@ constexpr std::uint32_t kIgl_Orthof = gl_slots::kIglSlots + 2u;      // = 82
 // sintoma.
 constexpr std::uint32_t kIgl_AlphaFunc = gl_slots::kIglSlots + 3u;  // = 83
 
+// E O QUINTO. O `glColor4f(r, g, b, a)` do IGLES11 (`AEEGLES10.h:30`,
+// `AEEGLES11.h:104`) leva QUATRO `AEEGLfloat` -- 32 bits cada; o `AEEGL.h` so
+// declara o `glColor4x` (`:71`, `GLfixed`), logo `kIgl_Color4x` (o slot 40 da
+// vtable) NAO serve este pedido: os dois escrevem a MESMA cor, em escalas
+// DIFERENTES. E o mesmo par do `AlphaFunc`/`AlphaFuncx`, e o teste da frente
+// prova-o nas duas direccoes: os mesmos 0.25/0.5/0.75/0.5 em `float` e em
+// `GLfixed` 16.16 tem de deixar o MESMO RGBA8 no motor.
+//
+// O QUARTO ARGUMENTO VAI NA PILHA: a moldura do IGLES11 leva `iname *pMe` em r0,
+// logo os tres primeiros argumentos reais caem em r1..r3 e o quarto em [sp]
+// (`classes.cpp`, `SlotIglesTemQuartoNaPilha`, que passou a listar este slot).
+//
+// MEDIDO na corrida de base: 299 pedidos no `abd` e 299 no `torkandkral`, e o
+// padrao dos bits e de `float`, nao de 16.16 (o detalhe da recusa no teste
+// mostra r1=0x3e800000 para 0.25, onde o 16.16 seria 0x00004000): ler estes
+// argumentos com o `Fixo` daria 16256.0, que o `Apertar` levava a 1.0 -- o
+// desenho sairia com 0xFF em vez de 0x40 e nada avisava.
+constexpr std::uint32_t kIgl_Color4f = gl_slots::kIglSlots + 4u;  // = 84
+
 // O resultado de UM slot, com os tres valores que o desenho exige:
 //   Feito           -- entendido, e o efeito de ESTADO aconteceu;
 //   Recusado        -- o metodo existe, e o pedido nao pode ser servido (o
