@@ -68,6 +68,18 @@ constexpr std::uint32_t kPassoDeMime = 0x20;
 constexpr std::uint32_t kMaximoDeMimes = 16;
 constexpr std::uint32_t kRascunhoDoShell = kObjShell + 0x800u;
 
+// --- O SQL (ISQLMgr + ISQLDatabase) -----------------------------------------
+//
+// A ZONA DE UMA LINHA DE CONSULTA. Vive na pagina do objecto do banco
+// (`kObjSqlDb` = 0x81080000), como as cadeias do `DetectType` vivem na do shell e
+// pela mesma razao: uma cadeia que o guest le tem de estar num sitio que o guest
+// ve. Ate quatro colunas, 0x40 bytes de texto por coluna, e os DOIS vectores de
+// `char *` (valores e nomes) em 0x200/0x220 -- separados dos textos para uma
+// coluna comprida nao os pisar.
+constexpr std::uint32_t kZonaDeLinhasSql = kObjSqlDb + 0x400u;
+constexpr std::uint32_t kMaximoDeColunas = 4;
+constexpr std::uint32_t kZonaDosVectoresSql = kObjSqlDb + 0x600u;
+
 // Um temporizador pedido pelo guest. UM so, porque e o que os titulos pedem: o
 // laco de quadro, re-armado pelo proprio callback.
 //
@@ -191,6 +203,14 @@ class Despacho {
   // faz mal nenhum que quem dirige o titulo o chame tambem, e assim esta frente
   // nao obriga a mudar `tools/bateria.cpp`.
   bool InstalarWidgets(const Saidas& saidas);
+
+  // --- O SQL (ISQLMgr + ISQLDatabase) --------------------------------------
+  //
+  // O `tectoy` (274755, o Z-Wheel) e o UNICO titulo do corpus que toca o SQL:
+  // quatro `ISQLMgr::Open` -- `tt_prefs.db` 2x, `asset_cache` e `tt_game_info`.
+  // Ver `InstalarSql` no `.cpp` para a medicao.
+  bool InstalarSql(const Saidas& saidas);
+  bool AtenderSql(ICpu& cpu, std::uint32_t indice, std::uint32_t pp_saida);
   Widgets& WidgetsRef() { return widgets_; }
   const Widgets& WidgetsRef() const { return widgets_; }
   // `true` = o indice era do widget e ja foi atendido (com sucesso OU com recusa
@@ -524,6 +544,32 @@ class Despacho {
   std::uint32_t destino_ = 0;
   std::uint32_t vtable_bitmap_ = 0;
   std::uint32_t vtable_ficheiro_ = 0;
+  // O `ISQLDatabase` so tem UM objecto: medido, o Z-Wheel abre um banco de cada
+  // vez (abre, usa, fecha, e so depois abre o seguinte). Com uma fila de um lugar
+  // a segunda abertura SUBSTITUI a primeira -- e um titulo que tivesse dois
+  // abertos em simultaneo perderia o primeiro; fica DECLARADO aqui em vez de
+  // silencioso.
+  bool sql_pronto_ = false;
+  std::uint32_t sql_abertos_ = 0;
+  // O CONTEUDO desta base: os nomes das tabelas que o jogo CRIOU, e o `DBINFO`.
+  //
+  // Nao ha aqui linha nenhuma de outra tabela -- ver `ExecutarSql`. Um `SELECT`
+  // de uma tabela que o jogo criou responde ZERO LINHAS, que e a resposta do
+  // SQLite para uma tabela vazia, e nao uma invencao: o catalogo de um console
+  // sem nada descarregado e vazio.
+  std::vector<std::string> tabelas_sql_;
+  bool tem_dbinfo_ = false;
+  std::uint32_t dbinfo_versao_ = 0;
+  std::uint32_t dbinfo_sub_ = 0;
+  // Uma linha entregue ao callback do `sqlite3_exec`: os valores e os nomes das
+  // colunas, ja em texto (e a forma que o `sqlite3_exec` entrega).
+  struct LinhaSql {
+    std::vector<std::string> valores;
+    std::vector<std::string> nomes;
+  };
+  std::uint32_t ExecutarSql(const std::string& sql, std::vector<LinhaSql>* linhas);
+  bool EntregarLinhasSql(ICpu& cpu, const std::vector<LinhaSql>& linhas, std::uint32_t cb,
+                         std::uint32_t ctx, std::uint32_t pp_saida);
 
   // A FRENTE io2: o estado dos objectos IUnzipAStream e IMemAStream, por
   // endereco de objecto. Os objectos nascem no `InstalarAjudantes` (kObjUnzip /

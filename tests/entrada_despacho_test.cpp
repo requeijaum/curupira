@@ -977,7 +977,7 @@ TEST(BitmapDoEcra, OPBmpApontaParaOEcraDoGuestEJaNaoEUmaFalta) {
 // `MkDir`/`Remove` ao lado, que registam. Uma recusa que nao se conta nao
 // aparece na corrida, e a lista do que falta diz que ninguem pediu.
 // ===========================================================================
-TEST(RecusasMudas, WriteESqlOpenPassamAContar) {
+TEST(RecusasMudas, OWritePassaAContar) {
   Bancada b;
   constexpr std::uint32_t kSaidaWrite = 1559, kSaidaSqlOpen = 1553;
   constexpr std::uint32_t kNome = 0x00094000u;
@@ -993,9 +993,12 @@ TEST(RecusasMudas, WriteESqlOpenPassamAContar) {
       << "o Write devolve BYTES ESCRITOS: zero e uma resposta legitima do "
          "contrato, e por isso e a recusa mais perigosa de calar";
 
+  // O `ISQLMgr::Open` SAIU DESTE TESTE: ele deixou de ser recusa. Passou a ser
+  // SERVIDO -- devolve um banco no `r2` e `AEE_SUCCESS` --, e o que ele faz tem
+  // testes proprios em `SqlDoZWheel.*` (o `Open`, o `Exec`, a tabela do `DBINFO`).
+  // Deixa-lo aqui a espera de `AEE_UNSUPPORTED` seria o teste a guardar o defeito.
   EXPECT_EQ(b.ChamaSaida(kSaidaSqlOpen, 0x80060200u, kNome, 0x00094200u, 0x00094300u),
-            kAeeUnsupported);
-  EXPECT_EQ(b.Faltas("ISQLMgr::Open"), 1u);
+            kAeeSuccess);
 }
 
 TEST(GetLastError, DevolveOErroDaUltimaOperacaoQueFalhou) {
@@ -2017,6 +2020,189 @@ TEST(FrenteSlot32, ORegistoDizNaoAoQueNaoSeServeEDizPorque) {
   EXPECT_EQ(b.ChamaSaida(kBaseDoShell + brew_slots::kShell_GetHandler, kObjShell, 0x01005500u,
                          kNomeNoGuest),
             0x01005501u);
+}
+
+
+// ===========================================================================
+// O SQL DO Z-WHEEL (`tectoy`, 274755): `ISQLMgr::Open` e o `ISQLDatabase::Exec`
+// ===========================================================================
+//
+// A MEDICAO que pediu este bloco (`ZB2_TRACE=1`, tectoy): o applet abre quatro
+// bancos (`tt_prefs.db` 2x, `asset_cache`, `tt_game_info`) e o unico titulo do
+// corpus que toca o SQL e ele. Antes disto o `Open` respondia `AEE_UNSUPPORTED` e
+// o applet imprimia `Failed to init Preferences database: 20` e desistia -- nao
+// chegava a pedir `Exec` nenhum, e a lista de demanda nao dizia o que ele QUERIA.
+//
+// A ORDEM DOS ARGUMENTOS vem de duas medicoes independentes (a sonda do `zeebx`,
+// `13-classes-desconhecidas.md`, e o `zeebx-emu/src/machine/sql.rs`): o nome no
+// `r1` e o PONTEIRO DE SAIDA no `r2`. O `r3` e o terceiro argumento, e o que aqui
+// estava escrevia o NULO nele.
+constexpr std::uint32_t kSaidaSqlOpen = 1553;
+constexpr std::uint32_t kSaidaSqlExec = kVtableSqlDb + 3;
+constexpr std::uint32_t kNomeDoBanco = 0x00094300u;
+constexpr std::uint32_t kSqlNoGuest = 0x00094400u;
+constexpr std::uint32_t kPPDb = 0x00094500u;
+constexpr std::uint32_t kMarcadorDoSql = 0x00000320u;
+// A ROTINA DO CALLBACK, ARM, em `kRotina` (0x200): grava o `r1` (o numero de
+// colunas) e o `r2` (o vector de valores) no marcador, e devolve ZERO -- que e o
+// que diz ao `sqlite3_exec` para continuar.
+void EscreverCallbackDoSql(Memoria& mem) {
+  mem.Escrever32(kRotina + 0x00, 0xE59F3010u);  // ldr r3, [pc, #0x10] -> 0x218
+  mem.Escrever32(kRotina + 0x04, 0xE5831000u);  // str r1, [r3]      (ncols)
+  mem.Escrever32(kRotina + 0x08, 0xE5832004u);  // str r2, [r3, #4]  (valores)
+  mem.Escrever32(kRotina + 0x0C, 0xE3A00000u);  // mov r0, #0
+  mem.Escrever32(kRotina + 0x10, 0xE12FFF1Eu);  // bx lr
+  mem.Escrever32(kRotina + 0x18, kMarcadorDoSql);
+  mem.Escrever32(kMarcadorDoSql, 0);
+  mem.Escrever32(kMarcadorDoSql + 4, 0);
+}
+
+void EscreverTexto(Memoria& mem, std::uint32_t onde, const std::string& s) {
+  for (std::size_t k = 0; k < s.size(); ++k)
+    mem.Escrever8(onde + static_cast<std::uint32_t>(k), static_cast<std::uint8_t>(s[k]));
+  mem.Escrever8(onde + static_cast<std::uint32_t>(s.size()), 0);
+}
+
+// Uma chamada ao `Exec` do banco, com a assinatura medida.
+std::uint32_t ChamaExec(Bancada& b, const std::string& sql, std::uint32_t cb = 0,
+                        std::uint32_t ctx = 0) {
+  EscreverTexto(b.Mem(), kSqlNoGuest, sql);
+  return b.ChamaSaida(kSaidaSqlExec, kObjSqlDb, kSqlNoGuest, cb, ctx);
+}
+
+TEST(SqlDoZWheel, ACablagemDoBancoApontaParaOExecNaPropriaTabela) {
+  // ESTE TESTE LE A TABELA (a vtable que o motor construiu), e nao o id interno:
+  // chamar o id provaria so que o ramo do id existe -- foi essa a classe de
+  // defeito que ja custou a cablagem do `SetTimer` nesta arvore.
+  Bancada b;
+  const std::uint32_t vt = kEnderecoDaVtableSqlDb;
+  EXPECT_EQ(b.Mem().Ler32(vt + 3 * 4), b.S().Endereco(kSaidaSqlExec))
+      << "o slot 3 do ISQLDatabase tem de ser o Exec";
+  // O endereco de saida TEM de cair dentro da faixa de saida: um endereco fora
+  // dela nunca e reconhecido pelo laco, e o `Exec` seria um stub mudo.
+  const std::uint32_t inicio = b.S().base;
+  const std::uint32_t fim = b.S().base + b.S().quantos * b.S().passo;
+  EXPECT_GE(b.Mem().Ler32(vt + 3 * 4), inicio);
+  EXPECT_LT(b.Mem().Ler32(vt + 3 * 4), fim);
+  // E A VTABLE NAO PODE VIVER DENTRO DA FAIXA DE SAIDAS.
+  //
+  // MEDIDO, e o custo foi um titulo ALHEIO: com a vtable na faixa (indice 9800 ->
+  // endereco 0xF0009920), o `reksio` (277495) -- que LE a memoria dessa faixa
+  // (`ldr r0,[r4,#0x34]` em `0x35ffa`, com `r4=0xF0009900`) -- passou de
+  // `passos_start=36` com `retornou` para `28` com `saiu_do_modulo`. A memoria da
+  // faixa devolvia zero e passou a devolver um endereco dela propria.
+  EXPECT_LT(vt, inicio) << "a vtable do banco tem de viver FORA da faixa de saidas";
+  // E ELA MORA NA PAGINA DO PROPRIO OBJECTO -- e o que a mantem fora da faixa sem
+  // depender de um segundo endereco escolhido a mao.
+  EXPECT_GE(vt, kObjSqlDb);
+  EXPECT_LT(vt, kObjSqlDb + 0x1000u);
+  EXPECT_EQ(b.Mem().Ler32(kObjSqlDb), vt) << "o objecto aponta para a vtable dele";
+}
+
+TEST(SqlDoZWheel, OOpenDevolveOBancoNoR2EInformaOSucesso) {
+  Bancada b;
+  EscreverTexto(b.Mem(), kNomeDoBanco, "tt_prefs.db");
+  b.Mem().Escrever32(kPPDb, 0xDEADBEEFu);
+  // A assinatura medida: `OpenDatabase(po, pszName, ISQLDatabase **ppDB)`.
+  EXPECT_EQ(b.ChamaSaida(kSaidaSqlOpen, 0x80060600u, kNomeDoBanco, kPPDb, 0u), kAeeSuccess);
+  EXPECT_EQ(b.Mem().Ler32(kPPDb), kObjSqlDb) << "o banco vai no r2, e nao no r3";
+  EXPECT_EQ(b.Faltas("ISQLMgr::Open"), 0u) << "servido nao e falta";
+}
+
+TEST(SqlDoZWheel, OsPragmasEOsMarcadoresDeTransaccaoSaoServidos) {
+  Bancada b;
+  // Os quatro `PRAGMA` que so AJUSTAM e o `BEGIN`/`END` que envolvem a criacao
+  // das tabelas: medidos no tectoy, e nenhum deles devolve linha.
+  for (const char* s : {"PRAGMA main.journal_mode = PERSIST;", "PRAGMA main.locking_mode = EXCLUSIVE;",
+                        "PRAGMA main.synchronous = FULL;", "PRAGMA legacy_file_format = OFF;",
+                        "PRAGMA encoding = \"UTF-16\";", "BEGIN TRANSACTION;", "END TRANSACTION;"}) {
+    EXPECT_EQ(ChamaExec(b, s), kAeeSuccess) << s;
+  }
+  // O `ROLLBACK` NAO esta na lista, e de proposito: ele promete DESFAZER, e aqui
+  // nao ha nada para desfazer. Recusa com o nome.
+  EXPECT_EQ(ChamaExec(b, "ROLLBACK;"), kAeeFailed);
+  EXPECT_EQ(b.Faltas("ISQLDatabase::Exec instrucao nao servida"), 1u);
+}
+
+TEST(SqlDoZWheel, ODbinfoNasceVazioERecebeAVersaoQueOJogoGrava) {
+  // A SEQUENCIA MEDIDA no tectoy, passo a passo:
+  //   SELECT version, subversion FROM DBINFO   -> falha (nao ha tabela)
+  //   CREATE TABLE DBINFO(...)                 -> cria
+  //   INSERT OR REPLACE INTO DBINFO values (1, 0)
+  //   SELECT version, subversion FROM DBINFO   -> uma linha
+  Bancada b;
+  EXPECT_EQ(ChamaExec(b, "SELECT version, subversion FROM DBINFO"), kAeeFailed)
+      << "sem a tabela, o SQLite diz 'no such table' -- e e assim que o jogo sabe "
+         "que tem de criar";
+  EXPECT_EQ(ChamaExec(b, "CREATE TABLE DBINFO(version INTEGER DEFAULT DB_VERSION, "
+                         "subversion INTEGER DEFAULT DB_SUBVERSION)"),
+            kAeeSuccess);
+  EXPECT_EQ(ChamaExec(b, "CREATE TABLE DBINFO(version INTEGER, subversion INTEGER)"), kAeeFailed)
+      << "um CREATE de uma tabela que ja existe e recusado pelo SQLite";
+  EXPECT_EQ(ChamaExec(b, "INSERT OR REPLACE INTO DBINFO values (1, 0)"), kAeeSuccess);
+
+  EscreverCallbackDoSql(b.Mem());
+  EXPECT_EQ(ChamaExec(b, "SELECT version, subversion FROM DBINFO", kRotina, kContexto),
+            kAeeSuccess);
+  // A LINHA FOI ENTREGUE AO CALLBACK: ele correu (gravou o numero de colunas) e
+  // o numero de colunas e DOIS.
+  EXPECT_EQ(b.Mem().Ler32(kMarcadorDoSql), 2u);
+  EXPECT_NE(b.Mem().Ler32(kMarcadorDoSql + 4), 0u) << "o vector de valores tem de vir preenchido";
+  // OS NOMES E OS VALORES estao na zona da linha, em texto -- e o contrato do
+  // `sqlite3_exec` (o callback recebe `char **`).
+  std::string nome0, valor0;
+  b.Mem().LerCadeia(kZonaDeLinhasSql, &nome0, 64);
+  b.Mem().LerCadeia(kZonaDeLinhasSql + 0x100u, &valor0, 64);
+  EXPECT_EQ(nome0, "version");
+  EXPECT_EQ(valor0, "1");
+  // E a coluna 1 e a subversao.
+  std::string nome1, valor1;
+  b.Mem().LerCadeia(kZonaDeLinhasSql + 0x40u, &nome1, 64);
+  b.Mem().LerCadeia(kZonaDeLinhasSql + 0x140u, &valor1, 64);
+  EXPECT_EQ(nome1, "subversion");
+  EXPECT_EQ(valor1, "0");
+}
+
+TEST(SqlDoZWheel, OPragmaIntegrityCheckEntregaOKAoCallback) {
+  Bancada b;
+  EscreverCallbackDoSql(b.Mem());
+  EXPECT_EQ(ChamaExec(b, "PRAGMA integrity_check", kRotina, kContexto), kAeeSuccess);
+  EXPECT_EQ(b.Mem().Ler32(kMarcadorDoSql), 1u);
+  std::string valor;
+  b.Mem().LerCadeia(kZonaDeLinhasSql + 0x100u, &valor, 64);
+  EXPECT_EQ(valor, "ok");
+}
+
+TEST(SqlDoZWheel, AsTabelasSemArmazenamentoSaoUmaFaltaDeclarada) {
+  // O CAMINHO DO CATALOGO E DA FILA DE DESCARGAS. O Z-Wheel grava aqui
+  // (`PREFSINFO`, `ASSETS`, `DLITEMINFO`, `GAMEINFO`), e a instrucao e ACEITE com
+  // o conteudo a NAO ficar -- uma falta declarada com o nome da tabela, e nao um
+  // sucesso mudo: o `SELECT` seguinte a essa tabela le ZERO linhas de onde o jogo
+  // escreveu uma.
+  Bancada b;
+  EXPECT_EQ(ChamaExec(b, "INSERT OR REPLACE INTO PREFSINFO values ('Initialized', '', 1, 2)"),
+            kAeeFailed) << "sem a tabela, e erro -- o SQLite nao a inventa";
+  EXPECT_EQ(ChamaExec(b, "CREATE TABLE PREFSINFO(name TEXT PRIMARY KEY, strValue TEXT, "
+                         "dwValue INTEGER, flags INTEGER)"),
+            kAeeSuccess);
+  EXPECT_EQ(ChamaExec(b, "INSERT OR REPLACE INTO PREFSINFO values ('Initialized', '', 1, 2)"),
+            kAeeSuccess);
+  EXPECT_EQ(b.Faltas("ISQLDatabase::Exec INSERT sem armazenamento"), 1u);
+  // A tabela existe e esta VAZIA: zero linhas, e nao uma recusa.
+  EscreverCallbackDoSql(b.Mem());
+  EXPECT_EQ(ChamaExec(b, "SELECT * FROM PREFSINFO", kRotina, kContexto), kAeeSuccess);
+  EXPECT_EQ(b.Mem().Ler32(kMarcadorDoSql), 0u) << "tabela vazia nao chama o callback";
+  // E uma consulta a uma tabela que NINGUEM criou e recusada com o nome dela.
+  EXPECT_EQ(ChamaExec(b, "SELECT * FROM GAMEINFO, TITLETEXT"), kAeeFailed);
+  EXPECT_EQ(b.Faltas("ISQLDatabase::Exec SELECT de tabela ausente"), 1u);
+}
+
+TEST(SqlDoZWheel, OCallbackForaDoModuloNaoSeChama) {
+  // A MESMA GUARDA do `IShell::SendEvent` e do temporizador: um ponteiro de
+  // funcao fora da faixa do modulo poria o PC num endereco de dados.
+  Bancada b;
+  EXPECT_EQ(ChamaExec(b, "PRAGMA integrity_check", 0x50000000u, kContexto), kAeeSuccess);
+  EXPECT_EQ(b.Faltas("ISQLDatabase::Exec callback fora do modulo"), 1u);
 }
 
 }  // namespace zb2::brew

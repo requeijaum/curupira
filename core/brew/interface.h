@@ -58,6 +58,28 @@ constexpr std::uint32_t kObjDibBase = 0x80050000u;
 constexpr std::uint32_t kFimDosDibCompativeis = kObjDibBase + 0x8C0u;
 static_assert(kFimDosDibCompativeis <= 0x800508C0u,
               "a fronteira dos DIBs compativeis tem de ficar ABAIXO do fundo dos IDIBs do PNG");
+// O `ISQLDatabase`: o banco que o `ISQLMgr::Open` devolve.
+//
+// MEDIDO onde ele vive: o `zeebx` escreve o objecto no `r2` da chamada e o
+// `tools/` daqui nao tinha banco nenhum -- o endereco e escolha NOSSA, e por isso
+// esta declarado aqui, ao lado dos outros. `0x81080000` e o primeiro bloco livre
+// acima dos widgets (`kObjetoDosWidgets` = `0x81070000`, `core/brew/widget.h`), e
+// a vtable em 9800 e o primeiro espaco livre acima do fim da vtable do IFileObj
+// (9500 + 64 slots = 9756) e abaixo da do IGL (30000).
+constexpr std::uint32_t kObjSqlDb = 0x81080000u;
+// O INDICE de base das saidas do banco (o numero que o `ConstruirObjeto` usa como
+// `base_dos_slots`), e o ENDERECO da vtable dele DENTRO da pagina do objecto.
+//
+// SAO DOIS NUMEROS DIFERENTES, e a primeira versao desta frente confundiu-os: a
+// vtable ficava na PROPRIA FAIXA DE SAIDAS (indice 9800 -> endereco 0xF0009920).
+// MEDIDO, e o custo foi um titulo alheio: o `reksio` (277495) le a memoria
+// `0xF0009934` a partir de `0x35ffa` (`ldr r0,[r4,#0x34]`, com `r4=0xF0009900`)
+// -- uma leitura que naquela faixa devolvia ZERO e passou a devolver um endereco
+// da faixa. O `passos_start` dele mudou de 36 para 28 e o fim da fase mudou de
+// `retornou` para `saiu_do_modulo`. A faixa de saidas NAO e nossa.
+constexpr std::uint32_t kVtableSqlDb = 9800;
+constexpr std::uint32_t kEnderecoDaVtableSqlDb = kObjSqlDb + 0x800u;
+
 constexpr std::uint32_t kObjGenericoBase = 0x80060000u;
 constexpr std::uint32_t kObjFileBase = 0x80070000u;
 constexpr std::uint32_t kPassoGenericoObj = 0x100;

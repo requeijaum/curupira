@@ -136,6 +136,13 @@ constexpr std::uint32_t kSlotIdMkDir = 1544,
                        kSlotIdSetDest = 1546, kSlotIdRmDir = 1547, kSlotIdGetDeviceInfo = 1549,
                        kSlotIdGetDeviceBitmap = 1550, kSlotIdGetClipRect = 1551,
                        kSlotIdCancelTimer = 1552, kSlotIdSqlOpen = 1553, kSlotIdOpenFile = 1554,
+                       // O `Exec` do `ISQLDatabase`: NAO e um id avulso na faixa 15xx.
+                       // O objecto do banco e construido por `ConstruirObjeto` com a
+                       // `base_dos_slots` IGUAL a propria vtable (`kVtableSqlDb`), logo
+                       // o indice de saida do slot `k` e `kVtableSqlDb + k` -- UMA so
+                       // fonte para a cablagem e para o despacho, e nenhum numero
+                       // escrito a mao nos dois lados (a armadilha das duas copias).
+                       kSlotIdSqlExec = kVtableSqlDb + 3,
                        kSlotIdFileRead = 1555, kSlotIdFileSeek = 1556, kSlotIdFileInfo = 1557,
                        kSlotIdFileRelease = 1558, kSlotIdFileWrite = 1559;
 constexpr std::uint32_t kSlotIdSprintf = 1560, kSlotIdVsprintf = 1561, kSlotIdHeapLock = 1562,
@@ -315,6 +322,357 @@ bool Despacho::AtenderWidgets(ICpu& cpu, std::uint32_t indice) {
   // `IRootForm::slot3` quando o que faltou foi, por exemplo, o `Draw` de um
   // widget.
   (void)widgets_.Atender(cpu, indice);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// O SQL: o `ISQLMgr` e o `ISQLDatabase` que ele devolve
+// ---------------------------------------------------------------------------
+//
+// O QUE O Z-WHEEL FAZ, MEDIDO com o traco (`ZB2_TRACE=1`, `tectoy`, 274755) e
+// conferido contra a sonda do `zeebx`
+// (`zeebx-emu/docs/implementacao/13-classes-desconhecidas.md`):
+//
+//   OpenDatabase("tt_prefs.db", &pdb)                       -> o gestor devolve um banco
+//   Exec(pdb, "PRAGMA integrity_check", cb, x)              -> o banco executa
+//   Exec(pdb, "SELECT version, subversion FROM DBINFO", cb, x)
+//
+// Sao as duas assinaturas do `sqlite3_open`/`sqlite3_exec`, e o `Exec` leva um
+// PONTEIRO DE FUNCAO (`r2`, dentro da faixa de codigo do modulo) e um contexto
+// (`r3`): e o `sqlite3_exec` com o callback do jogo.
+//
+// A ORDEM DOS SLOTS NAO VEIO DE CABECALHO -- nao ha `AEEISQL.h` no SDK 4.0.2 nem
+// no 7.12.5 (conferido). Veio das duas medicoes independentes, e as duas dizem o
+// MESMO: os tres primeiros slots sao o `IQI` de sempre e o slot 3 e o `Open`
+// (aqui) / o `Exec` (no banco).
+//
+// O QUE ESTE MODULO NAO E: uma base de dados. E o SUBCONJUNTO MEDIDO de SQL que o
+// Z-Wheel pede, e tudo o que sai desse conjunto e RECUSADO COM O TEXTO DA
+// INSTRUCAO no registo.
+bool Despacho::InstalarSql(const Saidas& saidas) {
+  if (sql_pronto_) return true;
+  // Os 64 slots, e nao 4: um slot por cablar le-se como zero e um `blx 0` e o
+  // que acontece a seguir (foi o defeito do IBitmap do ecra, `interface.h`).
+  // O 4.o argumento e o ENDERECO da vtable e o 6.o e o INDICE de base das saidas
+  // -- dois papeis do MESMO numero (`kVtableSqlDb`), e troca-los poe o valor 9800
+  // como PONTEIRO de vtable: o `ldr r3,[r0]`/`ldr ip,[r3,#12]` do thunk do modulo
+  // le entao a palavra de instrucao que estiver em 9800+12. Foi esse o defeito
+  // desta instalacao na primeira corrida: o traco dizia
+  // `saiu_do_modulo_para_0xe08f5004`, que e a propria instrucao `add r5,pc,r4` do
+  // modulo usada como endereco.
+  ConstruirObjeto(mem_, saidas, kObjSqlDb, kEnderecoDaVtableSqlDb, kSlotsPorVtable, kVtableSqlDb);
+  // A LEITURA DE VOLTA: o slot 3 tem de apontar para o indice do `Exec`.
+  const std::uint32_t lido = mem_.Ler32(kEnderecoDaVtableSqlDb + 3 * 4);
+  if (lido != saidas.Endereco(kSlotIdSqlExec)) {
+    traco_.RegistarFalta(Area::Brew, "cablagem_do_SQL",
+                         "o slot 3 do ISQLDatabase nao aponta para o Exec");
+    return false;
+  }
+  sql_pronto_ = true;
+  traco_.Emitir(Area::Brew, Nivel::Informacao, "SQL_INSTALADO",
+                "ISQLDatabase obj=0x" + Hex(kObjSqlDb) + " vtable=0x" +
+                    Hex(kEnderecoDaVtableSqlDb) + " (indice de saida " +
+                    std::to_string(kVtableSqlDb) + ") Exec=slot3");
+  return true;
+}
+
+namespace {
+// Um `toupper` sem locale: a instrucao vem do jogo e o dialecto e ASCII.
+std::string Maiusculas(const std::string& s) {
+  std::string r = s;
+  for (char& c : r) {
+    if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+  }
+  return r;
+}
+
+// O primeiro nome depois de `depois`, saltando espacos e parando no espaco, na
+// virgula, no parenteses ou no ponto e virgula.
+// `CREATE TABLE DBINFO(version ...)` da "DBINFO".
+std::string NomeDepoisDe(const std::string& s, std::size_t depois) {
+  std::size_t i = depois;
+  while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) ++i;
+  const std::size_t inicio = i;
+  while (i < s.size() && s[i] != ' ' && s[i] != '(' && s[i] != ',' && s[i] != ';') ++i;
+  return s.substr(inicio, i - inicio);
+}
+
+// Os inteiros decimais de `s` a partir de `inicio`, em ordem -- e como se le a
+// lista de um `values (%d, %d)` sem escrever um analisador de SQL.
+std::vector<long> InteirosDe(const std::string& s, std::size_t inicio) {
+  std::vector<long> v;
+  std::size_t i = inicio;
+  while (i < s.size()) {
+    if (s[i] >= '0' && s[i] <= '9') {
+      const std::size_t a = i;
+      while (i < s.size() && s[i] >= '0' && s[i] <= '9') ++i;
+      v.push_back(std::strtol(s.substr(a, i - a).c_str(), nullptr, 10));
+    } else {
+      ++i;
+    }
+  }
+  return v;
+}
+
+// Uma cadeia NUL-terminada na memoria do guest. Nao ha `EscreverCadeia` no
+// `Memoria`; o que ha e `Escrever8`, e escrever um byte a cada vez num interface
+// que ja tem `LerCadeia` seria a assimetria que produz o proximo defeito.
+void EscreverTexto(Memoria& mem, std::uint32_t onde, const std::string& s) {
+  for (std::size_t k = 0; k < s.size(); ++k) {
+    mem.Escrever8(onde + static_cast<std::uint32_t>(k), static_cast<std::uint8_t>(s[k]));
+  }
+  mem.Escrever8(onde + static_cast<std::uint32_t>(s.size()), 0);
+}
+}  // namespace
+
+// A INSTRUCAO, ATENDIDA NO SUBCONJUNTO MEDIDO. Devolve o codigo para o `r0` e
+// enche `linhas` com o que o `Exec` tem de entregar ao callback do jogo.
+std::uint32_t Despacho::ExecutarSql(const std::string& sql, std::vector<LinhaSql>* linhas) {
+  const std::string up = Maiusculas(sql);
+  const auto comeca_com = [&](const char* prefixo) { return up.rfind(prefixo, 0) == 0; };
+  const auto posicao = [&](const char* agulha) -> std::size_t {
+    const std::size_t p = up.find(agulha);
+    return p == std::string::npos ? sql.size() : p;
+  };
+  const auto existe_tabela = [&](const std::string& nome) {
+    for (const std::string& t : tabelas_sql_) {
+      if (t == nome) return true;
+    }
+    return false;
+  };
+
+  if (comeca_com("PRAGMA")) {
+    // `PRAGMA integrity_check` DEVOLVE UMA LINHA ("ok"), e e a primeira coisa que
+    // o Z-Wheel manda. Um `PRAGMA` que so AJUSTA (journal_mode, synchronous,
+    // encoding) nao devolve linha nenhuma -- e essa a diferenca entre os dois, e
+    // nao um "aceita tudo".
+    if (up.find("INTEGRITY_CHECK") != std::string::npos) {
+      LinhaSql l;
+      l.nomes.push_back("integrity_check");
+      // "ok" e a resposta do SQLite para uma base INTEGRA -- e a base daqui e
+      // VAZIA, que e integra. Nao ha aqui promessa nenhuma sobre ficheiro.
+      l.valores.push_back("ok");
+      linhas->push_back(std::move(l));
+    }
+    return kAeeSuccess;
+  }
+
+  if (comeca_com("CREATE TABLE")) {
+    const std::string nome = NomeDepoisDe(sql, std::strlen("CREATE TABLE"));
+    if (nome.empty()) {
+      traco_.RegistarFalta(Area::Brew, "ISQLDatabase::Exec CREATE sem nome", sql.substr(0, 96));
+      return kAeeFailed;
+    }
+    if (existe_tabela(nome)) {
+      // O SQLite RECUSA o `CREATE TABLE` de uma tabela que ja existe, e o jogo
+      // conta com isso: e assim que ele sabe que a base ja foi criada. Aceitar
+      // aqui daria ao jogo uma resposta que o console nunca da.
+      traco_.Emitir(Area::Brew, Nivel::Depuracao, "SQL_TABELA_EXISTE", nome);
+      return kAeeFailed;
+    }
+    tabelas_sql_.push_back(nome);
+    traco_.Emitir(Area::Brew, Nivel::Depuracao, "SQL_TABELA_CRIADA", nome);
+    return kAeeSuccess;
+  }
+
+  if (comeca_com("INSERT")) {
+    const std::size_t p_into = posicao("INTO ");
+    const std::string nome = NomeDepoisDe(sql, p_into == sql.size() ? p_into : p_into + 5);
+    if (!existe_tabela(nome)) {
+      // Inserir numa tabela que nao existe e ERRO no SQLite, e o jogo conta com
+      // isso. Nao se inventa a tabela: um erro de sequencia do jogo seria
+      // mascarado e apareceria mais tarde como outra coisa.
+      traco_.RegistarFalta(Area::Brew, "ISQLDatabase::Exec INSERT em tabela ausente",
+                           nome + " | " + sql.substr(0, 64));
+      return kAeeFailed;
+    }
+    if (nome == "DBINFO") {
+      // `INSERT OR REPLACE INTO DBINFO values (%d, %d)` -- a VERSAO e a
+      // SUBVERSAO, o unico conteudo desta base que o Z-Wheel volta a ler.
+      const std::size_t p_valores = posicao("VALUES");
+      const std::vector<long> n = InteirosDe(sql, p_valores);
+      if (n.size() < 2) {
+        traco_.RegistarFalta(Area::Brew, "ISQLDatabase::Exec DBINFO sem dois numeros",
+                             sql.substr(0, 96));
+        return kAeeFailed;
+      }
+      dbinfo_versao_ = static_cast<std::uint32_t>(n[0]);
+      dbinfo_sub_ = static_cast<std::uint32_t>(n[1]);
+      tem_dbinfo_ = true;
+      traco_.Emitir(Area::Brew, Nivel::Informacao, "SQL_DBINFO_GRAVADO",
+                    std::to_string(n[0]) + "," + std::to_string(n[1]));
+      return kAeeSuccess;
+    }
+    // AS OUTRAS TABELAS: a instrucao e aceite e o CONTEUDO NAO FICA. E uma falta
+    // DECLARADA com o nome da tabela, e nao um sucesso mudo: o Z-Wheel grava aqui
+    // o catalogo e a fila de descargas, e um `SELECT` posterior a esta tabela vai
+    // ler ZERO linhas de onde o jogo escreveu uma linha.
+    traco_.RegistarFalta(Area::Brew, "ISQLDatabase::Exec INSERT sem armazenamento", nome);
+    return kAeeSuccess;
+  }
+
+  if (comeca_com("SELECT")) {
+    if (up.find("FROM DBINFO") != std::string::npos) {
+      if (!tem_dbinfo_) {
+        // SEM A TABELA, o SQLite diz "no such table: DBINFO" e o jogo entra pelo
+        // caminho de CRIAR e GRAVAR -- que e exactamente a sequencia medida.
+        traco_.Emitir(Area::Brew, Nivel::Depuracao, "SQL_DBINFO_AUSENTE", sql.substr(0, 64));
+        return kAeeFailed;
+      }
+      LinhaSql l;
+      l.nomes.push_back("version");
+      l.nomes.push_back("subversion");
+      l.valores.push_back(std::to_string(dbinfo_versao_));
+      l.valores.push_back(std::to_string(dbinfo_sub_));
+      linhas->push_back(std::move(l));
+      return kAeeSuccess;
+    }
+    const std::size_t p_from = posicao("FROM ");
+    const std::string nome = NomeDepoisDe(sql, p_from == sql.size() ? p_from : p_from + 5);
+    if (existe_tabela(nome)) {
+      // Tabela existe e esta VAZIA: zero linhas e a resposta do SQLite, e nao uma
+      // recusa. E o caso do catalogo de um console sem nada descarregado.
+      traco_.Emitir(Area::Brew, Nivel::Depuracao, "SQL_CONSULTA_VAZIA", nome);
+      return kAeeSuccess;
+    }
+    traco_.RegistarFalta(Area::Brew, "ISQLDatabase::Exec SELECT de tabela ausente",
+                         nome + " | " + sql.substr(0, 64));
+    return kAeeFailed;
+  }
+
+  if (comeca_com("BEGIN") || comeca_com("COMMIT") || comeca_com("END")) {
+    // MARCADORES DE TRANSACCAO. Nao ha transaccao aqui -- o armazenamento e de
+    // memoria e cada instrucao e aplicada na hora --, mas o `BEGIN`/`COMMIT` e o
+    // que o jogo usa para envolver a criacao das tabelas, e recusa-lo parava o
+    // init a meio (MEDIDO: `BEGIN TRANSACTION;` e a instrucao SEGUINTE ao
+    // `SELECT` que falha, e sem ele o `Failed to init ... database: 1` de todos os
+    // tres bancos).
+    //
+    // O `ROLLBACK` NAO esta na lista DE PROPOSITO: ele promete DESFAZER, e aqui
+    // nao ha nada para desfazer -- aceita-lo seria a mentira que so aparece no
+    // resultado do jogo. Fica a recusar com o nome, e se o Z-Wheel o pedir ele
+    // aparece na lista de demanda.
+    return kAeeSuccess;
+  }
+
+  // QUALQUER OUTRA INSTRUCAO. O texto vai no registo: e ele que diz o que falta
+  // implementar, e sem ele a lista de demanda diria "SQL" e mais nada.
+  traco_.RegistarFalta(Area::Brew, "ISQLDatabase::Exec instrucao nao servida",
+                       sql.substr(0, 96));
+  return kAeeFailed;
+}
+
+// ENTREGA UMA LINHA AO CALLBACK DO JOGO, com a forma do `sqlite3_exec`:
+// `int cb(void *ctx, int ncols, char **valores, char **nomes)`, e um retorno
+// DIFERENTE DE ZERO pede paragem.
+//
+// A CHAMADA AO GUEST E REENTRANTE, e por isso segue o mesmo cuidado do
+// `ISHELL_SendEvent`: guardar os 16 registadores e o CPSR, um tecto de
+// aninhamento, e repor tudo no fim. O callback corre pelo `Correr` (o mesmo
+// caminho do evento) e nao por um laco de `Passo`, pela razao escrita la: um
+// `Passo` entraria na faixa de saida e deslizaria ate ao limite.
+bool Despacho::EntregarLinhasSql(ICpu& cpu, const std::vector<LinhaSql>& linhas, std::uint32_t cb,
+                                 std::uint32_t ctx, std::uint32_t pp_saida) {
+  if (cb == 0 || linhas.empty()) return false;
+  // O CALLBACK TEM DE ESTAR DENTRO DO MODULO DO TITULO -- a mesma guarda do
+  // `IShell::SendEvent`. Sem ela, um ponteiro de funcao por inicializar punha o
+  // PC num endereco de dados e o laco andava a executar zeros.
+  const std::uint32_t fim_do_modulo = (faixa_fim_ > faixa_base_) ? faixa_fim_ : 0;
+  if (fim_do_modulo == 0 || cb < faixa_base_ || cb >= fim_do_modulo) {
+    char det[96];
+    std::snprintf(det, sizeof(det), "cb=0x%08x fora do modulo [0x%08x,0x%08x)", cb, faixa_base_,
+                  fim_do_modulo);
+    traco_.RegistarFalta(Area::Brew, "ISQLDatabase::Exec callback fora do modulo", det);
+    return false;
+  }
+  if (profundidade_de_evento_ >= kMaxProfundidadeDeEvento) {
+    traco_.RegistarFalta(Area::Brew, "ISQLDatabase::Exec aninhamento",
+                         "sem entrega de linhas por aninhamento profundo");
+    return false;
+  }
+
+  for (const LinhaSql& linha : linhas) {
+    if (linha.valores.size() != linha.nomes.size() || linha.valores.size() > kMaximoDeColunas) {
+      traco_.RegistarFalta(Area::Brew, "ISQLDatabase::Exec linha com forma estranha",
+                           std::to_string(linha.valores.size()) + " valores");
+      return false;
+    }
+    // A ZONA DA LINHA: os nomes em 0x00, os valores em 0x100, os dois vectores de
+    // `char *` em 0x600/0x620. O `NULL` do fim de cada vector e CONTRATO do
+    // `sqlite3_exec` (o callback percorre ate ele); sem ele o jogo leria o que
+    // estivesse a seguir na zona.
+    std::vector<std::uint32_t> p_valores, p_nomes;
+    for (std::size_t i = 0; i < linha.nomes.size(); ++i) {
+      const std::uint32_t onde = kZonaDeLinhasSql + static_cast<std::uint32_t>(i) * 0x40;
+      EscreverTexto(mem_, onde, linha.nomes[i]);
+      p_nomes.push_back(onde);
+    }
+    for (std::size_t i = 0; i < linha.valores.size(); ++i) {
+      const std::uint32_t onde = kZonaDeLinhasSql + 0x100u + static_cast<std::uint32_t>(i) * 0x40;
+      EscreverTexto(mem_, onde, linha.valores[i]);
+      p_valores.push_back(onde);
+    }
+    for (std::size_t i = 0; i < p_valores.size(); ++i) {
+      mem_.Escrever32(kZonaDosVectoresSql + static_cast<std::uint32_t>(i) * 4, p_valores[i]);
+      mem_.Escrever32(kZonaDosVectoresSql + 0x20u + static_cast<std::uint32_t>(i) * 4, p_nomes[i]);
+    }
+    mem_.Escrever32(kZonaDosVectoresSql + static_cast<std::uint32_t>(p_valores.size()) * 4, 0);
+    mem_.Escrever32(kZonaDosVectoresSql + 0x20u + static_cast<std::uint32_t>(p_nomes.size()) * 4,
+                    0);
+
+    std::array<std::uint32_t, 16> guardados{};
+    for (int r = 0; r < 16; ++r) guardados[static_cast<std::size_t>(r)] = cpu.Get(r);
+    const std::uint32_t cpsr_guardado = cpu.Cpsr();
+    cpu.Set(kR0, ctx);
+    cpu.Set(kR1, static_cast<std::uint32_t>(linha.valores.size()));
+    cpu.Set(kR2, kZonaDosVectoresSql);
+    cpu.Set(kR3, kZonaDosVectoresSql + 0x20u);
+    cpu.Set(kLR, kSentinela);
+    cpu.Set(kPC, cb);
+    ++profundidade_de_evento_;
+    const ResultadoFase r = Correr(cpu, kLimiteDoEvento, pp_saida);
+    --profundidade_de_evento_;
+    for (int r2 = 0; r2 < 16; ++r2) cpu.Set(r2, guardados[static_cast<std::size_t>(r2)]);
+    cpu.SetCpsr(cpsr_guardado);
+    if (r.motivo != "retornou") {
+      traco_.RegistarFalta(Area::Brew, "ISQLDatabase::Exec callback nao voltou",
+                           r.motivo + " | cb=0x" + Hex(cb));
+      return false;
+    }
+    // "Callback que devolve diferente de zero manda parar": o contrato do
+    // `sqlite3_exec`.
+    if (cpu.Get(kR0) != 0) break;
+  }
+  return true;
+}
+
+bool Despacho::AtenderSql(ICpu& cpu, std::uint32_t indice, std::uint32_t pp_saida) {
+  if (!sql_pronto_) return false;
+  if (indice < kVtableSqlDb || indice >= kVtableSqlDb + kSlotsPorVtable) return false;
+  const std::uint32_t slot = indice - kVtableSqlDb;
+  if (slot != 3) {
+    // Os outros slots do banco. Nenhum apareceu na medicao: um pedido aqui e
+    // informacao NOVA, e por isso fica com nome proprio em vez de cair no ramo
+    // generico e ser lido como `IFileMgr::slot2803`.
+    char det[64];
+    std::snprintf(det, sizeof(det), "slot=%u", slot);
+    traco_.RegistarFalta(Area::Brew, "ISQLDatabase slot nao implementado", det);
+    cpu.Set(kR0, kAeeUnsupported);
+    return true;
+  }
+
+  std::string sql;
+  mem_.LerCadeia(cpu.Get(kR1), &sql, 1024);
+  const std::uint32_t cb = cpu.Get(kR2);
+  const std::uint32_t ctx = cpu.Get(kR3);
+  traco_.Emitir(Area::Brew, Nivel::Depuracao, "SQL_EXEC",
+                "\"" + sql + "\" cb=0x" + Hex(cb) + " ctx=0x" + Hex(ctx));
+  std::vector<LinhaSql> linhas;
+  const std::uint32_t r = ExecutarSql(sql, &linhas);
+  if (r == kAeeSuccess && !linhas.empty()) {
+    (void)EntregarLinhasSql(cpu, linhas, cb, ctx, pp_saida);
+  }
+  cpu.Set(kR0, r);
   return true;
 }
 
@@ -1572,6 +1930,9 @@ void Despacho::InstalarAjudantes(const Saidas& saidas, Endereco tabela) {
   // a ferramenta: `tools/bateria.cpp` e partilhado. O `InstalarWidgets` e
   // idempotente, logo quem o quiser chamar explicitamente tambem pode.
   (void)InstalarWidgets(saidas);
+  // O SQL, pela MESMA razao: a ferramenta e partilhada e esta frente nao obriga a
+  // muda-la. Ver `InstalarSql`.
+  (void)InstalarSql(saidas);
 
   const auto ja_tem = [&](std::uint32_t off) {
     for (const auto& lig : kLigados) {
@@ -2096,6 +2457,10 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         }
       } else if (media_ && media_->Atender(idx, cpu)) {
         // O IMedia (core/brew/imedia) atendeu este indice de saida.
+      } else if (AtenderSql(cpu, idx, pp_saida)) {
+        // O SQL. Antes do ramo generico pelo mesmo motivo do widget: a faixa
+        // 9800+ cai no `idx >= kVtableFileMgr` do fim da cadeia e um `Exec`
+        // apareceria nomeado como `IFileMgr::slot2803`.
       } else if (AtenderWidgets(cpu, idx)) {
         // O WIDGET: `IRootForm`, `IForm`, `IHandler` e `IWidget`.
         //
@@ -3475,20 +3840,30 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         ultimo_erro_do_fm_ = kAeeUnsupported;
         cpu.Set(kR0, 0);
       } else if (idx == kSlotIdSqlOpen) {
-        // `int Open(ISQLMgr *po, const char *pszFile, ISQL **ppiSQL, uint32 flags)`
+        // `int OpenDatabase(ISQLMgr *po, const char *pszName, ISQLDatabase **ppDB)`
         // -- ISQLMgr slot 3.
         //
-        // Recusa DECLARADA: nao ha SQLite aqui, e implementar meia base de dados
-        // seria a pior especie de mentira -- a que so falha mais tarde, ja dentro
-        // do jogo. O `tectoy` e o unico que o pede.
-        // A recusa era DECLARADA no comentario e MUDA na corrida.
-        if (cpu.Get(kR3) != 0) mem_.Escrever32(cpu.Get(kR3), 0);
+        // O PONTEIRO DE SAIDA E O `r2`, E AQUI ESTAVA O `r3`. MEDIDO duas vezes,
+        // por dois caminhos independentes:
+        //   - a sonda do `zeebx` imprime a chamada inteira --
+        //     `slot[ 3] ("tt_prefs.db", 0x10002f28, 0x0)`
+        //     (`zeebx-emu/docs/implementacao/13-classes-desconhecidas.md`);
+        //   - o `zeebx` escreve o banco em `a2` e le o nome em `a1`
+        //     (`zeebx-emu/src/machine/sql.rs`, `OpenDatabase`).
+        // O `r3` e o TERCEIRO argumento (zero no Z-Wheel). O que aqui estava
+        // escrevia o NULO em cima do que o chamador tivesse no `r3`, e deixava o
+        // `ppDB` do chamador com o lixo que ele ja tinha -- um NULO no sitio
+        // errado. Nao se via porque a resposta era `AEE_UNSUPPORTED` e o jogo
+        // desistia na linha seguinte: o defeito ficava escondido atras de outro.
         std::string nome_sql;
         mem_.LerCadeia(cpu.Get(kR1), &nome_sql, 512);
-        char det_sql[96];
-        std::snprintf(det_sql, sizeof(det_sql), "Open %s", nome_sql.c_str());
-        traco_.RegistarFalta(Area::Brew, "ISQLMgr::Open", det_sql);
-        cpu.Set(kR0, kAeeUnsupported);
+        const std::uint32_t ppdb = cpu.Get(kR2);
+        if (ppdb != 0) mem_.Escrever32(ppdb, kObjSqlDb);
+        ++sql_abertos_;
+        traco_.Emitir(Area::Brew, Nivel::Depuracao, "SQLMGR_OPEN",
+                      "\"" + nome_sql + "\" -> 0x" + Hex(kObjSqlDb) + " ppDB=0x" + Hex(ppdb) +
+                          " aberto#" + std::to_string(sql_abertos_));
+        cpu.Set(kR0, kAeeSuccess);
       } else if (idx == kSlotIdGetDeviceInfo) {
         // `void GetDeviceInfo(IShell *po, AEEDeviceInfo *pi)` -- IShell slot 4,
         // e a demanda MAIS ALTA do corpus. MEDIDO com uma sonda temporaria no
