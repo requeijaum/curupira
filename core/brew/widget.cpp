@@ -400,21 +400,47 @@ Atendido Widgets::AtenderRootForm(ICpu& cpu, std::uint32_t slot) {
       }
       // QUALQUER OUTRO EVENTO. O contrato do `IRootForm` e entregar os eventos
       // que ele nao trata a forma que esta no TOPO da pilha. Nao ha formas na
-      // pilha (nada empurrou nenhuma), logo a resposta honesta e FALSE -- e fica
-      // REGISTADA, com o numero do evento, porque um FALSE mudo e exactamente o
-      // que este projecto proibe.
+      // pilha (nada empurrou nenhuma), logo a resposta e FALSE -- e o FALSE
+      // CONTINUA a ser dado.
+      //
+      // **MAS O FALSE NAO E UMA FALTA: E O CONTRATO -- e ele esta MEDIDO.** No
+      // `tectoy` (274755), no sitio que oferece este evento a raiz (`evt=0x7b0a`
+      // no traco, `lr=0x6b41c`), desmonte base ZERO:
+      //
+      //     6b400  ldr r1,[r0]      ; a vtable do IRootForm (guardado em pMe+0x24)
+      //     6b408  ldr ip,[r1,#0xc] ; slot 3 = HandleEvent
+      //     6b418  bx  ip           ; HandleEvent(raiz, 0x7b0a, 4, d)
+      //     6b41c  cmp r0,#0        ; O TITULO LE A RESPOSTA
+      //     6b420  bne 0x6b630      ; != 0 (TRUE) -> SALTA o switch PROPRIO dele
+      //     6b424  ...              ; == 0 (FALSE) -> cai no switch e trata o evento
+      //
+      // Com TRUE este applet NAO tratava o proprio evento -- logo o FALSE e a
+      // resposta de que ele DEPENDE, e nao uma recusa nossa. E o `0x7b0a` tambem
+      // nao e evento de widget nenhum (`EVT_WDG_GETPROPERTY` = 0x800 e
+      // `EVT_WDG_SETPROPERTY` = 0x801, `AEEIWidget.h:65-66`; o `w=4` tambem nao e
+      // um `WID_*`): e um evento PRIVADO do applet, que ele oferece a raiz ANTES
+      // de o tratar ele mesmo.
+      //
+      // POR ISSO O REGISTO DESTE CAMINHO E UM PRESSUPOSTO DECLARADO, e nao uma
+      // falta: `RegistarFalta` e para o que NAO se conseguiu cumprir, e isto
+      // cumpre-se. A contagem da bateria muda de balde (falta -> pressuposto) --
+      // reclassificacao deliberada, com o `lr` e a razao medidas. O comportamento
+      // NAO muda: continua FALSE, e o `Atendido::Feito` (e nao `NaoImplementado`)
+      // passa a dizer o mesmo no codigo. E nao entra nas `Recusas()` do modulo:
+      // um pedido cumprido pelo contrato nao e um pedido recusado.
+      //
       // O `lr` ENTRA NO DETALHE, e e uma medida e nao enfeite: e ele que diz QUAL
       // sitio do modulo ofereceu o evento a raiz, e sem ele nao ha como ir ao
       // desmonte ver o que o titulo faz com a resposta (foi assim que se leu o
-      // `Tectoy_FixupTime`). O detalhe nao muda a CHAVE da falta, logo a contagem
-      // da bateria e a mesma.
-      char det[128];
-      std::snprintf(det, sizeof(det), "evt=0x%04x w=0x%04x d=0x%08x pilha=%zu lr=0x%08x", evt, w, d,
-                    pilha_.size(), cpu.Get(kLR));
-      traco_.RegistarFalta(Area::Brew, "IRootForm HandleEvent nao atendido", det);
-      recusas_.push_back(std::string("HandleEvent nao atendido ") + det);
+      // `Tectoy_FixupTime`).
+      char det[160];
+      std::snprintf(det, sizeof(det),
+                    "evt=0x%04x w=0x%04x d=0x%08x pilha=%zu lr=0x%08x (o titulo LE a resposta)",
+                    evt, w, d, pilha_.size(), cpu.Get(kLR));
+      traco_.RegistarPressuposto(Area::Brew,
+                                 "IRootForm HandleEvent privado do applet -> FALSE", det);
       cpu.Set(kR0, 0);
-      return Atendido::NaoImplementado;
+      return Atendido::Feito;
     }
 
     case kIHandler_SetHandler: {

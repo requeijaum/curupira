@@ -152,7 +152,10 @@ constexpr std::uint32_t kTamanhoDoObjetoDeWidget = 0x40;
 // ---------------------------------------------------------------------------
 enum class Atendido {
   NaoEMeu,        // o indice nao e desta faixa: quem chamou decide
-  Feito,          // atendido -- nao regista nada
+  // `Feito` = o pedido foi cumprido. Pode registar o que o CONTRATO declara (um
+  // pressuposto) e nunca uma falta: e o caso do `IRootForm HandleEvent`, cujo
+  // FALSE medido e a resposta de que o applet depende.
+  Feito,          // atendido -- nao regista falta nenhuma
   NaoImplementado,// atendido com RECUSA, e ja registado (P2)
 };
 

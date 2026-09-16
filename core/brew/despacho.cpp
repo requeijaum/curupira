@@ -1844,6 +1844,109 @@ bool Despacho::AtenderGetHandler(ICpu& cpu) {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// O `GetClassItemID` -- o SLOT 45 do IShell (`tools/brew_slots.inc:58`).
+//
+// O CONTRATO, do SDK (`AEEShell.h:813`; ficha em `:7239`):
+//
+//     uint32 GetClassItemID(iname *po, AEECLSID cls);
+//     "This method returns a 32-bit unique identifier associated with the
+//      owning module for the specified class ID."
+//     "Return Value: 0 - Class not found or module is static"   (`:7255`)
+//
+// O QUE O TITULO FAZ COM O QUE ELE DEVOLVE -- desmonte do `tectoy` (`274755`),
+// base ZERO (os literais do `.mod` sao offsets do ficheiro), no `Tectoy_FixupTime`
+// (0x69b20) do `Tectoy.c`:
+//
+//     69b4c  ldr r3,[r1,#8]      ; IShell slot 2 = CreateInstance
+//     69b58  mov r1,#0x1000000   ; AEECLSID_DOWNLOAD (o literal e este `mov`)
+//     69b60  bx  r3              ; CreateInstance(po, DOWNLOAD, &m_pDownload)
+//     69b64  cmp r0,#0 ; beq 0x69ba4        ; 0 = criou -> caminho bom
+//     69ba4  ldr r0,[r5,#0x20]   ; o IShell
+//     69ba8  ldr r7,[pc,#0xdc]   ; 0x01070798 -- lido em 0x69c8c: o CLSID DO PROPRIO TITULO
+//     69bb4  ldr r2,[r1,#0xb4]   ; slot 45 (0xb4 = 45*4) = GetClassItemID
+//     69bb8  mov r1,r7
+//     69bbc  bx  r2              ; GetClassItemID(po, 0x01070798)
+//     69bc0  movs r6,r0
+//     69bc4  bne 0x69bdc         ; id != 0 -> USA este id
+//     69bc8  ldr r0,[r4,#0x57c]  ; id == 0 -> VIA ALTERNATIVA: o IDownload que criou
+//     69bd0  bl  0x59f58         ; que chama o slot 3 dele (lista de falhados) e, por
+//                                ; cada id, o slot 4 (o AppModInfo), a procura de um
+//                                ; classID igual a 0x01070798 (`59fd8 cmp r2,r7`)
+//     69bd8  beq 0x69b44         ; nao achou -> DESISTE e retorna
+//     69bf0  ldr ip,[r1,#0x54]   ; slot 21 (0x54 = 21*4) do IDownload
+//     69bf4  mov r1,r6           ; com o id que veio do slot 45
+//
+// Duas conclusoes, as duas medidas:
+//
+//  1. **o valor do slot 45 E um id de item.** E o mesmo valor que o `IDownload`
+//     recebe no slot 21, que tem a forma de `IDOWNLOAD_GetItemInfo(po, id, cb,
+//     ctx)` (`OATDownload.c:589`). Nao e um codigo de erro nem um booleano.
+//  2. **o zero NAO e neutro aqui:** e a porta da via alternativa -- varrer a fila
+//     de downloads falhados. Nesta maquina essa fila nao existe, logo um zero
+//     manda o titulo DESISTIR (0x69bd8) por um caminho que nao e o dele.
+//
+// O NUMERO QUE SE DEVOLVE. O id de item de um modulo e o nome da PASTA dele na
+// NAND -- `mod/274755/tectoy.mod` --, e a pasta e numerica nos 65 `.mod` do
+// corpus. O `SituarTitulo` ja entrega esse nome ao Despacho (`pasta_`), que e o
+// mesmo valor que serve o `LoadResString` (`dir_ + "/../mif/" + pasta_ + ".mif"`).
+// Segunda prova no mesmo lugar: o `.mif` do titulo chama-se `274755.mif`, tambem
+// com o numero no NOME.
+//
+// CONTRADICAO DECLARADA: o `zeebx` (`src/machine/shell.rs:401`) escreve que o
+// numero "e a mesma numeracao que aparece no `.mif`". MEDIDO: **nao aparece.** O
+// `mif/274755.mif` (1480 bytes) nao contem `274755` em ASCII, nem em 32 bits
+// little-endian nem big-endian. O que existe e o NOME do ficheiro. A conclusao
+// (id = numero da pasta) nao muda -- mas a prova e a pasta, e nao o conteudo.
+bool Despacho::AtenderGetClassItemID(ICpu& cpu) {
+  const std::uint32_t cls = cpu.Get(kR1);
+  // A ABI CRUA, so com `ZB2_TRACE=1`: e ela que confirma que o `r1` e o CLSID do
+  // titulo, e nao um ponteiro de texto (a armadilha do ramo generico, que lia
+  // "texto" de um `0x01070798`).
+  traco_.Emitir(Area::Brew, Nivel::Depuracao, "ISHELL_GETCLASSITEMID_ABI",
+                "cls=" + Hex(cls) + " lr=" + Hex(cpu.Get(kLR)));
+
+  // A CLASSE DE OUTRO MODULO (ou um titulo sem CLSID conhecido): o SDK manda
+  // devolver 0 -- "Class not found or module is static". Fica DECLARADO, porque
+  // este caminho nao foi medido em nenhum titulo do corpus: e uma resposta dada,
+  // nao uma leitura.
+  if (!tem_clsid_ || cls != clsid_titulo_) {
+    char det[160];
+    std::snprintf(det, sizeof(det), "cls=0x%08x; o clsid deste modulo e %s lr=0x%08x", cls,
+                  tem_clsid_ ? Hex(clsid_titulo_).c_str() : "desconhecido", cpu.Get(kLR));
+    traco_.RegistarPressuposto(Area::Brew, "IShell::GetClassItemID de classe alheia (-> 0)",
+                               det);
+    cpu.Set(kR0, 0);
+    return true;
+  }
+
+  // O ID: o nome da pasta do titulo, lido como numero decimal. Vem da CORRIDA
+  // (o `dir` que a bateria abriu), e nao de uma tabela nossa.
+  std::uint32_t id = 0;
+  bool numerica = !pasta_.empty() && pasta_.size() <= 9u;
+  for (char c : pasta_) {
+    if (c < '0' || c > '9') { numerica = false; break; }
+    id = id * 10u + static_cast<std::uint32_t>(c - '0');
+  }
+  // SEM NUMERO, NADA SE INVENTA. Uma pasta que nao seja um numero quer dizer que
+  // o id de item nao e conhecido: um id inventado punha o titulo a pedir o
+  // `AppModInfo` de um item ALHEIO no slot 21. O `0` e o valor que o SDK preve
+  // para "nao encontrado", e e o unico canal que este metodo tem -- o retorno E
+  // o id, e nao ha codigo de erro. Por isso a recusa fica registada com o NOME.
+  if (!numerica || id == 0) {
+    traco_.RegistarFalta(Area::Brew, "IShell::GetClassItemID sem id de item",
+                         "pasta='" + pasta_ + "' (o id de item e o numero da pasta do modulo, "
+                         "medido em mod/274755/tectoy.mod)");
+    cpu.Set(kR0, 0);
+    return true;
+  }
+  traco_.Emitir(Area::Brew, Nivel::Depuracao, "ISHELL_GETCLASSITEMID",
+                "cls=" + Hex(cls) + " -> id=" + Hex(id) + " (" + pasta_ + ") lr=" +
+                    Hex(cpu.Get(kLR)));
+  cpu.Set(kR0, id);
+  return true;
+}
+
 std::uint32_t Despacho::IdibLivre() const {
   for (std::uint32_t obj = zb2::brew::kObjDibBase + 0x340u;
        obj < zb2::brew::kFimDosDibCompativeis; obj += 0x40u) {
@@ -2802,6 +2905,13 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
                         item_servido->bytes);
           traco_.Emitir(Area::Brew, Nivel::Depuracao, "ISHELL_GETDEVICEINFOEX", det);
         }
+      } else if (idx == kBaseDoShell + brew_slots::kShell_GetClassItemID) {
+        // `uint32 GetClassItemID(IShell*, AEECLSID cls)` -- o SLOT 45, que estava
+        // no ramo generico: recusava com `IShell::slot45` e deixava no `r0` o
+        // `kAeeUnsupported` (20 = 0x14), que o `tectoy` guardava e passava ao
+        // `IDownload::slot21` COMO SE FOSSE um id de item (ver o comentario do
+        // `AtenderGetClassItemID`). O `r1` deste slot e um CLSID, e nao texto.
+        (void)AtenderGetClassItemID(cpu);
       } else if (idx == kBaseDoShell + brew_slots::kShell_Resume) {
         // ISHELL_Resume -- IShell slot 36. `int Resume(IShell*, AEECallback* pcb)`
         // (AEEIShell.h, INHERIT_IShell). E O MECANISMO das threads cooperativas:

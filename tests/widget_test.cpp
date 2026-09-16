@@ -151,6 +151,12 @@ class Bancada {
     return it == f.end() ? 0 : static_cast<std::size_t>(it->second);
   }
 
+  std::size_t Pressupostos(const std::string& nome) const {
+    const auto& p = traco_.ContagemPressupostos();
+    const auto it = p.find(nome);
+    return it == p.end() ? 0 : static_cast<std::size_t>(it->second);
+  }
+
   Memoria& Mem() { return mem_; }
   Despacho& D() { return *despacho_; }
   ArmInterpreter& Cpu() { return cpu_; }
@@ -412,6 +418,21 @@ TEST(Widget, UmaPropriedadeDesconhecidaRecusaEDeixaNome) {
       b.PedeAoRootForm(brew_slots::EVT_WDG_GETPROPERTY, 0x7777u, nullptr);
   EXPECT_EQ(r, 0u) << "FALSE e a resposta do contrato para 'nao atendido'";
   EXPECT_GE(b.Faltas("IRootForm GetProperty desconhecido"), 1u);
+}
+
+TEST(Widget, OHandleEventDaRaizEOPressupostoDoContratoENaoUmaFalta) {
+  // A RECLASSIFICACAO (frente `slot45`, decisao do dono): o FALSE medido no
+  // `tectoy` (`evt=0x7b0a`, `lr=0x6b41c`, `cmp r0,#0; bne 0x6b630`) NAO e uma
+  // falta -- com TRUE o applet SALTA o proprio switch, logo o FALSE e a resposta
+  // de que ele DEPENDE. O COMPORTAMENTO NAO MUDA (continua 0); o que muda e o
+  // balde em que fica declarado, e a razao vai no detalhe com o `lr`.
+  Bancada b;
+  const std::uint32_t r = b.PedeAoRootForm(0x7b0au, 4u, nullptr);
+  EXPECT_EQ(r, 0u) << "o FALSE e o contrato: a resposta nao muda";
+  EXPECT_EQ(b.Faltas("IRootForm HandleEvent nao atendido"), 0u)
+      << "nao e uma falta: o caminho cumpre o contrato medido";
+  EXPECT_EQ(b.Pressupostos("IRootForm HandleEvent privado do applet -> FALSE"), 1u)
+      << "e fica DECLARADO, com o lr e o evt no detalhe";
 }
 
 TEST(Widget, OQueryInterfaceRecusaUmIidDesconhecidoEZeroNoPonteiro) {

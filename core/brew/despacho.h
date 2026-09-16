@@ -582,6 +582,16 @@ class Despacho {
   // otherwise", `AEEIShell.h:6289`). O contrato medido e a tabela do registo
   // estao no comentario do `AtenderGetHandler`, em `despacho.cpp`.
   bool AtenderGetHandler(ICpu& cpu);
+
+  // `uint32 GetClassItemID(IShell*, AEECLSID cls)` -- `AEEIShell.h:813`, o SLOT
+  // 45 do IShell (`tools/brew_slots.inc:58`).
+  //   -> r0=po  r1=cls
+  // Devolve o id de ITEM do modulo dono daquela classe, ou 0 quando a classe nao
+  // e deste modulo -- que e o que o SDK preve ("0 - Class not found or module is
+  // static", ficha em `AEEShell.h:7255`). O contrato, o desmonte do `tectoy` que
+  // o consome e a prova do numero estao no comentario do
+  // `AtenderGetClassItemID`, em `despacho.cpp`.
+  bool AtenderGetClassItemID(ICpu& cpu);
   // O primeiro IDIB LIVRE da banda dos bitmaps compativeis, ACIMA do ecra
   // (`kObjDibBase + 0x300`), que e a mesma escolha do servico da familia
   // (`core/brew/interface.cpp`, `ProcurarObjectoLivre`) e a razao que la esta

@@ -2426,8 +2426,12 @@ TEST(ZclsidDoZWheel, ODownloadVemDoCreateInstanceEOSeuSlot21RecusaComONome) {
   // O SLOT 21, com os argumentos medidos em `Tectoy_FixupTime`: (po, id, callback
   // do modulo, contexto). Ele NAO e lido pelo jogo -- a resposta e EFAILED porque
   // nao ha fila de downloads, e o que fica registado e o motivo.
+  //
+  // O `id` E O QUE O SLOT 45 DEVOLVE (frente `slot45`): 274755, o numero da pasta
+  // do modulo. O `0x14` que aqui esteve era o `kAeeUnsupported` do ramo generico
+  // -- um codigo de erro a passar por id de item, e nao uma medida.
   EXPECT_EQ(b.EntradaDaVtable(obj, 21), b.S().Endereco(kSlotDownloadInfoComCallback));
-  EXPECT_EQ(b.ChamaEndereco(b.EntradaDaVtable(obj, 21), obj, 0x14u, 0x000735f4u, 0x80200048u),
+  EXPECT_EQ(b.ChamaEndereco(b.EntradaDaVtable(obj, 21), obj, 274755u, 0x000735f4u, 0x80200048u),
             kAeeFailed);
   EXPECT_EQ(b.Faltas("IDownload slot21 (info do item, id/cb/ctx)"), 1u);
   // A LISTA DE DOWNLOADS FALHADOS (o slot 3 do segundo sitio medido, o
@@ -2438,6 +2442,70 @@ TEST(ZclsidDoZWheel, ODownloadVemDoCreateInstanceEOSeuSlot21RecusaComONome) {
   // zero a fingir de contrato.
   EXPECT_EQ(b.ChamaEndereco(b.EntradaDaVtable(obj, 7), obj, 0u), kAeeUnsupported);
   EXPECT_EQ(b.Faltas("IDownload slot nao implementado"), 1u);
+}
+
+// ===========================================================================
+// O SLOT 45 DO IShell: o `GetClassItemID` (frente `slot45`).
+//
+// A DEMANDA, medida no `tectoy` (274755): depois de criar o `IDownload`, o
+// `Tectoy_FixupTime` chama `GetClassItemID(po, 0x01070798)` e passa o que ele
+// devolver ao slot 21 do `IDownload`. Com o slot 45 no ramo generico, o `r0` era
+// o `kAeeUnsupported` (20 = 0x14) -- um codigo de erro a viajar como id de item.
+//
+// Estes testes entram pela ENTRADA DA VTABLE do IShell (a TABELA, e nao o id
+// interno de saida): uma chamada a `ChamaSaida(2045)` provaria a semantica, e nao
+// a cablagem.
+// ===========================================================================
+TEST(FrenteSlot45, OGetClassItemIDEstaNaVtableEDevolveOIdDeItemDaPastaDoTitulo) {
+  Bancada b;
+  ConstruirOShell(b);
+  // A TABELA: o slot 45 da vtable do IShell tem de apontar para o handler (o
+  // indice de saida `kBaseDoShell + 45`, como o `ConstruirObjeto` da bateria).
+  EXPECT_EQ(b.EntradaDaVtable(kObjShell, brew_slots::kShell_GetClassItemID),
+            b.S().Endereco(kBaseDoShell + brew_slots::kShell_GetClassItemID))
+      << "o slot 45 da vtable do shell tem de apontar para o GetClassItemID";
+  // O TITULO MEDIDO: pasta 274755, clsid 0x01070798 (`corpus62.json` e o `.mif`).
+  b.D().SituarTitulo("/nao/existe", "274755", 0x01070798u);
+  const std::uint32_t id = b.ChamaEndereco(
+      b.EntradaDaVtable(kObjShell, brew_slots::kShell_GetClassItemID), kObjShell, 0x01070798u);
+  EXPECT_EQ(id, 274755u) << "o id de item e o numero da PASTA do modulo (mod/274755/tectoy.mod)";
+  EXPECT_EQ(b.Faltas("IShell::slot45"), 0u)
+      << "o ramo generico nao pode voltar a apanhar este slot";
+  EXPECT_EQ(b.Faltas("IShell::GetClassItemID sem id de item"), 0u);
+}
+
+TEST(FrenteSlot45, UmaClasseDeOutroModuloRespondeZero) {
+  Bancada b;
+  ConstruirOShell(b);
+  b.D().SituarTitulo("/nao/existe", "274755", 0x01070798u);
+  // `0x01000000` e o `AEECLSID_DOWNLOAD`: uma classe que NAO e deste modulo. O SDK
+  // manda devolver 0 ("Class not found or module is static") -- e o 0 fica
+  // DECLARADO como pressuposto, porque este caminho nao foi medido.
+  EXPECT_EQ(b.ChamaEndereco(b.EntradaDaVtable(kObjShell, brew_slots::kShell_GetClassItemID),
+                            kObjShell, 0x01000000u),
+            0u);
+  const auto& p = b.Tr().ContagemPressupostos();
+  EXPECT_NE(p.find("IShell::GetClassItemID de classe alheia (-> 0)"), p.end());
+  // SEM `SituarTitulo` tambem: nao ha titulo, logo nao ha id de item a dar.
+  Bancada c;
+  ConstruirOShell(c);
+  EXPECT_EQ(c.ChamaEndereco(c.EntradaDaVtable(kObjShell, brew_slots::kShell_GetClassItemID),
+                            kObjShell, 0x01070798u),
+            0u);
+}
+
+TEST(FrenteSlot45, SemNumeroDePastaRecusaComONome) {
+  // UMA PASTA QUE NAO E UM NUMERO: o id de item nao e conhecido. Devolver um
+  // numero inventado punha o titulo a pedir o `AppModInfo` de um item ALHEIO no
+  // slot 21 do `IDownload` -- por isso a falta fica com o nome (P2), e o 0 e o
+  // unico canal que ha (o retorno do metodo E o id).
+  Bancada b;
+  ConstruirOShell(b);
+  b.D().SituarTitulo("/nao/existe", "pasta_sem_numero", 0x01070798u);
+  EXPECT_EQ(b.ChamaEndereco(b.EntradaDaVtable(kObjShell, brew_slots::kShell_GetClassItemID),
+                            kObjShell, 0x01070798u),
+            0u);
+  EXPECT_EQ(b.Faltas("IShell::GetClassItemID sem id de item"), 1u);
 }
 
 }  // namespace zb2::brew
