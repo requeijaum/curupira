@@ -668,7 +668,7 @@ TEST(AjudantesExtra, OffsetForaDaTabelaNaoERecusadoAqui) {
   EXPECT_TRUE(b.traco.ContagemFaltas().empty());
 }
 
-TEST(AjudantesExtra, ImplementadosSaoVinteEQuatroEATodosNoCatalogo) {
+TEST(AjudantesExtra, ImplementadosSaoVinteECincoEATodosNoCatalogo) {
   // 7 da etapa anterior + os 6 da frente io2 (wstrlen, wstrncopyn, strtoul,
   // snprintf, strlcpy, strlcat) + o stricmp (0x0d0) da frente park + os 4 da
   // frente ajud2 (atoi, strends, aee_GetTimeMS, wsprintf) + o memcmp (0x0dc),
@@ -680,10 +680,12 @@ TEST(AjudantesExtra, ImplementadosSaoVinteEQuatroEATodosNoCatalogo) {
   // + o `sysfree` (0x0bc), que o `allstarcards` pedia 3x e que estava na tabela
   // do cabecalho SEM implementacao (e o par do heap: liberta o buffer que o
   // `SetupNativeImage` entrega).
-  EXPECT_EQ(AjudantesExtra::Implementados(), 24u);
+  // + o `swaps` (0x130), que o `gof` e o `pbc` pediam 1646 vezes e que estava na
+  // tabela do cabecalho SEM implementacao. O nome engana: troca BYTES, nao valores.
+  EXPECT_EQ(AjudantesExtra::Implementados(), 25u);
   for (std::uint32_t off : {0x0D8u, 0x044u, 0x050u, 0x054u, 0x0E8u, 0x138u, 0x0F4u, 0x0CCu,
                             0x0D0u, 0x090u, 0x0FCu, 0x0ACu, 0x0B4u, 0x0B8u, 0x03Cu, 0x0DCu,
-                            0x0BCu}) {
+                            0x0BCu, 0x130u}) {
     EXPECT_NE(DeclaracaoDoOffset(off), nullptr) << "0x" << std::hex << off;
   }
 }
@@ -1421,7 +1423,7 @@ TEST(AjudantesExtra, SetupNativeImageEDescodificadoPorEstaTabela) {
   EXPECT_STREQ(DeclaracaoDoOffset(0x064)->assinatura,
                "void *(*SetupNativeImage)(AEECLSID cls, void *pBuffer, AEEImageInfo *pii, "
                "boolean *pbRealloc)");
-  EXPECT_EQ(AjudantesExtra::Implementados(), 24u) << "o 0x064 entrou na tabela";
+  EXPECT_EQ(AjudantesExtra::Implementados(), 25u) << "o 0x064 entrou na tabela";
 }
 
 TEST(AjudantesExtra, SetupNativeImageDescodificaBmpDe8BitsComPaleta) {
@@ -1818,6 +1820,26 @@ TEST(AjudantesExtra, VsprintfDaTabelaUsaOMesmoVaLists) {
 }
 
 }  // namespace
+
+TEST(AjudantesExtra, OSwapsTrocaOsBytesEOLswaplNaoEstaServido) {
+  // `swaps` (0x130) NAO troca dois valores: troca os BYTES de um. Num guest little-endian
+  // isso e o que le dados gravados em big-endian -- e eram 1646 chamadas (gof 1308, pbc 338)
+  // sem resposta.
+  Bancada b;
+  for (const auto par : {std::pair<std::uint32_t, std::uint32_t>{0x1234, 0x3412},
+                         {0x00FF, 0xFF00}, {0xFF00, 0x00FF}, {0x0000, 0x0000},
+                         {0xABCD, 0xCDAB}}) {
+    b.cpu.Set(kR0, par.first);
+    EXPECT_EQ(b.Atender(brew_ajudantes::kAjudante_swaps), Atendimento::Implementado);
+    EXPECT_EQ(b.cpu.Get(kR0), par.second) << "swaps(0x" << std::hex << par.first << ")";
+  }
+  // O `+0` do `swaps` e o `+4` de um `swapl` sao offsets DIFERENTES: o cabecalho
+  // (`AEEStdLib.h:172-173`) lista `swapl` em 0x12c e `swaps` em 0x130. Um teste que so
+  // olhasse para o nome nao apanhava uma troca entre os dois -- e por isso este fixa o offset.
+  EXPECT_EQ(brew_ajudantes::kAjudante_swaps, 0x130u);
+  EXPECT_EQ(DeclaracaoDoOffset(0x130)->nome, std::string("swaps"));
+  EXPECT_EQ(DeclaracaoDoOffset(0x12C)->nome, std::string("swapl"));
+}
 
 TEST(AjudantesExtra, OSysfreeLibertaOBlocoDoHeapDoGuest) {
   // O `sysfree` (0x0BC) e o par do alocador do SISTEMA -- e nesta arvore esse alocador e

@@ -699,6 +699,24 @@ void FazerStrncmp(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
 //
 // O valor devolvido segue a convencao do C: o sinal da diferenca do PRIMEIRO byte que
 // difere, e zero quando os n bytes sao iguais.
+// 0x130 -- `uint16 (*swaps)(uint16 us)` e o par 0x12C `uint32 (*swapl)(uint32 ul)`
+// (`AEEStdLib.h:172-173`; `#define SWAPS GET_HELPER()->swaps`, `:481`).
+//
+// O NOME ENGANAVA. "swaps" nao e "troca dois valores": e **trocar os BYTES** de um valor, o que
+// num Zeebo (ARM, little-endian) serve para ler dados gravados em big-endian -- e era o que
+// dois titulos pediam 1646 vezes (`gof` 1308, `pbc` 338) sem resposta.
+//
+// A regra e a do proprio nome, e nao ha parametro nenhum a validar: `swaps(0x1234) = 0x3412`.
+void FazerSwaps(Memoria&, Alocador&, ICpu& cpu, Traco& traco) {
+  const std::uint32_t us = cpu.Get(kR0) & 0xFFFFu;
+  const std::uint32_t trocado = ((us >> 8) | (us << 8)) & 0xFFFFu;
+  cpu.Set(kR0, trocado);
+  char det[48];
+  std::snprintf(det, sizeof(det), "0x%04x -> 0x%04x", static_cast<unsigned>(us),
+                static_cast<unsigned>(trocado));
+  EmitirChamada(traco, brew_ajudantes::kAjudante_swaps, det);
+}
+
 // 0x0BC -- `void (*sysfree)(void *pb)` (`AEEStdLib.h:140`, `#define SYSFREE
 // GET_HELPER()->sysfree`). Liberta um bloco do alocador do SISTEMA, que nesta arvore e o
 // MESMO `Alocador` do heap do guest -- e e por isso que o `SetupNativeImage` (frente
@@ -2045,6 +2063,7 @@ constexpr Implementacao kImplementados[] = {
     {brew_ajudantes::kAjudante_strncmp, "strncmp", FazerStrncmp},
     {brew_ajudantes::kAjudante_memcmp, "memcmp", FazerMemcmp},
     {brew_ajudantes::kAjudante_sysfree, "sysfree", FazerSysFree},
+    {brew_ajudantes::kAjudante_swaps, "swaps", FazerSwaps},
     {brew_ajudantes::kAjudante_stricmp, "stricmp", FazerStricmp},
     {brew_ajudantes::kAjudante_atoi, "atoi", FazerAtoi},
     {brew_ajudantes::kAjudante_strends, "strends", FazerStrends},
@@ -2075,6 +2094,7 @@ static_assert(brew_ajudantes::kAjudante_strdup == 0x0F4, "0x0f4 e strdup");
 static_assert(brew_ajudantes::kAjudante_strncmp == 0x0CC, "0x0cc e strncmp");
 static_assert(brew_ajudantes::kAjudante_memcmp == 0x0DC, "0x0dc e memcmp");
 static_assert(brew_ajudantes::kAjudante_sysfree == 0x0BC, "0x0bc e sysfree");
+static_assert(brew_ajudantes::kAjudante_swaps == 0x130, "0x130 e swaps");
 static_assert(brew_ajudantes::kAjudante_stricmp == 0x0D0, "0x0d0 e stricmp");
 static_assert(brew_ajudantes::kAjudante_wstrlen == 0x030, "0x030 e wstrlen");
 static_assert(brew_ajudantes::kAjudante_wstrncopyn == 0x080, "0x080 e wstrncopyn, nao strncpy");
@@ -2093,7 +2113,7 @@ static_assert(brew_ajudantes::kAjudante_aee_GetSeconds == 0x0B4, "0x0b4 e aee_Ge
 static_assert(brew_ajudantes::kAjudante_aee_GetJulianDate == 0x0B8, "0x0b8 e aee_GetJulianDate");
 static_assert(
     sizeof(kImplementados) / sizeof(kImplementados[0]) ==
-        24,
+        25,
     "a lista das implementacoes mudou: actualiza o numero e o teste");
 
 }  // namespace
