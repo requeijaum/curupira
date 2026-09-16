@@ -104,6 +104,14 @@ INTERFACES = [
     ("ImageDecoder", "platform/media/inc/AEEIImageDecoder.h",
      "#define INHERIT_IImageDecoder("),
     ("ForceFeed", "platform/system/inc/AEEIForceFeed.h",  "#define INHERIT_IForceFeed("),
+    # O `IGraphics` (a interface 2D do BREW 4.0, frente igfx). E da FORMA ANTIGA:
+    # `QINTERFACE` + `DECLARE_IBASE`, sem `INHERIT_` -- o `metodos` ja sabe le-la
+    # pelo `QINTERFACE(IGraphics)`, como faz com o `ITextCtl`. PORQUE ENTRA AQUI:
+    # os quatro slots que o corpus pede (4 `SetColor`, 6 `SetFillMode`, 8
+    # `SetFillColor`, 22 `DrawRect`) e os outros 40 nao podem ser numeros
+    # escritos a mao -- um slot deslocado nesta interface NAO da erro, da desenho
+    # errado.
+    ("Graphics", "platform/ui/inc/AEEGraphics.h", "#define INHERIT_IGraphics("),
 ]
 
 

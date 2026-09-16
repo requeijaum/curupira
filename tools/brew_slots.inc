@@ -716,6 +716,65 @@ inline const char* NomeDeForceFeed(unsigned slot) {
   return slot < 5 ? k[slot] : "slot_fora_da_tabela";
 }
 
+// platform/ui/inc/AEEGraphics.h
+//   cabeca: QINTERFACE + DECLARE_IBASE = 2
+//   42 metodos; slot = 2 + posicao
+constexpr unsigned kGraphics_AddRef = 0;
+constexpr unsigned kGraphics_Release = 1;
+constexpr unsigned kGraphics_SetBackground = 2;
+constexpr unsigned kGraphics_GetBackground = 3;
+constexpr unsigned kGraphics_SetColor = 4;
+constexpr unsigned kGraphics_GetColor = 5;
+constexpr unsigned kGraphics_SetFillMode = 6;
+constexpr unsigned kGraphics_GetFillMode = 7;
+constexpr unsigned kGraphics_SetFillColor = 8;
+constexpr unsigned kGraphics_GetFillColor = 9;
+constexpr unsigned kGraphics_SetPointSize = 10;
+constexpr unsigned kGraphics_GetPointSize = 11;
+constexpr unsigned kGraphics_SetClip = 12;
+constexpr unsigned kGraphics_GetClip = 13;
+constexpr unsigned kGraphics_SetViewport = 14;
+constexpr unsigned kGraphics_GetViewport = 15;
+constexpr unsigned kGraphics_ClearViewport = 16;
+constexpr unsigned kGraphics_SetPaintMode = 17;
+constexpr unsigned kGraphics_GetPaintMode = 18;
+constexpr unsigned kGraphics_GetColorDepth = 19;
+constexpr unsigned kGraphics_DrawPoint = 20;
+constexpr unsigned kGraphics_DrawLine = 21;
+constexpr unsigned kGraphics_DrawRect = 22;
+constexpr unsigned kGraphics_DrawCircle = 23;
+constexpr unsigned kGraphics_DrawArc = 24;
+constexpr unsigned kGraphics_DrawPie = 25;
+constexpr unsigned kGraphics_DrawEllipse = 26;
+constexpr unsigned kGraphics_DrawTriangle = 27;
+constexpr unsigned kGraphics_DrawPolygon = 28;
+constexpr unsigned kGraphics_DrawPolyline = 29;
+constexpr unsigned kGraphics_ClearRect = 30;
+constexpr unsigned kGraphics_EnableDoubleBuffer = 31;
+constexpr unsigned kGraphics_Update = 32;
+constexpr unsigned kGraphics_Translate = 33;
+constexpr unsigned kGraphics_Pan = 34;
+constexpr unsigned kGraphics_StretchBlt = 35;
+constexpr unsigned kGraphics_SetAlgorithmHint = 36;
+constexpr unsigned kGraphics_GetAlgorithmHint = 37;
+constexpr unsigned kGraphics_SetDestination = 38;
+constexpr unsigned kGraphics_GetDestination = 39;
+constexpr unsigned kGraphics_SetStrokeStyle = 40;
+constexpr unsigned kGraphics_GetStrokeStyle = 41;
+constexpr unsigned kGraphics_DrawEllipticalArc = 42;
+constexpr unsigned kGraphics_DrawRoundRectangle = 43;
+// Quantos slots esta interface TEM, lido do cabecalho. E o limite da
+// cablagem e o do `NomeDeGraphics` -- uma so constante, para os dois nao
+// poderem divergir.
+constexpr unsigned kGraphicsSlots = 44;
+
+inline const char* NomeDeGraphics(unsigned slot) {
+  static const char* k[] = {
+      "AddRef", "Release", "SetBackground", "GetBackground", "SetColor", "GetColor", "SetFillMode", "GetFillMode", "SetFillColor", "GetFillColor", "SetPointSize", "GetPointSize", "SetClip", "GetClip", "SetViewport", "GetViewport", "ClearViewport", "SetPaintMode", "GetPaintMode", "GetColorDepth", "DrawPoint", "DrawLine", "DrawRect", "DrawCircle", "DrawArc", "DrawPie", "DrawEllipse", "DrawTriangle", "DrawPolygon", "DrawPolyline", "ClearRect", "EnableDoubleBuffer", "Update", "Translate", "Pan", "StretchBlt", "SetAlgorithmHint", "GetAlgorithmHint", "SetDestination", "GetDestination", "SetStrokeStyle", "GetStrokeStyle", "DrawEllipticalArc", "DrawRoundRectangle",
+  };
+  return slot < 44 ? k[slot] : "slot_fora_da_tabela";
+}
+
 // platform/ui/inc/AEEIForm.h
 constexpr unsigned PROP_FORM = 20480u;
 constexpr unsigned WID_FORM = 20480u;

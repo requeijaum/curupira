@@ -40,16 +40,12 @@ namespace {
 // So se ve com uma SENTINELA a seguir a struct: o teste antigo escrevia e lia
 // quatro `uint32` e passava, porque **encodava a mesma suposicao errada**.
 
-// A `AEERect` DO GUEST: quatro `int16`. E ESTA que se usa quando o ponteiro vem
-// do titulo (`IRootForm::GetClientRect`).
-void EscreverRectDoGuest(Memoria& mem, std::uint32_t onde, std::uint32_t x, std::uint32_t y,
-                         std::uint32_t dx, std::uint32_t dy) {
-  if (onde == 0) return;
-  mem.Escrever16(onde + 0, static_cast<std::uint16_t>(x));
-  mem.Escrever16(onde + 2, static_cast<std::uint16_t>(y));
-  mem.Escrever16(onde + 4, static_cast<std::uint16_t>(dx));
-  mem.Escrever16(onde + 6, static_cast<std::uint16_t>(dy));
-}
+// A `AEERect` DO GUEST (quatro `int16`, oito bytes) deixou de ser escrita AQUI:
+// e `EscreverRectDoGuest`/`LerRectDoGuest` de `core/brew/graficos.h`, usada
+// pelos dois modulos. O `IGraphics` le a MESMA struct que este modulo escreve
+// (`DrawRect` recebe-a do titulo), e duas implementacoes da mesma struct eram
+// duas chances de a ler com o tamanho errado -- que e o defeito que o
+// comentario acima ja paga uma vez.
 
 // O rect DENTRO DO NOSSO objecto de widget (`widget.h`, `kW_Rect`): quatro
 // `uint32` no nosso esquema, que nao e o do guest. Duas coisas diferentes com o
@@ -80,7 +76,8 @@ void LerExtent(const Memoria& mem, std::uint32_t onde, std::uint32_t* largura,
 
 }  // namespace
 
-Widgets::Widgets(Memoria& mem, Traco& traco) : mem_(mem), traco_(traco) {}
+Widgets::Widgets(Memoria& mem, Traco& traco)
+    : mem_(mem), traco_(traco), graficos_(mem, traco) {}
 
 std::uint32_t Widgets::Widget(std::uint32_t k) const {
   if (k >= kQuantosWidgets) return 0;
@@ -156,12 +153,26 @@ bool Widgets::Construir(const Saidas& saidas, std::string* motivo) {
     }
   }
 
+  // O `IGraphics`: a interface 2D do BREW (`core/brew/graficos.h`). Constroi-se
+  // AQUI porque este e o unico `Instalar*`/`Construir` que corre sempre (o
+  // `InstalarAjudantes`) e a unica cadeia de atendimento que reconhece a faixa
+  // -- ver o bloco `IGraphics` em `widget.h`.
+  std::string motivo_do_igfx;
+  if (!graficos_.Construir(saidas, &motivo_do_igfx)) {
+    // NAO se aborta a construcao dos widgets por causa do IGraphics: sao duas
+    // interfaces, e uma faixa curta para a segunda nao pode tirar a primeira ao
+    // jogo. A recusa fica REGISTADA e o `IGraphics` responde `kAeeUnsupported`
+    // (o ramo generico fazia isso, e continua a ser o que ele ve).
+    traco_.RegistarFalta(Area::Brew, "o IGraphics nao foi construido", motivo_do_igfx);
+  }
+
   pronto_ = true;
   traco_.Emitir(Area::Brew, Nivel::Informacao, "WIDGETS_CONSTRUIDOS",
                 "raiz=" + Hex(ObjetoDaRaiz_) + " widgets=" +
                     std::to_string(kQuantosWidgets) + " faixa=" +
                     std::to_string(kBaseDaFaixaDosWidgets) + ".." +
-                    std::to_string(ultimo));
+                    std::to_string(ultimo) + " | IGraphics no generico " +
+                    std::to_string(kIndiceDoGraphics));
   return true;
 }
 
@@ -172,6 +183,9 @@ bool Widgets::EMeu(std::uint32_t indice) const {
   // dos dois mundos: o pedido nao chega ao ramo generico (que o nomearia) e nao
   // e servido.
   if (!pronto_) return false;
+  // O `IGraphics` (o generico 3) tem modulo proprio; aqui so se delega. O
+  // `EMeu` dele tem a sua propria guarda de construcao.
+  if (graficos_.EMeu(indice)) return true;
   // Os objectos de widget deste modulo.
   if (indice >= kBaseDaFaixaDosWidgets &&
       indice < kBaseDaFaixaDosWidgets + kQuantosWidgets * kSlotsPorObjetoDeWidget) {
@@ -186,6 +200,10 @@ bool Widgets::EMeu(std::uint32_t indice) const {
 
 Atendido Widgets::Atender(ICpu& cpu, std::uint32_t indice) {
   if (!pronto_) return Atendido::NaoEMeu;
+  // A interface 2D. ANTES dos ramos do widget: as duas faixas nao se cruzam
+  // (uma e 9192+ e a outra 60000+ / `VtGenerico(4)`+), e a ordem so teria de
+  // importar se se cruzassem -- o teste `NaoSeSobrepoem` fixa isso.
+  if (graficos_.EMeu(indice)) return graficos_.Atender(cpu, indice);
   const std::uint32_t base = VtGenerico(kIndiceDoRootForm);
   if (indice >= base + 2 && indice < base + kSlotsPorObjetoDeWidget) {
     return AtenderRootForm(cpu, indice - base);

@@ -63,6 +63,7 @@
 #include <vector>
 
 #include "core/brew/ecra.h"
+#include "core/brew/graficos.h"  // o `IGraphics` -- ver abaixo porque e este modulo que o atende
 #include "core/brew/interface.h"
 #include "core/cpu/cpu.h"
 #include "core/memoria/memoria.h"
@@ -198,6 +199,20 @@ class Widgets {
   std::uint32_t ObjetoDaRaiz() const;
   std::uint32_t Widget(std::uint32_t k) const;
 
+  // --- O `IGraphics` (a interface 2D) -------------------------------------
+  //
+  // PORQUE E ESTE MODULO QUE O ATENDE, e nao um ramo proprio no `despacho.cpp`:
+  // os indices do objecto do `IGraphics` (`VtGenerico(3)`..+64) caem DENTRO da
+  // faixa generica que o despacho nomeia mas serve com `kAeeUnsupported`, e a
+  // unica porta de atendimento que existe nos ficheiros que esta frente pode
+  // tocar e o `AtenderWidgets` (`despacho.cpp:2706`) -- que vem ANTES desse ramo
+  // generico, pela razao que ja la esta escrita. **E uma DIVIDA declarada**: o
+  // lugar certo de um modulo de desenho 2D e um ramo proprio na cadeia, e ele
+  // exige uma linha no `despacho.cpp`, que nesta frente esta fechado (a frente
+  // `igl9` esta nele). Aqui o que se faz e reconhecer a faixa e delegar.
+  Graficos& GraficosRef() { return graficos_; }
+  const Graficos& GraficosRef() const { return graficos_; }
+
   // Os dois ramos do `Atender`, PUBLICOS porque o TESTE os chama directamente,
   // com os MESMOS argumentos que o `tectoy` passou. Um teste que corre pela mesma
   // porta que a medicao prova alguma coisa; um teste que corre por uma porta
@@ -261,6 +276,11 @@ class Widgets {
   std::uint32_t arranque_cls_ = 0;
   std::uint32_t arranque_display_ = 0;
   std::vector<std::uint32_t> pilha_;
+  // O `IGraphics`: o modulo da interface 2D, com a faixa de saida dele (o
+  // generico 3). Ver `core/brew/graficos.h`. Construido no `Widgets(...)`, que e
+  // onde os parametros existem (um inicializador de membro na declaracao NAO ve os
+  // parametros do construtor).
+  Graficos graficos_;
   std::uint32_t lidas_ = 0, escritas_ = 0, entregues_ = 0, desenhos_ = 0;
   std::vector<std::string> recusas_;
 };
