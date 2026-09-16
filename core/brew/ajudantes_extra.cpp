@@ -3,8 +3,11 @@
 #include <algorithm>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include "core/brew/formato.h"
+#include "core/brew/tela.h"
+#include "tools/clsids.inc"
 
 namespace zb2::brew {
 
@@ -1310,6 +1313,376 @@ void FazerWsprintf(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
   EmitirChamada(traco, brew_ajudantes::kAjudante_wsprintf, det);
 }
 
+// ---------------------------------------------------------------------------
+// 0x064 -- `void *(*SetupNativeImage)(AEECLSID cls, void *pBuffer,
+//                                      AEEImageInfo *pii, boolean *pbRealloc)`
+// ---------------------------------------------------------------------------
+//
+// E o `CONVERTBMP` do SDK: `AEEStdLib.h:384`
+// (`#define CONVERTBMP(src,pi,pb) GET_HELPER()->SetupNativeImage(AEECLSID_WINBMP,(src),(pi),(pb))`,
+// documentado em `:3823-3865`), e o cabecalho diz o que faz: "converts a
+// Windows bitmap into the native format. The native format is specific to each
+// handset", e "If pbReallocated is returned as TRUE ... the caller must use
+// SYSFREE()".
+//
+// O QUE O JOGO FAZ COM ELE, medido no desmonte do `allstarcards.mod` (base 0,
+// 159 824 bytes; e o unico titulo do corpus que o pede -- 22 pedidos, os 22
+// servidos por esta funcao):
+//
+//   ee2c  add   r3, r4, #16      ; pbRealloc: o BYTE de estado da imagem
+//   ee34  add   r2, sp, #12      ; pii: 10 bytes na pilha
+//   ee38  mov   r1, r5           ; pBuffer: o BMP que o jogo ja tem em memoria
+//   ee40  ldr   r0, =0x01004001  ; AEECLSID_WinBMP
+//   ee3c  ldr   ip, [r0, #0x64]  ; a tabela dos ajudantes, em `base - 4`
+//   ee44  blx   ip
+//   ee48  str   r0, [r4, #12]    ; o buffer devolvido
+//   ee4c  ldrh  r0, [sp, #12]    ; pii->cx -> [r4+0]
+//   ee54  ldrh  r0, [sp, #14]    ; pii->cy -> [r4+4]
+//   ee5c  ldrb  r0, [r4, #16]    ; pbRealloc
+//   ee64  bne   0xee10           ; != 0 -> NAO copia nada
+//   ee68  ldr   r1, [r0, #0x68]  ; == 0 -> malloc(r9)
+//   ee88  ldr   r3, [r0]         ;          memmove(dest, buffer, r9)
+//   ec1c  ldrd  r0, [r0]         ; no desenho: cx e cy do [img+0]/[img+4]
+//   eca0  ldr   r0, [r0, #12]    ;          e o buffer devolvido aqui
+//   ecd0  blx   r5               ; vtable[0x18] do objecto [img+8]+20 =
+//                                ;   `IDisplay::BitBlt(po, x, y, cxDest, cyDest,
+//                                ;    pbmSource, xSrc, ySrc, rop)` -- a
+//                                ;    assinatura esta em `core/brew/despacho.cpp`
+//                                ;    (`kSlotIdBitBlt`): a origem e um bloco CRU
+//                                ;    de pixels, sem cabecalho nenhum
+//   efc0  (destrutor)            ; estado 1 -> sysfree(buffer); 2 -> Release
+//
+// TRES CONSEQUENCIAS, e cada uma e uma linha deste codigo:
+//   1. o que sai daqui e um BLOCO CRU de pixels RGB565 -- o formato que a
+//      `Tela` e o `BitBlt` deste emulador ja leem (`Ler16` por pixel, linha a
+//      linha, largura = `cxDest`). Nao e um objecto com vtable, e nao leva
+//      cabecalho: o `BitBlt` nao sabe ler nenhum;
+//   2. `pii->cx` e `pii->cy` TEM de estar escritos: o jogo le-os e nao confirma
+//      nada (nem o ponteiro devolvido, neste ramo);
+//   3. `*pbRealloc = TRUE`. Com FALSE o jogo copiava `r9` bytes -- e o `r9`
+//      medido e o tamanho COMPRIMIDO do recurso, nao o da imagem: para um BMP
+//      de 16x21 a 4 bits (286 bytes) ele vale 221. A copia sairia truncada, e
+//      era essa a unica copia que o jogo faria.
+//
+// A RECUSA CONTINUA NOMEADA (P2) E SEM ESCREVER `pii`: o SDK diz que em falha
+// se devolve NULL. Escrever meio cabecalho seria pior do que nao escrever nada
+// -- o jogo leria dimensoes inventadas e desenharia uma faixa a mais.
+
+// `AEECLSID_WinBMP` = `AEECLSID_NATIVEBMP` = `0x01004001`
+// (`tools/clsids.inc:1120` e `:1826`, de `AEEClassIDs.h:215` e de
+// `AEEBMPViewer.bid:14`). Nao se escreve a mao: o `clsids.inc` e a tabela que o
+// `verificar_clsids.sh` confere.
+constexpr std::uint32_t kClsidWinBmp = brew_clsids::kClsid_NATIVEBMP;
+
+// `AEEImageInfo` -- `platform/media/inc/AEEImageInfo.h:17-23`, com os tamanhos
+// do SDK: `uint16` = 2 bytes e `boolean` = `unsigned char`
+// (`AEEStdDef.h:39`), logo `bAnimated` ocupa 1 byte e o `cxFrame` (uint16)
+// alinha em +8. O `sizeof` e 10, e o jogo le os dois primeiros campos.
+struct CamposDaImageInfo {
+  static constexpr std::uint32_t kCx = 0;        // uint16, largura
+  static constexpr std::uint32_t kCy = 2;        // uint16, altura
+  static constexpr std::uint32_t kNColors = 4;   // uint16
+  static constexpr std::uint32_t kBAnimated = 6; // boolean (1 byte) + 1 de enchimento
+  static constexpr std::uint32_t kCxFrame = 8;   // uint16, largura da animacao
+  static constexpr std::uint32_t kTamanho = 10;
+};
+static_assert(CamposDaImageInfo::kCxFrame == 8 && CamposDaImageInfo::kTamanho == 10,
+              "o AEEImageInfo do SDK tem 10 bytes: cx, cy, nColors, bAnimated, cxFrame");
+
+// `BITMAPFILEHEADER` (14 bytes) + `BITMAPINFOHEADER` (40), de `wingdi.h`, que e
+// o que o SDK chama "a Windows bitmap". Os offsets sao de contrato do FORMATO,
+// nao deste corpus: e por eles que se le o tamanho sem o chamador no-lo dizer
+// (a assinatura do ajudante nao leva tamanho nenhum).
+struct CamposDoBmp {
+  static constexpr std::uint32_t kAssinatura = 0;          // "BM"
+  static constexpr std::uint32_t kTamanhoDoFicheiro = 2;   // uint32
+  static constexpr std::uint32_t kOffsetDosPixels = 10;    // uint32
+  static constexpr std::uint32_t kCabecalho = 14;          // inicio do BITMAPINFOHEADER
+  static constexpr std::uint32_t kLargura = 18;            // int32
+  static constexpr std::uint32_t kAltura = 22;             // int32 (negativa = top-down)
+  static constexpr std::uint32_t kPlanos = 26;             // uint16
+  static constexpr std::uint32_t kBitsPorPixel = 28;       // uint16
+  static constexpr std::uint32_t kCompressao = 30;         // uint32
+  static constexpr std::uint32_t kCoresUsadas = 46;        // uint32 (so no cabecalho de 40)
+  static constexpr std::uint32_t kCabecalhoDeInfo = 40;    // BITMAPINFOHEADER
+  static constexpr std::uint32_t kRgb = 0;                 // BI_RGB
+  static constexpr std::uint32_t kRle8 = 1;                // BI_RLE8
+  static constexpr std::uint32_t kRle4 = 2;                // BI_RLE4
+};
+
+// Um limite de sanidade para a dimensao declarada. Nao e estilo: a largura e a
+// altura vem do ficheiro, e um laco que confie nelas pode pedir um buffer
+// absurdo. O corpus medido vai ate 1024x80; o limite e largamente acima disso e
+// a sua violacao e REGISTADA.
+constexpr std::uint32_t kMaximoDeLado = 4096;
+constexpr std::uint32_t kMaximoDePixels = 1u << 22;  // 4,2 M pixels = 8,4 MB a 565
+
+// `RGB565` -- o formato nativo da `Tela` e do `BitBlt` deste emulador. A
+// conversao e a MESMA do `Tela::RgbvalPara565` (o `rgbval` do BREW e
+// `r<<8 | g<<16 | b<<24`, `AEERGBVAL.h`), e usa-se a dela em vez de se
+// escreverem os deslocamentos outra vez.
+std::uint16_t Para565(std::uint32_t r, std::uint32_t g, std::uint32_t b) {
+  return static_cast<std::uint16_t>(Tela::RgbvalPara565((r << 8) | (g << 16) | (b << 24)));
+}
+
+// Le o cabecalho, valida-o e descodifica para pixels RGB565 (2 bytes por
+// pixel, top-down, sem passo nenhum pelo meio -- e assim que o `BitBlt` os
+// le). `porque` fica com o motivo quando devolve `false`.
+//
+// OS TRES MODOS QUE O CORPUS USA, medidos nos 439 BMP comprimidos do
+// `allstarcards.bar` (o `.bar` guarda-os em gzip, e o tamanho declarado no
+// cabecalho bate certo com o descomprimido): 372 ficheiros a 8 bits BI_RGB, 49
+// a 8 bits BI_RLE8, 9 a 4 bits BI_RGB, 5 a 4 bits BI_RLE4, 3 a 24 bits e 1 a 1
+// bit. Dos que o jogo passa a este ajudante, caem nos cinco primeiros.
+bool DescodificarBmp(Memoria& mem, std::uint32_t p, std::vector<std::uint8_t>* pixels,
+                     std::uint32_t* largura, std::uint32_t* altura, std::string* porque) {
+  const auto falha = [&](const std::string& motivo) {
+    *porque = motivo;
+    return false;
+  };
+  const std::uint8_t b0 = mem.Ler8(p + CamposDoBmp::kAssinatura);
+  const std::uint8_t b1 = mem.Ler8(p + CamposDoBmp::kAssinatura + 1);
+  if (b0 != 'B' || b1 != 'M') {
+    char det[64];
+    std::snprintf(det, sizeof(det), "assinatura 0x%02x%02x, nao BM", b0, b1);
+    *porque = det;
+    return false;
+  }
+  const std::uint32_t tamanho = mem.Ler32(p + CamposDoBmp::kTamanhoDoFicheiro);
+  const std::uint32_t inicio_dos_pixels = mem.Ler32(p + CamposDoBmp::kOffsetDosPixels);
+  const std::uint32_t cabecalho = mem.Ler32(p + CamposDoBmp::kCabecalho);
+  if (cabecalho < CamposDoBmp::kCabecalhoDeInfo) {
+    char det[64];
+    std::snprintf(det, sizeof(det), "cabecalho de info com %u bytes (BITMAPINFOHEADER = 40)",
+                  cabecalho);
+    *porque = det;
+    return false;
+  }
+  const std::uint32_t l = static_cast<std::uint32_t>(mem.Ler32(p + CamposDoBmp::kLargura));
+  const std::uint32_t a = static_cast<std::uint32_t>(mem.Ler32(p + CamposDoBmp::kAltura));
+  const std::uint32_t planos = mem.Ler16(p + CamposDoBmp::kPlanos);
+  const std::uint32_t bits = mem.Ler16(p + CamposDoBmp::kBitsPorPixel);
+  const std::uint32_t compressao = mem.Ler32(p + CamposDoBmp::kCompressao);
+  // A ALTURA NEGATIVA e o "top-down" do formato, e `0xFFFFFFFF` e a altura -1:
+  // o `cast` acima le-a como um numero gigante, e e por isso que a comparacao e
+  // feita em 32 bits com o valor bruto.
+  const std::int32_t altura_com_sinal = static_cast<std::int32_t>(mem.Ler32(p + CamposDoBmp::kAltura));
+  const bool top_down = altura_com_sinal < 0;
+  const std::uint32_t altura_real =
+      top_down ? static_cast<std::uint32_t>(-altura_com_sinal) : a;
+
+  char det[160];
+  std::snprintf(det, sizeof(det), "cabecalho: %ux%u bits=%u compressao=%u planos=%u",
+                l, altura_real, bits, compressao, planos);
+  if (l == 0 || altura_real == 0) return falha("dimensao zero");
+  if (l > kMaximoDeLado || altura_real > kMaximoDeLado ||
+      static_cast<std::uint64_t>(l) * altura_real > kMaximoDePixels) {
+    *porque = std::string("dimensao fora do limite: ") + det;
+    return false;
+  }
+  if (planos != 1) return falha("planos != 1");
+  if (bits != 1 && bits != 4 && bits != 8 && bits != 24) {
+    *porque = std::string("profundidade nao suportada: ") + det;
+    return false;
+  }
+  if (compressao == CamposDoBmp::kRle8 && bits != 8) return falha("BI_RLE8 exige 8 bits");
+  if (compressao == CamposDoBmp::kRle4 && bits != 4) return falha("BI_RLE4 exige 4 bits");
+  if (compressao != CamposDoBmp::kRgb && compressao != CamposDoBmp::kRle8 &&
+      compressao != CamposDoBmp::kRle4) {
+    *porque = std::string("compressao nao suportada: ") + det;
+    return false;
+  }
+  if (top_down && compressao != CamposDoBmp::kRgb) {
+    return falha("top-down com compressao (o formato so o define para BI_RGB)");
+  }
+  // O LIMITE DA LEITURA: o tamanho declarado no cabecalho do ficheiro. A
+  // assinatura do ajudante nao leva tamanho, e ler para fora do buffer do jogo
+  // era ler a memoria do vizinho -- o formato DIZ quanto ocupa, e e isso que se
+  // usa.
+  const std::uint32_t limite =
+      (tamanho > inicio_dos_pixels && tamanho < (1u << 28)) ? tamanho : inicio_dos_pixels;
+  if (inicio_dos_pixels >= limite) return falha("o cabecalho nao declara pixels");
+  // OS DOIS ENDERECOS ABSOLUTOS: `biOffBits` e o tamanho do ficheiro sao
+  // OFFSETS dentro do BMP. Confundir um offset com um endereco le-se sempre
+  // como zero (a pagina nao existe) e nunca acusa nada -- foi esse o defeito
+  // que estes testes apanharam.
+  const std::uint32_t inicio = p + inicio_dos_pixels;
+  const std::uint32_t fim = p + limite;
+
+  // A PALETA: entradas BGRA de 4 bytes a seguir ao cabecalho de info. O numero
+  // de entradas e o `biClrUsed` quando nao e zero, e `1 << bits` quando e.
+  std::vector<std::uint16_t> paleta;
+  if (bits <= 8) {
+    const std::uint32_t usadas = mem.Ler32(p + CamposDoBmp::kCoresUsadas);
+    const std::uint32_t quantas = (usadas != 0) ? usadas : (1u << bits);
+    paleta.resize(1u << bits, 0);
+    const std::uint32_t base = p + CamposDoBmp::kCabecalho + cabecalho;
+    for (std::uint32_t k = 0; k < quantas && k < paleta.size(); ++k) {
+      const std::uint32_t q = base + k * 4;
+      paleta[k] = Para565(mem.Ler8(q + 2), mem.Ler8(q + 1), mem.Ler8(q));
+    }
+  }
+
+  const std::uint32_t quantos_bytes = l * altura_real * 2;
+  pixels->assign(quantos_bytes, 0);
+  const auto por_pixel = [&](std::uint32_t x, std::uint32_t y, std::uint16_t v) {
+    const std::size_t i = (static_cast<std::size_t>(y) * l + x) * 2u;
+    (*pixels)[i] = static_cast<std::uint8_t>(v & 0xFFu);
+    (*pixels)[i + 1] = static_cast<std::uint8_t>((v >> 8) & 0xFFu);
+  };
+
+  if (compressao == CamposDoBmp::kRgb) {
+    const std::uint32_t passo = ((l * bits + 31u) / 32u) * 4u;
+    for (std::uint32_t y = 0; y < altura_real; ++y) {
+      // O BI_RGB guarda as linhas de baixo para cima; a altura negativa inverte.
+      const std::uint32_t linha = top_down ? y : (altura_real - 1u - y);
+      const std::uint32_t base = inicio + linha * passo;
+      for (std::uint32_t x = 0; x < l; ++x) {
+        std::uint16_t v = 0;
+        if (bits == 24) {
+          const std::uint32_t q = base + x * 3u;
+          v = Para565(mem.Ler8(q + 2), mem.Ler8(q + 1), mem.Ler8(q));
+        } else if (bits == 8) {
+          v = paleta[mem.Ler8(base + x) & 0xFFu];
+        } else if (bits == 4) {
+          const std::uint8_t byte = mem.Ler8(base + x / 2u);
+          const std::uint32_t idx = ((x % 2u) == 0u) ? (byte >> 4) : (byte & 0x0Fu);
+          v = paleta[idx & 0xFFu];
+        } else {
+          const std::uint8_t byte = mem.Ler8(base + x / 8u);
+          const std::uint32_t idx = (byte >> (7u - (x % 8u))) & 1u;
+          v = paleta[idx];
+        }
+        por_pixel(x, y, v);
+      }
+    }
+    *largura = l;
+    *altura = altura_real;
+    return true;
+  }
+
+  // O RLE: a imagem comeca em baixo (como o BI_RGB) e cada linha comeca em x=0.
+  // As duas fugas (o EOL e o fim de ficheiro) e o delta sao os mesmos nos dois;
+  // o que muda e o que fazer com o par (n, valor), que no RLE4 leva DOIS
+  // indices num byte.
+  std::uint32_t x = 0;
+  std::uint32_t y = altura_real - 1u;
+  std::uint32_t pos = inicio;
+  bool acabou = false;
+  while (!acabou && pos + 1u < fim && y < altura_real) {
+    const std::uint32_t n = mem.Ler8(pos);
+    const std::uint32_t valor = mem.Ler8(pos + 1u);
+    pos += 2u;
+    if (n > 0) {
+      for (std::uint32_t k = 0; k < n; ++k) {
+        std::uint32_t idx = valor;
+        if (compressao == CamposDoBmp::kRle4) {
+          idx = ((k % 2u) == 0u) ? (valor >> 4) : (valor & 0x0Fu);
+        }
+        if (x < l && y < altura_real) por_pixel(x, y, paleta[idx & 0xFFu]);
+        ++x;
+      }
+      continue;
+    }
+    if (valor == 0) {  // fim de linha
+      x = 0;
+      if (y == 0) break;
+      --y;
+    } else if (valor == 1) {  // fim da imagem
+      acabou = true;
+    } else if (valor == 2) {  // delta: avanca x e sobe y
+      if (pos + 1u >= fim) break;
+      x += mem.Ler8(pos);
+      const std::uint32_t sobe = mem.Ler8(pos + 1u);
+      pos += 2u;
+      y = (sobe > y) ? 0 : (y - sobe);
+    } else {
+      // Corrida ABSOLUTA: `valor` pixels CRUS, um por byte (RLE8) ou dois por
+      // byte (RLE4). O bloco pauta-se a 2 bytes: o que sobra e enchimento e
+      // TEM de ser saltado, senao o comando seguinte le-se no sitio errado.
+      // A posicao anda em passos separados do indice -- foi esse o defeito que
+      // o teste do RLE4 apanhou (`pos + k / 2` contava duas vezes).
+      const std::uint32_t inicio_da_corrida = pos;
+      for (std::uint32_t k = 0; k < valor; ++k) {
+        if (inicio_da_corrida + k / ((compressao == CamposDoBmp::kRle8) ? 1u : 2u) >= fim) break;
+        std::uint32_t idx = 0;
+        if (compressao == CamposDoBmp::kRle8) {
+          idx = mem.Ler8(inicio_da_corrida + k);
+        } else {
+          const std::uint8_t byte = mem.Ler8(inicio_da_corrida + k / 2u);
+          idx = ((k % 2u) == 0u) ? (byte >> 4) : (byte & 0x0Fu);
+        }
+        if (x < l && y < altura_real) por_pixel(x, y, paleta[idx & 0xFFu]);
+        ++x;
+      }
+      const std::uint32_t bytes_consumidos =
+          (compressao == CamposDoBmp::kRle8) ? valor : ((valor + 1u) / 2u);
+      pos = inicio_da_corrida + ((bytes_consumidos + 1u) & ~1u);
+    }
+  }
+  *largura = l;
+  *altura = altura_real;
+  return true;
+}
+
+void FazerSetupNativeImage(Memoria& mem, Alocador& al, ICpu& cpu, Traco& traco) {
+  constexpr std::uint32_t kOffset = brew_ajudantes::kAjudante_SetupNativeImage;
+  const std::uint32_t cls = cpu.Get(kR0);
+  const std::uint32_t p_buffer = cpu.Get(kR1);
+  const std::uint32_t p_ii = cpu.Get(kR2);
+  const std::uint32_t p_realloc = cpu.Get(kR3);
+
+  const auto recusar = [&](const std::string& motivo) {
+    RegistarRecusa(traco, kOffset, motivo.c_str(), DetalheDosRegistos(cpu));
+    cpu.Set(kR0, kAeeUnsupported);
+  };
+
+  if (cls != kClsidWinBmp) {
+    char det[96];
+    std::snprintf(det, sizeof(det), "cls=0x%08x nao e AEECLSID_WinBMP (0x%08x)", cls, kClsidWinBmp);
+    recusar(det);
+    return;
+  }
+  if (p_buffer == 0 || p_ii == 0) {
+    recusar("ponteiro nulo (pBuffer ou pii)");
+    return;
+  }
+  std::vector<std::uint8_t> pixels;
+  std::uint32_t largura = 0;
+  std::uint32_t altura = 0;
+  std::string porque;
+  if (!DescodificarBmp(mem, p_buffer, &pixels, &largura, &altura, &porque)) {
+    recusar("BMP nao descodificado: " + porque);
+    return;
+  }
+  const std::uint32_t endereco = al.Malloc(static_cast<std::uint32_t>(pixels.size()));
+  if (endereco == 0) {
+    recusar("o alocador do guest nao tem espaco para a imagem nativa");
+    return;
+  }
+  mem.EscreverBloco(endereco, pixels.data(), static_cast<std::uint32_t>(pixels.size()));
+  using I = CamposDaImageInfo;
+  mem.Escrever16(p_ii + I::kCx, static_cast<std::uint16_t>(largura));
+  mem.Escrever16(p_ii + I::kCy, static_cast<std::uint16_t>(altura));
+  // `nColors` = 0: "more than 65535 colors" tem este valor no cabecalho, e a
+  // imagem nativa nao guarda paleta nenhuma. `bAnimated` = FALSE e uma imagem
+  // parada; `cxFrame` e a largura do unico quadro, que e a imagem toda.
+  mem.Escrever16(p_ii + I::kNColors, 0);
+  mem.Escrever8(p_ii + I::kBAnimated, 0);
+  mem.Escrever8(p_ii + I::kBAnimated + 1u, 0);
+  mem.Escrever16(p_ii + I::kCxFrame, static_cast<std::uint16_t>(largura));
+  // O SINALIZADOR, e ele tem de ser escrito: com FALSE o jogo copiava `r9`
+  // bytes (o tamanho COMPRIMIDO) para um buffer seu e desenhava a copia
+  // truncada. TRUE e a verdade -- o buffer e uma alocacao nossa.
+  if (p_realloc != 0) mem.Escrever8(p_realloc, 1);
+
+  cpu.Set(kR0, endereco);
+  char det[160];
+  std::snprintf(det, sizeof(det), "%ux%u -> %u bytes em 0x%08x | pii=0x%08x pbRealloc=0x%08x",
+                largura, altura, static_cast<unsigned>(pixels.size()), endereco, p_ii, p_realloc);
+  EmitirChamada(traco, kOffset, det);
+}
+
 constexpr Implementacao kImplementados[] = {
     {brew_ajudantes::kAjudante_strstr, "strstr", FazerStrstr},
     {brew_ajudantes::kAjudante_wstrlen, "wstrlen", FazerWstrlen},
@@ -1330,6 +1703,7 @@ constexpr Implementacao kImplementados[] = {
     {brew_ajudantes::kAjudante_strends, "strends", FazerStrends},
     {brew_ajudantes::kAjudante_aee_GetTimeMS, "aee_GetTimeMS", FazerAeeGetTimeMS},
     {brew_ajudantes::kAjudante_wsprintf, "wsprintf", FazerWsprintf},
+    {brew_ajudantes::kAjudante_SetupNativeImage, "SetupNativeImage", FazerSetupNativeImage},
 };
 
 // AS ANCORAS DA LISTA, verificadas em tempo de COMPILACAO. Cada uma e um offset
@@ -1363,7 +1737,7 @@ static_assert(brew_ajudantes::kAjudante_aee_GetTimeMS == 0x0AC, "0x0ac e aee_Get
 static_assert(brew_ajudantes::kAjudante_wsprintf == 0x03C, "0x03c e wsprintf");
 static_assert(
     sizeof(kImplementados) / sizeof(kImplementados[0]) ==
-        19,
+        20,
     "a lista das implementacoes mudou: actualiza o numero e o teste");
 
 }  // namespace

@@ -487,12 +487,13 @@ TEST(AjudantesExtra, OffsetForaDaTabelaNaoERecusadoAqui) {
   EXPECT_TRUE(b.traco.ContagemFaltas().empty());
 }
 
-TEST(AjudantesExtra, ImplementadosSaoDezanoveEATodosNoCatalogo) {
+TEST(AjudantesExtra, ImplementadosSaoVinteEATodosNoCatalogo) {
   // 7 da etapa anterior + os 6 da frente io2 (wstrlen, wstrncopyn, strtoul,
   // snprintf, strlcpy, strlcat) + o stricmp (0x0d0) da frente park + os 4 da
   // frente ajud2 (atoi, strends, aee_GetTimeMS, wsprintf) + o memcmp (0x0dc),
-  // que 8 titulos pediam e que estava na tabela do cabecalho SEM implementacao.
-  EXPECT_EQ(AjudantesExtra::Implementados(), 19u);
+  // que 8 titulos pediam e que estava na tabela do cabecalho SEM implementacao
+  // + o SetupNativeImage (0x064) da frente setup, que e o `CONVERTBMP`.
+  EXPECT_EQ(AjudantesExtra::Implementados(), 20u);
   for (std::uint32_t off : {0x0D8u, 0x044u, 0x050u, 0x0E8u, 0x138u, 0x0F4u, 0x0CCu, 0x0D0u,
                             0x090u, 0x0FCu, 0x0ACu, 0x03Cu, 0x0DCu}) {
     EXPECT_NE(DeclaracaoDoOffset(off), nullptr) << "0x" << std::hex << off;
@@ -1018,23 +1019,260 @@ TEST(AjudantesExtra, WsprintfComNSizeZeroRecusaESenaoEscreve) {
   EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x03c] wsprintf"), 1u);
 }
 
-TEST(AjudantesExtra, SetupNativeImageNaoEAtendidoPorEstaTabela) {
-  // 0x064 e `SetupNativeImage` -- o `CONVERTBMP` do SDK (AEEStdLib.h:88 e :384)
-  // e NAO um ajudante de texto: devolve um buffer de imagem, e o que ele
-  // precisa (o descodificador e um bitmap na faixa de saida) esta FORA desta
-  // tabela. Este teste existe para que a proxima frente nao o tome por um
-  // `atoi` maior, e para que a recusa continue NOMEADA.
+// ===========================================================================
+// O `SetupNativeImage` (0x064) -- o `CONVERTBMP`, frente `setup`.
+//
+// O que estes testes fixam, e por que cada um:
+//   1. O QUE SAI e um BLOCO CRU de pixels RGB565, top-down, largura x altura,
+//      sem cabecalho nenhum -- e assim que o `BitBlt` do emulador o le
+//      (`core/brew/despacho.cpp`, `kSlotIdBitBlt`), e foi o que o desmonte do
+//      `allstarcards.mod` mostrou ser o destino do ponteiro.
+//   2. `pii` fica ESCRITO (cx, cy, nColors, bAnimated, cxFrame): o jogo le
+//      `cx` e `cy` sem confirmar nada.
+//   3. `*pbRealloc = TRUE`: com FALSE o jogo copiava o tamanho COMPRIMIDO.
+//   4. A RECUSA nao escreve `pii` e leva o NOME (P2) e a razao.
+// ===========================================================================
+
+constexpr std::uint32_t kBmp = 0x80110000u;
+constexpr std::uint32_t kPii = 0x80120000u;
+constexpr std::uint32_t kSinalizador = 0x80130000u;
+constexpr std::uint32_t kSentinela = 0xCDCDCDCDu;
+
+// UM BMP A SERIO, byte a byte, com o tamanho declarado no cabecalho do
+// ficheiro -- e o ajudante le-o de la, porque a assinatura NAO leva tamanho.
+// `paleta` e uma lista de cores RGB (a ordem do ficheiro e B, G, R, 0).
+std::uint32_t EscreverBmp(Bancada& b, std::uint32_t onde, std::int32_t largura,
+                          std::int32_t altura, std::uint16_t bits, std::uint32_t compressao,
+                          const std::vector<std::uint32_t>& paleta,
+                          const std::vector<std::uint8_t>& dados) {
+  const std::uint32_t inicio =
+      14u + 40u + static_cast<std::uint32_t>(paleta.size()) * 4u;
+  const std::uint32_t total = inicio + static_cast<std::uint32_t>(dados.size());
+  const auto p8 = [&](std::uint32_t off, std::uint8_t v) { b.mem.Escrever8(onde + off, v); };
+  const auto p16 = [&](std::uint32_t off, std::uint16_t v) { b.mem.Escrever16(onde + off, v); };
+  const auto p32 = [&](std::uint32_t off, std::uint32_t v) { b.mem.Escrever32(onde + off, v); };
+  p8(0, 'B');
+  p8(1, 'M');
+  p32(2, total);
+  p32(10, inicio);
+  p32(14, 40);  // BITMAPINFOHEADER
+  p32(18, static_cast<std::uint32_t>(largura));
+  p32(22, static_cast<std::uint32_t>(altura));
+  p16(26, 1);
+  p16(28, bits);
+  p32(30, compressao);
+  p32(34, static_cast<std::uint32_t>(dados.size()));
+  p32(46, static_cast<std::uint32_t>(paleta.size()));
+  for (std::size_t k = 0; k < paleta.size(); ++k) {
+    // A cor entra como 0xRRGGBB e o ficheiro guarda os tres bytes ao
+    // contrario (B, G, R) e um quarto que fica a zero.
+    const std::uint32_t cor = paleta[k];
+    const std::uint32_t q = 54u + static_cast<std::uint32_t>(k) * 4u;
+    p8(q + 0, static_cast<std::uint8_t>((cor >> 16) & 0xFFu));
+    p8(q + 1, static_cast<std::uint8_t>((cor >> 8) & 0xFFu));
+    p8(q + 2, static_cast<std::uint8_t>(cor & 0xFFu));
+    p8(q + 3, 0);
+  }
+  for (std::size_t k = 0; k < dados.size(); ++k) {
+    p8(inicio + static_cast<std::uint32_t>(k), dados[k]);
+  }
+  return total;
+}
+
+// As cores do teste, dadas em RGB (o BMP guarda-as ao contrario).
+constexpr std::uint32_t kRgbVermelho = 0x0000FFu;
+constexpr std::uint32_t kRgbVerde = 0x00FF00u;
+constexpr std::uint32_t kRgbAzul = 0xFF0000u;
+constexpr std::uint32_t kRgbBranco = 0xFFFFFFu;
+constexpr std::uint16_t k565Vermelho = 0xF800u;
+constexpr std::uint16_t k565Verde = 0x07E0u;
+constexpr std::uint16_t k565Azul = 0x001Fu;
+constexpr std::uint16_t k565Branco = 0xFFFFu;
+
+// Arma a bancada para uma chamada ao ajudante: clsid, buffer, pii e o byte do
+// `pbRealloc`, com uma sentinela para se poder provar que ele NAO foi mexido.
+void ArmarSetup(Bancada& b, std::uint32_t p_buffer, std::uint32_t cls = 0x01004001u) {
+  b.cpu.Set(kR0, cls);
+  b.cpu.Set(kR1, p_buffer);
+  b.cpu.Set(kR2, kPii);
+  b.cpu.Set(kR3, kSinalizador);
+  for (std::uint32_t k = 0; k < 10; ++k) b.mem.Escrever8(kPii + k, 0xCD);
+  b.mem.Escrever8(kSinalizador, 0xCD);
+}
+
+TEST(AjudantesExtra, SetupNativeImageEDescodificadoPorEstaTabela) {
+  // O offset, o nome e a assinatura do cabecalho (`AEEStdLib.h:88`), escritos
+  // por extenso para a proxima frente nao o tomar por um `atoi` maior.
   EXPECT_EQ(brew_ajudantes::kAjudante_SetupNativeImage, 0x064u);
   ASSERT_NE(DeclaracaoDoOffset(0x064), nullptr);
   EXPECT_STREQ(DeclaracaoDoOffset(0x064)->nome, "SetupNativeImage");
   EXPECT_STREQ(DeclaracaoDoOffset(0x064)->assinatura,
                "void *(*SetupNativeImage)(AEECLSID cls, void *pBuffer, AEEImageInfo *pii, "
                "boolean *pbRealloc)");
+  EXPECT_EQ(AjudantesExtra::Implementados(), 20u) << "o 0x064 entrou na tabela";
+}
+
+TEST(AjudantesExtra, SetupNativeImageDescodificaBmpDe8BitsComPaleta) {
+  // 2x2 a 8 bits com paleta: o BI_RGB guarda o ficheiro de BAIXO para cima, e o
+  // que sai daqui tem de estar em CIMA para baixo (e a ordem que o `BitBlt` le).
+  // Imagem:   A B      ficheiro: C D (primeira linha) e depois A B
+  //           C D
   Bancada b;
-  b.cpu.Set(kR0, 0x01004001u);  // AEECLSID_WINBMP, o que o CONVERTBMP passa
-  EXPECT_EQ(b.Atender(0x064), Atendimento::Recusado);
-  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x064] SetupNativeImage"), 1u);
+  const std::vector<std::uint32_t> paleta = {kRgbVermelho, kRgbVerde, kRgbAzul, kRgbBranco};
+  const std::vector<std::uint8_t> dados = {2, 3, 0, 0,  // linha de baixo: C D + enchimento
+                                           0, 1, 0, 0}; // linha de cima:  A B
+  EscreverBmp(b, kBmp, 2, 2, 8, 0, paleta, dados);
+  ArmarSetup(b, kBmp);
+
+  EXPECT_EQ(b.Atender(0x064), Atendimento::Implementado);
+  const std::uint32_t p = b.cpu.Get(kR0);
+  EXPECT_NE(p, 0u);
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x064] SetupNativeImage"), 0u);
+  EXPECT_EQ(b.mem.Ler16(p + 0), k565Vermelho);
+  EXPECT_EQ(b.mem.Ler16(p + 2), k565Verde);
+  EXPECT_EQ(b.mem.Ler16(p + 4), k565Azul);
+  EXPECT_EQ(b.mem.Ler16(p + 6), k565Branco);
+  // O `pii` (`AEEImageInfo.h:17-23`): cx, cy, nColors, bAnimated, cxFrame.
+  EXPECT_EQ(b.mem.Ler16(kPii + 0), 2u) << "cx";
+  EXPECT_EQ(b.mem.Ler16(kPii + 2), 2u) << "cy";
+  EXPECT_EQ(b.mem.Ler16(kPii + 4), 0u) << "nColors";
+  EXPECT_EQ(b.mem.Ler8(kPii + 6), 0u) << "bAnimated";
+  EXPECT_EQ(b.mem.Ler16(kPii + 8), 2u) << "cxFrame = a largura do unico quadro";
+  // E O SINALIZADOR. Com FALSE o jogo copiava o tamanho COMPRIMIDO (221 para um
+  // BMP de 286 bytes, medido) e desenhava a copia truncada.
+  EXPECT_EQ(b.mem.Ler8(kSinalizador), 1u) << "pbRealloc TRUE: o buffer e nosso";
+}
+
+TEST(AjudantesExtra, SetupNativeImageDescodificaBmpDe24BitsSemPaleta) {
+  Bancada b;
+  const std::vector<std::uint8_t> dados = {0, 0, 255, 255, 0, 0, 0, 0};  // BGR, BGR + enchimento
+  EscreverBmp(b, kBmp, 2, 1, 24, 0, {}, dados);
+  ArmarSetup(b, kBmp);
+  EXPECT_EQ(b.Atender(0x064), Atendimento::Implementado);
+  const std::uint32_t p = b.cpu.Get(kR0);
+  EXPECT_EQ(b.mem.Ler16(p + 0), k565Vermelho);
+  EXPECT_EQ(b.mem.Ler16(p + 2), k565Azul);
+  EXPECT_EQ(b.mem.Ler16(kPii + 0), 2u);
+  EXPECT_EQ(b.mem.Ler16(kPii + 2), 1u);
+}
+
+TEST(AjudantesExtra, SetupNativeImageDescodificaBmpDe4BitsEOSinalizador) {
+  // 2x2 a 4 bits BI_RGB: dois pixels por byte, o da ESQUERDA no nibble de cima.
+  Bancada b;
+  const std::vector<std::uint32_t> paleta = {kRgbVermelho, kRgbVerde, kRgbAzul, kRgbBranco};
+  // Linha de baixo (azul, branco) = 0x23, linha de cima (vermelho, verde) = 0x01.
+  const std::vector<std::uint8_t> dados = {0x23, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00};
+  EscreverBmp(b, kBmp, 2, 2, 4, 0, paleta, dados);
+  ArmarSetup(b, kBmp);
+  EXPECT_EQ(b.Atender(0x064), Atendimento::Implementado);
+  const std::uint32_t p = b.cpu.Get(kR0);
+  EXPECT_EQ(b.mem.Ler16(p + 0), k565Vermelho) << "nibble de cima = pixel da esquerda";
+  EXPECT_EQ(b.mem.Ler16(p + 2), k565Verde);
+  EXPECT_EQ(b.mem.Ler16(p + 4), k565Azul);
+  EXPECT_EQ(b.mem.Ler16(p + 6), k565Branco);
+}
+
+TEST(AjudantesExtra, SetupNativeImageDescodificaRle8DeBaixoParaCima) {
+  // 4x4 a 8 bits BI_RLE8, quatro linhas absolutas IGUAIS em conteudo e
+  // diferentes entre si, para se ver a ORDEM: a primeira linha do ficheiro e a
+  // de BAIXO. As corridas absolutas pautam-se a 2 bytes (a de 3 valores leva um
+  // enchimento), e e isso que o teste do `0x00,0x03` mede.
+  Bancada b;
+  const std::vector<std::uint32_t> paleta = {kRgbVermelho, kRgbVerde, kRgbAzul, kRgbBranco};
+  const std::vector<std::uint8_t> dados = {
+      0x00, 0x04, 0, 0, 0, 0, 0x00, 0x00,  // linha de baixo: 0 0 0 0
+      0x00, 0x04, 1, 1, 1, 1, 0x00, 0x00,  //                  1 1 1 1
+      // A corrida absoluta de 3 valores e IMPAR: leva um byte de enchimento,
+      // e o que vem a seguir (uma corrida normal de 1) tem de ser lido no sitio
+      // certo. E este o teste do alinhamento.
+      0x00, 0x03, 2, 2, 2, 0x00, 0x01, 0x03, 0x00, 0x00,  //  2 2 2 3
+      0x00, 0x04, 3, 3, 3, 3, 0x00, 0x00,  // linha de cima:   3 3 3 3
+      0x00, 0x01};                         // fim da imagem
+  EscreverBmp(b, kBmp, 4, 4, 8, 1, paleta, dados);
+  ArmarSetup(b, kBmp);
+  EXPECT_EQ(b.Atender(0x064), Atendimento::Implementado);
+  const std::uint32_t p = b.cpu.Get(kR0);
+  const std::uint16_t esperado[4][4] = {{k565Branco, k565Branco, k565Branco, k565Branco},
+                                        {k565Azul, k565Azul, k565Azul, k565Branco},
+                                        {k565Verde, k565Verde, k565Verde, k565Verde},
+                                        {k565Vermelho, k565Vermelho, k565Vermelho, k565Vermelho}};
+  for (std::uint32_t y = 0; y < 4; ++y) {
+    for (std::uint32_t x = 0; x < 4; ++x) {
+      EXPECT_EQ(b.mem.Ler16(p + (y * 4u + x) * 2u), esperado[y][x])
+          << "pixel (" << x << "," << y << ")";
+    }
+  }
+  EXPECT_EQ(b.mem.Ler16(kPii + 0), 4u);
+  EXPECT_EQ(b.mem.Ler16(kPii + 2), 4u);
+}
+
+TEST(AjudantesExtra, SetupNativeImageDescodificaRle4) {
+  // 4x2 a 4 bits BI_RLE4: cada byte leva dois nibbles, o primeiro e o pixel da
+  // ESQUERDA. A corrida absoluta de 3 nibbles leva um byte (2 nibbles) e o
+  // bloco inteiro pauta-se a 2 bytes.
+  Bancada b;
+  const std::vector<std::uint32_t> paleta = {kRgbVermelho, kRgbVerde, kRgbAzul, kRgbBranco};
+  const std::vector<std::uint8_t> dados = {
+      0x00, 0x04, 0x01, 0x23, 0x00, 0x00,  // linha de baixo: 0 1 2 3
+      0x00, 0x04, 0x32, 0x10, 0x00, 0x00,  // linha de cima:  3 2 1 0
+      0x00, 0x01};
+  EscreverBmp(b, kBmp, 4, 2, 4, 2, paleta, dados);
+  ArmarSetup(b, kBmp);
+  EXPECT_EQ(b.Atender(0x064), Atendimento::Implementado);
+  const std::uint32_t p = b.cpu.Get(kR0);
+  EXPECT_EQ(b.mem.Ler16(p + 0), k565Branco) << "linha de cima, pixel 0";
+  EXPECT_EQ(b.mem.Ler16(p + 2), k565Azul);
+  EXPECT_EQ(b.mem.Ler16(p + 4), k565Verde);
+  EXPECT_EQ(b.mem.Ler16(p + 6), k565Vermelho);
+  EXPECT_EQ(b.mem.Ler16(p + 8), k565Vermelho) << "linha de baixo, pixel 0";
+  EXPECT_EQ(b.mem.Ler16(p + 10), k565Verde);
+  EXPECT_EQ(b.mem.Ler16(p + 12), k565Azul);
+  EXPECT_EQ(b.mem.Ler16(p + 14), k565Branco);
+}
+
+TEST(AjudantesExtra, SetupNativeImageRecusaClsQueNaoEOWinBmp) {
+  // `AEECLSID_WINBMP` (0x01004002) NAO e o que o `CONVERTBMP` passa: o
+  // `#define` do SDK passa `AEECLSID_WinBMP` = `AEECLSID_NATIVEBMP` = 0x01004001
+  // (`AEEStdLib.h:384`, `tools/clsids.inc`).
+  Bancada b;
+  ArmarSetup(b, kBmp, 0x01004002u);
+  // O ajudante ESTA na tabela (logo `Implementado`), e a recusa dele fica
+  // registada com o nome -- e a convencao das outras recusas desta tabela.
+  EXPECT_EQ(b.Atender(0x064), Atendimento::Implementado);
   EXPECT_EQ(b.cpu.Get(kR0), kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x064] SetupNativeImage"), 1u);
+  EXPECT_NE(b.DetalheDaFalta("AEEHelperFuncs[0x064] SetupNativeImage").find("0x01004002"),
+            std::string::npos);
+}
+
+TEST(AjudantesExtra, SetupNativeImageRecusaOQueNaoEDescodificavelENaoEscreveOPii) {
+  Bancada b;
+  // Assinatura que nao e "BM" (4 bytes escritos por cima do cabecalho).
+  for (std::uint32_t k = 0; k < 64; ++k) b.mem.Escrever8(kBmp + k, 0);
+  b.mem.Escrever8(kBmp + 0, 'P');
+  b.mem.Escrever8(kBmp + 1, 'N');
+  b.mem.Escrever8(kBmp + 2, 'G');
+  ArmarSetup(b, kBmp);
+  EXPECT_EQ(b.Atender(0x064), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x064] SetupNativeImage"), 1u);
+  EXPECT_NE(b.DetalheDaFalta("AEEHelperFuncs[0x064] SetupNativeImage").find("nao BM"),
+            std::string::npos);
+  // O `pii` fica como estava: o SDK so o escreve quando devolve imagem.
+  for (std::uint32_t k = 0; k < 10; ++k) {
+    EXPECT_EQ(b.mem.Ler8(kPii + k), 0xCDu) << "pii mexido no byte " << k;
+  }
+  EXPECT_EQ(b.mem.Ler8(kSinalizador), 0xCDu) << "o sinalizador tambem nao se mexe";
+}
+
+TEST(AjudantesExtra, SetupNativeImageRecusaProfundidadeQueNaoSabeLer) {
+  Bancada b;
+  EscreverBmp(b, kBmp, 2, 2, 16, 0, {}, std::vector<std::uint8_t>(16, 0));
+  ArmarSetup(b, kBmp);
+  EXPECT_EQ(b.Atender(0x064), Atendimento::Implementado);
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x064] SetupNativeImage"), 1u);
+  EXPECT_NE(b.DetalheDaFalta("AEEHelperFuncs[0x064] SetupNativeImage").find("profundidade"),
+            std::string::npos);
 }
 
 // ===========================================================================
