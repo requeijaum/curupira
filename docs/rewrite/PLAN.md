@@ -501,6 +501,46 @@ impar do `IMediaUtil`.
 
 ---
 
+## O tecto de passos (o terceiro limite do instrumento que tapava trabalho)
+
+Medido em tres valores, e a conclusao foi imediata:
+
+| tecto de passos por fase | `heavyweaponbrew` | `tekken2` | bateria dos 62 |
+|---|---|---|---|
+| **8 M** (era o valor) | **0 px** (`create:orcamento_esgotado`) | 101 cores | ~40 s |
+| **16 M** (`43e8557`) | **116 851 652 px** | **174 cores** | 1m48 |
+| 32 M | 116 851 652 px | 174 cores | 2m53 |
+
+O `create` do `heavyweaponbrew` precisava de **8 505 337** passos -- **0,5 M** acima do tecto. E 16 M da
+as MESMAS 5 melhorias que 32 M, em dois tercos do tempo: por isso o valor e 16 M, e o custo (a bateria
+4x mais lenta) fica declarado.
+
+**E a terceira vez nesta sessao** que um limite do INSTRUMENTO tapava trabalho real: os 200 despachos
+(`6c72cb5`), as 20 000 saidas por fase (`3258489`) e agora os 8 M passos.
+
+### O que ficou por decidir (precisa do dono)
+
+O `corpus62.json` declara `max_steps` para **dois** titulos e os dois valores sao artefactos do GUI do
+zeebulator -- `cnk2` 186 486 543 e `fifa09` 483 295 456. O agente `cnk` provou que **um numero igual ao
+`max_steps` nao mede trabalho**: o `cnk2` nao consome 186 M, consome o que o tecto lhe der. Removê-los
+muda o `sha256` do corpus, que e a proveniencia de todas as corridas de referencia -- nao se toca sem
+ordem explicita.
+
+### Os ajudantes do Z-Wheel (`51f3a43`)
+
+- `utf8towstr` (0x050): **a regra veio do SDK DESMONTADO** (`BREWSim.dll1`, export `aee_UTF8ToWStr`):
+  enche o destino, nao reserva o NUL, devolve TRUE quando gasta o `nLen`. O nosso reservava -- e **comia
+  o ultimo caracter** (`"http://www.ats.com/"` -> `"http://www.ats.com"`).
+- `wstrtoutf8` (0x054) implementado (`nLen` em AECHARs, CESU-8, nunca 4 bytes por unidade).
+- `aee_GetSeconds`/`aee_GetJulianDate` com as ancoras do teste do proprio SDK: 1980/01/06 = **domingo**.
+  **O zeebx usa domingo a zero -- erra um dia em toda a semana.**
+- **Prova qualitativa**: a Z-Wheel gravava `'���������ȿ'` e passou a gravar
+  `'CreditServerURL','http://www.ats.com/'`.
+- As 5 faltas do `pbc` **nao somem de proposito**: o chamador corta o texto de creditos em janelas de 21
+  bytes, 4 comecam em byte de continuacao -- **o proprio SDK recusa igual**, e o numero nao se maquilha.
+
+---
+
 ## O laco de trabalho
 
 1. **Um titulo de cada vez**, do mais simples ao mais complexo.
