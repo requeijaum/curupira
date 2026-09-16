@@ -2301,7 +2301,21 @@ a primeira do modulo. Ou seja: **a leitura "fora do mapa" e o jogo a tomar o cod
 proprio modulo por uma vtable**, porque o objecto nunca foi construido. As 107 recusas
 (1 por quadro) e as 22 `SetupNativeImage` sao a MESMA parede.
 
-Consequencia para o plano: nao ha duas frentes -- **servir o `SetupNativeImage` (0x064)
-deve apagar as duas**. O caminho ja existe: o descodificador PNG da frente `imgdec`
+Consequencia para o plano: nao ha duas frentes -- servir o `SetupNativeImage` (0x064)
+apaga as 22 faltas dele. O caminho ja existe: o descodificador PNG da frente `imgdec`
 (`core/carga/png.h/cpp`) + o servidor de bitmaps da frente `ibmap2`
 (`AtenderBitmapDaFamilia`), que constroi IDIBs com o cabecalho publico.
+
+**CORRECCAO (frente `setup`, commit `0e3d5e8`): a cadeia que eu tinha escrito acima estava
+ERRADA, e foi medida.** O `SetupNativeImage` foi servido e o `allstarcards` saltou de
+650 240 para **220 216 388 px** com **1406 cores** -- mas as **106 recusas de CPU NAO
+caem**. O objecto de `[r4+28]` nao e o retorno do 0x064 (esse vai para `[r4+12]`): e o
+`IMedia **ppm` de saida de `IMediaUtil::CreateMedia` (0xf39c, slot 3), e o objecto vem de
+`[[r4]+12]->[2](this, 0x0100550d, ...)` = `AEECLSID_MEDIAUTIL`. **Criamo-lo com a vtable do
+`IMedia`** (`imedia.cpp:76`): o slot 3 responde `RegisterNotify` e devolve SUCCESS sem
+escrever o `ppm` -> ponteiro nulo -> o jogo chama pela primeira palavra do modulo. A parede
+seguinte e essa, e e do `imedia.*`.
+
+Licao de metodo (a terceira vez na sessao): o desmonte LOCAL (aquele `ldr`/`blx`) dizia
+*como* o jogo morria, nao *porque* o ponteiro estava a zero -- e a causa real so apareceu
+quando a frente mediu o valor de `[r4+28]` em vez de o inferir do desmonte.
