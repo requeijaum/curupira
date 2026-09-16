@@ -564,6 +564,220 @@ bool Despacho::AtenderSql(ICpu& cpu, std::uint32_t indice, std::uint32_t pp_said
   cpu.Set(kR0, (r == PonteSqlite::kBom) ? kAeeSuccess : kAeeFailed);
   return true;
 }
+
+// ---------------------------------------------------------------------------
+// OS DOIS CLSIDs DO Z-WHEEL: o `IConfig` e o `IDownload` (frente zclsid)
+// ---------------------------------------------------------------------------
+//
+// As constantes e a MEDICAO inteira (o traco e o desmonte dos dois sitios de
+// chamada) estao em `core/brew/despacho.h`, junto das dos outros objectos. Aqui
+// esta o comportamento, e a regra e a da casa: **o que a medicao mostrou e
+// servido; o que nao se sabe RECUSA COM O NOME** -- nunca sucesso silencioso.
+bool Despacho::InstalarZclsid(const Saidas& saidas) {
+  if (zclsid_pronto_) return true;
+  // UM OBJECTO POR CLSID, cada um com a vtable da SUA interface (64 slots, como
+  // todas as desta arvore: um slot por cablar le-se como zero, e o `blx 0` e o
+  // defeito que o IBitmap do ecra ja pagou).
+  ConstruirObjeto(mem_, saidas, kObjConfig, kVtableZclsidConfig, kSlotsPorVtable, kVtableConfig);
+  ConstruirObjeto(mem_, saidas, kObjDownload, kVtableZclsidDownload, kSlotsPorVtable,
+                  kVtableDownload);
+  // A LEITURA DE VOLTA DOS SLOTS QUE A MEDICAO USOU -- e nao so a escrita: uma
+  // cablagem ja se perdeu nesta arvore sem sintoma nenhum (`SetTimer`), e o
+  // sintoma era a bateria dizer que faltava o metodo.
+  const std::uint32_t lido_config =
+      mem_.Ler32(kVtableZclsidConfig + (kSlotConfigSetItem - kVtableConfig) * 4);
+  if (lido_config != saidas.Endereco(kSlotConfigSetItem)) {
+    traco_.RegistarFalta(Area::Brew, "cablagem_do_IConfig",
+                         "o slot 3 do IConfig nao aponta para o SetItem");
+    return false;
+  }
+  const std::uint32_t lido_download =
+      mem_.Ler32(kVtableZclsidDownload + (kSlotDownloadFalhados - kVtableDownload) * 4);
+  if (lido_download != saidas.Endereco(kSlotDownloadFalhados)) {
+    traco_.RegistarFalta(Area::Brew, "cablagem_do_IDownload",
+                         "o slot 3 do IDownload nao aponta para a lista");
+    return false;
+  }
+  zclsid_pronto_ = true;
+  traco_.Emitir(Area::Brew, Nivel::Informacao, "ZCLSID_INSTALADOS",
+                "IConfig obj=0x" + Hex(kObjConfig) + " vtable=0x" + Hex(kVtableZclsidConfig) +
+                    " (SetItem no slot 3) | IDownload obj=0x" + Hex(kObjDownload) +
+                    " vtable=0x" + Hex(kVtableZclsidDownload) + " (lista no slot 3)");
+  return true;
+}
+
+bool Despacho::AtenderZclsid(ICpu& cpu, std::uint32_t indice, std::uint32_t pp_saida) {
+  (void)pp_saida;
+  if (!zclsid_pronto_) return false;
+  if (indice >= kVtableConfig && indice < kVtableConfig + kSlotsPorVtable) {
+    return AtenderConfig(cpu, indice - kVtableConfig);
+  }
+  if (indice >= kVtableDownload && indice < kVtableDownload + kSlotsPorVtable) {
+    return AtenderDownload(cpu, indice - kVtableDownload);
+  }
+  return false;
+}
+
+// O `IConfig` (`AEECLSID_CONFIG`). Os quatro slots com nome vem do `zeebx` novo
+// (`src/aee_slots.rs:957`) e o `SetItem` no slot 3 esta confirmado no desmonte do
+// proprio `tectoy` (`0x71250`): `SetItem(po, 0x3f, sp+8, 4)` -- o item 63, o
+// idioma do sistema, 4 bytes.
+bool Despacho::AtenderConfig(ICpu& cpu, std::uint32_t slot) {
+  if (slot == kSlotConfigGetItem - kVtableConfig) {
+    const std::uint32_t item = cpu.Get(kR1);
+    const std::uint32_t destino = cpu.Get(kR2);
+    const std::uint32_t tamanho = cpu.Get(kR3);
+    const auto it = itens_do_config_.find(item);
+    // ITEM QUE O JOGO NUNCA ESCREVEU: RECUSA. Este emulador nao tem configuracao
+    // de aparelho, e devolver ZERO seria devolver um valor -- e um valor zero e
+    // legitimo (o `dwValue` das preferencias mede-se a zero). A recusa leva o
+    // numero do item para o proximo poder saber QUAL item falta.
+    if (it == itens_do_config_.end()) {
+      char det[96];
+      std::snprintf(det, sizeof(det), "item=0x%02x n=%u (nunca foi escrito pelo app)",
+                    item, tamanho);
+      traco_.RegistarFalta(Area::Brew, "IConfig::GetItem item nao definido", det);
+      cpu.Set(kR0, kAeeFailed);
+      return true;
+    }
+    // UM PEDIDO MAIOR QUE O GUARDADO NAO SE COMPLETA COM LIXO: se o jogo quer 8
+    // bytes de um item de 4, o que esta depois nao existe.
+    if (tamanho > it->second.size()) {
+      char det[96];
+      std::snprintf(det, sizeof(det), "item=0x%02x pede %u bytes, ha %zu", item, tamanho,
+                    it->second.size());
+      traco_.RegistarFalta(Area::Brew, "IConfig::GetItem pedido maior que o valor", det);
+      cpu.Set(kR0, kAeeFailed);
+      return true;
+    }
+    if (destino != 0) {
+      for (std::uint32_t k = 0; k < tamanho; ++k) {
+        mem_.Escrever8(destino + k, it->second[k]);
+      }
+    }
+    ++config_lidas_;
+    traco_.Emitir(Area::Brew, Nivel::Depuracao, "ICONFIG_GETITEM",
+                  "item=0x" + Hex(item) + " n=" + std::to_string(tamanho) + " (gravado pelo app)");
+    cpu.Set(kR0, kAeeSuccess);
+    return true;
+  }
+  if (slot == kSlotConfigSetItem - kVtableConfig) {
+    const std::uint32_t item = cpu.Get(kR1);
+    const std::uint32_t origem = cpu.Get(kR2);
+    const std::uint32_t tamanho = cpu.Get(kR3);
+    if (tamanho == 0 || tamanho > kMaximoDoItemDeConfig) {
+      char det[96];
+      std::snprintf(det, sizeof(det), "item=0x%02x n=%u (tecto %u)", item, tamanho,
+                    kMaximoDoItemDeConfig);
+      traco_.RegistarFalta(Area::Brew, "IConfig::SetItem tamanho fora do contrato", det);
+      cpu.Set(kR0, kAeeFailed);
+      return true;
+    }
+    std::vector<std::uint8_t> valor(tamanho, 0);
+    for (std::uint32_t k = 0; k < tamanho; ++k) {
+      valor[k] = mem_.Ler8(origem + k);
+    }
+    itens_do_config_[item] = valor;
+    ++config_escritas_;
+    // O PRESSUPOSTO, DECLARADO (e nao uma falta): o item guarda-se, e o que o
+    // `GetItem` devolve e o que o proprio jogo gravou nesta corrida. O aparelho
+    // deste emulador NAO tem configuracao -- inventa-la seria dar ao jogo um
+    // idioma que ninguem escolheu.
+    traco_.RegistarPressuposto(Area::Brew, "IConfig::SetItem (o valor e do proprio app)",
+                               "este emulador nao tem configuracao de aparelho; o que o app "
+                               "grava e o que o app rele");
+    traco_.Emitir(Area::Brew, Nivel::Depuracao, "ICONFIG_SETITEM",
+                  "item=0x" + Hex(item) + " n=" + std::to_string(tamanho));
+    cpu.Set(kR0, kAeeSuccess);
+    return true;
+  }
+  // OS OUTROS SLOTS. Nenhum apareceu na medicao: um pedido aqui e informacao
+  // NOVA, e fica com nome proprio em vez de cair no ramo generico e ser lido como
+  // um slot do IFileMgr.
+  char det[96];
+  std::snprintf(det, sizeof(det), "slot=%u po=0x%08x lr=0x%08x", slot, cpu.Get(kR0), cpu.Get(kLR));
+  traco_.RegistarFalta(Area::Brew, "IConfig slot nao implementado", det);
+  cpu.Set(kR0, kAeeUnsupported);
+  return true;
+}
+
+// O `IDownload` (`AEECLSID_DOWNLOAD` = 0x01000000). O SLOT 3 DEVOLVE A LISTA dos
+// downloads falhados, ou ZERO quando nao ha nenhum -- e o desmonte mostra-o com
+// todas as letras: com `r0 != 0` o jogo faz
+//
+//     27dd4  ldr r6,[r5] ; cmp r6,#0 ; bne 0x27ce0     ; r6 = um id da lista
+//     27dd0  add r5,r5,#4                              ; e avanca quatro bytes
+//
+// ou seja `r0` e um PONTEIRO para uma lista terminada em NULO, e nao um codigo de
+// erro (com um codigo, o `ldr r6,[20]` leria dentro do proprio modulo e o laco
+// nunca parava).
+//
+// ESTE EMULADOR NAO TEM FILA DE DOWNLOADS: nao ha rede, nao ha `tt_dlqueue.db`
+// aberto e nada foi descarregado, logo a lista de falhados e VAZIA -- e o `0` e a
+// verdade sobre este sistema, e nao um stub. O que se declara e isso mesmo, com
+// um pressuposto nomeado.
+bool Despacho::AtenderDownload(ICpu& cpu, std::uint32_t slot) {
+  if (slot == kSlotDownloadFalhados - kVtableDownload) {
+    traco_.RegistarPressuposto(Area::Brew, "IDownload (a fila de downloads nao existe)",
+                               "sem rede e sem fila nada foi descarregado; a lista de "
+                               "falhados e vazia, e o 0 e o valor que o modulo medido "
+                               "trata como nada a corrigir");
+    traco_.Emitir(Area::Brew, Nivel::Depuracao, "IDOWNLOAD_FALHADOS",
+                  "vazia -> 0 (nenhum download falhado)");
+    cpu.Set(kR0, 0);
+    return true;
+  }
+  if (slot == kSlotDownloadItemInfo - kVtableDownload) {
+    // O `slot 4` SO E ALCANCAVEL POR UM ID DA LISTA (`27d38 mov r1,r6`), e a lista
+    // volta vazia -- logo aqui nao ha nada a entregar. Fica com o NOME e contado,
+    // para o dia em que um titulo chegar aqui com um id: a resposta seria o
+    // `AppModInfo` daquele id, e isso exige a fila de downloads, que nao existe.
+    char det[96];
+    std::snprintf(det, sizeof(det), "id=0x%08x lr=0x%08x (a lista de falhados estava vazia)",
+                  cpu.Get(kR1), cpu.Get(kLR));
+    traco_.RegistarFalta(Area::Brew, "IDownload slot4 (info do item) sem lista", det);
+    cpu.Set(kR0, 0);
+    return true;
+  }
+  if (slot == kSlotDownloadInfoComCallback - kVtableDownload) {
+    // O SLOT 21, E ELE QUE O `tectoy` CHAMA. MEDIDO (traco com o `lr` posto no
+    // detalhe, e depois o desmonte do sitio): em `Tectoy_FixupTime`, logo a seguir
+    // ao `IShell::GetClassItemID` (slot 45, `tools/brew_slots.inc:58`),
+    //
+    //     69bdc  ldr r0,[r4,#0x57c]   ; o objecto IDownload que ELE guardou
+    //     69be4  ldr r1,[r0]          ; a vtable
+    //     69bf0  ldr ip,[r1,#0x54]    ; slot 21 (0x54 = 21*4)
+    //     69bf4  mov r1,r6            ; o id do item (o que o slot 45 devolveu)
+    //     69bec  add r2,pc,r2         ; um PONTEIRO DE FUNCAO do modulo (0x735f4)
+    //     69bf8  mov lr,pc ; bx ip    ; slot21(po, id, callback, contexto)
+    //
+    // A FORMA `(po, id, callback, contexto)` E A DO `IDOWNLOAD_GetItemInfo` da
+    // implementacao de referencia do SDK (`OATDownload.c:589`:
+    // `IDOWNLOAD_GetItemInfo(pme->m_pIDownload, pme->m_id, OATDownload_ItemInfoCB,
+    // pme)`), e o `AEEIDownload.h` NAO existe nesta maquina para confirmar a ORDEM
+    // dos slots -- ver a contradicao no cabecalho. O NOME fica o da forma medida
+    // ("info do item com callback") e nao o do candidato.
+    //
+    // SEM FILA NAO HA ITEM: o id que o `GetClassItemID` devolveu nao corresponde a
+    // nada descarregado, e nao ha `AppModInfo` para entregar. A resposta e
+    // `AEE_EFAILED` -- "esse item nao existe" e a verdade deste sistema -- e o
+    // callback NAO se chama: chama-lo com uma estrutura inventada seria dar ao
+    // jogo um URL ou uma versao que ninguem mediu.
+    char det[128];
+    std::snprintf(det, sizeof(det),
+                  "id=0x%08x cb=0x%08x ctx=0x%08x lr=0x%08x (nao ha fila de downloads)",
+                  cpu.Get(kR1), cpu.Get(kR2), cpu.Get(kR3), cpu.Get(kLR));
+    traco_.RegistarFalta(Area::Brew, "IDownload slot21 (info do item, id/cb/ctx)", det);
+    cpu.Set(kR0, kAeeFailed);
+    return true;
+  }
+  char det[96];
+  std::snprintf(det, sizeof(det), "slot=%u po=0x%08x lr=0x%08x", slot, cpu.Get(kR0), cpu.Get(kLR));
+  traco_.RegistarFalta(Area::Brew, "IDownload slot nao implementado", det);
+  cpu.Set(kR0, kAeeUnsupported);
+  return true;
+}
+
 namespace {
 // Le uma cadeia do guest, com limite. Sem limite, um ponteiro errado percorre o
 // espaco todo antes de parar.
@@ -1834,6 +2048,8 @@ void Despacho::InstalarAjudantes(const Saidas& saidas, Endereco tabela) {
   // O SQL, pela MESMA razao: a ferramenta e partilhada e esta frente nao obriga a
   // muda-la. Ver `InstalarSql`.
   (void)InstalarSql(saidas);
+  // OS DOIS CLSIDs DO Z-WHEEL, pela mesma razao das duas linhas acima.
+  (void)InstalarZclsid(saidas);
 
   const auto ja_tem = [&](std::uint32_t off) {
     for (const auto& lig : kLigados) {
@@ -2304,6 +2520,24 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // `Read`/`SetStream` que o allstarcards pede em laco (310 KB).
         else if (iid == kClsidUnzipStream) devolver = kObjUnzip;
         else if (iid == kClsidMemAStream) devolver = kObjMemStream;
+        // OS DOIS CLSIDs DO Z-WHEEL (frente zclsid): cada um recebe o objecto da
+        // SUA interface. Este ramo vem ANTES do dos genericos, e nao e gosto: o
+        // `0x01000000` e tambem o `AEECLSID_PRIV` (a base de toda a familia), e um
+        // titulo que o peca espera a classe -- deixar o ramo generico apanha-lo
+        // daria uma interface sem comportamento nenhum em vez de recusa.
+        else if (zclsid_pronto_ && iid == kIidConfig) {
+          devolver = kObjConfig;
+          // O `lr` no traco e a MEDICAO do sitio de chamada, e sem ele nao ha como
+          // ir ao desmonte (foi assim que se leu o `Tectoy_SetSystemLanguage`).
+          traco_.Emitir(Area::Brew, Nivel::Depuracao, "ZCLSID_CRIADO",
+                        "AEECLSID_CONFIG -> IConfig obj=0x" + Hex(kObjConfig) + " ppo=0x" +
+                            Hex(ppo) + " lr=0x" + Hex(cpu.Get(kLR)));
+        } else if (zclsid_pronto_ && iid == kIidDownload) {
+          devolver = kObjDownload;
+          traco_.Emitir(Area::Brew, Nivel::Depuracao, "ZCLSID_CRIADO",
+                        "AEECLSID_DOWNLOAD -> IDownload obj=0x" + Hex(kObjDownload) + " ppo=0x" +
+                            Hex(ppo) + " lr=0x" + Hex(cpu.Get(kLR)));
+        }
         // Os que tem objecto generico: o jogo fica com uma interface cujos
         // metodos recusam, e a bateria aprende quais sao.
         else {
@@ -2362,6 +2596,10 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // O SQL. Antes do ramo generico pelo mesmo motivo do widget: a faixa
         // 9800+ cai no `idx >= kVtableFileMgr` do fim da cadeia e um `Exec`
         // apareceria nomeado como `IFileMgr::slot2803`.
+      } else if (AtenderZclsid(cpu, idx, pp_saida)) {
+        // OS DOIS CLSIDs DO Z-WHEEL, ao lado do SQL e pela MESMA razao: as faixas
+        // 9900 (IConfig) e 10000 (IDownload) caiam no `idx >= kBaseDoShell` do fim
+        // da cadeia, e um `SetItem` apareceria nomeado como um slot do IFileMgr.
       } else if (AtenderWidgets(cpu, idx)) {
         // O WIDGET: `IRootForm`, `IForm`, `IHandler` e `IWidget`.
         //
@@ -2728,7 +2966,15 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // ficheiro concreto. Sem isto ficava-se a olhar para 0x80202a70.
         char txt[48] = {0};
         const std::uint32_t possivel = cpu.Get(kR1);
-        if (possivel >= 0x00100000u && possivel < 0x81000000u) {
+        // E A PAGINA TEM DE ESTAR MAPEADA, e a guarda de FAIXA nao chega: MEDIDO
+        // nesta frente, o `IShell::slot45` (`GetClassItemID`) recebe o CLSID do
+        // titulo em r1 (0x01070798) -- dentro da faixa, mas NAO e memoria. Ler o
+        // "texto" ali registava uma leitura nao mapeada que era NOSSA, e o
+        // `pc_de_quem_leu` apontava para a instrucao do guest seguinte (a mesma
+        // armadilha que a frente `ropi2` escreveu). A leitura do instrumento
+        // ainda por cima deixa o estado pendente do `Memoria` -- que a CPU usa
+        // para julgar a INSTRUCAO.
+        if (possivel >= 0x00100000u && possivel < 0x81000000u && mem_.Existe(possivel)) {
           bool imprimivel = true;
           for (int k = 0; k < 40; ++k) {
             const std::uint8_t ch = mem_.Ler8(possivel + static_cast<std::uint32_t>(k));

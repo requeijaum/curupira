@@ -105,6 +105,35 @@ class Bancada {
     return it == f.end() ? 0 : static_cast<std::size_t>(it->second);
   }
 
+  // UMA CHAMADA DO GUEST A UM ENDERECO -- e nao a um indice.
+  //
+  // E o que testa a CABLAGEM: o PC vai para a ENTRADA DA VTABLE que o objecto
+  // tem, e nao para o endereco de saida que o teste "ja sabe". Um teste que chama
+  // `ChamaSaida(<id interno>)` prova que o handler responde -- nao prova que o
+  // objecto esta ligado a ele, e foi assim que um `SetTimer` cablado ao stub
+  // errado passou uma corrida inteira sem sintoma.
+  std::uint32_t ChamaEndereco(std::uint32_t endereco, std::uint32_t r0, std::uint32_t r1 = 0,
+                              std::uint32_t r2 = 0, std::uint32_t r3 = 0,
+                              std::uint64_t limite = 1000) {
+    cpu_.Set(kR0, r0);
+    cpu_.Set(kR1, r1);
+    cpu_.Set(kR2, r2);
+    cpu_.Set(kR3, r3);
+    cpu_.Set(kSP, kArg0);
+    mem_.Escrever32(kArg0, 0);
+    cpu_.Set(kLR, kSentinela);
+    cpu_.Set(kPC, endereco);
+    const ResultadoFase r = despacho_->Correr(cpu_, limite, kArg0);
+    (void)r;
+    return cpu_.Get(kR0);
+  }
+
+  // A ENTRADA `slot` DA VTABLE DO OBJECTO -- a TABELA, e nao a resposta de quem a
+  // escreveu.
+  std::uint32_t EntradaDaVtable(std::uint32_t objeto, std::uint32_t slot) const {
+    return mem_.Ler32(mem_.Ler32(objeto) + slot * 4);
+  }
+
   Memoria& Mem() { return mem_; }
   Vfs& AcessoAVfs() { return vfs_; }
   Despacho& D() { return *despacho_; }
@@ -2337,6 +2366,78 @@ TEST(SqlDoZWheel, OExecDeclaraOPressupostoDaPonteENaoUmaFalta) {
   const auto& p = b.Tr().ContagemPressupostos();
   EXPECT_NE(p.find("ISQLDatabase::Exec (ponte SQLite)"), p.end())
       << "o motor de SQL usado tem de ficar declarado, e nao implicito";
+}
+
+// ===========================================================================
+// OS DOIS CLSIDs DO Z-WHEEL: o `IConfig` e o `IDownload` (frente zclsid).
+//
+// A DEMANDA, medida na corrida do `tectoy` (`ZB2_TRACE=1`): `AEECLSID_CONFIG` 2x,
+// `AEECLSID_DOWNLOAD` 1x, e as tres a receberem `ECLASSNOTSUPPORT`. Estes testes
+// provam que o `CreateInstance` os serve -- e prova-o pela TABELA e pela ENTRADA
+// DA VTABLE, e nao pelo id interno de saida.
+// ===========================================================================
+TEST(ZclsidDoZWheel, OConfigVemDoCreateInstanceComASuaVtableCablada) {
+  Bancada b;
+  constexpr std::uint32_t kPPo = 0x00090020u;
+  b.Mem().Escrever32(kPPo, 0);
+  // A PORTA E A MESMA DA MEDICAO: o slot 2 do IShell.
+  ASSERT_EQ(b.ChamaSaida(2000 + brew_slots::kShell_CreateInstance, 0x80020000u, kIidConfig,
+                         kPPo),
+            kAeeSuccess);
+  const std::uint32_t obj = b.Mem().Ler32(kPPo);
+  ASSERT_EQ(obj, kObjConfig) << "o AEECLSID_CONFIG tem de dar o NOSSO IConfig";
+  // A TABELA: o slot 3 do objecto tem de ser o `SetItem`, e o 2 o `GetItem`.
+  EXPECT_EQ(b.EntradaDaVtable(obj, 3), b.S().Endereco(kSlotConfigSetItem));
+  EXPECT_EQ(b.EntradaDaVtable(obj, 2), b.S().Endereco(kSlotConfigGetItem));
+}
+
+TEST(ZclsidDoZWheel, OSetItemDoConfigGuardaEOGetItemDevolveOGravado) {
+  // OS ARGUMENTOS SAO OS DO JOGO: `SetItem(po, 0x3f, ptr, 4)` -- o item 63, quatro
+  // bytes (`tectoy` 0x71250, `mov r1,#0x3f`; `mov r3,#4`).
+  Bancada b;
+  constexpr std::uint32_t kPPo = 0x00090020u;
+  constexpr std::uint32_t kValor = 0x000A0000u, kDestino = 0x000A0010u;
+  b.Mem().Escrever32(kPPo, 0);
+  ASSERT_EQ(b.ChamaSaida(2000 + brew_slots::kShell_CreateInstance, 0x80020000u, kIidConfig,
+                         kPPo),
+            kAeeSuccess);
+  const std::uint32_t obj = b.Mem().Ler32(kPPo);
+  b.Mem().Escrever32(kValor, 0x00000003u);
+  b.Mem().Escrever32(kDestino, 0xDEADBEEFu);
+  // PELA ENTRADA DA VTABLE: e o caminho que o jogo faz.
+  EXPECT_EQ(b.ChamaEndereco(b.EntradaDaVtable(obj, 3), obj, 0x3fu, kValor, 4u), kAeeSuccess);
+  EXPECT_EQ(b.ChamaEndereco(b.EntradaDaVtable(obj, 2), obj, 0x3fu, kDestino, 4u), kAeeSuccess);
+  EXPECT_EQ(b.Mem().Ler32(kDestino), 3u) << "quem grava rele o que gravou";
+  // E O ITEM QUE NINGUEM ESCREVEU RECUSA -- nao devolve zero, que e um valor
+  // legitimo e mentiria sobre o aparelho.
+  EXPECT_EQ(b.ChamaEndereco(b.EntradaDaVtable(obj, 2), obj, 0x10u, kDestino, 4u), kAeeFailed);
+  EXPECT_EQ(b.Faltas("IConfig::GetItem item nao definido"), 1u);
+}
+
+TEST(ZclsidDoZWheel, ODownloadVemDoCreateInstanceEOSeuSlot21RecusaComONome) {
+  Bancada b;
+  constexpr std::uint32_t kPPo = 0x00090020u;
+  b.Mem().Escrever32(kPPo, 0);
+  ASSERT_EQ(b.ChamaSaida(2000 + brew_slots::kShell_CreateInstance, 0x80020000u, kIidDownload,
+                         kPPo),
+            kAeeSuccess);
+  const std::uint32_t obj = b.Mem().Ler32(kPPo);
+  ASSERT_EQ(obj, kObjDownload);
+  // O SLOT 21, com os argumentos medidos em `Tectoy_FixupTime`: (po, id, callback
+  // do modulo, contexto). Ele NAO e lido pelo jogo -- a resposta e EFAILED porque
+  // nao ha fila de downloads, e o que fica registado e o motivo.
+  EXPECT_EQ(b.EntradaDaVtable(obj, 21), b.S().Endereco(kSlotDownloadInfoComCallback));
+  EXPECT_EQ(b.ChamaEndereco(b.EntradaDaVtable(obj, 21), obj, 0x14u, 0x000735f4u, 0x80200048u),
+            kAeeFailed);
+  EXPECT_EQ(b.Faltas("IDownload slot21 (info do item, id/cb/ctx)"), 1u);
+  // A LISTA DE DOWNLOADS FALHADOS (o slot 3 do segundo sitio medido, o
+  // `Gamelib_CheckForFailedDownload`) responde ZERO: nao ha fila, logo nao ha
+  // falhados -- e o zero e o valor que o modulo trata como "nada a corrigir".
+  EXPECT_EQ(b.ChamaEndereco(b.EntradaDaVtable(obj, 3), obj, 0u), 0u);
+  // E UM SLOT QUE NINGUEM MEDIU RECUSA COM O NUMERO DELE, em vez de responder
+  // zero a fingir de contrato.
+  EXPECT_EQ(b.ChamaEndereco(b.EntradaDaVtable(obj, 7), obj, 0u), kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("IDownload slot nao implementado"), 1u);
 }
 
 }  // namespace zb2::brew

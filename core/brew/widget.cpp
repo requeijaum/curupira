@@ -403,9 +403,14 @@ Atendido Widgets::AtenderRootForm(ICpu& cpu, std::uint32_t slot) {
       // pilha (nada empurrou nenhuma), logo a resposta honesta e FALSE -- e fica
       // REGISTADA, com o numero do evento, porque um FALSE mudo e exactamente o
       // que este projecto proibe.
-      char det[96];
-      std::snprintf(det, sizeof(det), "evt=0x%04x w=0x%04x d=0x%08x pilha=%zu", evt, w, d,
-                    pilha_.size());
+      // O `lr` ENTRA NO DETALHE, e e uma medida e nao enfeite: e ele que diz QUAL
+      // sitio do modulo ofereceu o evento a raiz, e sem ele nao ha como ir ao
+      // desmonte ver o que o titulo faz com a resposta (foi assim que se leu o
+      // `Tectoy_FixupTime`). O detalhe nao muda a CHAVE da falta, logo a contagem
+      // da bateria e a mesma.
+      char det[128];
+      std::snprintf(det, sizeof(det), "evt=0x%04x w=0x%04x d=0x%08x pilha=%zu lr=0x%08x", evt, w, d,
+                    pilha_.size(), cpu.Get(kLR));
       traco_.RegistarFalta(Area::Brew, "IRootForm HandleEvent nao atendido", det);
       recusas_.push_back(std::string("HandleEvent nao atendido ") + det);
       cpu.Set(kR0, 0);

@@ -108,6 +108,119 @@ static_assert(kZonaDosVectoresSql + 2u * (kMaximoDeColunasSql + 1u) * 4u <=
                   kEnderecoDaVtableSqlDb,
               "a zona da linha de consulta nao pode invadir a vtable do banco");
 
+// --- OS DOIS CLSIDs DO Z-WHEEL QUE FALTAVAM (frente zclsid) -----------------
+//
+// O `tectoy` (274755, o Z-Wheel) e o unico titulo do corpus que pede estas duas
+// classes, e ate aqui recebia `ECLASSNOTSUPPORT` nas tres, com o jogo a DIZER o
+// nome delas:
+//
+//   `Unable to create instance of IConfig in Tectoy_SetSystemLanguage, error 3`
+//   `Unable to create instance of IDOWNLOAD in Tectoy_FixupTime`
+//
+// MEDIDO no proprio modulo (`ZB2_TRACE=1`, `ZB2_QUADROS=300 ZB2_EVT_START=1`):
+// `AEECLSID_CONFIG` 2x (ppo na PILHA, 0x8007ff98 e 0x8007ffb0 -- os dois sitios de
+// chamada da mesma funcao) e `AEECLSID_DOWNLOAD` 1x (ppo=0x802035c4, no HEAP: o
+// jogo GUARDA o objecto).
+//
+// OS VALORES DOS CLSIDs NAO VEM DA MEDICAO, vem do SDK:
+// `platform/system/inc/AEEClassIDs.h:109` (`AEECLSID_CONFIG = AEECLSID_CORE+39` =
+// 0x01001027) e `:49` (`AEECLSID_DOWNLOAD = AEECLSID_PRIV = QVERSION` =
+// 0x01000000). O `tools/clsids.inc` desta arvore concorda com os dois.
+//
+// O QUE O JOGO FAZ COM CADA OBJECTO -- lido no DESMONTE do `.mod` (base ZERO, os
+// literais sao offsets do ficheiro), e nao adivinhado:
+//
+//   `Tectoy_SetSystemLanguage` (0x711c8), o sitio do `CreateInstance`:
+//     711d8  ldr r1,[r0]        ; a vtable do IShell
+//     711e0  ldr r3,[r1,#8]     ; slot 2 = CreateInstance
+//     711e4  ldr r1,[pc,#0x114] ; 0x01001027  <- o literal, em 0x71300
+//     711ec  bx  r3
+//     711f0  movs r4,r0 ; beq 0x71240        ; 0 = criou -> caminho bom
+//     71240  ldr r0,[sp]        ; o objecto IConfig
+//     71248  ldr r1,[r0]        ; a vtable DELE
+//     71250  ldr ip,[r1,#0xc]   ; slot 3
+//     71254  mov r1,#0x3f       ; nItem = 63  (o idioma do sistema)
+//     71258  bx  ip             ; SetItem(po, 0x3f, sp+8, 4)
+//     712e0  bl  0x2f2a4        ; e no fim SOLTA o objecto (slot 1)
+//
+//   `Tectoy_FixupTime` (0x69b20), o sitio do `CreateInstance` -- e ELE que corre
+//   nesta corrida (o `lr` do traco diz 0x69b64, o retorno do `bx`):
+//     69b4c  ldr r3,[r1,#8]     ; IShell slot 2 = CreateInstance
+//     69b54  add r2,r2,#0x17c   ; ppobj = pMe+0x357c -- o jogo GUARDA-o
+//     69b58  mov r1,#0x1000000  ; 0x01000000 -- o literal e este `mov`, e nao uma
+//                               ; palavra da pool: nao ha `ldr` dele no modulo
+//     69b60  bx  r3             ; CreateInstance(po, DOWNLOAD, &m_pDownload)
+//     69b64  cmp r0,#0 ; beq 0x69ba4         ; 0 = criou -> caminho bom
+//     (o caminho de falha imprime "Unable to create instance of IDOWNLOAD in
+//      Tectoy_FixupTime" -- 0x69c50 -- e foi o unico destes que o `tectoy` corria)
+//     69ba4  ... IShell slot 45 = GetClassItemID(po, o clsid do titulo) -> o id
+//     69bdc  ldr r0,[r4,#0x57c] ; e depois, com esse id:
+//     69bf0  ldr ip,[r1,#0x54]  ; SLOT 21 (0x54 = 21*4)
+//     69bf4  mov r1,r6          ; o id do item
+//     69bec  add r2,pc,r2       ; um PONTEIRO DE FUNCAO do modulo (0x735f4)
+//     69bfc  bx ip              ; slot21(po, id, callback, contexto)
+//     69c1c  b 0x69b44          ; e o RETORNO do slot 21 nao e lido
+//
+//   A MESMA CLASSE, NUM SEGUNDO SITIO (que NAO correu no corpus de 300 quadros,
+//   e por isso esta aqui como leitura estatica e nao como medida): o
+//   `Gamelib_CheckForFailedDownload` de `GameLib_Form.c` (0x27bf8), cujas cadeias
+//   o nomeiam -- "Gamelib_CheckForFailedDownload: dlitem = %d" (0x27f08) e
+//   "fixing failed download %s, adding classID 0x%X" (0x27f4c):
+//     27c5c  mov r1,#0x1000000  ; CreateInstance(DOWNLOAD, &obj)
+//     27cb4  ldr r0,[sp]        ; o objecto IDownload
+//     27cc0  ldr r2,[r1,#0xc]   ; slot 3
+//     27cc4  mov r1,#0
+//     27cc8  bx  r2             ; slot3(po, 0)
+//     27ccc  cmp r0,#0 ; beq 0x27de4         ; 0 = "NAO ha downloads falhados"
+//     27cd4  mov r5,r0 ; 27dd4: ldr r6,[r5]  ; senao: r0 e um PONTEIRO para uma
+//     27dd8  cmp r6,#0 ; bne 0x27ce0         ; lista terminada em NULO de ids, e
+//     27dd0  add r5,r5,#4                    ; por cada id ele chama o SLOT 4
+//     27d34  ldr r2,[r1,#0x10] ; 27d38 mov r1,r6 ; 27d3c bx r2   ; slot4(po,id)
+//     27d68  ldr r0,[r0,#0x20]  ; a cadeia que o `slot 4` devolveu, em +0x20
+//
+// OS SLOTS 2 DO IConfig E A ORDEM DO IConfig VEM DO `zeebx` NOVO
+// (`src/aee_slots.rs:957`, `CONFIG = ["AddRef","Release","GetItem","SetItem"]`),
+// que os leu do SDK e do proprio modulo; o `SetItem` no slot 3 esta confirmado
+// pelo desmonte acima. `AEEIConfig.h`/`AEEIDownload.h` NAO EXISTEM na extracao do
+// SDK que esta na maquina (conferido: nao ha `AEEIConfig.h` nem `AEEIDownload.h`
+// em `sdk-extract/`, e o `AEEClassIDs.h` do 4.0.2 traz so as constantes) --
+// **a contradicao com o enunciado desta frente, que os deu como fonte**.
+// O que existe do `IDownload` sao as macros USADAS pela implementacao de
+// referencia (`OATDownload.c`: `IDOWNLOAD_Release/OnStatus/GetItemInfo/Delete/
+// Restore/Acquire/GetModInfo`), que dao os NOMES e nao a ordem dos slots.
+constexpr std::uint32_t kIidConfig = 0x01001027u;
+constexpr std::uint32_t kIidDownload = 0x01000000u;
+
+// ONDE OS DOIS OBJECTOS VIVEM. Uma pagina por objecto, como o IHID (0x81010000 +
+// 0x81011000) e a fabrica de sinais (0x81030000 + 0x81031000): a pagina da vtable
+// e a do objecto, e nenhuma delas toca a faixa de SAIDA (0xF0000000), que NAO e
+// nossa -- a frente `zwheel` pagou um titulo alheio por ter posto uma vtable la
+// (o `reksio` le 0xF0009934).
+constexpr std::uint32_t kVtableZclsidConfig = 0x81090000u;
+constexpr std::uint32_t kObjConfig = 0x81091000u;
+constexpr std::uint32_t kVtableZclsidDownload = 0x810A0000u;
+constexpr std::uint32_t kObjDownload = 0x810A1000u;
+
+// OS INDICES DE SAIDA, um por slot, como no SQL (9800) e nos widgets (60000+):
+// 9900 e 10000 sao os primeiros blocos livres acima do fim do banco (9800 + 64 =
+// 9864). O `tools/bateria.cpp` NAO precisa de saber disto: quem escreve estas
+// vtables e o motor, no `InstalarZclsid`, e nao a ferramenta.
+constexpr std::uint32_t kVtableConfig = 9900;
+constexpr std::uint32_t kVtableDownload = 10000;
+constexpr std::uint32_t kSlotConfigGetItem = kVtableConfig + 2;
+constexpr std::uint32_t kSlotConfigSetItem = kVtableConfig + 3;
+constexpr std::uint32_t kSlotDownloadFalhados = kVtableDownload + 3;
+constexpr std::uint32_t kSlotDownloadItemInfo = kVtableDownload + 4;
+// O SLOT 21: medido no `tectoy` (ver `AtenderDownload` no `.cpp`).
+constexpr std::uint32_t kSlotDownloadInfoComCallback = kVtableDownload + 21;
+
+// O TECTO DE UM ITEM DE CONFIGURACAO, e o unico valor que o jogo escreveu: 4
+// bytes (`SetItem(0x3f, ptr, 4)`), medidos no desmonte. O tecto deixa passar o
+// que o SDK declara para um item de configuracao (bytes, cores, um `ConfigTime`)
+// e RECUSA o resto com o nome -- um item maior que isto nao tem contrato medido, e
+// aceita-lo seria o stub silencioso com outra cara.
+constexpr std::uint32_t kMaximoDoItemDeConfig = 256u;
+
 // Um temporizador pedido pelo guest. UM so, porque e o que os titulos pedem: o
 // laco de quadro, re-armado pelo proprio callback.
 //
@@ -239,6 +352,19 @@ class Despacho {
   // Ver `InstalarSql` no `.cpp` para a medicao.
   bool InstalarSql(const Saidas& saidas);
   bool AtenderSql(ICpu& cpu, std::uint32_t indice, std::uint32_t pp_saida);
+
+  // --- OS DOIS CLSIDs DO Z-WHEEL (frente zclsid) ----------------------------
+  //
+  // Os dois objectos que o `AEECLSID_CONFIG` e o `AEECLSID_DOWNLOAD` recebem, e
+  // os slots da interface de CADA um. Constroi-se um objecto por CLSID, com a
+  // vtable da SUA interface -- a licao da frente `mediautil` (`imedia.cpp`,
+  // `Criar`): servir duas classes com o mesmo objecto e o defeito que deu um
+  // `IMediaUtil` a quem pediu um `ECLASSID_MULTIMEDIA`.
+  //
+  // O que NAO se sabe recusa COM O NOME, e nao devolve sucesso: e a mesma regra
+  // do `AtenderSql` para os slots que a medicao nao mostrou.
+  bool InstalarZclsid(const Saidas& saidas);
+  bool AtenderZclsid(ICpu& cpu, std::uint32_t indice, std::uint32_t pp_saida);
   Widgets& WidgetsRef() { return widgets_; }
   const Widgets& WidgetsRef() const { return widgets_; }
   // `true` = o indice era do widget e ja foi atendido (com sucesso OU com recusa
@@ -592,6 +718,27 @@ class Despacho {
   // ser entregue -- e nesse caso a falta ja ficou registada com o nome.
   bool EntregarLinhaSql(ICpu& cpu, const PonteSqlite::Linha& linha, std::uint32_t cb,
                         std::uint32_t ctx, std::uint32_t pp_saida);
+
+  // --- OS DOIS CLSIDs DO Z-WHEEL (frente zclsid) ----------------------------
+  //
+  // `AtenderConfig` e `AtenderDownload` recebem o SLOT (0..63), e nao o indice da
+  // faixa: o `AtenderZclsid` e que sabe de que objecto se trata, e um slot que
+  // chegue aqui fora do que foi medido RECUSA com o numero dele.
+  bool AtenderConfig(ICpu& cpu, std::uint32_t slot);
+  bool AtenderDownload(ICpu& cpu, std::uint32_t slot);
+  // Os dois objectos construidos e a vtable conferida por leitura de volta.
+  bool zclsid_pronto_ = false;
+  // O QUE O JOGO ESCREVEU NOS ITENS DE CONFIGURACAO, por numero de item.
+  //
+  // O VALOR VEM DO PROPRIO APP (`IConfig::SetItem`), e nao de um aparelho: este
+  // emulador NAO tem configuracao de aparelho nenhuma, e inventar um idioma ou um
+  // brilho seria a resposta que ninguem mediu. O que fica guardado e o que o jogo
+  // gravou, e o `GetItem` devolve o que existe -- quem grava rele os seus valores,
+  // e o que o jogo nunca escreveu RECUSA (em vez de devolver zero, que e um valor
+  // legitimo e mentiria).
+  std::map<std::uint32_t, std::vector<std::uint8_t>> itens_do_config_;
+  std::uint32_t config_escritas_ = 0;
+  std::uint32_t config_lidas_ = 0;
 
   // A FRENTE io2: o estado dos objectos IUnzipAStream e IMemAStream, por
   // endereco de objecto. Os objectos nascem no `InstalarAjudantes` (kObjUnzip /
