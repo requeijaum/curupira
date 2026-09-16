@@ -1404,6 +1404,95 @@ TEST(Cpu, ThumbFormato11ContinuaARecusarOQueNaoConhece) {
 }
 
 // ===========================================================================
+// O `BL` DE 32 BITS DO THUMB E A CONTA DOS DESLOCAMENTOS
+// ===========================================================================
+
+TEST(Cpu, BlDe32BitsDoThumbUsaODeslocamentoCompleto) {
+  // MEDIDO. Tres `bl` de 32 bits tirados dos `.mod` do corpus, com o alvo
+  // calculado por capstone (o mesmo descodificador do objdump):
+  //
+  //   reksio.mod         0x09ae  f035 fbdf  ->  bl #0x36170
+  //   brainchallenge.mod 0x20fc  f01a fc88  ->  bl #0x1ca10
+  //   rocketweb.mod      0x07a0  f01d f900  ->  bl #0x1d9a4
+  //
+  // A ARVORE RESPONDIA OUTRA COISA: 0xd5170, 0x6aa10 e 0x749a4 -- os tres
+  // `saiu_do_modulo_para_0x...` que a bateria registava nestes titulos. O
+  // `imm10` (bits 9-0 da primeira meia-palavra) entrava deslocado de DOIS bits a
+  // mais, e o `i1`/`i2` estavam postos nos bits 12/11 em vez dos 23/22: o alvo
+  // saia com um erro de `imm10 * 0xC000`, e nenhum teste o media -- o nome
+  // `thumb:formato19_bl_blx` existia, a CONTA nao.
+  //
+  // Os quatro casos comparam com o valor do capstone, e o ultimo e a guarda da
+  // maioria: com `imm10 = 0` a formula antiga coincidia, e tem de continuar a
+  // coincidir.
+  struct Caso {
+    std::uint32_t pc;
+    std::uint16_t alta;
+    std::uint16_t baixa;
+    std::uint32_t alvo;
+    const char* quem;
+  };
+  const Caso casos[] = {
+      {0x000009aeu, 0xF035u, 0xFBDFu, 0x00036170u, "reksio.mod 0x09ae"},
+      {0x000020fcu, 0xF01Au, 0xFC88u, 0x0001CA10u, "brainchallenge.mod 0x20fc"},
+      {0x000007a0u, 0xF01Du, 0xF900u, 0x0001D9A4u, "rocketweb.mod 0x07a0"},
+      {0x0000060eu, 0xF000u, 0xF971u, 0x000008F4u, "alpineracerex.mod 0x060e (imm10 = 0)"},
+  };
+  for (const Caso& c : casos) {
+    Bancada b(c.pc);
+    b.Thumb(c.alta);
+    b.Thumb(c.baixa);
+    b.Cpu().SetCpsr(b.Cpu().Cpsr() | Cpsr::kT);
+    b.Correr(1);
+    EXPECT_EQ(b.R(15), c.alvo) << c.quem << ": o alvo do capstone";
+    EXPECT_EQ(b.R(14), (c.pc + 4u) | 1u) << c.quem << ": o retorno com o bit 0";
+  }
+}
+
+
+// ===========================================================================
+// O PC COMO OPERANDO NO THUMB
+// ===========================================================================
+
+TEST(Cpu, ORegistadorPcComoOperandoNoThumbValeAInstrucaoSeguinte) {
+  // MEDIDO, e e o mesmo defeito em dois titulos diferentes: o `add rX, pc` do
+  // Thumb lia o PC A SECO (o endereco da propria instrucao) em vez de
+  // `endereco + 4`. O alvo desta soma e a TABELA DE AJUDANTES do modulo, e o
+  // valor esta 4 bytes ao lado do sitio certo:
+  //
+  //   reksio.mod 0x36176  447d  `add r5, pc`  com r5 = 0xfffca046
+  //        certo: 0x000001c0  ([0x1c0+0x3c] = [0x1fc] = 0x80010000, o que a fase
+  //                            de CARGA la deixou -- medido com a sonda SONDA-G5)
+  //        arvore: 0x000001bc ([0x1f8] = 0, e o `ldr r3,[r1,#4]` seguinte le a
+  //                            palavra 4 do cabecalho do modulo: 0xea00000f)
+  //
+  //   brainchallenge.mod 0x1e31e  447e  `add r6, pc`  com r6 = 0xfffe1c9e
+  //        certo: 0xffffffc0  ([0xffffffc0+0x3c] = [0xfffffffc] = `GET_HELPER()`,
+  //                            base-4, onde o carregador escreve 0x80010000)
+  //        arvore: 0xffffffbc
+  //
+  // O `pc + 4` NAO leva mascara de alinhamento: nos dois casos o bit 1 do valor
+  // esta ligado, e `& ~3` daria 4 bytes a menos outra vez (medido, e o motivo de
+  // o teste fixar os dois valores exactos).
+  {
+    Bancada b(0x00036176u);
+    b.R(5, 0xFFFCA046u);
+    b.Thumb(0x447Du);  // add r5, pc
+    b.Cpu().SetCpsr(b.Cpu().Cpsr() | Cpsr::kT);
+    b.Correr(1);
+    EXPECT_EQ(b.R(5), 0x000001C0u) << "reksio.mod 0x36176: o alvo e a tabela de ajudantes";
+  }
+  {
+    Bancada b(0x0001E31Eu);
+    b.R(6, 0xFFFE1C9Eu);
+    b.Thumb(0x447Eu);  // add r6, pc
+    b.Cpu().SetCpsr(b.Cpu().Cpsr() | Cpsr::kT);
+    b.Correr(1);
+    EXPECT_EQ(b.R(6), 0xFFFFFFC0u) << "brainchallenge.mod 0x1e31e: o alvo e `GET_HELPER()` em base-4";
+  }
+}
+
+// ===========================================================================
 // OS DOIS DEFEITOS DO `emulator_neo`: ambos SILENCIOSOS, ambos com `recusadas = 0`
 // ===========================================================================
 

@@ -1906,17 +1906,37 @@ void ArmInterpreter::ExecutarThumb(std::uint16_t instr, std::uint32_t pc) {
     const std::uint32_t rd = ((h1 ? 1u : 0u) << 3) | (instr & 7u);
     static const char* const kNomes[4] = {"add", "cmp", "mov", "bx"};
     familia_ = kNomes[op];
+    // O PC COMO OPERANDO VALE `endereco da instrucao + 4`, e NAO o endereco a
+    // seco. MEDIDO em dois titulos do corpus, e nos dois o valor esta 4 bytes ao
+    // lado do sitio certo (as duas provas estao no comentario do teste
+    // `Cpu.ORegistadorPcComoOperandoNoThumbValeAInstrucaoSeguinte`):
+    //
+    //   reksio.mod         0x36176  `add r5, pc`  -> 0x1c0 (a arvore dava 0x1bc)
+    //   brainchallenge.mod 0x1e31e  `add r6, pc`  -> 0xffffffc0 (dava 0xffffffbc)
+    //
+    // O alvo destas somas e a TABELA DE AJUDANTES do modulo -- em `reksio` o
+    // `[r5 + 0x3c]` da [0x1fc] (0x80010000, escrito pela fase de CARGA) e em
+    // `brainchallenge` o `[r6 + 0x3c]` da [0xfffffffc], o `GET_HELPER()` de
+    // `AEEStdLib.h:297`. Com o PC a seco, a leitura cai em memoria nao mapeada,
+    // devolve 0, e o `bx` da veneira seguinte salta para a palavra 4 do
+    // cabecalho do proprio modulo (`0xea00000f`).
+    //
+    // O `+ 4` NAO leva mascara de alinhamento: nos dois casos o bit 1 esta
+    // ligado e `& ~3` daria outra vez 4 bytes a menos.
+    const auto valor = [&](std::uint32_t r) -> Reg {
+      return (r == kPC) ? static_cast<Reg>(pc + 4u) : Get(static_cast<int>(r));
+    };
     if (op == 0) {
-      const Reg r = Get(static_cast<int>(rd)) + Get(static_cast<int>(rm));
+      const Reg r = valor(rd) + valor(rm);
       if (h1 || h2) { Set(static_cast<int>(rd), r); }
       else { n_ = (r >> 31) != 0; z_ = r == 0; Set(static_cast<int>(rd), r); }
     } else if (op == 1) {
-      const Reg a = Get(static_cast<int>(rd));
-      const Reg r = a - Get(static_cast<int>(rm));
-      auto f = FlagsDaSub(a, Get(static_cast<int>(rm)), r);
+      const Reg a = valor(rd);
+      const Reg r = a - valor(rm);
+      auto f = FlagsDaSub(a, valor(rm), r);
       c_ = f.c; v_ = f.v; n_ = (r >> 31) != 0; z_ = r == 0;
     } else {
-      Set(static_cast<int>(rd), Get(static_cast<int>(rm)));
+      Set(static_cast<int>(rd), valor(rm));
     }
     Set(kPC, pc + 2);
     return;
@@ -1946,9 +1966,30 @@ void ArmInterpreter::ExecutarThumb(std::uint16_t instr, std::uint32_t pc) {
     const std::uint32_t j2 = (baixa >> 11) & 1u;
     const std::uint32_t i1 = ~(j1 ^ s) & 1u;
     const std::uint32_t i2 = ~(j2 ^ s) & 1u;
-    std::uint32_t off = (((s << 23) | ((alta & 0x3FFu) << 13) | (i1 << 12) | (i2 << 11) |
+    // A CONCATENACAO TEM DE SER A DO ARM ARM: `S:I1:I2:imm10:imm11:'0'`.
+    //
+    // MEDIDO, e e o defeito que a frente `g5` pagou: os campos estavam
+    // deslocados -- `imm10` entrava a `<< 13` e o `i1`/`i2` nos bits 12/11 (em
+    // vez de 23/22), o que empurrava o deslocamento dois bits a mais a cada
+    // `imm10` (erro de `imm10 * 0xC000` bytes). Os alvos saiam FORA do modulo e
+    // a bateria so podia dizer `saiu_do_modulo_para_0x...`:
+    //
+    //   reksio.mod         0x09ae  f035 fbdf  ->  0xd5170 (o certo e 0x36170)
+    //   brainchallenge.mod 0x20fc  f01a fc88  ->  0x6aa10 (o certo e 0x1ca10)
+    //   rocketweb.mod      0x07a0  f01d f900  ->  0x749a4 (o certo e 0x1d9a4)
+    //
+    // Os tres alvos CERTOS sao `push {...,lr}` -- um prologo de funcao. O teste
+    // `Cpu.BlDe32BitsDoThumbUsaODeslocamentoCompleto` fixa os tres e mais um com
+    // `imm10 = 0` (onde a formula antiga coincidia).
+    //
+    // O `BLX` imediato (bit 12 a zero) tem a MESMA concatenacao, mas com o bit 0
+    // da segunda meia-palavra dentro de `imm10L` e o alvo alinhado a palavra
+    // (`imm10H:imm10L:'00'`): o deslocamento e o mesmo com os dois bits de baixo
+    // a zero. Nao ha medicao de `BLX` neste corpus -- fica pela especificacao.
+    std::uint32_t off = (((s << 23) | (i1 << 22) | (i2 << 21) | ((alta & 0x3FFu) << 11) |
                           (baixa & 0x7FFu)) << 1);
     if ((off & 0x01000000u) != 0) off |= 0xFE000000u;  // sinal de 25 bits
+    if (!com_retorno) off &= ~2u;                      // o BLX salta a palavras
     const std::int32_t deslocamento = static_cast<std::int32_t>(off);
     if (com_retorno) Set(kLR, (pc + 4u) | 1u);
     Set(kPC, static_cast<Reg>(static_cast<std::int32_t>(pc) + 4 + deslocamento) & ~1u);

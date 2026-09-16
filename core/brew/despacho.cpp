@@ -2437,6 +2437,26 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
     std::uint32_t idx = 0;
     if (cpu.GetSaidas().Contem(pc, &idx)) {
       const std::uint32_t lr = cpu.Get(kLR);
+      // O RETORNO DE UMA SAIDA VAI SEM O BIT 0 DO `lr`.
+      //
+      // MEDIDO (frente g5, `reksio`): um `bl` do Thumb poe `lr = proxima | 1`. O
+      // regresso escrevia esse valor CRU no PC, e o PC ficava IMPAR -- a busca
+      // seguinte lia a meia-palavra a partir do byte 1 e o modulo ia para fora em
+      // duas instrucoes. O registo do titulo mostrou-o no proprio anel:
+      // `00000232:47204718` (a veneira `bx r3`), `00036189:011c3268` -- o PC
+      // impar 0x36189, com a palavra DESLOCADA (`0x1c3268e0` e a palavra certa em
+      // 0x36188, `ldr r0,[r4,#0xc]`).
+      //
+      // E O BIT 0 DIZ O MODO DO CHAMADOR: o regresso e um `bx lr`, e nao um
+      // `Set(kPC, lr)`. MEDIDO um degrau acima, e e o mesmo defeito que ja
+      // custou 186 486 543 passos no `EVT_APP_START` (ver o comentario do
+      // callback, `EntregarEventoAoApplet`): o guest chama o ajudante com um
+      // `bx r3` para um endereco PAR da faixa de saida, o que poe a CPU em ARM;
+      // a mascara sozinha devolvia o PC ao Thumb com o CPSR ainda em ARM, e o
+      // modulo passava a ler codigo Thumb como ARM -- foi o que o `reksio`
+      // mostrou: 91 recusas a partir de `pc=0x36188 instr=0x1c3268e0`
+      // (`ldr r0,[r4,#0xc]` lido a deslocado) e a deriva para fora do modulo.
+      const std::uint32_t kernel_retorno_ = lr;
       const std::uint32_t r0 = cpu.Get(kR0);
       // Esta saida RECUSOU? Os ramos de recusa marcam-no; o epilogo do bloco
       // usa-o para decidir se a sequencia de recusas recomeca.
@@ -2626,7 +2646,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           // tabela do IMedia e o ciclo de vida vivem em core/brew/imedia.
           if (ppo != 0) mem_.Escrever32(ppo, 0);
           cpu.Set(kR0, static_cast<std::uint32_t>(media_->Criar(iid, ppo)));
-          cpu.Set(kPC, lr);
+          cpu.Bx(kernel_retorno_);
           continue;
         }
         // DISPLAY1 (0x010127d4, "display 1") e o segundo display; num aparelho
@@ -4541,7 +4561,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         recusou_agora = true;
         if (++recusas_seguidas > 200) { resultado.motivo = "parou_em_slot_nao_implementado"; return resultado; }
       }
-      cpu.Set(kPC, lr);
+      cpu.Bx(kernel_retorno_);
       // Esta saida foi SERVIDA (nao passou por ramo de recusa): a sequencia de
       // recusas recomeca. E o "zera quando corre sem recusa" do item 1 do PLAN
       // -- a zero a cada INSTRUCAO do guest (em vez de a cada saida servida),

@@ -2508,4 +2508,38 @@ TEST(FrenteSlot45, SemNumeroDePastaRecusaComONome) {
   EXPECT_EQ(b.Faltas("IShell::GetClassItemID sem id de item"), 1u);
 }
 
+TEST(RetornoDeSaida, ORegressoVoltaAoModoDoChamador) {
+  // MEDIDO (frente g5, `reksio` 0x36184): o modulo chama o ajudante pela veneira
+  // do proprio ficheiro (`bl 0x232` + `bx r3`, com o endereco do ajudante na
+  // tabela do modulo). O `bx` vai para um endereco PAR da faixa de saida, e o
+  // bit 0 de um `bx` escolhe o MODO -- logo a chamada entra em ARM.
+  //
+  // O `bl` do Thumb tinha posto `lr = proxima | 1`. O regresso escrevia esse `lr`
+  // CRU no PC: o PC ficava IMPAR (a busca seguinte lia a meia-palavra a partir do
+  // byte 1) e o CPSR ficava em ARM, o que fazia o modulo ler codigo THUMB como
+  // ARM. Foi isso que se viu no `reksio`: 91 recusas a partir de
+  // `pc=0x36188 instr=0x1c3268e0` (a palavra deslocada de `ldr r0,[r4,#0xc]`) e,
+  // antes disso, os tres `saiu_do_modulo_para_0x...` da frente.
+  //
+  // E o MESMO defeito que o callback ja tinha pago (ver `EntregarEventoAoApplet`:
+  // "o modo tem de vir do bit 0 da FUNCAO"), agora do lado do RETORNO.
+  Bancada b;
+  b.Mem().Escrever8(0x80210000u, 0);  // strcat com destino vazio
+  b.Mem().Escrever8(0x80210100u, 0);  // e fonte vazia
+  // Um retorno de Thumb FORA do modulo (o modulo e 0..0x00100000): assim a
+  // paragem e imediata e o estado fica intacto para se poder afirmar.
+  constexpr std::uint32_t kRetorno = 0x00100011u;
+  b.Cpu().SetCpsr(b.Cpu().Cpsr() | Cpsr::kT);
+  b.Cpu().Set(kR0, 0x80210000u);
+  b.Cpu().Set(kR1, 0x80210100u);
+  b.Cpu().Set(kLR, kRetorno);
+  b.Cpu().Bx(b.S().Endereco(1568));  // AEEHelperFuncs[0x00C] = strcat
+  EXPECT_EQ(b.Cpu().Cpsr() & Cpsr::kT, 0u) << "a chamada entra em ARM (bit 0 do `bx`)";
+  const ResultadoFase r = b.D().Correr(b.Cpu(), 100, 0);
+  EXPECT_EQ(r.motivo.rfind("saiu_do_modulo", 0), 0u)
+      << "a saida servida e o modulo sai no retorno: " << r.motivo;
+  EXPECT_EQ(b.Cpu().Get(kPC), kRetorno & ~1u) << "o PC volta sem o bit 0";
+  EXPECT_EQ(b.Cpu().Cpsr() & Cpsr::kT, Cpsr::kT) << "e o CPSR volta a Thumb (bit 0 do `lr`)";
+}
+
 }  // namespace zb2::brew
