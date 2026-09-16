@@ -56,8 +56,26 @@ namespace {
 // O efeito nos 62 titulos: `modulo 48 -> 62` e `applet 22 -> 41`.
 constexpr std::uint32_t kBase = 0x00000000u;
 constexpr std::uint32_t kPilha = 0x80080000u;
-constexpr std::uint32_t kHeap = 0x80200000u;
-constexpr std::uint32_t kHeapTam = 0x00C00000u;
+// O HEAP DO GUEST: 64 MiB em 0x10000000 (o layout do zeebx e o do guia: 128+32 MB).
+//
+// ERAM 12 MiB EM 0x80200000, e o numero era uma PAREDE, nao um detalhe. A familia TTD
+// (Zeeboids, Zeebotennis, Zeebovolley, Zeebopeteca, Footparty, Funsoccer, Activity Center)
+// pede **20 a 23 MiB** so no `CreateInstance` -- `zeeboids` 0x01700000=23 MiB,
+// `zeebotennis`/`dodgeball` 22, `funsoccer` 21, `activitycenter` 20+3. Com 12 MiB o `Malloc`
+// devolvia 0 e o motor do jogo desistia pelos proprios `dbgprintf`: "Could not initialize the
+// MemoryManager", erro 10 (AEE_EBADCLASS), "TTDMM ASSERT"; no `footparty` diz mesmo "The game
+// will refuse beginning". 17 ASSERTs e **0 pixels** em 9 titulos.
+//
+// MEDIDO nos dois eixos, porque so um podia ser a causa: com 12 MiB em 0x10000000 (so o
+// ENDERECO) os 17 ASSERTs ficam; com 64 MiB em 0x80200000 a colisao com a NOSSA banda de
+// objectos (0x81011000..0x810a1000, 0x82000000) faz 2 titulos derrapar. **E o TAMANHO, e o
+// endereco tem de ficar fora da banda.**
+//
+// A corrida dos 62 com este par: 0 regressoes, 8 melhorias; 7 titulos passam de 0 a 307 200 px
+// e o `gof` de 0 a 90 316 800. Titulos sem um pixel: 42 -> 34. O custo e memoria do host que
+// so se toca quando o guest a pede (o `Alocador` e um carregador, nao um `memset`).
+constexpr std::uint32_t kHeap = 0x10000000u;
+constexpr std::uint32_t kHeapTam = 0x04000000u;
 constexpr std::uint32_t kTabela = 0x80010000u;
 // A AREA DE RASCUNHO CAI DENTRO DA IMAGEM DO MODULO EM 29 DOS 62 TITULOS.
 //
