@@ -573,6 +573,37 @@ titulos) -- o mecanismo que a frente `ropi2` mediu e para o qual ja ha teste.
 
 ---
 
+## A ronda do 16/09 -- tres defeitos GERAIS, e nenhum deles era uma API em falta
+
+### 1. O bit alto do `malloc` e uma bandeira (`fe1eaad`)
+
+`AEEStdLib.h:547` define `ALLOC_NO_ZMEM (0x80000000L)` e o `MALLOCREC_EX` (`:556`) usa-o como mascara:
+**o bit alto do tamanho nao e tamanho, e uma bandeira -- e o `malloc` zera por omissao.**
+
+O `quake2brew` faz `orr r0, r5, #0x80000000` (`0x000b0650`) antes de chamar o helper, e o nosso servidor
+lia aquilo como 2 GiB: **339 `MALLOC ERROR` do proprio Quake com o heap VAZIO** (`alocado=0,0 MiB de
+64,0 MiB`), as `cvars` todas a NULL e **99 `atoi(NULL)`**. `pixels 0 -> 307 200`, e o `chessbots` passa a
+fazer 19x mais trabalho (`passos_start` 1418 -> 26 939). **Um numero que nao cabe na leitura e um numero
+mal lido** -- e quem "corrigisse" o `atoi` fechava 99 faltas e deixava o jogo partido.
+
+### 2. O `GetAppInstance` respondia zero dentro do proprio `CreateInstance` (`81e3ca2`)
+
+A re-entrada do modulo (o grupo G2) tem **tres mecanismos**, e um era nosso. A cadeia medida no `Rolimaz`:
+`GetAppInstance` devolve 0 -> o codigo usa o zero como objecto -> `ldr r0,[r4,#0xc]` com `r4=0` le o campo
+`+0xc` do **cabecalho do modulo** -> salta para o lixo. **O `0x000fea00` dos 5 titulos TecToy nao era um
+endereco em falta**: era uma palavra do cabecalho, porque o objecto era nulo. A regra que faltava era a que
+o `EntregarEventoAoApplet` ja tinha. **0 regressoes, 8 melhorias**: `ddragonz` 0 -> **120 972 000 px** e
+1500 textos, 5 titulos 0 -> 307 200/614 400, `bio4_brew` 497 853 recusas -> 0. **35/62 desenham** (eram 29).
+
+### 3. O desenho 2D nao tinha destino (`b810e4e`)
+
+A pagina do ecra no guest so nascia a pedido -- e o `allstarcards` **desenha 296 rectangulos sem nunca a
+pedir**. O ecra passa a nascer quando o titulo o usa: `pixels 220 216 388 -> 224 621 076` e as 296 recusas a
+zero. **Um campo desceu** (cores 1406 -> 1405) e o comparador chamou-lhe regressao -- o `ZB2_HIST`
+(`cdf259c`) mostrou que era **uma cor com 4 pixeis** (`0x1060`) coberta pelos rectangulos que o titulo pediu.
+
+---
+
 ## O laco de trabalho
 
 1. **Um titulo de cada vez**, do mais simples ao mais complexo.
