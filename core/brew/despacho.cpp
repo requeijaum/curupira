@@ -2,8 +2,13 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <functional>
+#include <map>
 #include <set>
+#include <utility>
+#include <vector>
 
 #include "core/audio/misturador.h"
 #include "core/brew/ajudantes_extra.h"
@@ -21,6 +26,46 @@
 // este (`core/carga/png.h`). Nao se acrescenta descodificador nenhum a
 // `core/carga`: quem nao for PNG e recusado COM O NOME.
 #include "core/carga/png.h"
+
+// ---------------------------------------------------------------------------
+// ZB2_PC_HOT -- ONDE E QUE O GUEST GASTA O TEMPO. O instrumento que faltava.
+// ---------------------------------------------------------------------------
+//
+// A tabela de faltas diz o que os titulos PEDEM a esta arvore. Quando ela fica
+// VAZIA (41 dos 62, medido) e o titulo continua sem desenhar, ela nao tem mais
+// nada para dizer: a parede passou a ser o que o guest FAZ com o estado que tem.
+// Para esses, a pergunta e "onde e que ele esta a gastar os passos", e a resposta
+// e um histograma de PCs.
+//
+// AMOSTRAGEM, e nao todos os passos: um `++` por instrucao num `std::map` custa
+// mais do que a propria instrucao. `ZB2_PC_HOT=<n>` amostra um passo em cada n
+// (4096 chega para ver onde o tempo esta) e imprime no fim de cada fase os 12 PCs
+// mais quentes, com a PALAVRA que la estava -- a palavra e o que permite desmontar
+// o sitio sem outra corrida.
+std::map<std::uint32_t, std::uint64_t> g_pc_hist;
+std::uint32_t g_pc_amostra = 0;
+std::uint32_t g_pc_hist_lido = 0;
+const std::uint32_t LerPcHot() {
+  if (g_pc_hist_lido == 0) {
+    g_pc_hist_lido = 1;
+    if (const char* e = std::getenv("ZB2_PC_HOT")) g_pc_amostra = std::strtoul(e, nullptr, 0);
+  }
+  return g_pc_amostra;
+}
+void DespejarPcHot(const char* fase) {
+  if (g_pc_hist.empty()) return;
+  std::vector<std::pair<std::uint64_t, std::uint32_t>> v;
+  v.reserve(g_pc_hist.size());
+  for (const auto& par : g_pc_hist) v.push_back({par.second, par.first});
+  std::sort(v.begin(), v.end(), std::greater<std::pair<std::uint64_t, std::uint32_t>>());
+  std::fprintf(stderr, "\n== ZB2_PC_HOT %s: %zu PCs distintos, amostra 1/%u ==\n", fase, v.size(),
+               g_pc_amostra);
+  for (std::size_t k = 0; k < v.size() && k < 12; ++k) {
+    std::fprintf(stderr, "   pc=0x%08x  %llu amostras\n", v[k].second,
+                 static_cast<unsigned long long>(v[k].first));
+  }
+  g_pc_hist.clear();
+}
 
 namespace zb2::brew {
 
@@ -4806,11 +4851,14 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
     // serve para ver QUAL era a instrucao, e nao so onde estava.
     anel_pc_[ultimas_ % 16] = pc;
     anel_instr_[ultimas_ % 16] = mem_.Ler32(pc);
+    const std::uint32_t amostra_pc = LerPcHot();
+    if (amostra_pc != 0 && (resultado.passos % amostra_pc) == 0) ++g_pc_hist[pc];
     ++ultimas_;
     cpu.Passo();
     ++resultado.passos;
   }
   resultado.motivo = "orcamento_esgotado";
+  DespejarPcHot("orcamento_esgotado");
   // O `return` EXPLICITO nao e estilo: cair fora do fim de uma funcao que devolve
   // por valor e COMPORTAMENTO INDEFINIDO, e o `ResultadoFase` tem um
   // `std::string` dentro -- o resultado medido foi `free(): double free detected`
