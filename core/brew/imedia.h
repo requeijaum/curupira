@@ -220,17 +220,65 @@ static_assert(kBaseDoMedia + kSlotsDoMedia <= kVtableDoMedia,
 static_assert(kVtableDoMedia + kSlotsPorVtable <= 6000,
               "a vtable do media nao pode invadir o IDisplay");
 
+// --- A REGIAO DE MEMORIA DESTE MODULO, declarada ---------------------------
+//
 // Os objectos de midia. As bases usadas pelas outras interfaces vao de
-// 0x80020000 a 0x80070000; a primeira livre e 0x80090000.
+// 0x80020000 a 0x80070000; a primeira livre e 0x80090000. O mapa dos enderecos
+// de objecto deste emulador, por ordem (`core/brew/igl.h`, onde ele foi escrito
+// ao decidir-se para onde ia o IGL): 0x80010000 ajudantes | 0x80020000 IShell |
+// 0x80030000 IDisplay | 0x80040000 IFileMgr | 0x80050000 DIB | 0x80060000
+// genericos | 0x80070000 ficheiros | 0x80080000 pilha | **0x80090000 IMedia** |
+// **0x800A0000 avisos de midia** | 0x800B0000 IGL.
 constexpr std::uint32_t kObjMediaBase = 0x80090000u;
 constexpr std::uint32_t kPassoDoObjetoMedia = 0x40;
-constexpr std::uint32_t kMaxObjetosDeMidia = 16;
 
 // REGIAO AUXILIAR, declarada: onde o aviso (`AEEMediaCmdNotify`) e os dados que
 // ele aponta sao escritos na memoria do guest ANTES de o callback ser chamado.
 // Nao se escreve na pilha do jogo: o `pCmdNotify` que o callback recebe e nosso.
+//
+// UM BLOCO DE AVISO POR OBJECTO, e por isso o numero de objectos manda no
+// tamanho desta regiao. Com o teto de 1024 objectos (abaixo) sao
+// 1024 * 28 = 28 672 bytes de avisos, e a seguir os dados (4 bytes por objecto).
+// O `kAvisoDadosBase` SUBIU de 0x800A1000 para 0x800A8000 por isso mesmo, e o
+// comentario do `igl.h` que cita o valor antigo passou a estar desactualizado:
+// o `igl.h` NAO foi tocado (e de outra frente) e quem conta e o valor daqui. O
+// que NAO mudou e o que importa a quem vem depois: o `kObjIgl` continua em
+// 0x800B0000, e a regiao daqui acaba antes dele -- provado pelos tres
+// `static_assert` no topo do `imedia.cpp`, e pelo teste
+// `Media.ARegiaoDeMidiaNaoInvadeAQuemVemADepoisDela`.
 constexpr std::uint32_t kAvisoBase = 0x800A0000u;
-constexpr std::uint32_t kAvisoDadosBase = 0x800A1000u;
+constexpr std::uint32_t kAvisoDadosBase = 0x800A8000u;
+
+// O FIM DA REGIAO DESTE MODULO: onde nasce o modulo seguinte
+// (`core/brew/igl.h`, `kObjIgl = 0x800B0000u`, "o primeiro bloco livre").
+constexpr std::uint32_t kFimDaRegiaoDeMidia = 0x800B0000u;
+
+// QUANTOS OBJECTOS DE MIDIA CABEM AQUI -- E, MAIS IMPORTANTE, DE ONDE VEM O
+// NUMERO. Ele **nao** vem do SDK: o SDK nao limita quantos objectos de midia
+// podem existir ao mesmo tempo. O que ele limita e a REPRODUCAO SIMULTANEA (as
+// vozes), em `doc/AEEMedia.txt:785-791` ("IMedia - Simultaneous media
+// playback"):
+//
+//   "The device capabilities enforce certain restrictions on number and type of
+//    simultaneous media. / For example, Qualcomm MSM-based devices can typically
+//    simultaneously play the following media sets:  * 1 MIDI / MMF / PMD(with
+//    MIDI) + 4 QCP(fixed) / AMR / ADPCM (all 4 of same type) ... * [Using 6550
+//    and above] 4 MIDI / MMF / PMD(with MIDI) + 4 QCP(fixed) / AMR / ADPCM"
+//
+// Isso e quantas midias TOCAM ao mesmo tempo. Nesta arvore nao ha descodificador
+// nem vozes -- o `Avancar` soma as amostras no misturador e CONTA-as --, logo
+// aquele numero nao decide nada aqui, e cita-lo como se decidisse seria inventar
+// proveniencia.
+//
+// O que decide e a REGIAO: os objectos vivem em `[kObjMediaBase, kAvisoBase)` a
+// `kPassoDoObjetoMedia`, e o aviso de cada um tem de caber entre `kAvisoBase` e
+// `kAvisoDadosBase`. O conjunto CRESCE a pedido ate este maximo (era um conjunto
+// FIXO de 16 lugares, e o 17.o pedido respondia "sem memoria": a medicao que
+// obrigou a esta mudanca esta no `Criar`).
+constexpr std::uint32_t kMaxObjetosDeMidia =
+    (kAvisoBase - kObjMediaBase) / kPassoDoObjetoMedia;  // 1024
+static_assert(kMaxObjetosDeMidia == 1024,
+              "a regiao dos objectos da 1024 enderecos de 0x40 (0x80090000..0x800A0000)");
 
 // --- o cabecalho do objecto (medido em bytes, 32) ---------------------------
 constexpr std::uint32_t kOffObjVtable = 0;
@@ -488,6 +536,14 @@ class Media {
   };
 
   std::int32_t HandlerDeSlot(std::uint32_t slot, std::uint32_t objeto, ICpu& cpu);
+  // O endereco do BLOCO DE AVISO do objecto e o dos dados que ele aponta
+  // (`pCmdData`, 4 bytes por objecto). UMA conta, para os dois sitios que dela
+  // dependem (`EmitirAviso` e `GetTotalTime`).
+  //
+  // Devolve `false` -- sem escrever nada -- quando o objecto nao esta na regiao
+  // de midia: um indice fora dela escreveria o aviso de um objecto em cima do
+  // bloco de outro, e o jogo leria o `DONE` de um som como se fosse de outro.
+  bool EnderecoDoAviso(const Objeto& o, std::uint32_t* aviso, std::uint32_t* dados);
   // `MM_PARM_MEDIA_DATA`: le o `AEEMediaData` do guest e decide. Aceita bufer de
   // PCM; RECUSA o nome de ficheiro (nao ha descodificador nesta arvore) e a
   // fonte `MMD_ISOURCE`, os dois com o motivo escrito.
@@ -508,6 +564,9 @@ class Media {
   Saidas saidas_;
   audio::Misturador& misturador_;
   Vfs* vfs_;
+  // O CONJUNTO DE OBJECTOS. Cresce a pedido, ate `kMaxObjetosDeMidia`, e um lugar
+  // devolvido pelo `Release` (`RecolherLibertados`) volta a ser servido com o
+  // MESMO endereco -- o lugar e do indice, e nao um objecto que anda de lugar.
   std::vector<Objeto> objetos_;
   std::vector<Aviso> fila_;
   std::map<std::uint32_t, std::uint32_t> classes_pedidas_;

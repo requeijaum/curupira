@@ -6,6 +6,11 @@
 #include <vector>
 
 #include "core/audio/misturador.h"
+// O LIMITE DA REGIAO DE MIDIA e o endereco do modulo que vem a seguir: o
+// `kObjIgl` (`core/brew/igl.h`, "0x800B0000 e o primeiro bloco livre"). A
+// regiao deste modulo tem de acabar ANTES dele, e o teste prova-o com a
+// constante do outro modulo, e nao com um literal escrito aqui.
+#include "core/brew/igl.h"
 #include "core/brew/imedia.h"
 #include "core/cpu/arm_interpreter.h"
 #include "core/memoria/memoria.h"
@@ -453,27 +458,110 @@ TEST(Media, CriarRecusaUmaClasseQueNaoEMidia) {
   EXPECT_NE(b.OMedia().UltimoMotivoDeRecusa().find("0x01001001"), std::string::npos);
 }
 
-TEST(Media, OMediaVaiAteOLimiteDeObjetosERecusa) {
+TEST(Media, OReleaseDoGuestDevolveOLugarAoConjunto) {
   // O `Release` do guest chega pela IBase, que e do MOTOR (slot 1 -> saida 4).
-  // Sem recolher os objectos libertados, o conjunto esgotava-se e o decimo
-  // setimo `CreateInstance` de midia respondia "sem memoria" -- um erro que
-  // parece do jogo e nao e.
+  // Sem recolher os objectos libertados, o conjunto esgotava-se e o pedido
+  // seguinte respondia "sem memoria" -- um erro que parece do jogo e nao e.
+  //
+  // Os 19 sao o numero que o `abd` pede na corrida de referencia do `slot32`
+  // (`IMedia::Criar` 19 faltas): o jogo guarda UM `IMedia` POR SOM. Aqui prova-se
+  // que o `Release` de um deles DEVOLVE o lugar, e com o mesmo endereco -- um
+  // pool que so cresce tambem serviria o `abd`, mas nao devolver nada seria
+  // deixar a memoria do guest a encher sem razao.
   Bancada b;
-  for (std::uint32_t k = 0; k < kMaxObjetosDeMidia; ++k) {
-    EXPECT_NE(b.CriarMedia(kClasseMultimidia, kPponovo), 0u) << "criacao " << k;
+  std::vector<std::uint32_t> objetos;
+  for (std::uint32_t k = 0; k < 19; ++k) {
+    objetos.push_back(b.CriarMedia(kClasseMultimidia, kPponovo));
   }
-  EXPECT_EQ(b.OMedia().ObjetosVivos(), kMaxObjetosDeMidia);
-  b.Mem().Escrever32(kPponovo, 0x1234u);
-  EXPECT_EQ(b.OMedia().Criar(kClasseMultimidia, kPponovo), kAeeSemMemoria);
-  EXPECT_EQ(b.Mem().Ler32(kPponovo), 0x1234u);  // nada foi escrito
+  EXPECT_EQ(b.OMedia().ObjetosVivos(), 19u);
+  EXPECT_EQ(b.OMedia().PedidosRecusados(), 0u);
 
-  // O guest solta UM (slot 1 = IBase::Release, pelo mesmo caminho do jogo), e a
-  // criacao seguinte volta a caber.
-  const std::uint32_t primeiro = kObjMediaBase;
+  const std::uint32_t primeiro = objetos.front();
+  EXPECT_EQ(primeiro, kObjMediaBase);
   b.ApontarParaObjeto(primeiro);
   b.Chamar(1, primeiro, 0, 0, 0);  // vtable[1] = Release
   EXPECT_EQ(b.Mem().Ler32(primeiro + kOffObjRefs), 0u);
-  EXPECT_NE(b.CriarMedia(kClasseMultimidia, kPponovo), 0u);
+  EXPECT_EQ(b.CriarMedia(kClasseMultimidia, kPponovo), primeiro);
+  EXPECT_EQ(b.OMedia().ObjetosVivos(), 19u);
+}
+
+TEST(Media, OConjuntoDeObjetosServeUmIMediaPorSom) {
+  // A MEDICAO QUE ISTO GUARDA: `/tmp/corrida_slot32.json`, com o `GetHandler` ja
+  // a resolver o MIME numa classe de midia -- `abd` 19 pedidos, `ridgeracer` 9,
+  // `torkandkral` 1, 29 recusas no total. Os jogos guardam UM `IMedia` POR SOM e
+  // nao o soltam entre sons; com um conjunto fixo de 16, o 17.o pedido do `abd`
+  // respondia "sem memoria".
+  //
+  // O SDK NAO TEM ESTE NUMERO. O que a doc limita sao as VOZES ao mesmo tempo
+  // (`AEEMedia.txt`, "IMedia - Simultaneous media playback": 1 MIDI/MMF/PMD + 4
+  // QCP/AMR/ADPCM, e 4+4 em 6550 e acima). Criar objectos nao tem limite no SDK.
+  Bancada b;
+  constexpr std::uint32_t kObjetosDoAbd = 19;
+  std::vector<std::uint32_t> objetos;
+  for (std::uint32_t k = 0; k < kObjetosDoAbd; ++k) {
+    // O ENDERECO E O PROPRIO TESTE DA RECUSA: cada pedido tem de receber o
+    // endereco seguinte da regiao. Um pedido recusado devolve o ponteiro que
+    // estiver na memoria (o do ultimo objecto), e nao um endereco novo.
+    const std::uint32_t po = b.CriarMedia(kClasseMultimidia, kPponovo);
+    ASSERT_EQ(po, kObjMediaBase + k * kPassoDoObjetoMedia)
+        << "o pedido " << (k + 1) << " de " << kObjetosDoAbd << " nao recebeu um objecto";
+    objetos.push_back(po);
+  }
+  EXPECT_EQ(b.OMedia().ObjetosVivos(), kObjetosDoAbd);
+  EXPECT_EQ(b.OMedia().PedidosRecusados(), 0u);
+
+  // E o ULTIMO dos 19 TEM de funcionar: criar 19 e nao conseguir tocar o 19.o nao
+  // serve de nada. O `pIMedia` do aviso e por onde o jogo correla o som.
+  const std::uint32_t ultimo = objetos.back();
+  b.ApontarParaObjeto(ultimo);
+  b.RegistrarNotify();
+  b.PorPcm(Onda(64, 4000));
+  ASSERT_EQ(b.DefinirDados(), kAeeSucesso);
+  b.Play();
+  b.Avancar(64);
+  EXPECT_EQ(b.Avisos(), 1u);
+  EXPECT_EQ(b.UltimoStatus(), static_cast<std::uint32_t>(kMmStatusDone));
+  EXPECT_EQ(b.UltimoPimidia(), ultimo);
+  EXPECT_EQ(b.OMedia().EstadoDe(ultimo), kMmEstadoPronto);
+}
+
+TEST(Media, ARegiaoDosObjetosTemUmEnderecoPorObjectoEAUltimaRecusaNomeia) {
+  // O LIMITE QUE FICA, e porque fica: NAO ha numero de objectos no SDK, e o que
+  // limita e a REGIAO DE MEMORIA que este modulo reservou para eles
+  // (`[kObjMediaBase, kAvisoBase)`, a `kPassoDoObjetoMedia`). Um conjunto que
+  // cresce sem fim escreveria fora dela.
+  Bancada b;
+  for (std::uint32_t k = 0; k < kMaxObjetosDeMidia; ++k) {
+    ASSERT_EQ(b.CriarMedia(kClasseMultimidia, kPponovo), kObjMediaBase + k * kPassoDoObjetoMedia)
+        << "criacao " << k;
+  }
+  EXPECT_EQ(b.OMedia().ObjetosVivos(), kMaxObjetosDeMidia);
+  EXPECT_EQ(b.OMedia().PedidosRecusados(), 0u);
+  // O ultimo objecto fica ANTES do fim da regiao: o endereco do proximo seria o
+  // dos avisos.
+  const std::uint32_t ultimo = kObjMediaBase + (kMaxObjetosDeMidia - 1) * kPassoDoObjetoMedia;
+  EXPECT_EQ(b.OMedia().EstadoDe(ultimo), kMmEstadoOcioso);
+  EXPECT_LT(ultimo, kAvisoBase);
+  EXPECT_EQ(ultimo + kPassoDoObjetoMedia, kAvisoBase);
+
+  b.Mem().Escrever32(kPponovo, 0x1234u);
+  EXPECT_EQ(b.OMedia().Criar(kClasseMultimidia, kPponovo), kAeeSemMemoria);
+  EXPECT_EQ(b.Mem().Ler32(kPponovo), 0x1234u);  // nada foi escrito
+  // E o motivo NOMEIA o que acabou, com o endereco: "limite" sem numero obriga a
+  // ler o codigo para saber que limite era.
+  const std::string motivo = b.OMedia().UltimoMotivoDeRecusa();
+  EXPECT_NE(motivo.find(std::to_string(kMaxObjetosDeMidia)), std::string::npos) << motivo;
+  EXPECT_NE(motivo.find("regiao de midia"), std::string::npos) << motivo;
+}
+
+TEST(Media, ARegiaoDeMidiaNaoInvadeAQuemVemADepoisDela) {
+  // A ARITMETICA DAS TRES REGIOES, provada em vez de suposta: os objectos, os
+  // avisos (`AEEMediaCmdNotify`, um por objecto) e os dados dos avisos tem de
+  // caber INTEIROS na regiao de midia. Foi por nao estar escrito que o `kObjIgl`
+  // ia nascer dentro dela (`core/brew/igl.h`, o mapa dos enderecos de objecto).
+  EXPECT_LE(kObjMediaBase + kMaxObjetosDeMidia * kPassoDoObjetoMedia, kAvisoBase);
+  EXPECT_LE(kAvisoBase + kMaxObjetosDeMidia * kTamanhoDoAviso, kAvisoDadosBase);
+  EXPECT_LE(kAvisoDadosBase + kMaxObjetosDeMidia * 4, kObjIgl);
 }
 
 TEST(Media, SetMediaParmAceitaOsParametrosQueOSDKDefine) {

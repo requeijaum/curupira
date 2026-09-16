@@ -6,6 +6,18 @@
 
 namespace zb2::brew {
 
+// A ARITMETICA DAS TRES REGIOES deste modulo, provada em TEMPO DE COMPILACAO: os
+// objectos, o bloco de aviso de cada objecto (`kTamanhoDoAviso` = 28 bytes, um
+// por objecto) e os dados que o aviso aponta tem de caber INTEIROS na regiao. O
+// teste `Media.ARegiaoDeMidiaNaoInvadeAQuemVemADepoisDela` prova o mesmo contra o
+// `kObjIgl` do `core/brew/igl.h`, que e quem nasce a seguir.
+static_assert(kObjMediaBase + kMaxObjetosDeMidia * kPassoDoObjetoMedia <= kAvisoBase,
+              "os enderecos dos objectos nao cabem antes dos avisos");
+static_assert(kAvisoBase + kMaxObjetosDeMidia * kTamanhoDoAviso <= kAvisoDadosBase,
+              "um bloco de aviso por objecto nao cabe antes dos dados dos avisos");
+static_assert(kAvisoDadosBase + kMaxObjetosDeMidia * 4 <= kFimDaRegiaoDeMidia,
+              "os dados dos avisos nao cabem antes do fim da regiao de midia");
+
 const char* NomeDoStatusDeMidia(std::int32_t status) {
   // Os nomes e os valores, transcritos de `AEEIMedia.h` (MM_STATUS_BASE = 1).
   switch (status) {
@@ -151,10 +163,11 @@ const char* NomeDaClasseDeMidia(std::uint32_t cls) { return NomeDaClasse(cls); }
 Media::Media(Memoria& mem, Traco& traco, const Saidas& saidas,
              audio::Misturador& misturador, Vfs* vfs)
     : mem_(mem), traco_(traco), saidas_(saidas), misturador_(misturador), vfs_(vfs) {
-  objetos_.resize(kMaxObjetosDeMidia);
-  for (std::uint32_t k = 0; k < kMaxObjetosDeMidia; ++k) {
-    objetos_[k].endereco = kObjMediaBase + k * kPassoDoObjetoMedia;
-  }
+  // O CONJUNTO NASCE VAZIO e cresce a pedido. Era um `resize(16)` com os 16
+  // enderecos escritos a partida -- e o 17.o pedido do jogo respondia "sem
+  // memoria". Cada lugar custa um `Objeto` (com o PCM dele): reservar 1024
+  // lugares para um titulo que pede 2 seria pagar por todos. O endereco de cada
+  // lugar sai do INDICE, no `Criar`, e nao de uma reserva feita aqui.
 }
 
 void Media::Recusar(const std::string& o_que, const std::string& porque) {
@@ -236,27 +249,43 @@ std::int32_t Media::EstadoDe(std::uint32_t objeto) const {
   return o != nullptr ? o->estado : 0;
 }
 
+bool Media::EnderecoDoAviso(const Objeto& o, std::uint32_t* aviso, std::uint32_t* dados) {
+  // UMA CONTA SO, para os DOIS sitios que dela dependem: o `EmitirAviso` (o bloco
+  // do `AEEMediaCmdNotify`) e o `GetTotalTime` (os 4 bytes que ele aponta). Duas
+  // contas que tem de concordar sao zero contas -- e aqui a segunda apontaria
+  // para o bloco de outro objecto.
+  const std::uint32_t indice = (o.endereco - kObjMediaBase) / kPassoDoObjetoMedia;
+  if (o.endereco < kObjMediaBase || indice >= kMaxObjetosDeMidia) {
+    Recusar("IMedia::Aviso",
+            "o objecto " + EmHex(o.endereco) + " esta fora da regiao de midia (" +
+                EmHex(kObjMediaBase) + ".." + EmHex(kAvisoBase) + "): sem bloco de aviso");
+    return false;
+  }
+  if (aviso != nullptr) *aviso = kAvisoBase + indice * kTamanhoDoAviso;
+  if (dados != nullptr) *dados = kAvisoDadosBase + indice * 4;
+  return true;
+}
+
 void Media::RecolherLibertados() {
   // O `Release` do guest e o da IBase, que o MOTOR trata (slot 1 -> saida 4),
   // porque `Release` e igual para todos os objectos ROPI. Logo o objecto nao
   // avisa ninguem quando chega a zero: a contagem fica na memoria do guest e o
-  // recolhedor LE-A. Sem isto, dezasseis criacoes esgotavam o conjunto e o
-  // decimo setimo `CreateInstance` de midia respondia "sem memoria" -- um erro
-  // que parecia do jogo.
+  // recolhedor LE-A. Sem isto, os objectos que o jogo ja soltou ficavam ocupados
+  // para sempre, e um titulo que cria e solta som em ciclo encheria a regiao sem
+  // razao nenhuma.
+  //
+  // O LUGAR E DO INDICE, e nao do `Objeto`: por isso o endereco e guardado antes
+  // de o lugar ser limpo, e devolvido depois. (Antes isto eram DOIS lacos: o
+  // segundo repunha os enderecos dos lugares cujo campo tinha ficado a zero --
+  // uma lista a adivinhar o que a outra fez. Um lugar tem UM dono do endereco.)
   for (auto& o : objetos_) {
     if (!o.vivo) continue;
     if (mem_.Ler32(o.endereco + kOffObjRefs) == 0) {
       traco_.Emitir(Area::Audio, Nivel::Depuracao, "IMEDIA_RECOLHIDO",
                     "obj=" + EmHex(o.endereco));
+      const std::uint32_t endereco = o.endereco;
       o = Objeto{};
-      // O `endereco` nao se perde na reposicao acima: volta a ser derivado do
-      // indice.
-    }
-  }
-  // Repor os enderecos na posicao, porque a reposicao acima limpa o campo.
-  for (std::uint32_t k = 0; k < kMaxObjetosDeMidia; ++k) {
-    if (objetos_[k].endereco == 0) {
-      objetos_[k].endereco = kObjMediaBase + k * kPassoDoObjetoMedia;
+      o.endereco = endereco;
     }
   }
 }
@@ -283,9 +312,32 @@ std::int32_t Media::Criar(std::uint32_t cls, std::uint32_t pponovo) {
     }
   }
   if (livre == nullptr) {
-    Recusar("IMedia::Criar",
-            std::to_string(kMaxObjetosDeMidia) + " objectos de midia vivos (limite)");
-    return kAeeSemMemoria;
+    // O CONJUNTO CRESCE A PEDIDO, E O LIMITE E A REGIAO, NAO UM NUMERO ESCOLHIDO
+    // AQUI. Era um conjunto FIXO de 16 lugares, e o 17.o pedido respondia "sem
+    // memoria". MEDIDO na corrida de referencia do `slot32`
+    // (`/tmp/corrida_slot32.json`, `ZB2_QUADROS=300 ZB2_EVT_START=1`): **29
+    // pedidos recusados com aquele motivo**, por titulo `abd` 19, `ridgeracer`
+    // 9, `torkandkral` 1. Os jogos guardam UM `IMedia` POR SOM e nao o soltam
+    // entre sons -- o `abd` sozinho tem 19 pedidos.
+    //
+    // O SDK **nao** tem este numero: o que a doc limita sao as vozes que tocam
+    // ao mesmo tempo (`AEEMedia.txt`, "IMedia - Simultaneous media playback").
+    // Citá-lo aqui seria inventar proveniencia -- o motivo esta escrito em
+    // `kMaxObjetosDeMidia` (imedia.h), com a linha do SDK transcrita.
+    if (objetos_.size() >= kMaxObjetosDeMidia) {
+      Recusar("IMedia::Criar",
+              "os " + std::to_string(kMaxObjetosDeMidia) +
+                  " enderecos da regiao de midia (" + EmHex(kObjMediaBase) + ".." +
+                  EmHex(kAvisoBase) + ") estao ocupados");
+      return kAeeSemMemoria;
+    }
+    objetos_.push_back(Objeto{});
+    livre = &objetos_.back();
+    // O ENDERECO E DO INDICE, e nao do `Objeto`: e o que da a cada objecto um
+    // lugar proprio na regiao -- e um lugar por objecto e o que a regiao dos
+    // avisos usa para nao escrever o aviso de um em cima do bloco de outro.
+    livre->endereco =
+        kObjMediaBase + static_cast<std::uint32_t>(objetos_.size() - 1) * kPassoDoObjetoMedia;
   }
   const std::uint32_t endereco = livre->endereco;
   *livre = Objeto{};
@@ -326,8 +378,13 @@ void Media::EmitirAviso(Objeto& o, std::int32_t comando, std::int32_t sub,
                       NomeDoStatusDeMidia(status));
     return;
   }
-  const std::uint32_t indice = (o.endereco - kObjMediaBase) / kPassoDoObjetoMedia;
-  const std::uint32_t endereco = kAvisoBase + indice * kTamanhoDoAviso;
+  // O BLOCO DO AVISO SAI DO INDICE DO OBJECTO, e nao de um contador que roda:
+  // dois objectos vivos NUNCA escrevem no mesmo bloco. A regiao esta dimensionada
+  // para `kMaxObjetosDeMidia` objectos (os `static_assert` no topo deste
+  // ficheiro), e um objecto fora dela escreveria o aviso em cima do bloco de
+  // outro -- por isso a guarda RECUSA em voz alta (P2) em vez de escrever.
+  std::uint32_t endereco = 0;
+  if (!EnderecoDoAviso(o, &endereco, nullptr)) return;
   // O `AEEMediaCmdNotify` que o callback recebe. Os deslocamentos 8 e 16 sao os
   // medidos no tratador do `cnk2` (ver o cabecalho do imedia.h).
   mem_.Escrever32(endereco + kOffAvisoClsMedia, o.classe);
@@ -888,8 +945,8 @@ std::int32_t Media::HandlerDeSlot(std::uint32_t slot, std::uint32_t objeto, ICpu
       // milissegundos), e e por isso que aqui nasce UM aviso, com DONE.
       const std::uint32_t ms = static_cast<std::uint32_t>(
           static_cast<std::uint64_t>(o->amostras.size()) * 1000 / kTaxaDeclarada);
-      const std::uint32_t indice = (o->endereco - kObjMediaBase) / kPassoDoObjetoMedia;
-      const std::uint32_t dados = kAvisoDadosBase + indice * 4;
+      std::uint32_t dados = 0;
+      if (!EnderecoDoAviso(*o, nullptr, &dados)) return kAeeFalhou;
       mem_.Escrever32(dados, ms);
       EmitirAviso(*o, kMmCmdGetTotalTime, 0, kMmStatusDone, dados, 4);
       ++pedidos_aceitos_;
