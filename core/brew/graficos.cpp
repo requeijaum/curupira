@@ -213,6 +213,15 @@ void Graficos::LigarATela() {
   // `DrawRect` responde que nao tem destino (por nome), em vez de escrever num
   // terceiro sitio. A tentativa fica aqui, e nao em cada pixel: quando a pagina
   // aparece, o `tem_tela_` fica verdadeiro e nao ha mais nenhuma consulta.
+  // SE A PAGINA NAO EXISTE, O DESTINO E CRIADO -- e nao recusado. O ecra existe
+  // sempre; o que era condicional era a COPIA no guest, que so nascia a pedido do
+  // titulo. Um titulo que desenhe 2D sem pedir o bitmap do ecra ficava sem destino
+  // e a falta dizia "sem pBmp" -- honesta quanto ao sintoma e enganadora quanto a
+  // causa (o ecra sempre existiu; faltava criar a pagina). MEDIDO no `allstarcards`:
+  // 296 `DrawRect` por quadro, zero pedidos de bitmap do ecra, 296 recusas.
+  if (!mem_.Existe(kBaseDoEcraNoGuest) && criar_ecra_) {
+    criar_ecra_();
+  }
   tem_tela_ = mem_.Existe(kBaseDoEcraNoGuest);
 }
 

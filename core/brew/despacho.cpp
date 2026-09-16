@@ -309,6 +309,13 @@ bool Despacho::InstalarWidgets(const Saidas& saidas) {
     traco_.RegistarFalta(Area::Brew, "os widgets nao foram construidos", motivo);
     return false;
   }
+  // O DESTINO DO DESENHO 2D: quem sabe escrever o cabecalho do IDIB do ecra e o
+  // proprio despacho (`EscreverCabecalhoDoBitmapDoEcra`, que ja era chamado pelo
+  // `IDisplay::GetDestination` e pelo `GetDeviceBitmap`). O `IGraphics` do widget
+  // desenha no buffer do ecra e a `Tela` absorve-o no `Update` -- a mesma via dos
+  // outros, e nao um segundo framebuffer.
+  widgets_.GraficosRef().DefinirCriadorDoEcra(
+      [this]() -> std::uint32_t { return EscreverCabecalhoDoBitmapDoEcra(); });
   widgets_prontos_ = true;
   return true;
 }

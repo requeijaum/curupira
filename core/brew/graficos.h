@@ -74,6 +74,7 @@
 // a contradicao fica registada no relatorio.
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -186,6 +187,16 @@ class Graficos {
  public:
   Graficos(Memoria& mem, Traco& traco);
 
+  // O DESTINO DO DESENHO 2D. O modulo escreve no buffer do ecra do GUEST
+  // (`kBaseDoEcraNoGuest`) e a `Tela` do hospedeiro absorve-o no `Update`. Essa
+  // pagina so nasce quando alguem pede o bitmap do ecra -- e ha titulos que
+  // DESENHAM sem nunca o pedir (medido: `allstarcards`, 296 `DrawRect` por
+  // quadro e zero pedidos). Sem este criador o desenho nao teria destino e o
+  // modulo recusaria por nome; com ele, o ecra existe quando o titulo o usa.
+  // E o `Despacho` que o liga (e ele que sabe escrever o cabecalho do IDIB do
+  // ecra); aqui fica so a porta.
+  void DefinirCriadorDoEcra(std::function<std::uint32_t()> f) { criar_ecra_ = std::move(f); }
+
   // Guarda a faixa de saida (uma COPIA: a `Saidas` que a bateria usa vive no
   // ambito do titulo, e um ponteiro guardado de um titulo para o outro apontaria
   // para memoria morta -- foi um defeito medido nesta arvore) e confere que ela
@@ -258,6 +269,7 @@ class Graficos {
   Saidas saidas_;
   bool pronto_ = false;
   bool tem_tela_ = false;
+  std::function<std::uint32_t()> criar_ecra_;
   // Uma mascara: o bit `slot` esta posto quando a cablagem desse slot ja foi
   // conferida. 64 slots = um `uint64_t`.
   std::uint64_t slots_conferidos_ = 0;

@@ -599,6 +599,12 @@ TEST(Graficos, ATabelaDosNomesVemDoGerador) {
 // ---------------------------------------------------------------------------
 TEST(Graficos, SemDestinoODrawRectRecusaComONomeEOsSlotsDeEstadoSaoServidos) {
   Bancada b(/*com_ecra=*/false);
+  // A CABLAGEM DO DESPACHO CRIA O DESTINO A PEDIDO (`DefinirCriadorDoEcra`, ligado
+  // no `InstalarWidgets`), e e isso que faz o caminho do `allstarcards` -- 296
+  // `DrawRect` e zero pedidos de bitmap do ecra -- desenhar em vez de recusar. Este
+  // teste mede o OUTRO contrato: um modulo SEM via para criar o ecra. Tira-se-lhe a
+  // via e ele tem de RECUSAR COM O NOME (e nao escrever num sitio nenhum).
+  b.G().DefinirCriadorDoEcra(nullptr);
   ASSERT_FALSE(b.G().TemTela());
   const std::size_t antes = b.TotalDeFaltas();
   // OS SLOTS DE ESTADO NAO DEPENDEM DE DESTINO NENHUM: sao servidos na mesma.
@@ -616,6 +622,29 @@ TEST(Graficos, SemDestinoODrawRectRecusaComONomeEOsSlotsDeEstadoSaoServidos) {
   EXPECT_EQ(b.G().Resumo().rectangulos, 1u) << "o pedido foi CONTADO";
   // E o rect fica no registo (e a medicao do sitio onde o titulo desenha).
   EXPECT_EQ(b.Mem().Ler16(kZona + 4), 206u);
+}
+
+
+TEST(Graficos, ComACablagemODrawRectCriaOEcraDoGuestEDesenha) {
+  // O CAMINHO QUE FALTAVA. O `allstarcards` desenha 296 rectangulos por quadro e
+  // nunca pede o bitmap do ecra; a pagina 0x82000000 so nascia a pedido, logo o
+  // desenho 2D nao tinha destino. Com o criador ligado (o `Despacho`), o ecra
+  // existe quando o titulo o usa -- e o destino e o MESMO dos outros (o guest
+  // escreve no buffer do ecra e a `Tela` absorve-o no `Update`), nao um segundo
+  // framebuffer.
+  Bancada b(/*com_ecra=*/false);
+  // O `tem_tela_` e decidido no PRIMEIRO desenho (e nao no construtor): antes disso
+  // a pergunta ainda nao foi feita, e afirma-lo aqui seria testar a omissao.
+  b.Pede(kGraphics_SetColor, 0xff, 0x00, 0x00);
+  b.Pede(kGraphics_SetFillColor, 0x00, 0xff, 0x00);
+  b.Pede(kGraphics_SetFillMode, 1);
+  b.EscreverRect(kZona, 100, 200, 40, 20);
+  EXPECT_EQ(b.Pede(kGraphics_DrawRect, kZona), kAeeSuccess);
+  EXPECT_EQ(b.Faltas("IGraphics::DrawRect sem destino"), 0u)
+      << "com destino nao ha falta nenhuma";
+  EXPECT_TRUE(b.G().TemTela()) << "a cablagem do despacho cria o ecra a pedido";
+  EXPECT_GT(b.G().PixeisEscritos(), 0u) << "o rect tem de escrever pixeis";
+  EXPECT_EQ(b.G().Resumo().rectangulos, 1u);
 }
 
 }  // namespace zb2::brew
