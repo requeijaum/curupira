@@ -2710,10 +2710,20 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         cpu.Set(kR0, achou);
       } else if (idx == kSlotIdMemmove) {
         const std::uint32_t src = cpu.Get(kR1), n = cpu.Get(kR2);
+        constexpr std::uint32_t kLimiteDaCopia = 0x04000000u;  // 64 MiB
+        if (n > kLimiteDaCopia) {
+          char det[160];
+          std::snprintf(det, sizeof(det),
+                        "n=0x%08x (limite 0x%08x) dest=0x%08x src=0x%08x lr=0x%08x -- copia RECUSADA",
+                        n, kLimiteDaCopia, r0, src, lr);
+          traco_.RegistarFalta(Area::Brew, "AEEHelperFuncs[0x000] memmove (tamanho absurdo)", det);
+          cpu.Set(kR0, r0);
+        } else {
         std::vector<std::uint8_t> copia(n);   // copia intermediaria: o C permite sobreposicao
         mem_.LerBloco(src, copia.data(), n);
         mem_.EscreverBloco(r0, copia.data(), n);
         cpu.Set(kR0, r0);
+        }
       } else if (idx == kSlotIdStrtowstr) {
         // AECHAR *strtowstr(const char *pszIn, AECHAR *pDest, int nSize).
         // AECHAR e UTF-16; nSize e em CARACTERES, e a funcao termina o destino.
@@ -3954,6 +3964,61 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
       }
     }
 
+    if (const char* w = std::getenv("ZB2_SONDA_WATCH")) {
+      const std::uint32_t alvo_w = static_cast<std::uint32_t>(std::strtoul(w, nullptr, 0));
+      static std::uint32_t ant = 0;
+      static bool liga = false;
+      const std::uint32_t v = mem_.Ler32(alvo_w);
+      if (!liga) { liga = true; ant = v; }
+      else if (v != ant) {
+        std::fprintf(stderr,
+                     "WATCH %08x %08x -> %08x pela instrucao pc=%08x=%08x r0=%08x r1=%08x r2=%08x r3=%08x r4=%08x r5=%08x r6=%08x r7=%08x lr=%08x sp=%08x\n",
+                     alvo_w, ant, v, pc, mem_.Ler32(pc), cpu.Get(kR0), cpu.Get(kR1), cpu.Get(kR2),
+                     cpu.Get(kR3), cpu.Get(kR4), cpu.Get(kR5), cpu.Get(kR6), cpu.Get(kR7),
+                     cpu.Get(kLR), cpu.Get(kSP));
+        ant = v;
+      }
+    }
+    // PROPOSTA (frente ropi2), NAO APLICADA NA ENTREGA.
+    //
+    // A SEGUNDA ENTRADA NO MODULO E UMA SENTENCA DE MORTE para os 6 titulos da
+    // familia A (`cninja`, `karnovr`, `spinmast`, `strhoop`, `supbtime`,
+    // `wizdfire`), e hoje ela nao se ve em lado nenhum: o registo do titulo diz
+    // apenas `saiu_do_modulo_para_0xfe3bc25c`. MEDIDO no `cninja` real: a
+    // primeira entrada em 0 e a do sistema (lr = sentinela, r2 = 0x90000); a
+    // SEGUNDA vem de DENTRO da thread (sp = 0x8f033e60, lr = 0x00011014, r0 = 0)
+    // e a veneira da ROPI volta a correr sobre a lista JA ZERADA -- 82 475
+    // iteracoes de `[0x9c] += 0x9c`, que destroem a primeira instrucao do
+    // proprio modulo (`0x0a8ef06e` = `beq 0xfe3bc1c0`, e o PC de saida do
+    // titulo e `0xfe3bc25c` = o alvo mais 0x9c). Ver
+    // `tests/carga_test.cpp`, `CargaRopi.ASegundaPassagemDaVeneiraDestroiAEntradaDoModulo`.
+    if (pc == faixa_base_) {
+      const bool ja = entrada_ja_correu_;
+      entrada_ja_correu_ = true;
+      if (ja) traco_.Emitir(Area::Brew, Nivel::Erro, "ENTRADA_DO_MODULO_REPETIDA",
+                    "pc=0x" + Hex(pc) + " lr=0x" + Hex(cpu.Get(kLR)) + " r0=0x" +
+                        Hex(cpu.Get(kR0)) + " sp=0x" + Hex(cpu.Get(kSP)) +
+                        " -- a veneira da ROPI vai correr outra vez sobre a lista zerada");
+    }
+    if (std::getenv("ZB2_SONDA_ZERO") != nullptr) {
+      static bool ja = false;
+      if (!ja && pc >= 0x1000u && mem_.Ler32(pc) == 0u) {
+        ja = true;
+        char a3[16 * 22 + 1];
+        std::size_t u = 0;
+        a3[0] = 0;
+        const std::uint32_t q = (ultimas_ < 16) ? ultimas_ : 16;
+        for (std::uint32_t k = 0; k < q; ++k) {
+          const std::uint32_t ii = (ultimas_ + k) % 16;
+          const int nn = std::snprintf(a3 + u, sizeof(a3) - u, " %08x:%08x", anel_pc_[ii], anel_instr_[ii]);
+          if (nn <= 0 || u + static_cast<std::size_t>(nn) >= sizeof(a3) - 1) break;
+          u += static_cast<std::size_t>(nn);
+        }
+        std::fprintf(stderr, "PRIMEIRO_ZERO pc=%08x r0=%08x r1=%08x r2=%08x r3=%08x r4=%08x r5=%08x r7=%08x lr=%08x sp=%08x anel:%s\n",
+                     pc, cpu.Get(kR0), cpu.Get(kR1), cpu.Get(kR2), cpu.Get(kR3), cpu.Get(kR4),
+                     cpu.Get(kR5), cpu.Get(kR7), cpu.Get(kLR), cpu.Get(kSP), a3);
+      }
+    }
     // O ANEL: guarda o PC e a PALAVRA da instrucao antes de a executar. A palavra
     // serve para ver QUAL era a instrucao, e nao so onde estava.
     anel_pc_[ultimas_ % 16] = pc;

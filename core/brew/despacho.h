@@ -257,6 +257,8 @@ class Despacho {
     vfs_.DeclararNoTraco(&traco_);
     // O PARK DA ESPERA (frente park): o estado nao passa de titulo para titulo.
     estacionada_ = false;
+    // Frente ropi2: uma vez por titulo, e nao uma vez por processo.
+    entrada_ja_correu_ = false;
   }
   std::uint32_t ClsidDoTitulo() const { return clsid_titulo_; }
   bool TemClsidDoTitulo() const { return tem_clsid_; }
@@ -554,6 +556,10 @@ class Despacho {
   bool tem_clsid_ = false;
   std::uint32_t faixa_base_ = 0;
   std::uint32_t faixa_fim_ = 0;
+  // PROPOSTA (frente ropi2): o modulo ja arrancou uma vez nesta corrida. Serve
+  // para a SEGUNDA entrada em `base` deixar de ser invisivel -- ver o ramo
+  // `ENTRADA_DO_MODULO_REPETIDA` em `despacho.cpp`.
+  bool entrada_ja_correu_ = false;
 };
 
 }  // namespace zb2::brew
