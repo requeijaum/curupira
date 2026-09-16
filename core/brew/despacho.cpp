@@ -3987,7 +3987,16 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // `void *realloc(void *pSrc, uint32 dwSize)` -- o alocador do guest, que ja
         // tinha o `Realloc` escrito e testado. Ate agora um jogo que o chamasse
         // recebia `EUNSUPPORTED` e **ficava com o ponteiro antigo sem saber**.
-        cpu.Set(kR0, al_.Realloc(cpu.Get(kR0), cpu.Get(kR1)));
+        //
+        // A BANDEIRA VALE AQUI TAMBEM (`ALLOC_NO_ZMEM`, `AEEStdLib.h:547`): um
+        // `realloc(p, n | 0x80000000)` pedia 2 GiB a este ramo e recebia zero -- o
+        // mesmo defeito do `malloc`, no vizinho. E a parte NOVA cresce com a mesma
+        // regra (zerada, salvo com a bandeira), que e a leitura consistente do
+        // contrato -- e esta escrita aqui para ser discutida se aparecer a fonte
+        // que fixe o contrario.
+        const std::uint32_t pedido_realloc = cpu.Get(kR1);
+        cpu.Set(kR0, al_.Realloc(cpu.Get(kR0), pedido_realloc & ~kAllocNoZmem,
+                                 (pedido_realloc & kAllocNoZmem) == 0));
       } else if (idx == kSlotIdHeapLock || idx == kSlotIdHeapLock + 0) {
         // `int Lock(IHeap1 *po)` -- IHeap1 slot 7. Bloqueia o heap para uso
         // exclusivo.

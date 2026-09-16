@@ -71,7 +71,11 @@ class Alocador {
 
   std::uint32_t Malloc(std::uint32_t tamanho);
   void Free(std::uint32_t endereco);
-  std::uint32_t Realloc(std::uint32_t endereco, std::uint32_t tamanho);
+  // `zerar` = a parte NOVA (quando cresce) fica a zero. E a regra do `malloc`
+  // desta casa (`ALLOC_NO_ZMEM` a ZERO, `AEEStdLib.h:547`): o `malloc` zera por
+  // omissao, e o `realloc` cresce pela mesma regra. A omissao e `true` -- quem
+  // nao diz nada recebe a regra, e nao o contrario.
+  std::uint32_t Realloc(std::uint32_t endereco, std::uint32_t tamanho, bool zerar = true);
 
   std::uint32_t Inicio() const { return inicio_; }
   std::uint32_t Tamanho() const { return tamanho_; }

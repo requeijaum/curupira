@@ -668,7 +668,7 @@ TEST(AjudantesExtra, OffsetForaDaTabelaNaoERecusadoAqui) {
   EXPECT_TRUE(b.traco.ContagemFaltas().empty());
 }
 
-TEST(AjudantesExtra, ImplementadosSaoVinteECincoEATodosNoCatalogo) {
+TEST(AjudantesExtra, ImplementadosSaoVinteESeisEATodosNoCatalogo) {
   // 7 da etapa anterior + os 6 da frente io2 (wstrlen, wstrncopyn, strtoul,
   // snprintf, strlcpy, strlcat) + o stricmp (0x0d0) da frente park + os 4 da
   // frente ajud2 (atoi, strends, aee_GetTimeMS, wsprintf) + o memcmp (0x0dc),
@@ -682,10 +682,12 @@ TEST(AjudantesExtra, ImplementadosSaoVinteECincoEATodosNoCatalogo) {
   // `SetupNativeImage` entrega).
   // + o `swaps` (0x130), que o `gof` e o `pbc` pediam 1646 vezes e que estava na
   // tabela do cabecalho SEM implementacao. O nome engana: troca BYTES, nao valores.
-  EXPECT_EQ(AjudantesExtra::Implementados(), 25u);
+  // + o `strlower` (0x114), que o `quake2brew` pede -- e que so ficou alcancavel
+  // depois de a bandeira do `malloc` ser servida (`fe1eaad`).
+  EXPECT_EQ(AjudantesExtra::Implementados(), 26u);
   for (std::uint32_t off : {0x0D8u, 0x044u, 0x050u, 0x054u, 0x0E8u, 0x138u, 0x0F4u, 0x0CCu,
                             0x0D0u, 0x090u, 0x0FCu, 0x0ACu, 0x0B4u, 0x0B8u, 0x03Cu, 0x0DCu,
-                            0x0BCu, 0x130u}) {
+                            0x0BCu, 0x130u, 0x114u}) {
     EXPECT_NE(DeclaracaoDoOffset(off), nullptr) << "0x" << std::hex << off;
   }
 }
@@ -1423,7 +1425,7 @@ TEST(AjudantesExtra, SetupNativeImageEDescodificadoPorEstaTabela) {
   EXPECT_STREQ(DeclaracaoDoOffset(0x064)->assinatura,
                "void *(*SetupNativeImage)(AEECLSID cls, void *pBuffer, AEEImageInfo *pii, "
                "boolean *pbRealloc)");
-  EXPECT_EQ(AjudantesExtra::Implementados(), 25u) << "o 0x064 entrou na tabela";
+  EXPECT_EQ(AjudantesExtra::Implementados(), 26u) << "o 0x064 entrou na tabela";
 }
 
 TEST(AjudantesExtra, SetupNativeImageDescodificaBmpDe8BitsComPaleta) {
@@ -1820,6 +1822,34 @@ TEST(AjudantesExtra, VsprintfDaTabelaUsaOMesmoVaLists) {
 }
 
 }  // namespace
+
+TEST(AjudantesExtra, OStrlowerPoeEmMinusculasNoSitioEDevolveOMesmoPonteiro) {
+  // `char *(*strlower)(char *psz)`: altera o argumento E devolve-o. Um teste que so
+  // olhasse para o valor de retorno nao apanhava um `strlower` que devolvesse uma
+  // COPIA -- e um chamador que compare ponteiros (ou que escreva no retorno) ficaria
+  // a alterar a cadeia errada.
+  Bancada b;
+  const std::uint32_t onde = 0x80010000u;
+  const std::string texto = "AbC-123-Zz";
+  for (std::size_t k = 0; k < texto.size(); ++k) {
+    b.mem.Escrever8(onde + k, static_cast<std::uint8_t>(texto[k]));
+  }
+  b.mem.Escrever8(onde + texto.size(), 0);
+  b.cpu.Set(kR0, onde);
+  EXPECT_EQ(b.Atender(brew_ajudantes::kAjudante_strlower), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), onde) << "devolve o MESMO ponteiro";
+  std::string saida;
+  for (std::size_t k = 0; k < texto.size(); ++k) {
+    saida.push_back(static_cast<char>(b.mem.Ler8(onde + k)));
+  }
+  EXPECT_EQ(saida, std::string("abc-123-zz")) << "so A-Z; os digitos e o hifen ficam";
+  // O NULO tem de continuar a ser RECUSADO, e nao devolver sucesso.
+  const std::uint64_t faltas_antes = b.Faltas("AEEHelperFuncs[0x114] strlower");
+  b.cpu.Set(kR0, 0);
+  b.Atender(brew_ajudantes::kAjudante_strlower);
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x114] strlower"), faltas_antes + 1)
+      << "ponteiro nulo recusa COM O NOME";
+}
 
 TEST(AjudantesExtra, OSwapsTrocaOsBytesEOLswaplNaoEstaServido) {
   // `swaps` (0x130) NAO troca dois valores: troca os BYTES de um. Num guest little-endian

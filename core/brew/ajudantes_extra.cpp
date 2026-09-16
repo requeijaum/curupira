@@ -771,6 +771,39 @@ void FazerMemcmp(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
 // DEMANDA MEDIDA (corrida_thrd.json): 10 titulos (baddudes, cninja, darkseal,
 // hbarrel, magdrop3, ...) pedem este slot; sem ele a thread recebe
 // AEE_EUNSUPPORTED em cada pergunta de nome e decide ao contrario.
+// 0x114 -- `char *(*strlower)(char *psz)` (`AEEStdLib.h`, tabela do cabecalho).
+//
+// Poe a cadeia em MINUSCULAS no proprio sitio e devolve o MESMO ponteiro (e o que a
+// assinatura promete: devolve `char *`, e o `strlwr` de que ele vem altera o
+// argumento). Dois titulos pediam-no: o `quake2brew` (2x) -- e so DEPOIS da bandeira
+// do `malloc` (commit `fe1eaad`) e que ele chegou aqui a primeira vez.
+//
+// Maiusculas A-Z apenas: e o que o `strlwr` do C faz, e comparar com `isupper` seria
+// trazer a locale para um contrato que nao a tem.
+void FazerStrlower(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
+  const std::uint32_t psz = cpu.Get(kR0);
+  if (psz == 0) {
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_strlower, "ponteiro nulo",
+                   DetalheDosRegistos(cpu));
+    cpu.Set(kR0, 0);
+    return;
+  }
+  std::uint32_t i = 0;
+  std::uint32_t quantas = 0;
+  for (; i < kLimiteDeCaracteres; ++i) {
+    const std::uint8_t c = mem.Ler8(psz + i);
+    if (c == 0) break;
+    if (c >= 'A' && c <= 'Z') {
+      mem.Escrever8(psz + i, static_cast<std::uint8_t>(c + 32));
+      ++quantas;
+    }
+  }
+  char det[64];
+  std::snprintf(det, sizeof(det), "psz=0x%08x %u caracteres mudados", psz, quantas);
+  EmitirChamada(traco, brew_ajudantes::kAjudante_strlower, det);
+  cpu.Set(kR0, psz);  // devolve o MESMO ponteiro: a alteracao e no sitio
+}
+
 void FazerStricmp(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
   const std::uint32_t a = cpu.Get(kR0);
   const std::uint32_t b = cpu.Get(kR1);
@@ -2064,6 +2097,7 @@ constexpr Implementacao kImplementados[] = {
     {brew_ajudantes::kAjudante_memcmp, "memcmp", FazerMemcmp},
     {brew_ajudantes::kAjudante_sysfree, "sysfree", FazerSysFree},
     {brew_ajudantes::kAjudante_swaps, "swaps", FazerSwaps},
+    {brew_ajudantes::kAjudante_strlower, "strlower", FazerStrlower},
     {brew_ajudantes::kAjudante_stricmp, "stricmp", FazerStricmp},
     {brew_ajudantes::kAjudante_atoi, "atoi", FazerAtoi},
     {brew_ajudantes::kAjudante_strends, "strends", FazerStrends},
@@ -2095,6 +2129,7 @@ static_assert(brew_ajudantes::kAjudante_strncmp == 0x0CC, "0x0cc e strncmp");
 static_assert(brew_ajudantes::kAjudante_memcmp == 0x0DC, "0x0dc e memcmp");
 static_assert(brew_ajudantes::kAjudante_sysfree == 0x0BC, "0x0bc e sysfree");
 static_assert(brew_ajudantes::kAjudante_swaps == 0x130, "0x130 e swaps");
+static_assert(brew_ajudantes::kAjudante_strlower == 0x114, "0x114 e strlower");
 static_assert(brew_ajudantes::kAjudante_stricmp == 0x0D0, "0x0d0 e stricmp");
 static_assert(brew_ajudantes::kAjudante_wstrlen == 0x030, "0x030 e wstrlen");
 static_assert(brew_ajudantes::kAjudante_wstrncopyn == 0x080, "0x080 e wstrncopyn, nao strncpy");
@@ -2113,7 +2148,7 @@ static_assert(brew_ajudantes::kAjudante_aee_GetSeconds == 0x0B4, "0x0b4 e aee_Ge
 static_assert(brew_ajudantes::kAjudante_aee_GetJulianDate == 0x0B8, "0x0b8 e aee_GetJulianDate");
 static_assert(
     sizeof(kImplementados) / sizeof(kImplementados[0]) ==
-        25,
+        26,
     "a lista das implementacoes mudou: actualiza o numero e o teste");
 
 }  // namespace

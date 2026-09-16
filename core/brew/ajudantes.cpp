@@ -115,8 +115,15 @@ void Alocador::Free(std::uint32_t endereco) {
   }
 }
 
-std::uint32_t Alocador::Realloc(std::uint32_t endereco, std::uint32_t tamanho) {
-  if (endereco == 0) return Malloc(tamanho);
+std::uint32_t Alocador::Realloc(std::uint32_t endereco, std::uint32_t tamanho, bool zerar) {
+  // `realloc(0, n)` e um `malloc(n)`: a regra do zero e a do `malloc`.
+  if (endereco == 0) {
+    const std::uint32_t p = Malloc(tamanho);
+    if (p != 0 && zerar) {
+      for (std::uint32_t k = 0; k < tamanho; ++k) mem_.Escrever8(p + k, 0);
+    }
+    return p;
+  }
   if (tamanho == 0) {
     Free(endereco);
     return 0;
@@ -132,6 +139,12 @@ std::uint32_t Alocador::Realloc(std::uint32_t endereco, std::uint32_t tamanho) {
   std::vector<std::uint8_t> copia(capacidade);
   mem_.LerBloco(endereco, copia.data(), capacidade);
   mem_.EscreverBloco(novo, copia.data(), capacidade);
+  // A PARTE NOVA: do fim do que havia ate ao tamanho pedido. Sem isto o crescimento
+  // entregava ao titulo os bytes do dono anterior do bloco -- e o `malloc` desta
+  // casa zera (`ALLOC_NO_ZMEM` e a bandeira que o desliga).
+  if (zerar) {
+    for (std::uint32_t k = capacidade; k < tamanho; ++k) mem_.Escrever8(novo + k, 0);
+  }
   Free(endereco);
   return novo;
 }
