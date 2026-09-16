@@ -1720,6 +1720,81 @@ TEST(Rasterizador, AsLinhasChegamATelaPelaCablagemDoIglEALarguraEGuardada) {
   // E A LARGURA NAO POSITIVA CONTINUA A RECUSAR NO SLOT (nao e um estado).
   EXPECT_EQ(b.Ch(kIgl_LineWidthx, 0u), zb2::brew::ResultadoGl::Recusado);
 }
+// ---------------------------------------------------------------------------
+// 10. A FRENTE IGL9: A LIMPEZA DE PROFUNDIDADE E O AMBIENTE DO MODELO
+// ---------------------------------------------------------------------------
+//
+// As duas metades que o `igl.cpp` guarda e o rasterizador usa, provadas pela
+// CABLAGEM (os slots do IGL, como um titulo os chama), e nao pelo estado posto
+// a mao: um pedido guardado num mapa que o retrato do desenho nao le e
+// indistinguivel de um pedido perdido.
+
+TEST(Rasterizador, OGlClearDepthxDecideOValorQueFicaNoBuffer) {
+  Bancada b;
+  b.igl.DefinirTela(&b.tela);
+
+  // A OMISSAO DO GL e 1.0, e ela esta no primeiro `glClear`.
+  EXPECT_EQ(b.Ch(kIgl_Clear, GL_DEPTH_BUFFER_BIT), zb2::brew::ResultadoGl::Feito);
+  ASSERT_TRUE(b.igl.RasterizadorRef().TemBufferDeProfundidade());
+  EXPECT_FLOAT_EQ(b.igl.RasterizadorRef().ProfundidadeEm(0, 0), 1.0f);
+
+  // `glClearDepthx(0.25)` e o `glClear` seguinte: o buffer fica a 0.25 em TODA
+  // a superficie. Um `glClear` que usasse 1.0 fixo daria 1.0 aqui, e o
+  // `glClearDepthx` seria um pedido guardado que ninguem le.
+  EXPECT_EQ(b.Ch(kIgl_ClearDepthx, Fixo(0.25f)), zb2::brew::ResultadoGl::Feito);
+  EXPECT_EQ(b.Ch(kIgl_Clear, GL_DEPTH_BUFFER_BIT), zb2::brew::ResultadoGl::Feito);
+  EXPECT_FLOAT_EQ(b.igl.RasterizadorRef().ProfundidadeEm(0, 0), 0.25f);
+  EXPECT_FLOAT_EQ(b.igl.RasterizadorRef().ProfundidadeEm(639, 479), 0.25f);
+}
+
+TEST(Rasterizador, OAmbienteDoModeloDaCablagemEntraNaCorIluminada) {
+  // A EQUACAO, com UM termo so: sem nenhuma luz ligada,
+  //   cor = emissao + ambiente_do_material * ambiente_da_cena
+  // O material e branco (1,1,1) e a emissao fica a zero, logo a cor E o
+  // ambiente da cena. Os dois numeros estao escritos:
+  //   0.5  -> canal = 0.5*255+0.5 = 128 -> (128>>3)<<11|(128>>2)<<5|(128>>3) = 0x8410
+  //   0.25 -> canal =  64            -> (8<<11)|(16<<5)|8                   = 0x4208
+  constexpr Endereco kVertices = 0x00100000, kAmbiente = 0x00104000;
+  constexpr std::uint32_t kGlAmbient = 0x1200u;      // gles_1_0/gl.h:259
+  constexpr std::uint32_t kGlAmbientDaCena = 0x0B53u;  // gles_1_1/gl.h:362
+  const auto cor_do_desenho = [&](float ambiente) {
+    Bancada b;
+    b.igl.DefinirTela(&b.tela);
+    b.PrepararTriangulo(kVertices);
+    // O AMBIENTE DO MODELO, pela cablagem do IGLES11/IGL: quatro GLfixed.
+    // O MATERIAL E `float` (`AEEGLfloat`, 32 bits): o `glMaterialfv` do IGLES11
+    // le os BITS de um `float`, e nao um 16.16 -- escrever `Fixo(1.0f)` aqui
+    // punha 0x00010000, que como `float` e um denormal de 9.2e-41, e o material
+    // sairia PRETO sem nenhum aviso. E a armadilha que a frente igl2 fechou.
+    for (int k = 0; k < 4; ++k) {
+      b.mem.Escrever32(kAmbiente + 4u * static_cast<std::uint32_t>(k), Real2(1.0f));
+    }
+    EXPECT_EQ(b.Ch(zb2::brew::kIgl_Materialfv, GL_FRONT_AND_BACK, kGlAmbient, kAmbiente),
+              zb2::brew::ResultadoGl::Feito);
+    // E o AMBIENTE DA CENA pelo `glLightModelxv(GL_LIGHT_MODEL_AMBIENT, ...)`.
+    const std::uint32_t cena[4] = {Fixo(ambiente), Fixo(ambiente), Fixo(ambiente), Fixo(1.0f)};
+    for (int k = 0; k < 4; ++k) {
+      b.mem.Escrever32(kAmbiente + 16u + 4u * static_cast<std::uint32_t>(k), cena[k]);
+    }
+    EXPECT_EQ(b.Ch(kIgl_LightModelxv, kGlAmbientDaCena, kAmbiente + 16u),
+              zb2::brew::ResultadoGl::Feito);
+    EXPECT_EQ(b.Ch(kIgl_Enable, GL_LIGHTING), zb2::brew::ResultadoGl::Feito);
+    EXPECT_EQ(b.Ch(kIgl_DrawArrays, GL_TRIANGLES, 0, 3), zb2::brew::ResultadoGl::Feito);
+    // A COR DO DESENHO, no primeiro pixel escrito.
+    std::uint32_t cor = 0;
+    for (int y = 0; y < 8 && cor == 0; ++y) {
+      for (int x = 0; x < 8 && cor == 0; ++x) {
+        const std::uint32_t p = b.tela.PixelEm(x, y);
+        if (p != 0) cor = p;
+      }
+    }
+    return cor;
+  };
+  EXPECT_EQ(cor_do_desenho(0.5f), 0x8410u);
+  EXPECT_EQ(cor_do_desenho(0.25f), 0x4208u);
+}
+
+
 
 
 }  // namespace

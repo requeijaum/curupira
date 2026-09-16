@@ -1881,6 +1881,253 @@ TEST(FrenteGetint, OPnameForaDoCabecalhoRecusaComONumeroDele) {
   EXPECT_EQ(b.mem.Ler32(kDestino), 0xDEADBEEFu) << "a recusa nao escreve no destino";
 }
 
+// ---------------------------------------------------------------------------
+// 7. A FRENTE IGL9: O BLOCO `IGLES11` QUE NOVE TITULOS PEDEM
+// ---------------------------------------------------------------------------
+//
+// A DEMANDA, MEDIDA no traco dos nove titulos da familia TTD --
+// activitycenter, alice, dodgeball, footparty, funsoccer, zeeboids,
+// zeebopeteca, zeebotennis, zeebovolley -- com `ZB2_QUADROS=300
+// ZB2_EVT_START=1` (`/tmp/pesquisa/igl9-9trace.txt`, e as faltas por titulo em
+// `/tmp/corrida_ram.json`). Os nove escrevem 307 200 px (UM `glClear`) e param:
+//
+//   IGLES11::ClearDepthx    12x   r1=0x0000ffff (1.0 em GLfixed)
+//   IGLES11::ClearStencil    5x   r1=0x000000ff
+//   IGLES11::LightModelxv    5x   r1=0x00000b53 (GL_LIGHT_MODEL_AMBIENT)
+//   IGLES11::Disable         9x   r1=0x00000b90 (GL_STENCIL_TEST)
+//   glDisable (o IGL de 80)  9x   o MESMO pedido, pelo outro objecto
+//
+// TRES DESTES QUATRO SLOTS NAO TINHAM CAMINHO NENHUM no mapa `SlotIglesNoIgl`
+// (`core/brew/classes.cpp`): o `ClearDepthx`, o `ClearStencil` e o
+// `LightModelxv` morriam no mapa e recebiam a recusa generica com r0..r3 -- o
+// mesmo caso que o relatorio da frente `linhas` apanhou no `kIgles_LineWidthx`.
+//
+// E DOIS DEFEITOS DA TABELA DE CONSTANTES. `GL_STENCIL_TEST` (0x0B90) e o
+// `GL_LIGHT_MODEL_TWO_SIDE` (0x0B52) estao no cabecalho `gles_1_1/gl.h`
+// (`:197` e `:363`) e NAO no `tools/gl_slots.inc` gerado -- esse ficheiro le
+// `gles_1_0/gl.h`, o perfil Common-Lite, que nao tem esses nomes. Sem eles a
+// recusa dizia "capacidade desconhecida (sem nome no cabecalho deste modulo)":
+// uma constante do GL ES 1.1 tratada como invencao do guest.
+
+// Os valores do cabecalho do SDK que o `.inc` gerado nao tem:
+//   gles_1_1/gl.h:197 GL_STENCIL_TEST 0x0B90
+//   gles_1_1/gl.h:362 GL_LIGHT_MODEL_AMBIENT 0x0B53
+//   gles_1_1/gl.h:363 GL_LIGHT_MODEL_TWO_SIDE 0x0B52
+constexpr std::uint32_t kGlStencilTest = 0x0B90u;
+constexpr std::uint32_t kGlLightModelAmbient = 0x0B53u;
+constexpr std::uint32_t kGlLightModelTwoSide = 0x0B52u;
+
+// O VALOR DE LIMPEZA DE PROFUNDIDADE E O QUE VAI AO RASTERIZADOR. A omissao do
+// GL e 1.0, e um motor que a fixasse nunca deixaria um titulo escolher outra --
+// o `glClearDepthx` e o UNICO caminho para a escolher.
+TEST(FrenteIgl9, OClearDepthxDaTabelaDecideOValorQueFicaNoBuffer) {
+  BancoClasses b;
+  Tela tela;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+  const_cast<Igl*>(EstadoDoIgles11())->DefinirTela(&tela);
+
+  // A OMISSAO, medida primeiro: sem nenhum `ClearDepthx` o buffer nasce a 1.0
+  // (`rasterizador.cpp`, `PrepararProfundidade`).
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, GL_DEPTH_BUFFER_BIT);
+  ASSERT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Clear, b.traco));
+  ASSERT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  ASSERT_TRUE(EstadoDoIgles11()->RasterizadorRef().TemBufferDeProfundidade());
+  EXPECT_FLOAT_EQ(EstadoDoIgles11()->RasterizadorRef().ProfundidadeEm(0, 0), 1.0f);
+
+  // O PEDIDO MEDIDO NO TRACO: `r1=0x0000ffff` = 65535/65536 = 1.0 em GLfixed.
+  // O 0.5 do teste e o que distingue "o pedido foi usado" de "o motor tinha
+  // 1.0 por omissao".
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, 0x00008000u);  // 0.5 em GLfixed
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_ClearDepthx, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  EXPECT_EQ(b.Faltas("IGLES11::ClearDepthx"), 0u) << b.Detalhe("IGLES11::ClearDepthx");
+  EXPECT_FLOAT_EQ(EstadoDoIgles11()->ProfundidadeDeLimpeza(), 0.5f);
+
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, GL_DEPTH_BUFFER_BIT);
+  ASSERT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Clear, b.traco));
+  EXPECT_FLOAT_EQ(EstadoDoIgles11()->RasterizadorRef().ProfundidadeEm(0, 0), 0.5f);
+  EXPECT_FLOAT_EQ(EstadoDoIgles11()->RasterizadorRef().ProfundidadeEm(639, 479), 0.5f);
+
+  // E UM SEGUNDO PEDIDO MUDA O BUFFER OUTRA VEZ: um valor fixo no codigo
+  // passaria as alineas de cima e falharia esta.
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, 0x00004000u);  // 0.25
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_ClearDepthx, b.traco));
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, GL_DEPTH_BUFFER_BIT);
+  ASSERT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Clear, b.traco));
+  EXPECT_FLOAT_EQ(EstadoDoIgles11()->RasterizadorRef().ProfundidadeEm(0, 0), 0.25f);
+}
+
+// O STENCIL NAO EXISTE NESTA ARVORE, E ISSO PASSA A ESTAR DITO.
+//
+// O valor de limpeza FICA guardado (o estado existe, e um `glGetIntegerv` pode
+// ter de o devolver), e o traco leva um PRESSUPOSTO: `EGL_STENCIL_SIZE 0`
+// ("nao ha buffer de stencil", `core/brew/egl.cpp:151`). O que muda nao e o
+// desenho -- e a recusa, que deixa de dizer "capacidade desconhecida" e passa a
+// dizer o NOME da capacidade e a razao.
+TEST(FrenteIgl9, OClearStencilGuardaOValorEDeclaraQueNaoHaBuffer) {
+  BancoClasses b;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, 0x000000FFu);  // o valor medido no traco
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_ClearStencil, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  EXPECT_EQ(b.Faltas("IGLES11::ClearStencil"), 0u) << b.Detalhe("IGLES11::ClearStencil");
+  EXPECT_EQ(EstadoDoIgles11()->StencilDeLimpeza(), 0xFFu);
+
+  // O PRESSUPOSTO, e nao uma falta: nao ha nada por fazer aqui -- ha uma coisa
+  // que esta arvore nao tem, e quem le a corrida tem de a poder ver.
+  const auto& p = b.traco.ContagemPressupostos();
+  const auto it = p.find("glClearStencil");
+  ASSERT_NE(it, p.end()) << "o pressuposto do stencil nao foi declarado";
+  EXPECT_EQ(it->second, 1u) << "um pressuposto por chamada";
+}
+
+// A CAPACIDADE SEM NOME NAO PODE VOLTAR A ACONTECER. `GL_STENCIL_TEST` e o
+// pedido MEDIDO 9x nos nove titulos -- pelo `IGLES11::Disable` E pelo
+// `glDisable` do IGL de 80 slots, que partilham esta tabela (duas recusas por
+// chamada, medidas no traco).
+TEST(FrenteIgl9, OStencilTestTemNomeEEstadoEDeclaraOSeuLimite) {
+  BancoClasses b;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, kGlStencilTest);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Disable, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  EXPECT_EQ(b.Faltas("IGLES11::Disable"), 0u) << b.Detalhe("IGLES11::Disable");
+  EXPECT_FALSE(EstadoDoIgles11()->InterruptorLigado(kGlStencilTest));
+
+  // E o `Enable` liga-o mesmo: o estado existe, para o `IsEnabled` nao mentir.
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, kGlStencilTest);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Enable, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  EXPECT_TRUE(EstadoDoIgles11()->InterruptorLigado(kGlStencilTest));
+
+  // LIGADO, entra na lista do que o rasterizador NAO faz (o mesmo caminho do
+  // scissor): o titulo que o liga ve uma falta com o NOME do limite, uma vez.
+  Tela tela;
+  const_cast<Igl*>(EstadoDoIgles11())->DefinirTela(&tela);
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, GL_COLOR_BUFFER_BIT);
+  ASSERT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Clear, b.traco));
+  EXPECT_EQ(b.Faltas("teste_de_stencil_sem_buffer_de_stencil"), 1u);
+}
+
+// A TABELA DE CONSTANTES COMPLETA: TODA A `EnableCap` DO CABECALHO TEM NOME.
+//
+// A lista e a do `gles_1_1/gl.h`, na seccao `/* EnableCap */` (`:189-221`),
+// mais as oito luzes (que o cabecalho deixa comentadas porque sao
+// `GL_LIGHT0 + i`). O teste pergunta ao MOTOR, pela tabela, como o guest
+// pergunta: uma constante sem nome RECUSA com "capacidade desconhecida", e o
+// teste diz qual.
+TEST(FrenteIgl9, TodaACapacidadeDoCabecalhoTemNomeEEstado) {
+  constexpr std::uint32_t kEnableCaps[] = {
+      0x0B60u,  // GL_FOG                      gles_1_1/gl.h:189
+      0x0B50u,  // GL_LIGHTING                            :190
+      0x0DE1u,  // GL_TEXTURE_2D                          :191
+      0x0B44u,  // GL_CULL_FACE                           :192
+      0x0BC0u,  // GL_ALPHA_TEST                          :193
+      0x0BE2u,  // GL_BLEND                               :194
+      0x0BF2u,  // GL_COLOR_LOGIC_OP                      :195
+      0x0BD0u,  // GL_DITHER                              :196
+      0x0B90u,  // GL_STENCIL_TEST                        :197
+      0x0B71u,  // GL_DEPTH_TEST                          :198
+      0x4000u, 0x4001u, 0x4002u, 0x4003u,  0x4004u, 0x4005u, 0x4006u, 0x4007u,
+      0x0B10u,  // GL_POINT_SMOOTH                        :207
+      0x0B20u,  // GL_LINE_SMOOTH                         :208
+      0x0C11u,  // GL_SCISSOR_TEST                        :209
+      0x0B57u,  // GL_COLOR_MATERIAL                      :210
+      0x0BA1u,  // GL_NORMALIZE                           :211
+      0x803Au,  // GL_RESCALE_NORMAL                      :212
+      0x8037u,  // GL_POLYGON_OFFSET_FILL                 :213
+      0x8074u,  // GL_VERTEX_ARRAY                        :214
+      0x8075u,  // GL_NORMAL_ARRAY                        :215
+      0x8076u,  // GL_COLOR_ARRAY                         :216
+      0x8078u,  // GL_TEXTURE_COORD_ARRAY                 :217
+      0x809Du,  // GL_MULTISAMPLE                         :218
+      0x809Eu,  // GL_SAMPLE_ALPHA_TO_COVERAGE            :219
+      0x809Fu,  // GL_SAMPLE_ALPHA_TO_ONE                 :220
+      0x80A0u,  // GL_SAMPLE_COVERAGE                     :221
+  };
+  BancoClasses b;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+  for (const std::uint32_t cap : kEnableCaps) {
+    for (const std::uint32_t slot : {igles_slots::kIgles_Enable,
+                                     igles_slots::kIgles_Disable}) {
+      const std::size_t antes = b.Faltas("IGLES11::Enable") + b.Faltas("IGLES11::Disable");
+      b.cpu.Set(kR0, kObjetoIgles);
+      b.cpu.Set(kR1, cap);
+      ASSERT_TRUE(AtenderClasse(b.cpu, kVtableIgles + slot, b.traco));
+      EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess) << "capacidade 0x" << std::hex << cap;
+      EXPECT_EQ(b.Faltas("IGLES11::Enable") + b.Faltas("IGLES11::Disable"), antes)
+          << "capacidade 0x" << std::hex << cap << ": " << b.Detalhe("IGLES11::Disable")
+          << b.Detalhe("IGLES11::Enable");
+      EXPECT_EQ(EstadoDoIgles11()->InterruptorLigado(cap),
+                slot == igles_slots::kIgles_Enable)
+          << "capacidade 0x" << std::hex << cap;
+    }
+  }
+}
+
+// O AMBIENTE DO MODELO: UMA CAPACIDADE REAL DO GL, SERVIDA A SERIO.
+//
+// `glLightModelxv(GL_LIGHT_MODEL_AMBIENT, params)` com QUATRO valores em
+// GLfixed: e o termo CONSTANTE da equacao de luz do GL ES 1.x
+// (`cor = emissao + ambiente_do_material * ambiente_da_cena + ...`), e o
+// rasterizador desta arvore ja o soma (`rasterizador.cpp:569`). O que faltava
+// era o CAMINHO: o slot nao estava no mapa, e o pedido MEDIDO 5x nos nove
+// titulos nunca chegava a este motor.
+TEST(FrenteIgl9, OLightModelxvServeAAmbienteDaCenaPorGLfixed) {
+  BancoClasses b;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+  constexpr std::uint32_t kParams = 0x0002E100u;
+  // OS VALORES SAO EXACTOS em 16.16 (0.5 = 0x8000, 0.25 = 0x4000, 1.0 =
+  // 0x10000). O 0.2 NAO e (0x3333 = 0.19999695), e usa-lo aqui punha a
+  // imprecisao da escala na expectativa em vez de na conversao.
+  const std::uint32_t fixos[4] = {0x00008000u, 0x00004000u, 0u, 0x00010000u};  // 0.5, 0.25, 0, 1
+  for (int k = 0; k < 4; ++k) b.mem.Escrever32(kParams + 4u * static_cast<std::uint32_t>(k), fixos[k]);
+
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, kGlLightModelAmbient);
+  b.cpu.Set(kR2, kParams);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_LightModelxv, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+  EXPECT_EQ(b.Faltas("IGLES11::LightModelxv"), 0u) << b.Detalhe("IGLES11::LightModelxv");
+
+  const float* a = EstadoDoIgles11()->AmbienteDaCena();
+  ASSERT_NE(a, nullptr);
+  EXPECT_FLOAT_EQ(a[0], 0.5f);
+  EXPECT_FLOAT_EQ(a[1], 0.25f);
+  EXPECT_FLOAT_EQ(a[2], 0.0f);
+  EXPECT_FLOAT_EQ(a[3], 1.0f);
+}
+
+// A METADE QUE NAO SE IMPLEMENTA, DITA PELO NOME. O `GL_LIGHT_MODEL_TWO_SIDE`
+// (`gles_1_1/gl.h:363`) pede a iluminacao das DUAS faces, com um material por
+// face; o rasterizador desta arvore tem UM material (a face e ignorada, como no
+// ES 1.x) e nao ha medida do que o vendor do Zeebo faria. Recusa com o NOME, em
+// vez de aceitar e nao fazer nada (P2).
+TEST(FrenteIgl9, OLightModelxvComTwoSideRecusaComONome) {
+  BancoClasses b;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, kGlLightModelTwoSide);
+  b.cpu.Set(kR2, 0x0002E200u);
+  EXPECT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_LightModelxv, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeUnsupported);
+  EXPECT_NE(b.Detalhe("IGLES11::LightModelxv").find("GL_LIGHT_MODEL_TWO_SIDE"),
+            std::string::npos)
+      << b.Detalhe("IGLES11::LightModelxv");
+  // O ESTADO DO AMBIENTE NAO FOI TOCADO por um pedido que nao e o dele.
+  EXPECT_FLOAT_EQ(EstadoDoIgles11()->AmbienteDaCena()[0], 0.2f);
+}
+
 
 
 }  // namespace

@@ -89,30 +89,54 @@ float Apertar(float v, float minimo, float maximo) {
   return v < minimo ? minimo : (v > maximo ? maximo : v);
 }
 
-// AS DUAS CAPACIDADES QUE O `.inc` GERADO NAO TEM, e a razao e medida.
+// A TABELA DAS CAPACIDADES DO GL, COMPLETA -- e a razao pela qual ela passa a
+// ser completa.
 //
 // `tools/gl_slots.inc` e GERADO de `AEEGL.h` e do cabecalho `gles/gl.h`, e e
 // conferido por `tools/verificar_slots_gl.sh`: uma linha escrita a mao la faz a
-// guarda DIVERGIR do cabecalho. Estas duas nao sao servidas por esse gerador, e
-// o valor e o do cabecalho do SDK, com a linha exacta:
+// guarda DIVERGIR do cabecalho. O cabecalho que esse gerador le e o
+// `gles_1_0/gl.h` -- o perfil Common-Lite --, e por isso NEM TODA a `EnableCap`
+// do GL ES 1.1 esta no `.inc`. As que faltavam ficam aqui, com a linha exacta
+// do cabecalho do SDK:
 //
 //   BREW-4.0.2-SP19/sdk/inc/gles/gles_1_0/gl.h:180   GL_RESCALE_NORMAL 0x803A
 //   BREW-4.0.2-SP19/sdk/inc/gles/gles_1_0/gl.h:178   GL_COLOR_MATERIAL 0x0B57
+//   BREW-4.0.2-SP19/sdk/inc/gles/gles_1_1/gl.h:195   GL_COLOR_LOGIC_OP 0x0BF2
+//   BREW-4.0.2-SP19/sdk/inc/gles/gles_1_1/gl.h:197   GL_STENCIL_TEST 0x0B90
+//   BREW-4.0.2-SP19/sdk/inc/gles/gles_1_1/gl.h:207   GL_POINT_SMOOTH 0x0B10
+//   BREW-4.0.2-SP19/sdk/inc/gles/gles_1_1/gl.h:208   GL_LINE_SMOOTH 0x0B20
+//   BREW-4.0.2-SP19/sdk/inc/gles/gles_1_1/gl.h:218   GL_MULTISAMPLE 0x809D
+//   BREW-4.0.2-SP19/sdk/inc/gles/gles_1_1/gl.h:219   GL_SAMPLE_ALPHA_TO_COVERAGE 0x809E
+//   BREW-4.0.2-SP19/sdk/inc/gles/gles_1_1/gl.h:220   GL_SAMPLE_ALPHA_TO_ONE 0x809F
+//   BREW-4.0.2-SP19/sdk/inc/gles/gles_1_1/gl.h:221   GL_SAMPLE_COVERAGE 0x80A0
 //
-// SAO AS UNICAS DUAS SEM NOME, e isso e medido, nao deduzido: no corpus de 62
-// titulos (`ZB2_TRACE=1`, capacidade contada por titulo) ha exactamente duas
-// capacidades recusadas por nao terem nome -- `glEnable 0x803A` em gof, rmp e
-// pbc, e `glDisable 0x0B57` em tekken2.
+// O QUE ISTO CONSERTA, medido. Antes desta frente havia exactamente DUAS
+// capacidades recusadas por nao terem nome no corpus de 62 (`zbEnable 0x803A`
+// em gof, rmp e pbc, e `glDisable 0x0B57` em tekken2); com o heap a 64 MiB
+// (`d3af3ec`) a familia TTD passou a correr e apareceu uma TERCEIRA, nove vezes
+// por corrida: `glDisable(GL_STENCIL_TEST)`, com o valor 0x0B90. A recusa dizia
+// "capacidade desconhecida (sem nome no cabecalho deste modulo)" -- e o defeito
+// era NOSSO, da tabela, e nao do guest: 0x0B90 e o `GL_STENCIL_TEST` do
+// cabecalho do SDK.
 //
-// A CONTRADICAO QUE ISTO CORRIGE. O relatorio da frente glbloco escreveu que o
-// `glDisable` do tekken2 era `GL_STENCIL_TEST` com o valor 0x0B57. Nao e:
-// 0x0B57 e GL_COLOR_MATERIAL, e GL_STENCIL_TEST vale 0x0B90 (gl.h:165). A troca
-// nao e cosmetica -- o nome errado manda quem o ler procurar um buffer de
-// stencil que ninguem pediu, quando o pedido e "a cor corrente alimenta o
-// material", que e o mesmo assunto dos dois `fv` desta frente. Nenhum dos 62
-// titulos medidos liga GL_STENCIL_TEST.
+// A CONTRADICAO QUE ISTO CORRIGE, outra vez, e agora com a medida do lado. O
+// relatorio da frente glbloco escreveu que o `glDisable` do tekken2 era
+// `GL_STENCIL_TEST` com o valor 0x0B57. Nao e: 0x0B57 e GL_COLOR_MATERIAL, e
+// GL_STENCIL_TEST vale 0x0B90. A troca nao e cosmetica -- o nome errado manda
+// quem o ler procurar um buffer de stencil que ninguem pediu, quando o pedido
+// era "a cor corrente alimenta o material" (o teken2 nao pede stencil nenhum).
+// E o stencil verdadeiro (0x0B90) so apareceu OITO COMMITS depois, quando os
+// nove titulos TTD passaram a correr.
 constexpr std::uint32_t GL_RESCALE_NORMAL = 0x803Au;
 constexpr std::uint32_t GL_COLOR_MATERIAL = 0x0B57u;
+constexpr std::uint32_t GL_COLOR_LOGIC_OP = 0x0BF2u;
+constexpr std::uint32_t GL_STENCIL_TEST = 0x0B90u;
+constexpr std::uint32_t GL_POINT_SMOOTH = 0x0B10u;
+constexpr std::uint32_t GL_LINE_SMOOTH = 0x0B20u;
+constexpr std::uint32_t GL_MULTISAMPLE = 0x809Du;
+constexpr std::uint32_t GL_SAMPLE_ALPHA_TO_COVERAGE = 0x809Eu;
+constexpr std::uint32_t GL_SAMPLE_ALPHA_TO_ONE = 0x809Fu;
+constexpr std::uint32_t GL_SAMPLE_COVERAGE = 0x80A0u;
 
 // OS `pname` DO `glGetIntegerv`, e para que servem aqui: SO PARA A RECUSA SER
 // LEGIVEL. Nenhum deles muda o que e servido -- um `pname` que o emulador nao
@@ -132,7 +156,9 @@ constexpr std::uint32_t GL_COLOR_MATERIAL = 0x0B57u;
 //   gles_1_1/gl.h:282   GL_MODELVIEW_MATRIX   0x0BA6
 //   gles_1_1/gl.h:302   GL_MAX_VIEWPORT_DIMS  0x0D3A
 //   gles_1_1/gl.h:316   GL_TEXTURE_BINDING_2D 0x8069
+//   gles_1_1/gl.h:269   GL_STENCIL_CLEAR_VALUE  0x0B91
 constexpr std::uint32_t GL_CURRENT_COLOR = 0x0B00u;
+constexpr std::uint32_t GL_STENCIL_CLEAR_VALUE = 0x0B91u;
 constexpr std::uint32_t GL_MATRIX_MODE = 0x0BA0u;
 constexpr std::uint32_t GL_VIEWPORT = 0x0BA2u;
 constexpr std::uint32_t GL_MODELVIEW_MATRIX = 0x0BA6u;
@@ -149,6 +175,8 @@ const char* NomeDoPnameDeConsulta(std::uint32_t pname) {
     case GL_MODELVIEW_MATRIX: return "GL_MODELVIEW_MATRIX";
     case GL_MAX_VIEWPORT_DIMS: return "GL_MAX_VIEWPORT_DIMS";
     case GL_TEXTURE_BINDING_2D: return "GL_TEXTURE_BINDING_2D";
+    case GL_STENCIL_CLEAR_VALUE: return "GL_STENCIL_CLEAR_VALUE";
+    case GL_STENCIL_BITS: return "GL_STENCIL_BITS";
     case GL_MAX_TEXTURE_SIZE: return "GL_MAX_TEXTURE_SIZE";
     case GL_MAX_MODELVIEW_STACK_DEPTH: return "GL_MAX_MODELVIEW_STACK_DEPTH";
     case GL_MAX_PROJECTION_STACK_DEPTH: return "GL_MAX_PROJECTION_STACK_DEPTH";
@@ -190,9 +218,12 @@ constexpr std::uint32_t GL_EMISSION = 0x1600u;
 constexpr std::uint32_t GL_SHININESS = 0x1601u;
 constexpr std::uint32_t GL_AMBIENT_AND_DIFFUSE = 0x1602u;
 constexpr std::uint32_t GL_LIGHT0 = 0x4000u;
-// A AMBIENTE DA CENA. Nao esta no `.inc` gerado, e o valor e o do cabecalho:
-//   gles_1_0/gl.h:255  GL_LIGHT_MODEL_AMBIENT 0x0B53
+// O MODELO DE LUZ. Nao estao no `.inc` gerado, e os valores sao os do
+// cabecalho do SDK:
+//   gles_1_0/gl.h:255 / gles_1_1/gl.h:362  GL_LIGHT_MODEL_AMBIENT 0x0B53
+//   gles_1_1/gl.h:363                       GL_LIGHT_MODEL_TWO_SIDE 0x0B52
 constexpr std::uint32_t GL_LIGHT_MODEL_AMBIENT = 0x0B53u;
+constexpr std::uint32_t GL_LIGHT_MODEL_TWO_SIDE = 0x0B52u;
 // O GL ES 1.x garante OITO luzes (`GL_MAX_LIGHTS`, gl.h:223, e 8). O valor da
 // MAQUINA nao foi medido: o limite aqui e o que a especificacao garante, e um
 // indice acima dele recusa com essa razao escrita, em vez de inventar um numero.
@@ -276,9 +307,22 @@ const Capacidade kCapacidades[] = {
     {GL_DEPTH_TEST, "GL_DEPTH_TEST"},
     {GL_SCISSOR_TEST, "GL_SCISSOR_TEST"},
     {GL_POLYGON_OFFSET_FILL, "GL_POLYGON_OFFSET_FILL"},
-    // As duas MEDIDAS no corpus (ver o bloco acima, com a linha do cabecalho).
+    // As que o `.inc` gerado NAO tem, todas do cabecalho do SDK (o bloco acima
+    // tem a linha de cada uma). A lista e a `/* EnableCap */` inteira do
+    // `gles_1_1/gl.h:189-221`: **uma capacidade do GL ES 1.1 nao pode voltar a
+    // ser recusada por nao ter nome**. O que ela NAO promete e um efeito -- a
+    // lista `por_fazer` do `MontarEstado` diz, uma por uma, o que esta arvore
+    // nao faz com o interruptor ligado.
     {GL_RESCALE_NORMAL, "GL_RESCALE_NORMAL"},
     {GL_COLOR_MATERIAL, "GL_COLOR_MATERIAL"},
+    {GL_COLOR_LOGIC_OP, "GL_COLOR_LOGIC_OP"},
+    {GL_STENCIL_TEST, "GL_STENCIL_TEST"},
+    {GL_POINT_SMOOTH, "GL_POINT_SMOOTH"},
+    {GL_LINE_SMOOTH, "GL_LINE_SMOOTH"},
+    {GL_MULTISAMPLE, "GL_MULTISAMPLE"},
+    {GL_SAMPLE_ALPHA_TO_COVERAGE, "GL_SAMPLE_ALPHA_TO_COVERAGE"},
+    {GL_SAMPLE_ALPHA_TO_ONE, "GL_SAMPLE_ALPHA_TO_ONE"},
+    {GL_SAMPLE_COVERAGE, "GL_SAMPLE_COVERAGE"},
     // AS OITO LUZES. `glEnable(GL_LIGHT0)` NAO e uma capacidade desconhecida: e
     // a luz 0, e sem estes nomes ela era RECUSADA -- medido, 299 recusas por
     // corrida em rmp (`slot=28 args=[00004000 ...]`), que e uma luz que o
@@ -327,6 +371,27 @@ bool TipoDeVerticeValido(std::uint32_t t, bool com_fixo) {
   if (t == GL_BYTE || t == GL_UNSIGNED_BYTE || t == GL_SHORT || t == GL_UNSIGNED_SHORT) return true;
   if (com_fixo && t == GL_FIXED) return true;
   return t == GL_FLOAT;
+}
+
+// A MASCARA DO `glClear`, POR NOME. Um `glClear(0x00004100)` no detalhe obriga
+// quem o le a ir procurar os bits ao cabecalho; com os nomes ao lado, o que o
+// titulo pediu le-se. O valor cru fica tambem: um bit que a tabela nao nomeie
+// aparece no numero, e nao desaparece.
+std::string NomeDaMascaraDeLimpeza(std::uint32_t mascara) {
+  std::string s;
+  const auto juntar = [&](std::uint32_t bit, const char* nome) {
+    if ((mascara & bit) == 0) return;
+    if (!s.empty()) s += "|";
+    s += nome;
+  };
+  // Os tres valores sao do `.inc` gerado (`gles/gl.h`): GL_COLOR_BUFFER_BIT
+  // 0x4000, GL_DEPTH_BUFFER_BIT 0x0100, GL_STENCIL_BUFFER_BIT 0x0400.
+  juntar(GL_COLOR_BUFFER_BIT, "GL_COLOR_BUFFER_BIT");
+  juntar(GL_DEPTH_BUFFER_BIT, "GL_DEPTH_BUFFER_BIT");
+  juntar(GL_STENCIL_BUFFER_BIT, "GL_STENCIL_BUFFER_BIT");
+  char hex[24];
+  std::snprintf(hex, sizeof(hex), "0x%08x", mascara);
+  return s.empty() ? std::string(hex) : (s + " [" + hex + "]");
 }
 
 std::uint64_t ChaveDeParametro(std::uint32_t slot, std::uint32_t pname) {
@@ -553,8 +618,12 @@ video::EstadoDeRasterizacao Igl::MontarEstado() const {
     valor(GL_LINEAR_ATTENUATION, &luz.atenuacao[1], 1);
     valor(GL_QUADRATIC_ATTENUATION, &luz.atenuacao[2], 1);
   }
-  // A AMBIENTE DA CENA (`glLightModelxv(GL_LIGHT_MODEL_AMBIENT, ...)`, valores
-  // em GLfixed). Sem pedido fica a omissao do GL que o retrato ja tem.
+  // A AMBIENTE DA CENA (`glLightModelxv(GL_LIGHT_MODEL_AMBIENT, ...)`). O valor
+  // e lido do ESTADO DO MOTOR, onde o caso do `kIgl_LightModelxv` o guarda em
+  // `float` e ja em [0,1] -- e nao de `parametros_`, que so guardava as palavras
+  // cruas: um mapa que ninguem decodifica e indistinguivel de um pedido perdido
+  // (P2). Sem nenhum pedido fica a omissao do GL que o retrato ja tem.
+  for (int k = 0; k < 4; ++k) e.ambiente_da_cena[k] = ambiente_da_cena_[k];
   //
   // AS VARIANTES `x`/`xv` DE LUZ E MATERIAL (`glLightxv`, `glMaterialxv`) NAO
   // ALIMENTAM ESTE RETRATO, e isso fica dito: elas guardam palavras CRUAS do
@@ -562,12 +631,6 @@ video::EstadoDeRasterizacao Igl::MontarEstado() const {
   // chama (o traco de gof, rmp, pbc, pacmania e tekken2 nao tem uma linha
   // `glLightxv`/`glMaterialxv`). Implementa-las as cegas seria adivinhar a
   // escala dos valores.
-  if (const std::vector<std::uint32_t>* v = Parametro(kIgl_LightModelxv, GL_LIGHT_MODEL_AMBIENT);
-      v != nullptr) {
-    for (std::size_t k = 0; k < v->size() && k < 4; ++k) {
-      e.ambiente_da_cena[k] = RealDoFixo((*v)[k]);
-    }
-  }
 
   // O QUE OS TITULOS LIGARAM E O RASTERIZADOR NAO FAZ. Cada nome vai para o
   // traco (uma vez, no `RegistarRessalvas`), com o nome do que falta -- e nao em
@@ -577,11 +640,29 @@ video::EstadoDeRasterizacao Igl::MontarEstado() const {
   // `GL_COLOR_MATERIAL`, SAIRAM dela porque o rasterizador passou a faze-las.
   // Uma capacidade que deixa de faltar TEM de sair desta lista: uma linha a
   // dizer que falta, com o codigo a faze-la, e a mentira simetrica do stub mudo.
+  //
+  // A LISTA CRESCEU (frente igl9) com as capacidades do GL ES 1.1 que a tabela
+  // de constantes passou a CONHECER. Uma capacidade conhecida que nao muda
+  // nenhum pixel TEM de estar aqui, e nao em silencio: a alternativa era
+  // recusa-la por "capacidade desconhecida", que e uma mentira sobre o
+  // cabecalho do SDK, ou aceita-la sem mais, que e o stub mudo.
   const struct { std::uint32_t cap; const char* nome; } por_fazer[] = {
       {GL_FOG, "nevoa_de_GL_sem_rasterizador"},
       {GL_POLYGON_OFFSET_FILL, "polygon_offset_sem_rasterizador"},
       {GL_SCISSOR_TEST, "scissor_sem_rasterizador"},
       {GL_DITHER, "dithering_sem_rasterizador"},
+      // O STENCIL: o pedido MEDIDO 9x nos nove titulos TTD
+      // (`glDisable(GL_STENCIL_TEST)`), e nao ha buffer de stencil nenhum nesta
+      // arvore (`core/brew/egl.cpp:151`, EGL_STENCIL_SIZE 0). O interruptor
+      // fica guardado (o `IsEnabled` nao mente) e o limite fica DITO.
+      {GL_STENCIL_TEST, "teste_de_stencil_sem_buffer_de_stencil"},
+      {GL_COLOR_LOGIC_OP, "operacao_logica_de_cor_sem_rasterizador"},
+      {GL_POINT_SMOOTH, "suavizacao_de_ponto_sem_rasterizador"},
+      {GL_LINE_SMOOTH, "suavizacao_de_linha_sem_rasterizador"},
+      {GL_MULTISAMPLE, "multiamostragem_sem_rasterizador"},
+      {GL_SAMPLE_ALPHA_TO_COVERAGE, "multiamostragem_sem_rasterizador"},
+      {GL_SAMPLE_ALPHA_TO_ONE, "multiamostragem_sem_rasterizador"},
+      {GL_SAMPLE_COVERAGE, "multiamostragem_sem_rasterizador"},
   };
   for (const auto& f : por_fazer) {
     if (InterruptorLigado(f.cap)) e.capacidades_por_fazer.push_back(f.nome);
@@ -1020,16 +1101,51 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
       }
       return feito(4);
     case kIgl_ClearDepthx:
+      // O VALOR VAI AO RASTERIZADOR, e nao para um mapa que ninguem le: o
+      // `MontarEstado` leva-o em `EstadoDeRasterizacao::profundidade_de_limpeza`
+      // e o `Rasterizador::Limpar` enche o buffer de profundidade com ele
+      // (`rasterizador.cpp:322`). O pedido MEDIDO no traco dos nove titulos TTD
+      // e `r1=0x0000ffff` = 65535/65536 = 1.0 em GLfixed (`IGLES11::ClearDepthx`
+      // 12x) -- o mesmo 1.0 da omissao do GL, e por isso o efeito dele so se ve
+      // num titulo que peca OUTRO valor.
       profundidade_limpeza_ = Apertar(Fixo(0, a), 0.0f, 1.0f);
       return feito(1);
-    case kIgl_ClearStencil:
-      // Guarda-se o valor. Nao ha buffer de stencil onde o aplicar, e o detalhe
-      // di-lo -- mas o estado existe e e observavel, em vez de "sucesso e nada".
-      parametros_[ChaveDeParametro(slot, 0)] = {a.reg[0]};
-      return feito_com(1, "valor de limpeza de stencil guardado; sem buffer de stencil");
+    case kIgl_ClearStencil: {
+      // ESTA ARVORE NAO TEM BUFFER DE STENCIL, E ISSO PASSA A ESTAR DITO. O
+      // valor fica guardado (o estado existe, e um `glGetIntegerv` pode ter de o
+      // devolver -- ver o `GL_STENCIL_CLEAR_VALUE` abaixo), e o traco leva um
+      // PRESSUPOSTO com a razao, que e a mesma do config do EGL:
+      //
+      //   core/brew/egl.cpp:151  {EGL_STENCIL_SIZE, 0, "nao ha buffer de stencil"}
+      //
+      // A DIFERENCA QUE ISTO FAZ NAO E NO DESENHO (nao ha nada para limpar): e
+      // na RECUSA. Antes deste caminho o slot nao estava no mapa e a resposta era
+      // "IGLES11::ClearStencil r0=.. r1=.." -- um pedido sem nome e sem razao.
+      // Era, no traco dos nove titulos, 5 recusas por corrida.
+      stencil_limpeza_ = a.reg[0];
+      traco_.RegistarPressuposto(
+          Area::Video, "glClearStencil",
+          "esta arvore NAO tem buffer de stencil (core/brew/egl.cpp:151, EGL_STENCIL_SIZE 0, "
+          "'nao ha buffer de stencil'); o valor fica guardado e observavel, nada e limpo");
+      char det[128];
+      std::snprintf(det, sizeof(det),
+                    "valor de limpeza de stencil 0x%08x guardado; esta arvore nao tem buffer de "
+                    "stencil (EGL_STENCIL_SIZE 0) e nada foi limpo",
+                    stencil_limpeza_);
+      return feito_com(1, det);
+    }
     case kIgl_Clear: {
       if ((a.reg[0] & (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)) == 0) {
         return recusa("mascara de Clear sem nenhum buffer conhecido");
+      }
+      // O BIT DO STENCIL E ACEITE E NAO LIMPA NADA, e isso e dito uma vez por
+      // corrida (presupposto, com a razao): um sucesso silencioso sobre um bit
+      // que nao existe seria o stub mudo.
+      if ((a.reg[0] & GL_STENCIL_BUFFER_BIT) != 0) {
+        traco_.RegistarPressuposto(
+            Area::Video, "glClear(GL_STENCIL_BUFFER_BIT)",
+            "esta arvore NAO tem buffer de stencil (core/brew/egl.cpp:151, EGL_STENCIL_SIZE 0); "
+            "o bit e aceite na mascara e nenhum pixel de stencil e limpo");
       }
       mascara_limpeza_ = a.reg[0];
       ++limpezas_;
@@ -1046,7 +1162,8 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
       std::string motivo;
       const std::uint64_t escritos = rasterizador_.Limpar(estado, &motivo);
       if (escritos == 0 && !motivo.empty()) return recusa_com(1, motivo);
-      return feito_com(1, "glClear escreveu " + std::to_string(escritos) + " pixels na Tela");
+      return feito_com(1, "glClear(" + NomeDaMascaraDeLimpeza(mascara_limpeza_) +
+                              ") escreveu " + std::to_string(escritos) + " pixels na Tela");
     }
 
     // --- interruptores ------------------------------------------------------
@@ -1320,15 +1437,74 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
       // existe, e o detalhe da chamada di-lo.
       parametros_[ChaveDeParametro(slot, 0)] = {a.reg[0], a.reg[1], a.reg[2], a.reg[3]};
       return feito_com(4, "parametro acumulado; sem rasterizador que o use");
-    case kIgl_Fogx:
+    // --- O MODELO DE LUZ -----------------------------------------------------
+    //
+    // A DEMANDA, MEDIDA no traco dos nove titulos TTD (`ZB2_QUADROS=300
+    // ZB2_EVT_START=1`, `/tmp/pesquisa/igl9-9trace.txt`): `IGLES11::LightModelxv`
+    // 5x, sempre com `r1=0x00000b53` = `GL_LIGHT_MODEL_AMBIENT` (`gles_1_1/gl.h:362`)
+    // e `r2` a apontar para QUATRO valores em GLfixed. E o termo CONSTANTE da
+    // equacao de luz do GL ES 1.x
+    //
+    //     cor = emissao + ambiente_do_material * ambiente_da_cena + SOMA(luzes)
+    //
+    // -- o rasterizador desta arvore ja o soma (`rasterizador.cpp:569`, frente
+    // iluminacao da frente rast2). O que faltava era o CAMINHO: o slot nao
+    // estava no mapa `SlotIglesNoIgl`, e o pedido nunca chegava aqui; e ele
+    // guardava as palavras cruas em `parametros_`, que so o `MontarEstado`
+    // decodificava. Agora o pedido SERVE o termo constante do ambiente.
     case kIgl_LightModelx:
+    case kIgl_LightModelxv: {
+      const std::uint32_t pname = a.reg[0];
+      if (pname == GL_LIGHT_MODEL_AMBIENT) {
+        // A FORMA ESCALAR NAO TEM ESTE `pname`: o `glLightModelx(GLenum, GLfixed)`
+        // do ES 1.1 so serve o `GL_LIGHT_MODEL_TWO_SIDE`; um ambiente de cena tem
+        // QUATRO componentes, e ler so uma seria servir uma cor que o titulo nao
+        // pediu.
+        if (slot == kIgl_LightModelx) {
+          return recusa(
+              "glLightModelx(GL_LIGHT_MODEL_AMBIENT) com UM valor: o ambiente da cena tem "
+              "quatro componentes (gles_1_1/gl.h:362) e a forma escalar so serve o "
+              "GL_LIGHT_MODEL_TWO_SIDE");
+        }
+        const std::uint32_t p = a.reg[1];
+        if (p == 0) return recusa("vector de parametros nulo");
+        for (int k = 0; k < 4; ++k) {
+          ambiente_da_cena_[k] =
+              Apertar(RealDoFixo(mem_.Ler32(p + 4u * static_cast<std::uint32_t>(k))), 0.0f, 1.0f);
+        }
+        char det[192];
+        std::snprintf(det, sizeof(det),
+                      "glLightModelxv(GL_LIGHT_MODEL_AMBIENT) = (%g, %g, %g, %g); e o termo "
+                      "constante da luz (rasterizador.cpp:569)",
+                      static_cast<double>(ambiente_da_cena_[0]), static_cast<double>(ambiente_da_cena_[1]),
+                      static_cast<double>(ambiente_da_cena_[2]), static_cast<double>(ambiente_da_cena_[3]));
+        return feito_com(2, det);
+      }
+      if (pname == GL_LIGHT_MODEL_TWO_SIDE) {
+        // O QUE NAO SE IMPLEMENTA, DITO PELO NOME. A iluminacao das DUAS faces
+        // pede um material por face; o rasterizador desta arvore tem UM (a face
+        // e ignorada, como no ES 1.x) e nao ha medida do que o vendor do Zeebo
+        // faria com a face de tras. Aceitar e nao fazer nada seria o stub mudo.
+        return recusa_com(
+            2,
+            "GL_LIGHT_MODEL_TWO_SIDE (gles_1_1/gl.h:363) nao implementado: a iluminacao desta "
+            "arvore tem UM material (a face e ignorada, como no ES 1.x) e nao ha medida da face "
+            "de tras");
+      }
+      char det[160];
+      std::snprintf(det, sizeof(det),
+                    "pname 0x%08x fora da tabela do modelo de luz deste modulo (o cabecalho do "
+                    "SDK declara GL_LIGHT_MODEL_AMBIENT 0x0B53 e GL_LIGHT_MODEL_TWO_SIDE 0x0B52)",
+                    pname);
+      return recusa(det);
+    }
+    case kIgl_Fogx:
     case kIgl_Lightx:
     case kIgl_Materialx:
     case kIgl_TexEnvx:
       parametros_[ChaveDeParametro(slot, a.reg[0])] = {a.reg[1]};
       return feito_com(2, "parametro acumulado; sem rasterizador que o use");
     case kIgl_Fogxv:
-    case kIgl_LightModelxv:
     case kIgl_Lightxv:
     case kIgl_Materialxv:
     case kIgl_TexEnvxv: {
@@ -1514,6 +1690,18 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
         valor = kFundoProjection;
       } else if (pname == GL_MAX_TEXTURE_STACK_DEPTH) {
         valor = kFundoTexture;
+      } else if (pname == GL_STENCIL_BITS) {
+        // ZERO BITS DE STENCIL, e o valor nao e um palpite: e o MESMO que o
+        // config do EGL declara (`core/brew/egl.cpp:151`, `EGL_STENCIL_SIZE 0
+        // "nao ha buffer de stencil"`). Um titulo que pergunte quantos bits de
+        // stencil existem recebe a verdade desta arvore, em vez de uma recusa
+        // que o mandaria adivinhar.
+        valor = 0;
+      } else if (pname == GL_STENCIL_CLEAR_VALUE) {
+        // O VALOR QUE O `glClearStencil` GUARDOU (`igl.h`, `stencil_limpeza_`).
+        // O estado existe mesmo que o buffer nao: e a diferenca entre "nao ha
+        // buffer" e "nao ha estado nenhum".
+        valor = stencil_limpeza_;
       } else if (pname == GL_MAX_TEXTURE_SIZE) {
         // O UNICO `pname` QUE OS TITULOS PEDEM A SERIO, e o numero e o do
         // console, com a fonte: `kTexturaMaxima` (`igl.h`), do guia 0.97:1254

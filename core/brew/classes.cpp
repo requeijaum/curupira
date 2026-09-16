@@ -843,6 +843,25 @@ std::uint32_t SlotIglesNoIgl(std::uint32_t slot) {
     // --- os treze do glbloco (ja servidos) ---
     case igles_slots::kIgles_Clear: return gl_slots::kIgl_Clear;
     case igles_slots::kIgles_ClearColorx: return gl_slots::kIgl_ClearColorx;
+    // --- os tres da frente igl9, e cada um tem DEMANDA MEDIDA ---
+    //
+    // ESTES TRES MORRIAM NO MAPA, e a falta era lida como um pedido sem nome
+    // (`IGLES11::ClearDepthx r0=.. r1=.. r2=.. r3=..`), no traco dos NOVE
+    // titulos da familia TTD -- activitycenter, alice, dodgeball, footparty,
+    // funsoccer, zeeboids, zeebopeteca, zeebotennis e zeebovolley
+    // (`ZB2_QUADROS=300 ZB2_EVT_START=1`, `/tmp/pesquisa/igl9-9trace.txt`):
+    //
+    //     ClearDepthx   (37) 12x  r1=0x0000ffff (1.0 em GLfixed)
+    //     ClearStencil  (38)  5x  r1=0x000000ff
+    //     LightModelxv  (70)  5x  r1=0x00000b53 (GL_LIGHT_MODEL_AMBIENT)
+    //
+    // E o quarto, o `Disable` (52), ja estava cablado desde a frente glbloco: o
+    // que faltava nele era a CONSTANTE (`GL_STENCIL_TEST`, 0x0B90) na tabela do
+    // `igl.cpp`, e por isso a recusa dizia "capacidade desconhecida". Os quatro
+    // chegam agora ao motor do IGL.
+    case igles_slots::kIgles_ClearDepthx: return gl_slots::kIgl_ClearDepthx;  // 37
+    case igles_slots::kIgles_ClearStencil: return gl_slots::kIgl_ClearStencil;  // 38
+    case igles_slots::kIgles_LightModelxv: return gl_slots::kIgl_LightModelxv;  // 70
     case igles_slots::kIgles_CullFace: return gl_slots::kIgl_CullFace;
     case igles_slots::kIgles_Disable: return gl_slots::kIgl_Disable;
     case igles_slots::kIgles_DisableClientState: return gl_slots::kIgl_DisableClientState;

@@ -341,6 +341,23 @@ class Igl {
   std::uint32_t MisturaDestino() const { return mistura_destino_; }
   std::uint32_t FuncaoDeAlfa() const { return funcao_de_alfa_; }
   float AlfaDeReferencia() const { return alfa_de_referencia_; }
+  // A LIMPEZA E O AMBIENTE DO MODELO, como o `glClearDepthx`, o
+  // `glClearStencil` e o `glLightModelxv(GL_LIGHT_MODEL_AMBIENT, ...)` os
+  // deixaram. Sao observaveis pela mesma razao dos outros: um estado que so
+  // existisse dentro do retrato do desenho nao se podia testar sem desenhar.
+  //
+  // O `ProfundidadeDeLimpeza` NAO e um valor guardado para decorar: e ele que o
+  // `MontarEstado` leva ao rasterizador, que o usa no `glClear` do buffer de
+  // profundidade (`rasterizador.cpp:322`). O `StencilDeLimpeza` e um valor
+  // guardado e DITO como tal -- nao ha buffer de stencil nesta arvore (ver o
+  // caso do `kIgl_ClearStencil`), e um valor de limpeza sem buffer e um estado,
+  // nao um efeito.
+  float ProfundidadeDeLimpeza() const { return profundidade_limpeza_; }
+  std::uint32_t StencilDeLimpeza() const { return stencil_limpeza_; }
+  // O AMBIENTE DA CENA (`GL_LIGHT_MODEL_AMBIENT`), em `float` e ja em [0,1].
+  // A omissao e a do GL, (0.2, 0.2, 0.2, 1.0) -- a MESMA que o retrato do
+  // rasterizador tem (`rasterizador.h`, `ambiente_da_cena`).
+  const float* AmbienteDaCena() const { return ambiente_da_cena_; }
   std::uint32_t CullFace() const { return cull_face_; }
   std::uint32_t FrontFace() const { return front_face_; }
   std::uint32_t ShadeModel() const { return shade_model_; }
@@ -404,7 +421,16 @@ class Igl {
   PilhaDeMatrizes mv_, proj_, tex_;
   std::uint32_t cor_ = 0xFFFFFFFFu;  // RGBA8
   std::uint32_t cor_limpeza_ = 0;
+  // A OMISSAO DA LIMPEZA DE PROFUNDIDADE E 1.0, a do GL. O `glClearDepthx` e o
+  // unico caminho para a mudar, e o valor VAI ao rasterizador: um motor que
+  // fixasse 1.0 no `glClear` faria do `glClearDepthx` um pedido guardado que
+  // ninguem le (P2).
   float profundidade_limpeza_ = 1.0f;
+  // O VALOR DE LIMPEZA DE STENCIL E SO ESTADO: esta arvore NAO TEM buffer de
+  // stencil (`core/brew/egl.cpp:151`, `EGL_STENCIL_SIZE 0 -- "nao ha buffer de
+  // stencil"`). Fica guardado para o estado nao mentir, e o caso do
+  // `kIgl_ClearStencil` di-lo no detalhe e no traco.
+  std::uint32_t stencil_limpeza_ = 0;
   std::uint32_t mascara_limpeza_ = 0;
   std::uint32_t viewport_[4] = {0, 0, 0, 0};
   std::uint32_t cull_face_ = gl_slots::GL_BACK;
@@ -436,6 +462,10 @@ class Igl {
   std::map<std::uint64_t, std::vector<float>> luzes_;
   std::map<std::uint64_t, std::vector<float>> luzes_em_olho_;
   std::map<std::uint64_t, std::vector<float>> materiais_;
+  // O AMBIENTE DA CENA (`GL_LIGHT_MODEL_AMBIENT`), em `float` e em [0,1]. E o
+  // termo CONSTANTE da equacao de luz do GL ES 1.x, e o rasterizador soma-o
+  // (`rasterizador.cpp:569`). A omissao e a do GL.
+  float ambiente_da_cena_[4] = {0.2f, 0.2f, 0.2f, 1.0f};
   std::uint64_t limpezas_ = 0, desenhos_ = 0, vertices_ = 0;
   std::uint64_t chamadas_ = 0;
   std::map<std::uint32_t, std::uint64_t> por_slot_;
