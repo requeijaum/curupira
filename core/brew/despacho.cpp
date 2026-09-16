@@ -1244,13 +1244,26 @@ bool Despacho::AtenderLoadResObject(ICpu& cpu) {
   const std::uint8_t* dados = bytes.data();
   std::size_t n = bytes.size();
   std::string mime;
+  // O CONTENTOR TEM DE VIVER ATE AO FIM DA FUNCAO. `dados`/`n` passam a apontar
+  // para dentro de `contentor.bytes_`: com o contentor declarado DENTRO do `if`
+  // abaixo, era destruido no fim do bloco e a `DescodificarPng` recebia um
+  // ponteiro PENDENTE.
+  //
+  // MEDIDO (frente fora, `toyraidzeebo` medido SOZINHO): SIGSEGV em
+  // `zb2::DescodificarPng` (`core/carga/png.cpp:126`), com
+  // `dados=0x7ffff61e0178` ja NAO mapeado e `tamanho=10676`. O `bytes_` de um
+  // contentor grande vive num `mmap` que a destruicao DEVOLVE ao sistema; nos
+  // titulos em que o bloco libertado fica na arena do `malloc` (o caso da
+  // corrida dos 62) o defeito nao rebenta -- le-se como lixo, e o `toyraidzeebo`
+  // so aparecia na corrida completa por isso.
+  ArquivoBar contentor;
   if (id != 0) {
     // 1b. O `pszResFile` e um CONTENTOR e o id escolhe a entrada. O `.pod` do
     //     `toyraidzeebo` foi medido com o MESMO formato do `.bar` (`0x11 0x00`,
     //     registos de 8 bytes, tabela de deslocamentos: `tools/medir_bar.py
     //     censo` diz "1 de 1 ficheiros com o formato medido"), logo o leitor e o
     //     mesmo -- e nao um segundo leitor a espera de divergir.
-    ArquivoBar contentor = ArquivoBar::AbrirDados(bytes, &motivo);
+    contentor = ArquivoBar::AbrirDados(bytes, &motivo);
     if (!contentor.Valido()) {
       traco_.RegistarFalta(Area::Brew, "IShell::LoadResObject",
                            nome + " id=" + std::to_string(id) + ": " + motivo);
@@ -3238,12 +3251,39 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         const std::uint32_t origem = mem_.Ler32(cpu.Get(kSP) + 4);
         const std::int32_t xs = static_cast<std::int32_t>(mem_.Ler32(cpu.Get(kSP) + 8));
         const std::int32_t ys = static_cast<std::int32_t>(mem_.Ler32(cpu.Get(kSP) + 12));
+        // O `pbmSource` E UM IDIB*, E NAO UM BLOCO CRU DE PIXELS.
+        //
+        // MEDIDO (frente fora, `toyraidzeebo`): o guest passa `0x80050340` e
+        // `0x80050380` -- enderecos DENTRO da banda dos IDIB (`kObjDibBase`) --
+        // com `cx=195 cy=203` e `xs=ys=0`. Lendo os pixels a partir do
+        // ENDERECO DO OBJECTO, o laco (39 585 pixels, 79 170 bytes) atravessa o
+        // fim da pagina dos IDIB e entra na pagina SEGUINTE, que nao esta
+        // mapeada: 1041 leituras nao mapeadas em `0x80051000` (a fronteira
+        // `kObjDibBase + 0x1000`), com o PC do guest `0x319c` -- e 1041 dos 1066
+        // pedidos da corrida de referencia de `/tmp/corrida_memcmp.json`.
+        //
+        // O `pBmp`/`cx`/`nPitch` do cabecalho PUBLICO do IDIB (`AEEIDIB.h`) sao
+        // o que diz onde os pixels estao; a origem de um `BitBlt` de um IDIB e o
+        // buffer, nao o cabecalho. Um ponteiro FORA da banda (um bloco cru, a
+        // convencao que este ramo seguia) continua a ser lido como pixels.
+        using C = zb2::brew::CamposDoIdib;
+        std::uint32_t fonte = origem;
+        std::uint32_t passo = static_cast<std::uint32_t>(cx) * 2u;
+        if (EUmObjectoDeBitmap(origem)) {
+          const std::uint32_t pbmp = mem_.Ler32(origem + C::kPBmp);
+          const std::uint32_t n_pitch =
+              static_cast<std::uint16_t>(mem_.Ler16(origem + C::kNPitch));
+          if (pbmp != 0 && n_pitch != 0) {
+            fonte = pbmp;
+            passo = n_pitch;
+          }
+        }
         if (origem != 0 && cx > 0 && cy > 0) {
           for (std::int32_t j = 0; j < cy; ++j) {
             for (std::int32_t i = 0; i < cx; ++i) {
               const std::uint32_t u = static_cast<std::uint32_t>(xs + i);
               const std::uint32_t v = static_cast<std::uint32_t>(ys + j);
-              tela_.CorAtual(mem_.Ler16(origem + (v * static_cast<std::uint32_t>(cx) + u) * 2));
+              tela_.CorAtual(mem_.Ler16(fonte + v * passo + u * 2u));
               tela_.Ponto(xd + i, yd + j);
             }
           }
