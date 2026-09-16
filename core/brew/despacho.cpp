@@ -4245,7 +4245,21 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           // Zero nao e "nao sei": zero e "nao ha RAM", e um titulo que divida
           // por ele ou que decida a qualidade das texturas por ele apanha o pior
           // caminho possivel.
-          di.dw_ram = 32u * 1024u * 1024u;
+          // `dwRAM` E O HEAP QUE DAMOS, e nao o do guia.
+          //
+          // O campo e o "Initial size of BREW heap" (`AEEShell.h:425`). O valor era o
+          // do guia ("Heap size is limited to 32MB", `ZeeboDeveloperGuide0.97.md:796`)
+          // -- verdadeiro na consola, falso aqui desde que o heap passou a 64 MiB
+          // (`d3af3ec`). Declarar 32 MiB sobre um heap de 64 e a mesma familia de
+          // mentira que esta sessao ja corrigiu varias vezes, e `al_.Tamanho()` e a
+          // fonte unica: e o MESMO alocador que serve o `malloc` do guest.
+          //
+          // MEDIDO e DITO: isto **nao** mexeu em nenhum dos 62 titulos (0 regressoes,
+          // 0 melhorias, 0 neutros). Tinha sido escrito para explicar o pool do motor
+          // TTD e a medicao desmentiu-o -- o `footparty` pede os mesmos 24 117 248
+          // bytes com 8, 32 ou 64 MiB declarados (ver o `docs/rewrite/PLANO`). Fica
+          // porque e verdade, nao porque resolve.
+          di.dw_ram = al_.Tamanho();
           di.b_alt_display = 0; di.b_flip = 0; di.b_vibrator = 0; di.b_ext_speaker = 0;
           di.b_vr = 0; di.b_pos_loc = 0; di.b_midi = 1; di.b_cmx = 0; di.b_pen = 1;
           di.dw_prompt_props = 0;
