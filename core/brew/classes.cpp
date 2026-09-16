@@ -943,6 +943,43 @@ std::uint32_t SlotIglesNoIgl(std::uint32_t slot) {
     // O id devolvido e INTERNO (`igl.h`): nao ha slot nenhum com este nome na
     // vtable do IGL de 80 slots.
     case igles_slots::kIgles_Color4f: return kIgl_Color4f;  // 6
+
+    // --- A FRENTE MATRIZ: a PILHA DE MATRIZES e os tres de uma so chamada -----
+    //
+    // MEDIDO (`ZB2_TRACE=1` no `Rolimaz`, 276809 -- os cinco titulos da familia
+    // TecToy pedem o mesmo, com a recusa nomeada na corrida de referencia):
+    // `PushMatrix`/`PopMatrix` 3x cada, `FrontFace` 2x -- com `0x00000900` e
+    // depois `0x00000901`, que sao **GL_CW** (`gles_1_0/gl.h:213`) e GL_CCW
+    // (`:214`), e nao os dois o mesmo --, `Rotatex` 1x com o angulo a 0 e
+    // `ActiveTexture` 1x com `0x000084c0` (GL_TEXTURE0).
+    //
+    // OS CINCO MORRIAM AQUI -- o pedido era lido como um metodo sem nome, e o
+    // mesmo ja aconteceu ao `LineWidthx` e ao trio `ClearDepthx`/`ClearStencil`/
+    // `LightModelxv`. E o defeito P2 da casa ao contrario: o motor TEM o metodo
+    // e nao ha caminho ate ele a partir do IGLES11.
+    //
+    // NADA DISTO E NOVO NO MOTOR, e essa e a informacao:
+    //   * a PILHA DE MATRIZES ja estava inteira (`igl.cpp`: o `Push` COPIA a
+    //     matriz corrente para o fundo seguinte, o `Pop` desce o indice e o valor
+    //     que la estava fica, e a profundidade 16/2/2 e a que o `glGetIntegerv`
+    //     declara);
+    //   * o `FrontFace` JA chegava ao rasterizador (`igl.cpp:537`,
+    //     `e.orientacao_da_frente = front_face_`), e o rasterizador ja a usava
+    //     (`rasterizador.cpp:805`);
+    //   * o `ActiveTexture` so aceita `GL_TEXTURE0` e recusa o resto com o valor
+    //     pedido no motivo (uma unidade de textura nesta arvore; `GL_TEXTURE1`+
+    //     e multitexture, que e extensao).
+    // O que faltava era so o CAMINHO -- e as cinco linhas abaixo sao o caminho.
+    //
+    // A correspondencia e POR NOME: o `PushMatrix` e o slot 89 no IGLES11 e o 61
+    // no IGL de 80 slots; o `PopMatrix` e 88 e 60; o `Rotatex` 91 e 63; o
+    // `FrontFace` 62 e 34; o `ActiveTexture` 31 e 3.
+    case igles_slots::kIgles_PushMatrix: return gl_slots::kIgl_PushMatrix;        // 89 -> 61
+    case igles_slots::kIgles_PopMatrix: return gl_slots::kIgl_PopMatrix;          // 88 -> 60
+    case igles_slots::kIgles_Rotatex: return gl_slots::kIgl_Rotatex;              // 91 -> 63
+    case igles_slots::kIgles_FrontFace: return gl_slots::kIgl_FrontFace;          // 62 -> 34
+    case igles_slots::kIgles_ActiveTexture:
+      return gl_slots::kIgl_ActiveTexture;                                        // 31 -> 3
     default: return kSemSlotNoIgl;
   }
 }
@@ -961,10 +998,17 @@ std::uint32_t SlotIglesNoIgl(std::uint32_t slot) {
 //   Color4f 4 (r,g,b,a) | Color4x 4 (r,g,b,a) | DrawElements 4 (modo,quantos,tipo,indices) |
 //   Orthof 6 | Orthox 6 | Scissor 4 (x,y,largura,altura) | TexCoordPointer 4 |
 //   VertexPointer 4 | TexImage2D 9 | TexSubImage2D 9 |
-//   CompressedTexImage2D 8 | Viewport 4 | ClearColorx 4.
+//   CompressedTexImage2D 8 | Viewport 4 | ClearColorx 4 | Rotatex 4
+//   (angulo, x, y, z).
 // Sem esta lista, num metodo de quatro argumentos o `r3` seria o TERCEIRO
 // argumento real e o quarto nunca era lido -- e o `Viewport` servia 640 onde o
 // titulo pediu 480.
+//
+// O `Rotatex` ENTROU COM A FRENTE MATRIZ, e a entrada dele e a diferenca entre
+// uma rotacao e nada: o eixo Z e o QUARTO argumento real, e com ele a ser lido do
+// `r3` o eixo seria o vector nulo (`Rotacao` volta sem tocar na matriz em
+// `igl.cpp`, `if (n == 0.0) return;`). O `ActiveTexture` e o `FrontFace` tem UM
+// argumento real cada, e o `PushMatrix`/`PopMatrix` nenhum: nao entram aqui.
 bool SlotIglesTemQuartoNaPilha(std::uint32_t slot) {
   switch (slot) {
     case igles_slots::kIgles_ClearColorx:
@@ -974,6 +1018,9 @@ bool SlotIglesTemQuartoNaPilha(std::uint32_t slot) {
     case igles_slots::kIgles_DrawElements:
     case igles_slots::kIgles_Orthof:
     case igles_slots::kIgles_Orthox:
+    // O `glRotatex(GLfixed angle, GLfixed x, GLfixed y, GLfixed z)`: o eixo Z e o
+    // quarto argumento real e vem em [sp].
+    case igles_slots::kIgles_Rotatex:
     case igles_slots::kIgles_Scissor:
     case igles_slots::kIgles_TexCoordPointer:
     case igles_slots::kIgles_TexImage2D:

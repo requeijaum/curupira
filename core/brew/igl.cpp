@@ -1249,7 +1249,22 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
     case kIgl_ClientActiveTexture: {
       // Uma so unidade de textura: o GL ES 1.x garante pelo menos uma, e e a
       // unica que este modulo acumula. `GL_TEXTURE0` vem gerado de `gles/gl.h`.
-      if (a.reg[0] != GL_TEXTURE0) return recusa("so a unidade GL_TEXTURE0 existe aqui");
+      //
+      // O MOTIVO DIZ O VALOR PEDIDO. `GL_TEXTURE1`+ e MULTITEXTURE (mais de uma
+      // unidade, `GL_MAX_TEXTURE_UNITS`), que no GL ES 1.x e EXTENSAO e nao
+      // existe nesta arvore: um "so a unidade GL_TEXTURE0 existe aqui" obrigava
+      // quem le o traco a ir buscar o numero a outro sitio para saber o que o
+      // titulo pediu, e o valor e a unica forma de distinguir `glActiveTexture`
+      // de uma chamada lida no sitio errado. A recusa continua a ser recusa: nada
+      // muda de estado (P2, nunca "sucesso" sem efeito).
+      if (a.reg[0] != GL_TEXTURE0) {
+        char det[192];
+        std::snprintf(det, sizeof(det),
+                      "unidade 0x%08x: GL_TEXTURE1+ e multitexture (extensao) e esta arvore "
+                      "tem UMA unidade de textura, GL_TEXTURE0 (0x%08x)",
+                      a.reg[0], static_cast<std::uint32_t>(GL_TEXTURE0));
+        return recusa(det);
+      }
       if (slot == kIgl_ActiveTexture) textura_activa_ = a.reg[0];
       return feito(1);
     }

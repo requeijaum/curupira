@@ -2128,7 +2128,255 @@ TEST(FrenteIgl9, OLightModelxvComTwoSideRecusaComONome) {
   EXPECT_FLOAT_EQ(EstadoDoIgles11()->AmbienteDaCena()[0], 0.2f);
 }
 
+// ---------------------------------------------------------------------------
+// 10. A FRENTE MATRIZ: OS CINCO SLOTS DO IGLES11 DA FAMILIA TECTOTY
+// ---------------------------------------------------------------------------
+//
+// MEDIDO (corrida de referencia `/tmp/corrida_g5.json`, `ZB2_QUADROS=300
+// ZB2_EVT_START=1`, 62 titulos): os CINCO titulos da familia TecToy -- `AirRacez`
+// 277285, `Bajaz` 277727, `Boiaz` 278285, `JetBoardz` 278283 e `Rolimaz` 276809 --
+// pedem cinco metodos do IGLES11 e recebem todos a recusa generica, porque os
+// cinco MORREM no mapa `SlotIglesNoIgl` do `classes.cpp`. E a mesma morte em
+// silencio que ja apanhou o `LineWidthx` e o `ClearDepthx`/`ClearStencil`/
+// `LightModelxv`: um metodo que EXISTE no motor do IGL de 80 slots e nao tem
+// caminho nenhum a partir do IGLES11.
+//
+//   IGLES11::PushMatrix    (89) | IGLES11::PopMatrix    (88)
+//   IGLES11::Rotatex       (91) | IGLES11::FrontFace    (62)
+//   IGLES11::ActiveTexture (31)
+//
+// OS NUMEROS DOS SLOTS sao os de `tools/igles_slots.inc` (gerado de
+// `AEEGLES10.h`/`AEEGLES11.h`); o lado direito do mapa e o slot do IGL de
+// `AEEGL.h` com o MESMO NOME -- a correspondencia e por nome, nunca por numero.
+//
+// OS ARGUMENTOS, lidos no traco do `Rolimaz` (`ZB2_TRACE=1`, o detalhe da recusa
+// nomeada e que os traz):
+//
+//   IGLES11::PushMatrix    r1=0xf0027714 r2=0xf00276ec   (sem argumentos)
+//   IGLES11::FrontFace     r1=0x00000900                  <- GL_CW
+//   IGLES11::FrontFace     r1=0x00000901                  <- GL_CCW
+//   IGLES11::ActiveTexture r1=0x000084c0                  <- GL_TEXTURE0
+//   IGLES11::Rotatex       r1=0x00000000 r2=0 r3=0        <- angulo 0, eixo (0,0,?)
+//
+// O `FrontFace` e pedido DUAS vezes e com os DOIS valores: `0x0900` e **GL_CW**
+// (`gles_1_0/gl.h:213`), e nao `GL_CCW`; `0x0901` (`:214`) e o `GL_CCW`. Quem
+// escreveu `0x0900 = GL_CCW` leu o valor ao contrario, e a diferenca nao e
+// decorativa: com o descarte de faces ligado os dois valores poem o MESMO
+// triangulo em lados opostos.
+//
+// A PILHA DE MATRIZES JA ESTAVA CERTA, e isso e uma MEDICAO: o
+// `kIgl_PushMatrix` COPIA a matriz corrente para o fundo seguinte e o
+// `kIgl_PopMatrix` desce o indice, logo o `Pop` repoe mesmo o valor que la estava
+// (o teste `EstadoGl.PushEPopVoltamAoQueEstava` fixa-o desde a etapa 6). O que
+// faltava era o CAMINHO: sem o mapa, nem o `Push` nem o `Pop` chegavam ao motor.
+// O teste abaixo (empilhar, MUDAR, repor, comparar) passa a ser o teste DAQUELE
+// par pelo caminho do titulo -- e um `Pop` que so contasse, ou que repusesse a
+// identidade, faz falhar pela diferenca entre 7 e 0.
+//
+// O QUARTO ARGUMENTO DO `Rotatex` VAI NA PILHA. O `glRotatex` tem QUATRO
+// argumentos reais (`angle, x, y, z`) e a moldura do IGLES11 leva `iname *pMe` em
+// r0: os tres primeiros caem em r1..r3 e o EIXO Z fica em `[sp]`. Sem a entrada
+// na lista `SlotIglesTemQuartoNaPilha`, o z era lido do r3 (que nesta corrida vale
+// 0), o eixo era o vector nulo e a `Rotacao` voltava sem tocar na matriz -- uma
+// rotacao que "passa" e nao roda, sem sintoma nenhum. Nesta corrida o angulo e 0
+// e a rotacao E a identidade: o que o teste prova e a LEITURA, com um eixo que
+// nao e zero.
+//
+// COMO ESTES TESTES ENTRAM: pela TABELA, pelo indice `kVtableIgles + slot`, que e
+// a mesma leitura do despacho. Um teste que chamasse o id interno do motor
+// provava o motor e nao a cablagem (a armadilha 3 desta casa).
 
+// `GL_TEXTURE1` = 0x84C1 (`gles_1_0/gl.h:406`). Nao esta em `gl_slots.inc` (o
+// gerador so le o que o Toolset gera); o valor fica escrito com a linha ao lado.
+constexpr std::uint32_t kGLTexture1 = 0x84C1u;
+
+// Um pedido do IGLES11 pela TABELA. Escreve `sp0` no primeiro lugar da pilha (onde
+// a moldura do IGLES11 poe o quarto argumento real) e devolve o r0.
+std::uint32_t PedirNaTabelaDoIgles(BancoClasses& b, std::uint32_t slot, std::uint32_t r1 = 0,
+                                   std::uint32_t r2 = 0, std::uint32_t r3 = 0,
+                                   std::uint32_t sp0 = 0) {
+  b.mem.Escrever32(kPilhaDoTeste, sp0);
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, r1);
+  b.cpu.Set(kR2, r2);
+  b.cpu.Set(kR3, r3);
+  b.cpu.Set(kSP, kPilhaDoTeste);
+  if (!AtenderClasse(b.cpu, kVtableIgles + slot, b.traco)) return 0xDEADBEEFu;
+  return b.cpu.Get(kR0);
+}
+
+TEST(FrenteMatriz, OsCincoSlotsDaFamiliaTectoyRespondemPelaTabela) {
+  BancoClasses b;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+  // A ORDEM IMPORTA: o `PushMatrix` vem ANTES do `PopMatrix` (um `Pop` em pilha
+  // vazia RECUSA, e isso e um teste proprio -- `EstadoGl.PopEmPilhaVaziaRecusa`).
+  const std::uint32_t slots[] = {igles_slots::kIgles_PushMatrix, igles_slots::kIgles_PopMatrix,
+                                 igles_slots::kIgles_Rotatex, igles_slots::kIgles_FrontFace,
+                                 igles_slots::kIgles_ActiveTexture};
+  const char* nomes[] = {"PushMatrix", "PopMatrix", "Rotatex", "FrontFace", "ActiveTexture"};
+  for (std::size_t k = 0; k < 5u; ++k) {
+    SCOPED_TRACE(nomes[k]);
+    std::uint32_t r1 = 0, sp0 = 0;
+    if (slots[k] == igles_slots::kIgles_Rotatex) {
+      r1 = Fixo(90.0f);       // o angulo, em GLfixed 16.16
+      sp0 = Fixo(1.0f);       // o eixo Z, o QUARTO argumento real: na PILHA
+    }
+    if (slots[k] == igles_slots::kIgles_FrontFace) r1 = GL_CCW;
+    if (slots[k] == igles_slots::kIgles_ActiveTexture) r1 = GL_TEXTURE0;
+    const std::string nome = std::string("IGLES11::") + nomes[k];
+    EXPECT_EQ(PedirNaTabelaDoIgles(b, slots[k], r1, 0u, 0u, sp0), kAeeSuccess) << b.Detalhe(nome);
+    EXPECT_EQ(b.Faltas(nome), 0u) << b.Detalhe(nome);
+  }
+  // O PAR CANCELOU: o `Pop` desceu o que o `Push` subiu.
+  EXPECT_EQ(EstadoDoIgles11()->TopoDaPilha(kModoModelView), 0);
+
+  // E O VALOR PEDIDO CHEGA AO ESTADO, e nao so "nao ha falta". O `FrontFace` e
+  // pedido com os DOIS valores medidos no traco, e o primeiro deles e o GL_CW.
+  EXPECT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_FrontFace, GL_CW), kAeeSuccess);
+  EXPECT_EQ(EstadoDoIgles11()->FrontFace(), GL_CW);
+  EXPECT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_FrontFace, GL_CCW), kAeeSuccess);
+  EXPECT_EQ(EstadoDoIgles11()->FrontFace(), GL_CCW);
+  // Um valor que nao e nenhum dos dois RECUSA com o nome, e o estado fica como
+  // estava (P2: nunca "sucesso" sem efeito).
+  EXPECT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_FrontFace, 0x1234u), kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("IGLES11::FrontFace"), 1u);
+  EXPECT_EQ(EstadoDoIgles11()->FrontFace(), GL_CCW);
+
+  // ActiveTexture: esta arvore tem UMA unidade de textura. `GL_TEXTURE0` e o
+  // valor certo e E O QUE O TITULO PEDE (0x84c0 no traco); `GL_TEXTURE1`+ e
+  // multitexture, uma EXTENSAO, e RECUSA COM O VALOR NOMEADO no motivo.
+  EXPECT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_ActiveTexture, GL_TEXTURE0), kAeeSuccess);
+  EXPECT_EQ(EstadoDoIgles11()->TexturaActiva(), GL_TEXTURE0);
+  EXPECT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_ActiveTexture, kGLTexture1),
+            kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("IGLES11::ActiveTexture"), 1u);
+  const std::string d_tex = b.Detalhe("IGLES11::ActiveTexture");
+  EXPECT_NE(d_tex.find("0x000084c1"), std::string::npos) << d_tex;
+  EXPECT_NE(d_tex.find("GL_TEXTURE0"), std::string::npos) << d_tex;
+  // E a unidade activa NAO mudou por um pedido recusado.
+  EXPECT_EQ(EstadoDoIgles11()->TexturaActiva(), GL_TEXTURE0);
+}
+
+TEST(FrenteMatriz, APilhaDeMatrizesEmpilhaMudaERepoePeloCaminhoDoTitulo) {
+  BancoClasses b;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_LoadIdentity), kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_Translatex, Fixo(7.0f), 0u, 0u),
+            kAeeSuccess);
+  ASSERT_FLOAT_EQ(EstadoDoIgles11()->MatrizCorrente()[12], 7.0f);
+
+  // 1) EMPILHA e 2) MUDA: a translacao nova escreve na COPIA, e o fundo de baixo
+  // fica com os 7.
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_PushMatrix), kAeeSuccess);
+  EXPECT_EQ(EstadoDoIgles11()->TopoDaPilha(kModoModelView), 1);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_Translatex, Fixo(3.0f), 0u, 0u),
+            kAeeSuccess);
+  EXPECT_FLOAT_EQ(EstadoDoIgles11()->MatrizCorrente()[12], 10.0f);
+
+  // 3) REPOE e 4) COMPARA. O `Pop` REPOE a matriz: o valor que la estava e 7, e
+  // nao a identidade. Um `Pop` que so contasse (ou que repusesse a identidade)
+  // da 0, e o teste falha -- e a razao de o valor ser 7 e nao 0.
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_PopMatrix), kAeeSuccess);
+  EXPECT_FLOAT_EQ(EstadoDoIgles11()->MatrizCorrente()[12], 7.0f);
+  EXPECT_EQ(EstadoDoIgles11()->TopoDaPilha(kModoModelView), 0);
+  EXPECT_EQ(b.Faltas("IGLES11::PushMatrix") + b.Faltas("IGLES11::PopMatrix"), 0u);
+
+  // 5) A PROFUNDIDADE E A QUE O GL ES 1.1 GARANTE: 16 niveis de MODELVIEW (a
+  // matriz inicial + 15 `Push`), e o 16.o `Push` RECUSA com o motivo do motor
+  // (nao ha "sucesso" sem efeito).
+  int feitos = 0;
+  for (int k = 0; k < 40; ++k) {
+    if (PedirNaTabelaDoIgles(b, igles_slots::kIgles_PushMatrix) == kAeeSuccess) ++feitos;
+  }
+  EXPECT_EQ(feitos, kFundoModelView - 1);
+  // E CADA UM DOS QUE NAO CABE RECUSA (40 - 15), com o motivo do motor -- e nao
+  // um "sucesso" que deixa a matriz por guardar (P2).
+  EXPECT_EQ(b.Faltas("IGLES11::PushMatrix"), 40u - static_cast<std::size_t>(feitos));
+  EXPECT_NE(b.Detalhe("IGLES11::PushMatrix").find("cheia"), std::string::npos)
+      << b.Detalhe("IGLES11::PushMatrix");
+}
+
+TEST(FrenteMatriz, ORotatexDoIgles11PosMultiplicaEUsaOEixoDaPilha) {
+  BancoClasses b;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_LoadIdentity), kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_Translatex, Fixo(1.0f), 0u, 0u),
+            kAeeSuccess);
+  // `Rotatex(90, 0, 0, 1)` em GLfixed, na ordem do cabecalho: angulo em r1, eixo
+  // em r2/r3 e o Z na PILHA.
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_Rotatex, Fixo(90.0f), Fixo(0.0f),
+                                 Fixo(0.0f), Fixo(1.0f)),
+            kAeeSuccess);
+  ASSERT_EQ(b.Faltas("IGLES11::Rotatex"), 0u) << b.Detalhe("IGLES11::Rotatex");
+  const float* m = EstadoDoIgles11()->MatrizCorrente();
+  // O EIXO VEM DA PILHA. Com o quarto argumento a ler o r3 (que vale 0) o eixo
+  // era o vector nulo, a `Rotacao` voltava sem escrever nada e o bloco 3x3 ficava
+  // na identidade -- m[1] = 0 e m[4] = 0. Cos 90 = 0, sen 90 = 1: em
+  // column-major, R[0][1] = -1 e m[4], e R[1][0] = 1 e m[1].
+  EXPECT_NEAR(m[1], 1.0f, 1e-5f);
+  EXPECT_NEAR(m[4], -1.0f, 1e-5f);
+  EXPECT_NEAR(m[0], 0.0f, 1e-6f);
+  EXPECT_NEAR(m[5], 0.0f, 1e-6f);
+  EXPECT_NEAR(m[10], 1.0f, 1e-6f);
+  // E A ORDEM E A DO GL: `M := M * R` (pos-multiplicacao), e nao `R * M`. Com a
+  // ordem trocada a TRANSLACAO era rodada: T(1,0,0) por 90 graus em Z daria
+  // (0,1,0), isto e m[12] = 0 e m[13] = 1. Na ordem do GL a ultima coluna e a
+  // translacao, intacta pelo R que so mexe nas linhas 0..2.
+  EXPECT_NEAR(m[12], 1.0f, 1e-5f);
+  EXPECT_NEAR(m[13], 0.0f, 1e-5f);
+}
+
+TEST(FrenteMatriz, OFrontFaceChegaAoRasterizadorEPoeOMesmoTrianguloEmLadosOpostos) {
+  // A CABLAGEM, e nao o estado: o `MontarEstado` (igl.cpp) leva o `front_face_` ao
+  // `orientacao_da_frente` do rasterizador (`rasterizador.cpp:805`), e o que se
+  // mede aqui e o EFEITO -- o MESMO triangulo, com a MESMA ordem de vertices, e
+  // desenhado ou DESCARTADO conforme a orientacao que o TITULO declarou. Um teste
+  // que so lesse `FrontFace()` provava o estado e nao o caminho ate aos pixels.
+  BancoClasses b;
+  Tela tela;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+  const_cast<Igl*>(EstadoDoIgles11())->DefinirTela(&tela);
+  Igl* motor = const_cast<Igl*>(EstadoDoIgles11());
+
+  constexpr std::uint32_t kV = 0x0002F500u;
+  constexpr std::uint32_t kI = 0x0002F600u;
+  // A mesma geometria do teste do rasterizador (`ODescarteDeFacesUsaAOrientacaoEmNDC`):
+  // a ordem (A, B, C) tem area POSITIVA em NDC, ou seja e a face da frente com
+  // `GL_CCW`.
+  const float v[3][2] = {{-1.0f, 0.75f}, {-1.0f, 0.0f}, {0.0f, 0.0f}};
+  for (std::uint32_t k = 0; k < 3u; ++k) {
+    b.mem.Escrever32(kV + 8u * k, Real(v[k][0]));
+    b.mem.Escrever32(kV + 8u * k + 4u, Real(v[k][1]));
+    b.mem.Escrever16(kI + 2u * k, static_cast<std::uint16_t>(k));
+  }
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_Viewport, 0u, 0u, 8u, 8u), kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_VertexPointer, 2u, GL_FLOAT, 8u, kV),
+            kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_EnableClientState, GL_VERTEX_ARRAY),
+            kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_Enable, GL_CULL_FACE), kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_CullFace, GL_BACK), kAeeSuccess);
+
+  const auto desenhar = [&]() {
+    return PedirNaTabelaDoIgles(b, igles_slots::kIgles_DrawElements, GL_TRIANGLES, 3u,
+                                GL_UNSIGNED_SHORT, kI);
+  };
+
+  // `GL_CCW` (0x0901, o SEGUNDO valor do traco): a face da frente e esta e o
+  // triangulo escreve os seis fragmentos.
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_FrontFace, GL_CCW), kAeeSuccess);
+  ASSERT_EQ(desenhar(), kAeeSuccess) << b.Detalhe("IGLES11::DrawElements");
+  EXPECT_EQ(tela.Escritos(), 6u);
+  EXPECT_EQ(motor->RasterizadorRef().TriangulosDescartados(), 0u);
+
+  // `GL_CW` (0x0900, o PRIMEIRO valor do traco): a frente passa a ser a outra face
+  // e o mesmo triangulo e DESCARTADO -- nenhum pixel novo. Se o `FrontFace` nao
+  // chegasse ao rasterizador, esta metade escrevia os mesmos seis e nao se via.
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_FrontFace, GL_CW), kAeeSuccess);
+  ASSERT_EQ(desenhar(), kAeeSuccess) << b.Detalhe("IGLES11::DrawElements");
+  EXPECT_EQ(tela.Escritos(), 6u) << "nenhum pixel NOVO: o triangulo foi descartado";
+  EXPECT_EQ(motor->RasterizadorRef().TriangulosDescartados(), 1u);
+}
 
 }  // namespace
 }  // namespace zb2::brew
