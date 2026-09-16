@@ -114,6 +114,49 @@ float Apertar(float v, float minimo, float maximo) {
 constexpr std::uint32_t GL_RESCALE_NORMAL = 0x803Au;
 constexpr std::uint32_t GL_COLOR_MATERIAL = 0x0B57u;
 
+// OS `pname` DO `glGetIntegerv`, e para que servem aqui: SO PARA A RECUSA SER
+// LEGIVEL. Nenhum deles muda o que e servido -- um `pname` que o emulador nao
+// saiba responder continua a RECUSAR (P2), mas a recusa passa a dizer o NOME em
+// vez de so o numero, que e a diferenca entre uma linha que se pode ler e uma
+// que se tem de ir procurar ao cabecalho.
+//
+// O QUE NAO ESTA NO `.inc` GERADO, e a razao e a mesma do `GL_RESCALE_NORMAL`
+// acima: `tools/gl_slots.inc` e gerado de `AEEGL.h` e de `gles_1_0/gl.h` (o
+// perfil Common-Lite, que NAO tem estes nomes). Os valores abaixo sao de
+// `sdk/inc/gles/gles_1_1/gl.h` -- o cabecalho do IGLES11, que e a interface por
+// onde o `IGLES11::GetIntegerv` chega -- com a linha exacta ao lado:
+//
+//   gles_1_1/gl.h:249   GL_CURRENT_COLOR      0x0B00
+//   gles_1_1/gl.h:277   GL_MATRIX_MODE        0x0BA0
+//   gles_1_1/gl.h:278   GL_VIEWPORT           0x0BA2
+//   gles_1_1/gl.h:282   GL_MODELVIEW_MATRIX   0x0BA6
+//   gles_1_1/gl.h:302   GL_MAX_VIEWPORT_DIMS  0x0D3A
+//   gles_1_1/gl.h:316   GL_TEXTURE_BINDING_2D 0x8069
+constexpr std::uint32_t GL_CURRENT_COLOR = 0x0B00u;
+constexpr std::uint32_t GL_MATRIX_MODE = 0x0BA0u;
+constexpr std::uint32_t GL_VIEWPORT = 0x0BA2u;
+constexpr std::uint32_t GL_MODELVIEW_MATRIX = 0x0BA6u;
+constexpr std::uint32_t GL_MAX_VIEWPORT_DIMS = 0x0D3Au;
+constexpr std::uint32_t GL_TEXTURE_BINDING_2D = 0x8069u;
+
+// O NOME DO `pname`, quando o cabecalho do SDK o da. Devolve `nullptr` para os
+// que nao estao aqui: inventar um nome seria pior do que nao dizer nenhum.
+const char* NomeDoPnameDeConsulta(std::uint32_t pname) {
+  switch (pname) {
+    case GL_CURRENT_COLOR: return "GL_CURRENT_COLOR";
+    case GL_MATRIX_MODE: return "GL_MATRIX_MODE";
+    case GL_VIEWPORT: return "GL_VIEWPORT";
+    case GL_MODELVIEW_MATRIX: return "GL_MODELVIEW_MATRIX";
+    case GL_MAX_VIEWPORT_DIMS: return "GL_MAX_VIEWPORT_DIMS";
+    case GL_TEXTURE_BINDING_2D: return "GL_TEXTURE_BINDING_2D";
+    case GL_MAX_TEXTURE_SIZE: return "GL_MAX_TEXTURE_SIZE";
+    case GL_MAX_MODELVIEW_STACK_DEPTH: return "GL_MAX_MODELVIEW_STACK_DEPTH";
+    case GL_MAX_PROJECTION_STACK_DEPTH: return "GL_MAX_PROJECTION_STACK_DEPTH";
+    case GL_MAX_TEXTURE_STACK_DEPTH: return "GL_MAX_TEXTURE_STACK_DEPTH";
+    default: return nullptr;
+  }
+}
+
 // OS `pname` DA LUZ E DO MATERIAL, com o numero de componentes de cada um.
 //
 // O `glLightfv`/`glMaterialfv` do GL ES 1.x leva um tanto de componentes que
@@ -1441,17 +1484,43 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
     case kIgl_GetIntegerv: {
       const std::uint32_t pname = a.reg[0], destino = a.reg[1];
       if (destino == 0) return recusa("destino de glGetIntegerv nulo");
+      // CADA LINHA DESTA TABELA E UMA AFIRMACAO SOBRE A MAQUINA, e por isso cada
+      // uma tem a fonte. O que nao se sabe responder RECUSA com o `pname` dito
+      // pelo nome (P2) -- uma resposta inventada aqui nao da erro nenhum: da um
+      // titulo a dimensionar texturas, ou um viewport, com numeros que a maquina
+      // nunca teve.
       std::uint32_t valor = 0;
-      if (pname == GL_MAX_MODELVIEW_STACK_DEPTH) valor = kFundoModelView;
-      else if (pname == GL_MAX_PROJECTION_STACK_DEPTH) valor = kFundoProjection;
-      else if (pname == GL_MAX_TEXTURE_STACK_DEPTH) valor = kFundoTexture;
-      else if (pname == GL_MAX_TEXTURE_SIZE) {
-        return recusa("a memoria de texturas nao existe nesta etapa");
+      if (pname == GL_MAX_MODELVIEW_STACK_DEPTH) {
+        valor = kFundoModelView;  // a pilha do motor (igl.h: kFundoModelView)
+      } else if (pname == GL_MAX_PROJECTION_STACK_DEPTH) {
+        valor = kFundoProjection;
+      } else if (pname == GL_MAX_TEXTURE_STACK_DEPTH) {
+        valor = kFundoTexture;
+      } else if (pname == GL_MAX_TEXTURE_SIZE) {
+        // O UNICO `pname` QUE OS TITULOS PEDEM A SERIO, e o numero e o do
+        // console, com a fonte: `kTexturaMaxima` (`igl.h`), do guia 0.97:1254
+        // ("texture sizes of up to 1024 x 1024"). Esta linha era uma RECUSA ate
+        // agora, com o motivo "a memoria de texturas nao existe nesta etapa" --
+        // que era verdade para o rasterizador de entao e deixou de ser: quem
+        // amostra a textura e o `AmostrarTextura`, que calcula o endereco do
+        // texel na memoria do guest e nao tem orcamento de textura nenhum.
+        valor = kTexturaMaxima;
       } else {
-        return recusa("pname nao servido (sem medida do que a maquina responde)");
+        char det[192];
+        const char* nome = NomeDoPnameDeConsulta(pname);
+        if (nome != nullptr) {
+          std::snprintf(det, sizeof(det),
+                        "pname 0x%08x (%s) nao servido: nao ha valor medido nesta maquina",
+                        pname, nome);
+        } else {
+          std::snprintf(det, sizeof(det),
+                        "pname 0x%08x nao servido: nao ha valor medido nesta maquina",
+                        pname);
+        }
+        return recusa(det);
       }
       mem_.Escrever32(destino, valor);
-      return feito(2);
+      return feito_com(2, "valor do estado do motor escrito na memoria do guest");
     }
     case kIgl_GetString:
       // A STRING E UMA AFIRMACAO SOBRE O HARDWARE. Devolver "ATI" ou uma lista de

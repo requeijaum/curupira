@@ -1712,6 +1712,153 @@ TEST(FrenteColor4f, ACorDoColor4fChegaATelaNoDesenho) {
   EXPECT_EQ(vermelhos, tela.Escritos()) << "todos os escritos sao vermelhos";
 }
 
+// ---------------------------------------------------------------------------
+// 10. A FRENTE getint: o `glGetIntegerv(GL_MAX_TEXTURE_SIZE)`
+// ---------------------------------------------------------------------------
+//
+// MEDIDO ANTES DE MEXER (frente getint, base `dc132e7`). Um titulo por corrida,
+// `ZB2_QUADROS=300 ZB2_EVT_START=1 ZB2_TRACE=1`, traco das tres corridas em
+// `/tmp/getint_tr_{gof,pbc,rmp}.txt`:
+//
+//   [video] GL_glGetIntegerv slot=38 args=[00000d33 802000a8 ...] lr=0x00022b68
+//           -> recusado | a memoria de texturas nao existe nesta etapa
+//
+// `args[0]` e o `pname` e o valor e 0x0D33 (GL_MAX_TEXTURE_SIZE, `gles_1_0/gl.h:224`),
+// e e o UNICO `pname` que os 62 titulos pedem a este metodo: uma chamada no gof,
+// uma no pbc e uma no rmp, sempre com o mesmo pname. Os tres levam o mesmo
+// desfecho: `recusado`.
+//
+// DUAS FALTAS POR UMA CHAMADA, e isso e o desenho, nao um defeito: o wrapper do
+// SDK (`sdk/src/GL.c`, `glGetIntegerv` -> `IGL_glGetIntegerv(GPIGL, pname, params)`)
+// entra pelo IGL de 80 slots (o motor regista `glGetIntegerv`), e o objecto
+// IGLES11 entra pelo slot 66 mapeado para o MESMO motor (o `classes.cpp` regista
+// `IGLES11::GetIntegerv`). Uma correccao no motor serve os dois nomes -- e o
+// teste verifica os DOIS contadores de faltas, porque e isso que a bateria conta.
+//
+// COMO ESTES TESTES ENTRAM: pela TABELA. O endereco de saida do slot vem da
+// VTABLE ESCRITA NA MEMORIA DO GUEST -- a mesma que o wrapper do SDK le pelo
+// ponteiro do objecto -- e o indice de despacho sai desse endereco. Um teste que
+// chamasse o id interno do motor provava o motor e nao a cablagem (armadilha 3).
+
+TEST(FrenteGetint, OMaxTextureSizeDoIgles11EhServidoPelaTabela) {
+  BancoClasses b;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+
+  // A TABELA, lida da memoria do guest no endereco que o objecto IGLES11 aponta.
+  const std::uint32_t entrada =
+      b.saidas.Endereco(kVtableIgles) + 4u * igles_slots::kIgles_GetIntegerv;
+  const std::uint32_t alvo = b.mem.Ler32(entrada);
+  std::uint32_t indice = 0;
+  ASSERT_TRUE(b.saidas.Contem(alvo, &indice)) << "entrada 0x" << std::hex << entrada;
+  EXPECT_EQ(indice, kVtableIgles + igles_slots::kIgles_GetIntegerv);
+
+  // O PEDIDO MEDIDO NO gof, pbc E rmp, com o destino que os tres usam.
+  constexpr std::uint32_t kDestino = 0x0002E300u;
+  b.mem.Escrever32(kDestino, 0xDEADBEEFu);  // VENENO: apanhado se nao escrever
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, GL_MAX_TEXTURE_SIZE);
+  b.cpu.Set(kR2, kDestino);
+  ASSERT_TRUE(AtenderClasse(b.cpu, indice, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess) << b.Detalhe("IGLES11::GetIntegerv");
+  // OS DOIS NOMES DA MESMA CHAMADA, e nenhum deles com falta.
+  EXPECT_EQ(b.Faltas("IGLES11::GetIntegerv"), 0u) << b.Detalhe("IGLES11::GetIntegerv");
+  EXPECT_EQ(b.Faltas("glGetIntegerv"), 0u);
+
+  // O NUMERO, escrito a mao, com a fonte: o guia do console diz, na linha 1254,
+  // "Zeebo supports texture sizes of up to 1024 x 1024". O valor tem de estar na
+  // memoria do guest -- e o titulo le-o de la.
+  EXPECT_EQ(b.mem.Ler32(kDestino), 1024u);
+
+  // O `GL_MAX_TEXTURE_SIZE` DEIXOU DE SER O UNICO: as tres profundidades de pilha
+  // continuam servidas pelo mesmo caminho, com os mesmos numeros do motor.
+  const std::uint32_t casos[3][2] = {{GL_MAX_MODELVIEW_STACK_DEPTH, 16u},
+                                     {GL_MAX_PROJECTION_STACK_DEPTH, 2u},
+                                     {GL_MAX_TEXTURE_STACK_DEPTH, 2u}};
+  for (const auto& caso : casos) {
+    b.mem.Escrever32(kDestino, 0xDEADBEEFu);
+    b.cpu.Set(kR0, kObjetoIgles);
+    b.cpu.Set(kR1, caso[0]);
+    b.cpu.Set(kR2, kDestino);
+    ASSERT_TRUE(AtenderClasse(b.cpu, indice, b.traco));
+    EXPECT_EQ(b.cpu.Get(kR0), kAeeSuccess);
+    EXPECT_EQ(b.mem.Ler32(kDestino), caso[1]) << "pname 0x" << std::hex << caso[0];
+  }
+}
+
+TEST(FrenteGetint, OMaxTextureSizeTambemServeOPercursoDoIGLDe80Slots) {
+  // A OUTRA PORTA: o wrapper do SDK (`GL.c: glGetIntegerv` ->
+  // `IGL_glGetIntegerv(GPIGL, ...)`) chega pelo motor do IGL de 80 slots. Sem
+  // esta metade, "o pedido foi servido" so estaria provado para o objecto
+  // IGLES11 -- e o `glGetIntegerv` do SDK nao passa por la.
+  Banco b;
+  ASSERT_EQ(b.igl.Instalar(b.saidas), kIglSlots);
+
+  // A TABELA, e nao um id interno: o slot 38 do IGL tem de apontar para o
+  // endereco de saida DO SEU slot.
+  EXPECT_EQ(b.mem.Ler32(b.igl.Vtable() + 4u * kIgl_GetIntegerv),
+            b.saidas.Endereco(kVtableIgl + kIgl_GetIntegerv));
+
+  constexpr std::uint32_t kDestino = 0x0002E400u;
+  b.mem.Escrever32(kDestino, 0xDEADBEEFu);
+  EXPECT_EQ(b.igl.Executar(kIgl_GetIntegerv, Args(GL_MAX_TEXTURE_SIZE, kDestino), nullptr),
+            ResultadoGl::Feito);
+  EXPECT_EQ(b.mem.Ler32(kDestino), 1024u);
+  EXPECT_EQ(b.igl.Recusas().count("glGetIntegerv"), 0u);
+}
+
+TEST(FrenteGetint, OPnameQueNaoSeSabeResponderRecusaComONomeEDeixaODestinoIntacto) {
+  // O OUTRO LADO DA REGRA (P2): um `pname` sem valor medido NAO pode receber um
+  // numero inventado -- um viewport ou uma matriz a zero fariam um titulo
+  // dimensionar texturas (ou recortar o ecra) com numeros que a maquina nao tem,
+  // e nada avisava. Recusa, diz o pname, e NAO escreve.
+  BancoClasses b;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+  const std::uint32_t entrada =
+      b.saidas.Endereco(kVtableIgles) + 4u * igles_slots::kIgles_GetIntegerv;
+  std::uint32_t indice = 0;
+  ASSERT_TRUE(b.saidas.Contem(b.mem.Ler32(entrada), &indice));
+
+  constexpr std::uint32_t kDestino = 0x0002E500u;
+  // `GL_VIEWPORT` (0x0BA2, `gles_1_1/gl.h:278`) esta no cabecalho do SDK, logo a
+  // recusa diz o NOME. O numero vai escrito aqui porque `tools/gl_slots.inc` e
+  // gerado do perfil Common-Lite e nao tem este nome (a mesma razao do `igl.cpp`).
+  b.mem.Escrever32(kDestino, 0xDEADBEEFu);
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, 0x00000BA2u);  // GL_VIEWPORT
+  b.cpu.Set(kR2, kDestino);
+  ASSERT_TRUE(AtenderClasse(b.cpu, indice, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("IGLES11::GetIntegerv"), 1u);
+  EXPECT_NE(b.Detalhe("IGLES11::GetIntegerv").find("0x00000ba2"), std::string::npos);
+  EXPECT_NE(b.Detalhe("IGLES11::GetIntegerv").find("GL_VIEWPORT"), std::string::npos);
+  EXPECT_EQ(b.mem.Ler32(kDestino), 0xDEADBEEFu) << "a recusa nao escreve no destino";
+}
+
+TEST(FrenteGetint, OPnameForaDoCabecalhoRecusaComONumeroDele) {
+  // O mesmo, com um `pname` que nem o cabecalho do SDK tem: a recusa fica com o
+  // NUMERO, que e a unica informacao que existe sobre ele. O banco e NOVO porque
+  // o `Detalhe` de um nome devolve o PRIMEIRO evento com esse nome, e nesta
+  // corrida o primeiro ja tem de ser este.
+  BancoClasses b;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+  const std::uint32_t entrada =
+      b.saidas.Endereco(kVtableIgles) + 4u * igles_slots::kIgles_GetIntegerv;
+  std::uint32_t indice = 0;
+  ASSERT_TRUE(b.saidas.Contem(b.mem.Ler32(entrada), &indice));
+
+  constexpr std::uint32_t kDestino = 0x0002E500u;
+  b.mem.Escrever32(kDestino, 0xDEADBEEFu);
+  b.cpu.Set(kR0, kObjetoIgles);
+  b.cpu.Set(kR1, 0x0000ABCDu);
+  b.cpu.Set(kR2, kDestino);
+  ASSERT_TRUE(AtenderClasse(b.cpu, indice, b.traco));
+  EXPECT_EQ(b.cpu.Get(kR0), kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("IGLES11::GetIntegerv"), 1u);
+  EXPECT_NE(b.Detalhe("IGLES11::GetIntegerv").find("0x0000abcd"), std::string::npos);
+  EXPECT_EQ(b.mem.Ler32(kDestino), 0xDEADBEEFu) << "a recusa nao escreve no destino";
+}
+
+
 
 }  // namespace
 }  // namespace zb2::brew

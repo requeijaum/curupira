@@ -251,6 +251,40 @@ constexpr int kModoModelView = 0;
 constexpr int kModoProjection = 1;
 constexpr int kModoTexture = 2;
 
+// --- O LADO MAXIMO DE TEXTURA QUE A MAQUINA DECLARA ---------------------------
+//
+// E O QUE O `glGetIntegerv(GL_MAX_TEXTURE_SIZE)` DEVOLVE. O numero nao foi
+// escolhido aqui: e o limite DOCUMENTADO do proprio console.
+//
+//   ZeeboDeveloperGuide0.97.md:1254  "Zeebo supports texture sizes of up to
+//                                     1024 x 1024. Texture dimensions must be a
+//                                     power of 2."
+//   ZeeboDeveloperGuide0.97.md:1445  "dual texture filtering units at maximum
+//                                     1024x1024 resolution"
+//   ZeeboDeveloperGuide0.97.md:4462  `GetIntegerv MAX_TEXTURE_SIZE` na tabela do
+//                                     que a plataforma responde
+//
+// O outro emulador desta casa chegou ao MESMO numero por fora -- e essa
+// concordancia e a segunda testemunha, nao a fonte:
+// `zeebx-emu/src/video/gles.rs:332`, `MAX_TEXTURE_SIZE = 1024`, com a razao
+// escrita la ("os jogos dimensionam os atlas por este numero, e um valor
+// absurdo so levaria a alocacoes absurdas").
+//
+// PORQUE E QUE O NOSSO EMULADOR PODE DIZER 1024 SEM MENTIR: nao ha memoria de
+// texturas nenhuma do lado do hospedeiro a estourar. O `AmostrarTextura`
+// (`core/video/rasterizador.cpp:684`) CALCULA o endereco do texel a partir do
+// ponteiro do guest -- `ponteiro + (ty*largura + tx)*bytes` -- e cada amostragem
+// e uma leitura da memoria do guest. O limite real seria a aritmetica de
+// enderecos de 32 bits, que aguenta 1024x1024 (4 MiB em RGBA8) com folga.
+//
+// O QUE ISTO **NAO** DIZ, e fica escrito para nao se ler a mais: que o emulador
+// IMPOE este limite. O `glTexImage2D` aceita e regista o lado que o guest
+// declarar, seja qual for, e recusar o que o guest declarou seria inventar uma
+// regra que a maquina nao tem. O que o `glGetIntegerv` responde e a pergunta do
+// titulo ("qual e o maior lado que a maquina aceita?"), e a resposta e a do
+// console.
+constexpr std::uint32_t kTexturaMaxima = 1024;
+
 struct PilhaDeMatrizes {
   float m[kFundosMax][16];
   int fundo = kFundoModelView;
