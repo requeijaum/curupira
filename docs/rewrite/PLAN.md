@@ -446,6 +446,61 @@ mudou de facto no corpus:
 
 ---
 
+## A ronda da noite -- os CLSIDs com a vtable certa, o SQLite de verdade, e o bitblt
+
+**Seis commits, 756 testes, ctest 13/13, 0 regressoes em cada medicao isolada.** O que
+mudou no corpus:
+
+| frente | commit | efeito medido |
+|---|---|---|
+| `setup` | `0e3d5e8` | `SetupNativeImage` (0x064): **allstarcards 650 K -> 220 216 388 px, cores 2 -> 1406, blits 2 -> 10 073** |
+| `zwheel` | `36102f1` | `ISQLMgr::Open` devolve o banco no **r2** (nao no r3): o `tectoy` 255 -> 16 197 passos |
+| **`sqlite`** | `56121fb` | o subconjunto de SQL a mao **trocado pela ponte sobre SQLite 3.50.2** (amalgamacao em `third_party/sqlite3/`); os 4 bancos reais abrem |
+| `fora` | `4b21651` | o **`BitBlt` lia os pixels a partir do endereco do OBJECT O** -> origem = `pBmp`, passo = `nPitch`: **toyraidzeebo cores 65 -> 332, tekken2 31 -> 101** |
+| `mediautil` | `dc132e7` | cada CLSID recebe a vtable da SUA interface; o `CreateMedia` **escreve o `ppm`**: 48 buffers PCM reais, 106 recusas -> 0 |
+
+**O numero que interessa:** `cores > 10` passou de 1 para **3** titulos --
+`tekken2` **101**, `toyraidzeebo` **332**, `allstarcards` **1406**. O total de pixels do
+corpus saiu de 1,64 para **2 062 839 542**.
+
+### As quatro contradicoes que corrigiram o plano (todas minhas)
+
+1. **O LEDGER tinha a cadeia do `allstarcards` errada.** Eu escrevi que as 106 recusas de
+   CPU eram consequencia do `SetupNativeImage`. **Nao eram**: o objecto de `[r4+28]` e o
+   `IMedia **ppm` de `IMediaUtil::CreateMedia`, e nos criavamos o `AEECLSID_MEDIAUTIL` com
+   a **vtable do `IMedia`** -- o slot 3 respondia `RegisterNotify` sem escrever o `ppm`.
+   Corrigido no ledger com os enderecos.
+2. **`CreateMediaEx` e o slot 5, nao o 4** (o `EncodeMedia` ocupa o 4). Com o Ex no 4, quem
+   pedisse o 4 recebia a funcao errada.
+3. **A referencia pode ser VELHA.** O `/tmp/corrida_park.json` (de antes do `zwheel`) deu
+   "5 regressoes e 11 melhorias FALSAS" a frente `sqlite`; a base verdadeira e a corrida
+   imediatamente anterior. Ja aconteceu com a `igl2` e com a `thrd`.
+4. **"Vai mais longe" nao e o criterio.** O `tectoy` com SQLite REAL faz **233 passos a
+   MENOS** no create -- porque o `SELECT` responde e o jogo salta o `CREATE`+`INSERT` que o
+   subconjunto forcava. Menos passos, e um banco que funciona.
+
+### Licao de metodo (a quarta vez na sessao)
+
+**O desmonte local diz COMO o jogo morre, nao PORQUE o ponteiro esta a zero.** A cadeia do
+`allstarcards` so ficou certa quando a frente mediu o **valor** de `[r4+28]` em vez de o
+inferir do `ldr`/`blx`. O mesmo padrao apareceu no `pbmSource` do `BitBlt` e no `dwSize`
+impar do `IMediaUtil`.
+
+### O PROXIMO, por evidencia
+
+1. **`Memoria::Ler fora de instrucao`** -- 9 titulos; os que ficam sao o `strstr` do guest
+   com agulha que nao e ponteiro (a frente `fora` mediu: qualquer "arranjo" seria mascara).
+2. **Os 4 ajudantes que faltam**: `utf8towstr` (2), `wstrtoutf8`, `aee_GetSeconds`,
+   `aee_GetJulianDate` (o `tectoy` e o `pbc`).
+3. **`IGLES11::GetIntegerv`** -- 3 titulos (gof/pbc/rmp); o motor tem o slot e o que falta e
+   responder os `pname` que eles pedem DE FACTO.
+4. **`AEECLSID_CONFIG` e `AEECLSID_DOWNLOAD`** (tectoy) + o `IRootForm HandleEvent`.
+5. **Os 5 `dwSize` impares** do `allstarcards` no `IMediaUtil::CreateMedia` (221 531,
+   299 689, 587 245, 470 217, 2 507): recusados com motivo -- **nao inventar formato**.
+6. A familia do `0xbfffff64` (6 titulos) e a fila estatica do `cninja`.
+
+---
+
 ## O laco de trabalho
 
 1. **Um titulo de cada vez**, do mais simples ao mais complexo.
