@@ -2319,3 +2319,23 @@ seguinte e essa, e e do `imedia.*`.
 Licao de metodo (a terceira vez na sessao): o desmonte LOCAL (aquele `ldr`/`blx`) dizia
 *como* o jogo morria, nao *porque* o ponteiro estava a zero -- e a causa real so apareceu
 quando a frente mediu o valor de `[r4+28]` em vez de o inferir do desmonte.
+
+
+### 16/09 -- o `IShell::LoadResDataEx` dos 4 titulos: a recusa esta CERTA (contrato do SDK lido)
+
+A demanda mantem 4 titulos (heavyweaponbrew, peggle, ridgeracer, torkandkral) com a mesma falta, e a
+tentacao era "servir de qualquer maneira". O cabecalho da consola fecha a questao (`sdk/inc/AEEShell.h`,
+bloco da doc de `LoadResDataEx`, 5112-5165):
+
+    pBuf = -1   -> nenhum buffer; o TAMANHO sai em pnBufSize e a funcao devolve -1 (0xffffffff)
+    pBuf = NULL -> a funcao ALOCA (e o jogo liberta com ISHELL_FreeResData); pnBufSize IGNORADO na entrada
+    pBuf != NULL-> pnBufSize e [in] (o tamanho do buffer do chamador); se for pequeno, devolve NULL
+
+Nos servimos AS TRES formas (`core/brew/recursos.cpp`, "FORMA 3: alocar" na linha 248, com o alocador do
+GUEST; e o teste V4). E o traco do `heavyweaponbrew` mostra o caso exato: o jogo pede o tamanho 2x
+(`pBuf=-1`), e depois pede a COPIA com `*pnBufSize=0x00000449` para um recurso de `0x00003030` -- um campo
+REUTILIZADO de outro recurso. Pelo SDK, um buffer pequeno devolve NULL, e e isso que fazemos.
+
+Conclusao: **nao ha nada a corrigir no nosso lado**; a falta fica como recusa honesta e o campo e do jogo.
+A premissa "servir de qualquer maneira" seria copiar por cima do buffer do chamador -- o que o
+zeebulator-upstream faz (copia sem olhar ao tamanho) e o que a spec proibe.
