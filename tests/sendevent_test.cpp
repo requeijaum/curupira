@@ -289,6 +289,54 @@ TEST(SendEvent, ForaDoRegistoOAppletSaiDoPpObj) {
   EXPECT_EQ(b.Mem().Ler32(kSaida), kResposta);
 }
 
+// 3b. O MESMO VALE PARA O AJUDANTE `GetAppInstance` (AEEHelperFuncs 0x0C0).
+//
+// MEDIDO no `Rolimaz` (276809): o motor chama o ajudante 0x0c0 DENTRO do seu
+// proprio `CreateInstance` (chamada em `pc=0x000047b8`, `lr=0x000047bc`) e usa o
+// resultado como OBJECT0 -- `ldr r0,[r4,#0xc]` em `0x0000480c`, com `r4` = a
+// resposta. Com `applet_` a zero a resposta e 0, a leitura de `[0+0xc]` cai no
+// CABECALHO DO PROPRIO MODULO (`[0x0c]` = 1), o `1` passa a ser tratado como
+// ponteiro, a leitura de `[1]` devolve `0x000fea00`, o `blx` seguinte salta para
+// 0 e a entrada do modulo corre uma SEGUNDA vez. E o grupo G2 (9 titulos).
+//
+// A RESPOSTA CERTA E A MESMA QUE O `SendEvent` ja usa
+// (`despacho.cpp:2262-2267`): enquanto o `CreateInstance` nao retorna, o applet
+// e o que o `AEEApplet_New` do GUEST ja escreveu no `ppObj`
+// (zeebx `src/machine/helper.rs`, caso "GetAppInstance").
+TEST(GetAppInstance, DentroDoCreateOAppletSaiDoPpObj) {
+  Bancada b;
+  b.D().SituarTitulo("/nao/existe", "274755", kClsidDoTitulo);
+  // NAO chamar DefinirApplet: e o estado de DENTRO do create.
+  b.Mem().Escrever32(kPpObj, kApplet);
+
+  // A CHAMADA E PELA TABELA, e nao pelo id interno: quem chama o id interno
+  // testa o despacho e nao a cablagem -- o offset 0x0c0 tem de estar LIGADO.
+  const std::uint32_t alvo = b.Mem().Ler32(kTabela + 0x0c0u);
+  EXPECT_NE(alvo, 0u) << "o offset 0x0c0 nao esta cablado na tabela";
+  b.Cpu().Set(kLR, kSentinela);
+  b.Cpu().Set(kPC, alvo);
+  (void)b.D().Correr(b.Cpu(), 1000, kPpObj);
+
+  EXPECT_EQ(b.Cpu().Get(kR0), kApplet)
+      << "o `GetAppInstance` dentro do create tem de devolver o ppObj, e nao 0";
+}
+
+// 3c. COM O APPLET JA REGISTADO, e ELE que responde (o `ppObj` nao ganha).
+TEST(GetAppInstance, ComOAppletRegistadoRespondeEle) {
+  constexpr std::uint32_t kAppletRegistado = 0x80096000u;
+  Bancada b;
+  b.D().SituarTitulo("/nao/existe", "274755", kClsidDoTitulo);
+  b.D().DefinirApplet(kAppletRegistado);
+  b.Mem().Escrever32(kPpObj, kApplet);
+
+  const std::uint32_t alvo = b.Mem().Ler32(kTabela + 0x0c0u);
+  b.Cpu().Set(kLR, kSentinela);
+  b.Cpu().Set(kPC, alvo);
+  (void)b.D().Correr(b.Cpu(), 1000, kPpObj);
+
+  EXPECT_EQ(b.Cpu().Get(kR0), kAppletRegistado);
+}
+
 // 4a. O PostEvent (EVTFLG_ASYNC) e RECUSADO EM VOZ ALTA -- nao ha fila.
 TEST(SendEvent, OAsincronoERecusadoComNome) {
   Bancada b;

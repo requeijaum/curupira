@@ -4390,7 +4390,33 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // nao tem o `po` a mao. Nao tem argumentos: os registos que a bateria
         // imprime sao RESIDUAIS, e foi por isso que quase persegui uma "fuga de
         // enderecos de saida para o guest" que nao existia.
-        cpu.Set(kR0, applet_);
+        //
+        // **DENTRO DO PROPRIO `CreateInstance` a resposta NAO E `applet_`**, e
+        // isto esta MEDIDO no `Rolimaz` (276809): o motor chama o ajudante 0x0c0
+        // em `pc=0x000047b8` (durante o create) e usa a resposta como OBJECT0
+        // -- `ldr r0,[r4,#0xc]` em `0x0000480c`. Com a resposta a ZERO, essa
+        // leitura cai no CABECALHO DO PROPRIO MODULO (`[0x0c]` = 1), o `1` passa
+        // a ser tratado como ponteiro, a leitura de `[1]` devolve `0x000fea00`,
+        // o `blx` seguinte salta para 0 e a entrada do modulo corre uma SEGUNDA
+        // vez (`ENTRADA_DO_MODULO_REPETIDA lr=0x000023dc`).
+        //
+        // MEDIDO na corrida dos 62 (0 regressoes): os 5 titulos do motor Tectoy
+        // (`Rolimaz`, `AirRacez`, `Bajaz`, `Boiaz`, `JetBoardz` -- 5,5,5,5,5
+        // re-entradas -> 0) e o `ddragonz` (1 -> 0, 0 -> 120 972 000 px e
+        // 0 -> 1500 textos). **O `footparty`, o `cnk2` e o `zumar` NAO vem por
+        // aqui**: esta correccao nao lhes toca UM campo (0 diferencas em 62), e o
+        // mecanismo deles esta medido em `/tmp/pesquisa/g2.md` (seccao 5).
+        //
+        // A REGRA E A QUE O `SendEvent` JA USA (acima, `EntregarEventoAoApplet`):
+        // o applet existe quando e CRIADO, e nao quando e INICIADO -- o
+        // `AEEApplet_New` do guest ja escreveu o ponteiro no `ppObj`
+        // (zeebulator `core/brew/ishell.cpp:200-207`; zeebx
+        // `src/machine/helper.rs`, caso "GetAppInstance": `current_applet == 0`
+        // -> `read_u32(out_module + 4)`). UM LUGAR, UMA REGRA: `applet_` so
+        // ganha quando o `DefinirApplet` corre (depois do create).
+        std::uint32_t applet = applet_;
+        if (applet == 0 && pp_saida != 0) applet = mem_.Ler32(pp_saida);
+        cpu.Set(kR0, applet);
       } else if (idx == kSlotIdQueryClass) {
         // `boolean QueryClass(IShell *po, AEECLSID cls, AEEAppInfo *pai)`.
         //
