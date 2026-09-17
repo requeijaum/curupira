@@ -1435,6 +1435,207 @@ TEST(Cpu, ThumbFormato11ContinuaARecusarOQueNaoConhece) {
   EXPECT_EQ(b.Cpu().FamiliaDaUltima(), std::string("thumb:formato19_bl_blx"));
 }
 
+TEST(Cpu, ThumbLsrsEAsrsComContagemZeroDeslocamTrintaEDois) {
+  // MEDIDO no espaco Thumb inteiro: as formas 3 e 4 do formato 4 (LSR/ASR por
+  // REGISTADOR, 0x40C0-0x40FF e 0x4100-0x413F) tratavam a contagem ZERO como
+  // "nao deslocar". No ARM ARM o zero do LSR e do ASR E 32 (so o LSL e o ROR
+  // tratam o zero como "nao deslocar") -- e um `lsrs r1, r0` com o byte baixo de
+  // r0 a zero deixava o registador intacto em vez de o zerar.
+  Bancada b(0x00100000u);
+  b.R(0, 0x00000100u);       // a quantidade: byte baixo ZERO
+  b.R(1, 0x80000000u);       // o valor
+  b.R(7, 0x00100005u);
+  b.Instrucao(0xE12FFF17u);  // bx r7 -> Thumb
+  b.Thumb(0x40C1u);          // lsrs r1, r0
+  b.Terminar();
+  b.Correr(2);
+  EXPECT_EQ(b.R(1), 0x00000000u) << "LSR por 32 e zero, e nao o valor intacto";
+  EXPECT_TRUE(C(b)) << "e o carry e o ultimo bit que saiu (o 31)";
+
+  Bancada d(0x00100000u);
+  d.R(0, 0x00000100u);
+  d.R(1, 0x80000000u);
+  d.R(7, 0x00100005u);
+  d.Instrucao(0xE12FFF17u);
+  d.Thumb(0x4101u);          // asrs r1, r0
+  d.Terminar();
+  d.Correr(2);
+  EXPECT_EQ(d.R(1), 0xFFFFFFFFu) << "ASR por 32 enche de sinal";
+  EXPECT_TRUE(C(d));
+}
+
+TEST(Cpu, MovDoPcLrPeloCaminhoDosDadosTrocaDeEstadoComoUmBx) {
+  // A INCONSISTENCIA, dentro da NOSSA propria arvore: o `ldr pc` (d0f1146) e o
+  // `ldm {..., pc}` HONRAM o bit 0 do valor carregado e escolhem o estado, e o
+  // `mov pc, rX`/`add pc, ...` do ARM NAO -- escrevia o valor CRU no PC, bit 0
+  // incluido. O ARM ARM (A2.3.1) poe os tres na mesma familia: escrever o PC
+  // por uma instrucao de dados no ARMv5T e um salto com troca de estado.
+  //
+  // NAO HA MEDICAO DESTE CASO NO CORPUS: os 2 727 `mov pc,lr` de 43 dos 62
+  // modulos levam o bit 0 a ZERO (medido pelo auditor de efeito, que compara o
+  // modo). A correccao NAO muda nada do que esta medido; fecha o caminho.
+  Bancada b(0x00100000u);
+  b.R(14, 0x00100021u);      // `lr` impar: o bit 0 escolhe Thumb
+  b.Mem().Escrever16(0x00100020u, 0x46C0u);  // nop no alvo (Thumb)
+  b.Instrucao(0xE1A0F00Eu);  // mov pc, lr
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(15), 0x00100020u) << "o PC fica sem o bit 0";
+  EXPECT_NE(b.Cpu().Cpsr() & Cpsr::kT, 0u) << "e o estado passa a Thumb";
+}
+
+TEST(Cpu, ThumbNegsUsaOSegundoOperandoENaoOProprioDestino) {
+  // MEDIDO no espaco Thumb inteiro: 56 meias-palavras. O formato 4 do Thumb e
+  // `op Rd, Rm`, e o `neg` e `RSBS Rd, Rm, #0` -- a UNICA operacao do formato em
+  // que o destino NAO e tambem fonte. O ramo lia `a = Get(rd)` como em todas as
+  // outras e negava o PROPRIO destino: `negs r1, r0` dava `0 - r1` em vez de
+  // `0 - r0`.
+  //
+  // NAO HA MEDICAO DESTE CASO NO CORPUS (nas 689 meias-palavras Thumb que os 62
+  // titulos executam nao ha nenhum `negs`); a correccao fecha o caminho.
+  Bancada b(0x00100000u);
+  b.R(0, 0x00000005u);       // Rm -- a fonte de verdade
+  b.R(1, 0x00000001u);       // Rd -- o que o defeito negava
+  b.R(7, 0x00100005u);
+  b.Instrucao(0xE12FFF17u);  // bx r7 -> Thumb
+  b.Thumb(0x4241u);          // negs r1, r0
+  b.Terminar();
+  b.Correr(2);
+  EXPECT_EQ(b.R(1), 0xFFFFFFFBu) << "0 - Rm (5), e nao 0 - Rd (1)";
+}
+
+TEST(Cpu, ArmDeslocamentoPorRegistadorComContagemZeroNoLsrEAsrE32) {
+  // MEDIDO no corpus pela sonda de efeito (880 641 instrucoes executadas):
+  // `orr r4, r4, r5, lsr r0` (`ridgeracer.mod` 0x928 e 6 casos mais) e 13 casos
+  // do `bio4_brew.mod`. A contagem ZERO do LSR/ASR POR REGISTADOR vale 32 no ARM
+  // ARM; o caminho do deslocamento IMEDIATO ja o sabia (`quantidade == 0 &&
+  // tipo != 0` -> 32) e o caminho do REGISTADOR nao: um `lsr rX` com o byte
+  // baixo do registador da contagem a zero nao deslocava nada.
+  Bancada b(0x00100000u);
+  b.R(1, 0x00000004u);       // valor a deslocar
+  b.R(2, 0x00008000u);       // o outro operando do `orr`
+  b.R(3, 0x00000100u);       // a CONTAGEM: byte baixo ZERO
+  b.Instrucao(0xE1810332u);  // orr r0, r1, r2, lsr r3
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(0), 0x00000004u)
+      << "LSR por 32 contribui ZERO; o valor intacto (0x8004) e o defeito";
+
+  // E o caminho do ASR tambem, com o sinal a encher.
+  Bancada d(0x00100000u);
+  d.R(1, 0x00000000u);
+  d.R(2, 0x80000000u);
+  d.R(3, 0x00000100u);
+  d.Instrucao(0xE1810352u);  // orr r0, r1, r2, asr r3
+  d.Terminar();
+  d.Correr(1);
+  EXPECT_EQ(d.R(0), 0xFFFFFFFFu) << "ASR por 32 enche de sinal";
+}
+
+TEST(Cpu, EscreverOCpsrComBandeirasNaoAsDeixaPresas) {
+  // O DEFEITO, e porque ele interessa a um auditor: `SetCpsr(v)` guardava o `v`
+  // INTEIRO (bandeiras incluidas) em `modo_atual_`, e o `Cpsr()` devolve
+  // `modo_atual_ | bandeiras`. Resultado: as bandeiras escritas por um
+  // `SetCpsr` NUNCA mais saiam -- uma instrucao que as punha a zero continuava a
+  // le-las a UM.
+  //
+  // O CAMINHO REAL onde isto morde: o `despacho` guarda o CPSR a volta de uma
+  // chamada ao C++ (`cpu.SetCpsr(cpsr_guardado)`, 2 sitios no `despacho.cpp` e 1
+  // no `imedia.cpp`) e o callback mexe nas bandeiras -- o restauro ORava as duas.
+  Bancada b(0x00100000u);
+  b.Cpu().SetCpsr(0xF0000010u);   // N,Z,C,V ligadas + modo Usuario
+  b.Instrucao(0xE2900001u);       // adds r0, r0, #1 -> r0 = 1, Z = 0
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_FALSE(Z(b)) << "o Z escrito a UM por um SetCpsr tem de poder sair";
+  EXPECT_FALSE(N(b));
+  EXPECT_FALSE(V(b));
+}
+
+TEST(Cpu, OBancoSombraDoFiqUsaOModoEOsBitsDeMascara) {
+  // DEFEITO MEDIDO no proprio `Get`/`Set`: o teste do banco sombreado do FIQ
+  // comparava o CPSR INTEIRO com o valor do modo (`modo_atual_ == Modo::FIQ`).
+  // Como o CPSR de um modo valido leva sempre as mascaras de interrupcao (0x80 e
+  // 0x40), a comparacao era FALSA e o banco sombreado nunca era usado: um FIQ
+  // corrompia r8-r12 do modo interrompido, em silencio. A mascara e o modo --
+  // `modo_atual_ & Cpsr::kModo`.
+  Bancada b(0x00100000u);
+  b.R(8, 0xAAAAAAAAu);
+  b.Cpu().SetCpsr(static_cast<std::uint32_t>(Modo::FIQ) | Cpsr::kI | Cpsr::kF);
+  EXPECT_EQ(b.Cpu().ModoAtual(), Modo::FIQ);
+  EXPECT_EQ(b.R(8), 0x00000000u) << "no FIQ o r8 e o SOMBREADO, e nao o do usuario";
+  b.R(8, 0x0000BBBBu);
+  b.Cpu().SetCpsr(static_cast<std::uint32_t>(Modo::Usuario) | Cpsr::kI | Cpsr::kF);
+  EXPECT_EQ(b.R(8), 0xAAAAAAAAu) << "e o do usuario voltou intacto";
+}
+
+// ===========================================================================
+// DOIS DEFEITOS DO THUMB QUE O AUDITOR DE EFEITO APANHOU (e que o auditor de
+// NOMES nao podia apanhar: os dois tem o nome certo do objdump)
+// ===========================================================================
+
+TEST(Cpu, ThumbCmpComImediatoNaoEscreveNoRegistador) {
+  // MEDIDO com o auditor de EFEITO sobre o espaco Thumb inteiro (65 536
+  // meias-palavras) e EXECUTADO por um dos 62 titulos (`brainchallenge`:
+  // 0x20f4 `2801`, 0x3e30 `2800`, 0xab4a `2800`, 0x108f8 `2800`).
+  //
+  // O FORMATO 3 DO THUMB (`001 op(2) Rd(3) imm8`, 0x2000-0x2FFF) tem QUATRO
+  // operacoes -- mov, cmp, add, sub -- e o `cmp` NAO ESCREVE em Rd. O ramo
+  // fazia a conta certa (`Rd - imm`, com as bandeiras certas) e depois havia um
+  // `Set(rd, r)` IGUAL PARA AS QUATRO: cada `cmp rX, #imm` deixava o registador
+  // com o resultado da comparacao. O nome que a sonda escrevia era `cmp`, o
+  // mesmo do objdump -- por isso o auditor de nomes dizia que estava certo.
+  Bancada b(0x00100000u);
+  b.R(0, 0x00000005u);
+  b.R(7, 0x00100005u);
+  b.Instrucao(0xE12FFF17u);  // bx r7 -> Thumb
+  b.Thumb(0x2804u);          // cmp r0, #4
+  b.Terminar();
+  b.Correr(2);
+  EXPECT_EQ(b.R(0), 0x00000005u) << "o `cmp` NAO escreve no registador";
+  EXPECT_FALSE(Z(b)) << "5 - 4 = 1: nao e zero";
+  EXPECT_TRUE(C(b)) << "5 - 4 = 1: sem borrow, C = 1";
+  EXPECT_FALSE(N(b));
+}
+
+TEST(Cpu, ThumbAddAoPcESaltaENaoAvancaUmPasso) {
+  // MEDIDO no espaco Thumb inteiro (31 meias-palavras do formato 2 com o
+  // destino no PC). O ramo escrevia o resultado em Rd = PC e, NO FIM, o
+  // `Set(kPC, pc + 2)` do proprio tratamento punha o PC outra vez na instrucao
+  // seguinte: o salto era ANULADO em silencio -- o `pc` observado era
+  // `0x00008002` (a caixa de areia mais um passo) em vez do alvo.
+  //
+  // E o MESMO padrao que ja foi corrigido duas vezes nesta arvore (o `ldr pc`
+  // da transferencia simples e o `mov pc,lr` do ARM, `DespacharDadosProcessados`)
+  // -- quem escreve o PC manda, e quem chama NAO avanca por cima.
+  //
+  // O alvo leva o bit 0 LIGADO de proposito: o `add pc, rX` do Thumb ignora o
+  // bit 0 (e nao muda de estado), e e isso que o teste fixa.
+  // O ALVO NAO PODE SER `pc + 2`: e exactamente o valor que o defeito escrevia,
+  // e a guarda passava VERDE com ele (foi a primeira versao deste teste, e ela
+  // passou com o defeito presente -- a licao do teste que coincide com o valor
+  // errado).
+  Bancada b(0x00100000u);
+  // O `add pc, rX` do Thumb soma o PC (`0x00100004 + 4 = 0x00100008`) ao
+  // registador: com r0 = 9 o alvo e 0x00100011, e o bit 0 cai.
+  b.R(0, 0x00000009u);
+  b.R(7, 0x00100005u);
+  b.Instrucao(0xE12FFF17u);  // bx r7 -> Thumb
+  b.Thumb(0x4487u);          // add pc, r0
+  b.Thumb(0x0000u);          // movs r0, r0 -- NO MEIO do caminho, nao pode correr
+  b.Mem().Escrever16(0x00100010u, 0x46C0u);   // nop (0xBF00 nao existe; 0x46C0 = mov r8, r8)
+  b.Terminar();
+  b.Correr(2);
+  EXPECT_EQ(b.R(15), 0x00100010u)
+      << "o `add pc, r0` e um salto, e o bit 0 do alvo e ignorado";
+  // E a prova de que se CONTINUA a partir do alvo: o passo seguinte corre a
+  // meia-palavra que esta la (e nao o `movs` que ficou no meio do caminho).
+  const std::uint32_t r0_antes = b.R(0);
+  b.Correr(1);
+  EXPECT_EQ(b.R(15), 0x00100012u) << "o passo seguinte e o do alvo";
+  EXPECT_EQ(b.R(0), r0_antes) << "e nao o `movs r0, r0` do meio do caminho";
+}
+
 // ===========================================================================
 // O `BL` DE 32 BITS DO THUMB E A CONTA DOS DESLOCAMENTOS
 // ===========================================================================

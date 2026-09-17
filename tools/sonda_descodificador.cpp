@@ -84,6 +84,8 @@ std::uint32_t FlagsParaCondicao(std::uint32_t cond) {
 struct Opcoes {
   std::string ficheiro;
   std::string bin;
+  std::string pcs;
+  bool efeito = false;
   bool thumb = false;
   bool verboso = false;
   bool resumo = false;
@@ -117,6 +119,180 @@ class TabelaDeClasses {
   bool transbordou_ = false;
 };
 
+
+// ---------------------------------------------------------------------------
+// O MODO DE EFEITO (`--efeito`): o auditor passa a comparar VALORES.
+// ---------------------------------------------------------------------------
+//
+// PORQUE EXISTE. O modo de cima compara NOMES: o `bl` de 32 bits do Thumb com os
+// campos trocados chama-se `bl` nos dois lados e faz o guest saltar para o meio
+// de outra funcao; o `ldr r0,[sp,#4]` do Thumb 9xxx chamava-se `ldr` nos dois
+// lados e lia o registador errado. Centenas de commits passaram por cima disso.
+// Um nome NAO e um efeito.
+//
+// COMO SE LE O EFEITO, sem uma segunda descodificacao aqui: a instrucao e
+// executada UMA vez numa CAIXA DE AREIA (um endereco proprio, com todo o espaco
+// em volta preenchido por um PADRAO invertivel), e o que se le de volta e o
+// estado: PC depois, registadores mudados, palavras de memoria mudadas.
+//
+//   - o PADRAO e `valor(a) = a * 0x9E3779B1 ^ 0xA5A5A5A5`, uma BIJECCAO: o valor
+//     que um `ldr` deixa no registador diz, sem ambiguidade, DE QUE ENDERECO ele
+//     leu. E assim que o endereco de um carregamento PC-relativo se compara em
+//     NUMEROS, e nao por "o nome bate".
+//   - a JANELA VIGIADA e lida de volta depois de cada passo e o que mudou sai no
+//     relatorio: e assim que a LISTA de um `stm`/`push` -- que nao escreve
+//     registador nenhum -- se compara.
+//   - os sentinelas dos registadores sao ENDERECOS dentro da janela (0x8800+4i),
+//     e os seus oito bits de baixo dao as contagens de deslocamento 0, 4, ... 48
+//     quando o registador e usado como quantidade (0 e 32 incluidos).
+//
+// A EXECUCAO E NA CAIXA, e nao no endereco do ficheiro, porque o padrao precisa
+// de rodear a instrucao. O endereco REAL de cada palavra vai no relatorio (e o
+// denominador continua a ser o ficheiro), e o que se compara e o efeito relativo
+// a `pc`.
+constexpr std::uint32_t kCaixa = 0x00008000u;
+constexpr std::uint32_t kPadraoInicio = 0x00000000u;
+constexpr std::uint32_t kPadraoFim = 0x00010000u;
+// A JANELA E A REGIAO DO PADRAO INTEIRA. Uma janela estreita deixava de fora
+// as escritas cujo endereco vem da ARITMETICA dos sentinelas (medido:
+// `str r0,[r0,r0]` do formato 5 do Thumb escreve em 0x11000, fora de 0x6000-0xA000)
+// -- e um deposito que nao se ve nao se compara.
+constexpr std::uint32_t kVigiaInicio = 0x00000000u;
+constexpr std::uint32_t kVigiaFim = 0x00010000u;
+constexpr std::uint32_t kPadraoM = 0x9E3779B1u;
+constexpr std::uint32_t kPadraoX = 0xA5A5A5A5u;
+// Os sentinelas vivem BAIXOS, para que a aritmetica entre eles (somas, indices
+// de registador) fique toda dentro da janela.
+constexpr std::uint32_t kSentinelas = 0x00002000u;
+constexpr std::uint32_t kSPDaCaixa = 0x00002400u;
+constexpr std::uint32_t kLRDaCaixa = 0x00002440u;
+
+inline std::uint32_t ValorDoPadrao(std::uint32_t a) { return (a * kPadraoM) ^ kPadraoX; }
+inline std::uint32_t SentinelaDoRegistador(int r) {
+  return kSentinelas + 4u * static_cast<std::uint32_t>(r);
+}
+
+// Le a lista de enderecos (um por linha, hexadecimal ou decimal) que o modo
+// `--pcs` audita. A lista vem do que o CORPUS EXECUTA, e nao do espaco inteiro.
+std::vector<std::uint64_t> LerEnderecos(const std::string& caminho, std::size_t tamanho) {
+  std::vector<std::uint64_t> saida;
+  std::ifstream f(caminho);
+  if (!f) {
+    std::fprintf(stderr, "nao abri a lista de enderecos %s\n", caminho.c_str());
+    return saida;
+  }
+  std::string linha;
+  while (std::getline(f, linha)) {
+    if (linha.empty() || linha[0] == '#') continue;
+    const char* c = linha.c_str();
+    char* fim = nullptr;
+    const unsigned long v = std::strtoul(c, &fim, 0);
+    if (fim == c) continue;
+    saida.push_back(static_cast<std::uint64_t>(v) / tamanho);
+  }
+  return saida;
+}
+
+int CorrerEfeito(const Opcoes& op, const std::vector<std::uint8_t>& dados) {
+  const std::size_t tamanho = op.thumb ? 2 : 4;
+  const std::uint64_t palavras = dados.size() / tamanho;
+  std::unique_ptr<zb2::Memoria> memoria(new zb2::Memoria(nullptr));
+  memoria->EscritorUnico("sonda_descodificador_efeito");
+  std::unique_ptr<zb2::ArmInterpreter> cpu(new zb2::ArmInterpreter(*memoria, nullptr));
+
+  // O PADRAO EM VOLTA DA CAIXA. E escrito uma so vez: cada passo que escreve em
+  // memoria e desfeito (a janela e reposta a partir da linha de base).
+  std::vector<std::uint8_t> padrao(kPadraoFim - kPadraoInicio);
+  for (std::uint32_t a = kPadraoInicio; a < kPadraoFim; a += 4) {
+    const std::uint32_t v = ValorDoPadrao(a);
+    const std::size_t i = a - kPadraoInicio;
+    padrao[i + 0] = static_cast<std::uint8_t>(v & 0xFFu);
+    padrao[i + 1] = static_cast<std::uint8_t>((v >> 8) & 0xFFu);
+    padrao[i + 2] = static_cast<std::uint8_t>((v >> 16) & 0xFFu);
+    padrao[i + 3] = static_cast<std::uint8_t>((v >> 24) & 0xFFu);
+  }
+  memoria->EscreverBruto(kPadraoInicio, padrao.data(), static_cast<std::uint32_t>(padrao.size()));
+
+  const std::size_t janela = kVigiaFim - kVigiaInicio;
+  std::vector<std::uint8_t> base(janela);
+  std::vector<std::uint8_t> agora(janela);
+  memoria->LerBloco(kVigiaInicio, base.data(), static_cast<std::uint32_t>(janela));
+
+  // O CABECALHO: tudo o que o auditor precisa de saber para calcular o que
+  // ESPERA. Os numeros saem daqui, e nao escritos a mao do outro lado.
+  std::printf("#efeito_sentinela caixa=0x%08x sp=0x%08x lr=0x%08x", kCaixa, kSPDaCaixa, kLRDaCaixa);
+  for (int r = 0; r < 13; ++r) std::printf(" r%d=0x%08x", r, SentinelaDoRegistador(r));
+  std::printf(" padrao_m=0x%08x padrao_x=0x%08x padrao_ini=0x%08x padrao_fim=0x%08x"
+              " vigia_ini=0x%08x vigia_fim=0x%08x base=0x%08x tamanho=%zu modo=%s\n",
+              kPadraoM, kPadraoX, kPadraoInicio, kPadraoFim, kVigiaInicio, kVigiaFim, op.base,
+              tamanho, op.thumb ? "thumb" : "arm");
+
+  std::vector<std::uint64_t> indices;
+  if (!op.pcs.empty()) {
+    indices = LerEnderecos(op.pcs, tamanho);
+  } else {
+    for (std::uint64_t i = op.inicio; i < palavras && i < op.fim; ++i) indices.push_back(i);
+  }
+
+  for (std::size_t k = 0; k < indices.size(); ++k) {
+    const std::uint64_t i = indices[k];
+    if (i >= palavras) continue;
+    std::uint32_t palavra = 0;
+    for (std::size_t b = 0; b < tamanho; ++b) palavra |= static_cast<std::uint32_t>(dados[i * tamanho + b]) << (8 * b);
+    const std::uint32_t endereco = op.base + static_cast<std::uint32_t>(i * tamanho);
+
+    // A INSTRUCAO NA CAIXA, e a linha de base posta em dia com ela (os quatro
+    // bytes da caixa sao os unicos que diferem da base por construcao).
+    std::uint8_t bytes[4] = {0, 0, 0, 0};
+    for (std::size_t b = 0; b < tamanho; ++b) bytes[b] = dados[i * tamanho + b];
+    memoria->EscreverBruto(kCaixa, bytes, static_cast<std::uint32_t>(tamanho));
+    for (std::size_t b = 0; b < tamanho; ++b) base[kCaixa - kVigiaInicio + b] = bytes[b];
+
+    // ESTADO INICIAL: os treze sentinelas, sp, lr e a condicao satisfeita.
+    cpu->Repor(kCaixa, kSPDaCaixa);
+    for (int r = 0; r < 13; ++r) cpu->Set(r, SentinelaDoRegistador(r));
+    cpu->Set(zb2::kLR, kLRDaCaixa);
+    std::uint32_t cpsr = static_cast<std::uint32_t>(zb2::Modo::Usuario) | zb2::Cpsr::kI | zb2::Cpsr::kF;
+    if (op.thumb) {
+      cpsr |= zb2::Cpsr::kT;
+      if ((palavra & 0xF000u) == 0xD000u) cpsr |= FlagsParaCondicao((palavra >> 8) & 0xFu);
+    } else {
+      cpsr |= FlagsParaCondicao(palavra >> 28);
+    }
+    cpu->SetCpsr(cpsr);
+    const std::uint32_t cpsr_antes = cpu->Cpsr();
+    cpu->Passo();
+    const bool recusou = cpu->InstruscoesRecusadas() != 0;
+    const std::uint32_t cpsr_depois = cpu->Cpsr();
+    const std::uint32_t pc_depois = cpu->Get(zb2::kPC);
+
+    std::printf("#efeito %08x %08x %08x %08x %08x %d regs:", endereco, palavra, cpsr_antes,
+                pc_depois, cpsr_depois, recusou ? 1 : 0);
+    for (int r = 0; r < 16; ++r) {
+      const std::uint32_t inicial = (r == zb2::kPC) ? kCaixa : ((r == zb2::kSP) ? kSPDaCaixa : ((r == zb2::kLR) ? kLRDaCaixa : SentinelaDoRegistador(r)));
+      const std::uint32_t v = cpu->Get(r);
+      if (v != inicial) std::printf("%d=%08x ", r, v);
+    }
+    std::printf(" mem:");
+    memoria->LerBloco(kVigiaInicio, agora.data(), static_cast<std::uint32_t>(janela));
+    if (std::memcmp(agora.data(), base.data(), janela) != 0) {
+      for (std::size_t o = 0; o < janela; o += 4) {
+        if (std::memcmp(&agora[o], &base[o], 4) == 0) continue;
+        std::uint32_t v = 0;
+        for (std::size_t b = 0; b < 4; ++b) v |= static_cast<std::uint32_t>(agora[o + b]) << (8 * b);
+        std::printf("%08x=%08x ", static_cast<std::uint32_t>(kVigiaInicio + o), v);
+      }
+      // A JANELA E REPOSTA: uma escrita de uma instrucao nao pode contaminar a
+      // leitura da seguinte (foi assim que o `strd` da sonda clobberou a imagem).
+      memoria->EscreverBruto(kVigiaInicio, base.data(), static_cast<std::uint32_t>(janela));
+    }
+    std::printf(" nome:%s\n", cpu->FamiliaDaUltima());
+    if (recusou) std::printf("#efeito_motivo %08x %s\n", endereco, cpu->MotivoDaRecusa() != nullptr ? cpu->MotivoDaRecusa() : "recusa sem motivo escrito");
+    std::fflush(stdout);
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -124,6 +300,8 @@ int main(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     if (a == "--thumb") op.thumb = true;
+    else if (a == "--efeito") op.efeito = true;
+    else if (a.rfind("--pcs=", 0) == 0) op.pcs = a.substr(6);
     else if (a == "--verboso") op.verboso = true;
     else if (a == "--resumo") op.resumo = true;
     else if (a.rfind("--bin=", 0) == 0) op.bin = a.substr(6);
@@ -144,6 +322,9 @@ int main(int argc, char** argv) {
   if (!entrada) { std::fprintf(stderr, "nao abri %s\n", op.ficheiro.c_str()); return 3; }
   std::vector<std::uint8_t> dados((std::istreambuf_iterator<char>(entrada)),
                                   std::istreambuf_iterator<char>());
+  // O MODO DE EFEITO nao classifica: ele EXECUTA numa caixa de areia e le o
+  // estado. Sai daqui, antes de se carregar a imagem na memoria.
+  if (op.efeito) return CorrerEfeito(op, dados);
   const std::size_t tamanho = op.thumb ? 2 : 4;
   const std::uint64_t palavras = dados.size() / tamanho;
 

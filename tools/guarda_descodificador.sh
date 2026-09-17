@@ -37,7 +37,6 @@ FIM
 CABECALHO="$(grep -m1 '^# concorda' "$TABELA")"
 echo "$CABECALHO"
 SILENCIOSO="$(echo "$CABECALHO" | sed -n 's/.*SILENCIOSO): \([0-9]*\).*/\1/p')"
-rm -f "$ESPACO" "$TABELA"
 if [ "${SILENCIOSO:-x}" = "x" ]; then
   echo "o auditor nao devolveu o numero -- leia-o como falha, e nao como sucesso"
   exit 1
@@ -47,4 +46,35 @@ if [ "$SILENCIOSO" -ne 0 ]; then
   exit 1
 fi
 echo "OK: 0 meias-palavras do espaco Thumb executadas como outra instrucao"
+
+# ---------------------------------------------------------------------------
+# PARTE 2: O AUDITOR DE EFEITO (VALORES) sobre o MESMO espaco.
+#
+# O auditor de cima compara NOMES -- e um `bl` com o alvo deslocado de 0x30000
+# chama-se `bl` nos dois lados. Este compara o EFEITO: o alvo resolvido, o
+# endereco de cada carregamento PC-relativo, a lista e a escrita de volta dos
+# blocos, e as contagens de deslocamento 0 e 32. Precisa dos DOIS oraculos
+# (objdump E capstone): com um so nao ha contraste independente.
+#
+# Criterio: ZERO divergencias de VALOR. As recusas com nome (P2), as palavras em
+# que so um oraculo sabe descodificar (o Thumb-2 do 0xE800-0xFFFF, que o ARM1136
+# nao tem) e as instrucoes fora do modelo NAO reprovam -- contam-se, e o
+# relatorio diz quantas sao.
+# ---------------------------------------------------------------------------
+python3 -c "import capstone" 2>/dev/null || { echo "SKIP: sem capstone (o segundo oraculo)"; rm -f "$ESPACO" "$TABELA"; exit 77; }
+"$RAIZ/tools/auditar_descodificador.py" "$ESPACO" --sonda "$SONDA" --objdump "$OBJDUMP" \
+    --thumb --efeito --exemplos 0 > "$TABELA" 2>&1
+CABECALHO_EFEITO="$(grep -m1 '^# concorda' "$TABELA")"
+echo "$CABECALHO_EFEITO"
+VALOR="$(grep -m1 '^# efeito divergencias_de_valor' "$TABELA" | sed -n 's/.*: \([0-9]*\)/\1/p')"
+rm -f "$ESPACO" "$TABELA"
+if [ "${VALOR:-x}" = "x" ]; then
+  echo "o auditor de efeito nao devolveu o numero -- leia-o como falha, e nao como sucesso"
+  exit 1
+fi
+if [ "$VALOR" -ne 0 ]; then
+  echo "DIVERGENCIA DE VALOR: $VALOR meias-palavras do espaco Thumb (alvo, registadores, bandeiras, modo ou memoria)"
+  exit 1
+fi
+echo "OK: 0 meias-palavras do espaco Thumb com efeito divergente (alvo, registadores, bandeiras, memoria)"
 exit 0

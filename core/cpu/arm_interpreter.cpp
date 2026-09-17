@@ -82,7 +82,11 @@ ArmInterpreter::ArmInterpreter(Memoria& mem, Traco* traco) : mem_(mem), traco_(t
 
 Reg ArmInterpreter::Get(int r) const {
   if (r == kPC) return banco_[kPC];
-  if (modo_atual_ == static_cast<std::uint32_t>(Modo::FIQ) && r >= 8 && r <= 12) {
+  // O MODO, e nao o CPSR INTEIRO: um CPSR valido leva sempre as mascaras de
+  // interrupcao, logo `modo_atual_ == Modo::FIQ` era SEMPRE falso e o banco
+  // sombreado do FIQ nunca era usado -- um FIQ corrompia r8-r12 do modo
+  // interrompido, em silencio.
+  if ((modo_atual_ & Cpsr::kModo) == static_cast<std::uint32_t>(Modo::FIQ) && r >= 8 && r <= 12) {
     return sombra_fiq_r8_r12_[r - 8];
   }
   if (r == kSP || r == kLR) {
@@ -99,7 +103,7 @@ Reg ArmInterpreter::Get(int r) const {
 
 void ArmInterpreter::Set(int r, Reg v) {
   if (r == kPC) { banco_[kPC] = v; return; }
-  if (modo_atual_ == static_cast<std::uint32_t>(Modo::FIQ) && r >= 8 && r <= 12) {
+  if ((modo_atual_ & Cpsr::kModo) == static_cast<std::uint32_t>(Modo::FIQ) && r >= 8 && r <= 12) {
     sombra_fiq_r8_r12_[r - 8] = v; return;
   }
   if (r == kSP || r == kLR) {
@@ -128,7 +132,16 @@ void ArmInterpreter::SetCpsr(std::uint32_t v) {
   z_ = (v & Cpsr::kZ) != 0;
   c_ = (v & Cpsr::kC) != 0;
   v_ = (v & Cpsr::kV) != 0;
-  modo_atual_ = v;
+  // AS BANDEIRAS FICAM SO NOS CAMPOS DELAS, e nao tambem no `modo_atual_`.
+  //
+  // DEFEITO MEDIDO (sonda de efeito: 1 007 casos no corpus, `cmpeq` do
+  // `bio4_brew`): guardar o `v` inteiro deixava as bandeiras escritas por um
+  // `SetCpsr` PRESAS -- o `Cpsr()` devolve `modo_atual_ | bandeiras`, e uma
+  // instrucao que punha o Z a zero continuava a le-lo a UM. O caminho real onde
+  // isto morde e o `despacho`, que guarda e repoe o CPSR a volta de uma chamada
+  // ao C++ (`despacho.cpp:511`, `:2341`, `imedia.cpp:524`): o callback mexe nas
+  // bandeiras e o restauro ORava as duas.
+  modo_atual_ = v & ~(Cpsr::kN | Cpsr::kZ | Cpsr::kC | Cpsr::kV);
   if (!ModoValido(v)) {
     // Nao se corrige em silencio: escrever um modo invalido e um defeito de
     // quem escreve, e engoli-lo foi exactamente o erro do projeto antigo.
@@ -262,7 +275,16 @@ Reg ArmInterpreter::OperandoDeslocado(std::uint32_t instr, std::uint32_t pc, boo
   const uint32_t tipo = (instr >> 5) & 3;
   if ((instr & 0x10u) != 0) {
     const uint32_t rs = (instr >> 8) & 0xF;
-    const uint32_t quantidade = Get(static_cast<int>(rs)) & 0xFF;
+    uint32_t quantidade = Get(static_cast<int>(rs)) & 0xFF;
+    // A CONTAGEM ZERO DO LSR/ASR POR REGISTADOR E 32, e nao "nao deslocar": o
+    // ARM ARM so trata o zero como "nao deslocar" no LSL (e o ROR como "nao
+    // rodar", com o carry intacto).
+    //
+    // MEDIDO pela sonda de efeito nas 880 641 instrucoes que os 62 titulos
+    // executam: `orr r4, r4, r5, lsr r0` no `ridgeracer.mod` 0x928 (7 casos) e 13
+    // casos no `bio4_brew.mod` -- o caminho do deslocamento IMEDIATO ja tinha
+    // esta conta (`quantidade == 0 && tipo != 0`), o do REGISTADOR nao.
+    if (quantidade == 0 && (tipo == 1 || tipo == 2)) quantidade = 32;
     return Deslocar(valor, tipo, quantidade, c_, carry_out);
   }
   uint32_t quantidade = (instr >> 7) & 0x1F;
@@ -871,6 +893,22 @@ void ArmInterpreter::DespacharDadosProcessados(std::uint32_t instr, std::uint32_
   Set(kPC, pc);
   DadosProcessados(instr, pc);
   if (!destino_e_pc || Get(kPC) == pc) Set(kPC, pc + 4);
+  // A ESCRITA DO PC POR UMA INSTRUCAO DE DADOS E UM SALTO COM TROCA DE ESTADO.
+  //
+  // E a TERCEIRA vez que este padrao aparece nesta arvore (o `ldr pc` em
+  // `d0f1146`, o `ldm {..., pc}` logo a seguir) e a primeira em que a guarda
+  // estava do lado de MAIS: o `ldr pc` e o `ldm` honram o bit 0 e o
+  // `mov pc, rX`/`add pc, ...` escreviam o valor CRU no PC -- com o bit 0
+  // dentro. O ARM ARM (A2.3.1, interworking) poe os tres na mesma familia.
+  //
+  // MEDIDO: os 2 727 `mov pc,lr` de 43 dos 62 modulos levam o bit 0 a ZERO
+  // (auditor de efeito, que compara o MODO), logo a correccao NAO muda nada do
+  // que esta medido -- fecha o caminho em que o `lr` vem de um chamador Thumb.
+  if (destino_e_pc && Get(kPC) != pc) {
+    if ((Get(kPC) & 1u) != 0) modo_atual_ |= Cpsr::kT;
+    else modo_atual_ &= ~Cpsr::kT;
+    Set(kPC, Get(kPC) & ~1u);
+  }
 }
 
 void ArmInterpreter::DadosProcessados(std::uint32_t instr, std::uint32_t pc) {
@@ -1499,13 +1537,25 @@ void ArmInterpreter::ExecutarThumb(std::uint16_t instr, std::uint32_t pc) {
     const Reg imm = instr & 0xFF;
     const Reg b = Get(static_cast<int>(rd));
     Reg r = 0;
+    // O `cmp` (op == 1) FAZ A CONTA E NAO ESCREVE EM Rd. Das quatro operacoes
+    // deste formato e a unica que nao escreve, e era a unica que este ramo
+    // tratava como as outras: a conta saia certa e as bandeiras tambem, e o
+    // registador ficava com o RESULTADO DA COMPARACAO.
+    //
+    // MEDIDO pela sonda de efeito sobre o espaco Thumb inteiro (65 536
+    // meias-palavras): 2 232 divergencias de registador, todas `cmp rX, #imm`
+    // com Rd a receber `Rd - imm`. E EXECUTADO por um titulo do corpus --
+    // `brainchallenge`, em 0x20f4 (`2801` cmp r0, #1), 0x3e30 e 0xab4a (`2800`
+    // cmp r0, #0) e 0x108f8 (`2800`). Nenhum auditor de NOMES o podia ver: a
+    // sonda escrevia `cmp` e o objdump escrevia `cmp`.
+    const bool escreve = (op != 1);
     switch (op) {
       case 0: r = imm; n_ = (r >> 31) != 0; z_ = r == 0; break;
       case 1: r = b - imm; { auto f = FlagsDaSub(b, imm, r); c_ = f.c; v_ = f.v; n_ = (r >> 31) != 0; z_ = r == 0; } break;
       case 2: r = b + imm; { auto f = FlagsDaSoma(b, imm, 0, r); c_ = f.c; v_ = f.v; n_ = (r >> 31) != 0; z_ = r == 0; } break;
       case 3: r = b - imm; { auto f = FlagsDaSub(b, imm, r); c_ = f.c; v_ = f.v; n_ = (r >> 31) != 0; z_ = r == 0; } break;
     }
-    Set(static_cast<int>(rd), r);
+    if (escreve) Set(static_cast<int>(rd), r);
     Set(kPC, pc + 2);
     return;
   }
@@ -1753,21 +1803,31 @@ void ArmInterpreter::ExecutarThumb(std::uint16_t instr, std::uint32_t pc) {
       case 0: { const Reg r = a & bv; bandeiras(r); Set(static_cast<int>(rn), r); break; }
       case 1: { const Reg r = a ^ bv; bandeiras(r); Set(static_cast<int>(rn), r); break; }
       case 2: case 3: case 4: case 7: {
+        // A CONTAGEM ZERO NAO E "NAO DESLOCAR" NO LSR NEM NO ASR: e 32. O ARM
+        // ARM so trata o zero como "nao deslocar" no LSL e no ROR.
+        //
+        // MEDIDO pela sonda de efeito sobre o espaco Thumb inteiro: 136
+        // meias-palavras do formato 4 por registador (0x40C0-0x40FF e
+        // 0x4100-0x413F) em que a contagem e zero e o registador ficava
+        // INTACTO -- um `lsrs r1, r0` com o byte baixo de r0 a zero nao zerava
+        // r1. E a mesma troca entre o 0 e o 32 que a frente do `LSL #0` pagou
+        // (`35c09dc`), do outro lado do mesmo campo.
         const std::uint32_t q = bv & 0xFFu;
         Reg r = a;
-        if (q != 0) {
+        if (q != 0 || op == 3 || op == 4) {
+          const std::uint32_t n = (q == 0) ? 32u : q;
           if (op == 2) {
-            r = (q >= 32u) ? 0u : static_cast<Reg>(a << q);
-            c_ = (q > 32u) ? false : (((a >> (32u - q)) & 1u) != 0);
+            r = (n >= 32u) ? 0u : static_cast<Reg>(a << n);
+            c_ = (n > 32u) ? false : (((a >> (32u - n)) & 1u) != 0);
           } else if (op == 3) {
-            r = (q >= 32u) ? 0u : (a >> q);
-            c_ = (q > 32u) ? false : (((a >> (q - 1u)) & 1u) != 0);
+            r = (n >= 32u) ? 0u : (a >> n);
+            c_ = (n > 32u) ? false : (((a >> (n - 1u)) & 1u) != 0);
           } else if (op == 4) {
             const std::int32_t s = static_cast<std::int32_t>(a);
-            r = (q >= 32u) ? static_cast<Reg>(s >> 31) : static_cast<Reg>(s >> q);
-            c_ = (q > 32u) ? (((a >> 31) & 1u) != 0) : (((a >> (q - 1u)) & 1u) != 0);
+            r = (n >= 32u) ? static_cast<Reg>(s >> 31) : static_cast<Reg>(s >> n);
+            c_ = (n > 32u) ? (((a >> 31) & 1u) != 0) : (((a >> (n - 1u)) & 1u) != 0);
           } else {
-            const std::uint32_t qq = q & 31u;
+            const std::uint32_t qq = n & 31u;
             if (qq != 0) {
               r = (a >> qq) | (a << (32u - qq));
               c_ = ((r >> 31) & 1u) != 0;
@@ -1790,8 +1850,12 @@ void ArmInterpreter::ExecutarThumb(std::uint16_t instr, std::uint32_t pc) {
       }
       case 8: { const Reg r = a & bv; bandeiras(r); break; }
       case 9: {
-        const Reg r = 0u - a;
-        auto f = FlagsDaSub(0u, a, r);
+        // O `neg` E O UNICO DO FORMATO 4 EM QUE O DESTINO NAO E TAMBEM FONTE:
+        // `NEGS Rd, Rm` e `RSBS Rd, Rm, #0`, logo a fonte e o SEGUNDO operando
+        // (`bv`) e nao `a` (que e o proprio Rd). MEDIDO no espaco Thumb inteiro:
+        // 56 meias-palavras com o resultado errado (`negs r1, r0` dava `0 - r1`).
+        const Reg r = 0u - bv;
+        auto f = FlagsDaSub(0u, bv, r);
         c_ = f.c; v_ = f.v; bandeiras(r); Set(static_cast<int>(rn), r); break;
       }
       case 10: { const Reg r = a - bv; auto f = FlagsDaSub(a, bv, r); c_ = f.c; v_ = f.v; bandeiras(r); break; }
@@ -1952,10 +2016,29 @@ void ArmInterpreter::ExecutarThumb(std::uint16_t instr, std::uint32_t pc) {
     const auto valor = [&](std::uint32_t r) -> Reg {
       return (r == kPC) ? static_cast<Reg>(pc + 4u) : Get(static_cast<int>(r));
     };
+    // QUEM ESCREVE O PC MANDA, E QUEM CHAMA NAO AVANCA POR CIMA.
+    //
+    // E o mesmo defeito pela TERCEIRA vez nesta arvore: o `ldr pc` da
+    // transferencia simples (`d0f1146`), o `mov pc,lr` do ARM
+    // (`DespacharDadosProcessados`, 2 727 casos em 43 dos 62 modulos) -- e aqui
+    // o `add pc, rX` e o `mov pc, rX` do FORMATO 2 DO THUMB. O ramo escrevia o
+    // resultado em Rd = PC e, no fim, o `Set(kPC, pc + 2)` deste tratamento
+    // anulava o salto EM SILENCIO.
+    //
+    // MEDIDO pela sonda de efeito sobre o espaco Thumb inteiro: 32
+    // meias-palavras com o PC a sair `caixa + 2` (o passo seguinte) em vez do
+    // alvo. A escrita no PC e o salto, e o bit 0 do alvo e ignorado: o
+    // `add pc, rX`/`mov pc, rX` do Thumb NAO muda de estado (quem muda e o `bx`).
+    //
+    // NAO HA MEDICAO DESTE SALTO NO CORPUS: nas 689 meias-palavras Thumb que os
+    // 62 titulos executam nao ha nenhum `add pc,`/`mov pc,`. A correccao NAO
+    // muda nada do que esta medido; fecha um caminho que hoje nao aparece.
+    bool escreveu_o_pc = false;
     if (op == 0) {
       const Reg r = valor(rd) + valor(rm);
       if (h1 || h2) { Set(static_cast<int>(rd), r); }
       else { n_ = (r >> 31) != 0; z_ = r == 0; Set(static_cast<int>(rd), r); }
+      escreveu_o_pc = (rd == kPC);
     } else if (op == 1) {
       const Reg a = valor(rd);
       const Reg r = a - valor(rm);
@@ -1963,6 +2046,11 @@ void ArmInterpreter::ExecutarThumb(std::uint16_t instr, std::uint32_t pc) {
       c_ = f.c; v_ = f.v; n_ = (r >> 31) != 0; z_ = r == 0;
     } else {
       Set(static_cast<int>(rd), valor(rm));
+      escreveu_o_pc = (rd == kPC);
+    }
+    if (escreveu_o_pc) {
+      Set(kPC, Get(kPC) & ~1u);
+      return;
     }
     Set(kPC, pc + 2);
     return;
