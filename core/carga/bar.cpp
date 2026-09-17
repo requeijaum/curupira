@@ -1,6 +1,7 @@
 #include "core/carga/bar.h"
 
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <utility>
 
@@ -424,6 +425,128 @@ ClsidDoMif LerClsidDoMif(const std::string& caminho) {
   std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)),
                                   std::istreambuf_iterator<char>());
   return LerClsidDoMifDados(bytes);
+}
+
+// ---------------------------------------------------------------------------
+// Os registos de classe, e a extensao
+// ---------------------------------------------------------------------------
+
+RegistosDoMif LerRegistosDoMifDados(const std::vector<std::uint8_t>& bytes) {
+  RegistosDoMif out;
+  if (bytes.empty()) {
+    out.motivo = "ficheiro vazio";
+    return out;
+  }
+  // O MESMO RODAPE que o `LerClsidDoMifDados` tolera: 12 de 62 `.mif` terminam
+  // com bytes a mais depois do ultimo deslocamento, e o `ArquivoBar` estrito
+  // recusa-os. Corta-se e tenta-se outra vez -- o rodape nao e recurso nenhum.
+  auto corpo = bytes;
+  std::string motivo;
+  for (int tentativa = 0; tentativa < 2; ++tentativa) {
+    const ArquivoBar mif = ArquivoBar::AbrirDados(corpo, &motivo);
+    if (mif.Valido()) {
+      for (std::uint32_t k = 0; k < mif.NumeroDeRecursos(); ++k) {
+        const RecursoDoBar r = mif.LerPorIndice(k);
+        if (!r.ok) continue;
+        if (r.tamanho == 20u) {
+          // A SECCAO DO APPLET: AEECLSID em +0, +4 e +12 a zero. As seccoes de
+          // 20 bytes que nao sao applet (o Prey Evil, o Reckless Racing e o
+          // Zeebo App comecam em 0x00xxfeff) sao barradas pelos campos.
+          const std::uint32_t clsid = Ler32(r.dados);
+          if (clsid != 0u && Ler32(r.dados + 4) == 0u && Ler32(r.dados + 12) == 0u &&
+              out.applet == 0u) {
+            out.applet = clsid;
+          }
+        } else if (r.tamanho == 8u) {
+          // O REGISTO DE CLASSE: `<u32 ClassID> <u32 zero>`. E a forma que
+          // aparece IDENTICA nos dois lados da relacao -- no manifesto do jogo
+          // (declarando a dependencia) e no da extensao (declarando o que
+          // fornece). Quem distingue os lados e o `applet` acima, e nao o
+          // registo.
+          const std::uint32_t clsid = Ler32(r.dados);
+          if (clsid != 0u && Ler32(r.dados + 4) == 0u) out.classes.push_back(clsid);
+        }
+      }
+      out.ok = true;
+      return out;
+    }
+    std::uint32_t fim = 0;
+    if (UltimoDeslocamento(corpo, &fim) && fim < corpo.size()) {
+      corpo.resize(fim);
+      continue;
+    }
+    break;
+  }
+  out.motivo = motivo.empty() ? "nao e o contentor .bar/.mif medido" : motivo;
+  return out;
+}
+
+RegistosDoMif LerRegistosDoMif(const std::string& caminho) {
+  RegistosDoMif out;
+  std::ifstream f(caminho, std::ios::binary);
+  if (!f) {
+    out.motivo = "nao foi possivel abrir o ficheiro: " + caminho;
+    return out;
+  }
+  std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)),
+                                  std::istreambuf_iterator<char>());
+  return LerRegistosDoMifDados(bytes);
+}
+
+FornecedorDaClasse ProcurarFornecedorDaClasse(const std::string& pasta_dos_mods,
+                                              std::uint32_t classe) {
+  FornecedorDaClasse out;
+  std::error_code ec;
+  int varridas = 0;
+  int com_mif = 0;
+  for (const auto& entrada : std::filesystem::directory_iterator(pasta_dos_mods, ec)) {
+    if (!entrada.is_directory()) continue;
+    const std::string pasta = entrada.path().filename().string();
+    ++varridas;
+    // A PARECAO PELO NOME DA PASTA: `<dir>/<nome>/` e `<dir>/../mif/<nome>.mif`.
+    const RegistosDoMif reg = LerRegistosDoMif(pasta_dos_mods + "/../mif/" + pasta + ".mif");
+    if (!reg.ok) continue;
+    ++com_mif;
+    if (!reg.EhExtensao()) continue;
+    bool declara = false;
+    for (const std::uint32_t c : reg.classes) {
+      if (c == classe) {
+        declara = true;
+        break;
+      }
+    }
+    if (!declara) continue;
+    // O modulo dentro da pasta, pelo nome dela primeiro (a disposicao do BREW).
+    const std::string pelo_nome = entrada.path().string() + "/" + pasta + ".mod";
+    if (std::filesystem::exists(pelo_nome, ec)) {
+      out.ok = true;
+      out.pasta = pasta;
+      out.caminho_do_mod = pelo_nome;
+      return out;
+    }
+    // Sem esse nome dentro, vale o unico `.mod` que la esteja -- e UM so. Dois
+    // seriam uma escolha, e uma escolha sem medida nao se faz (P2).
+    int quantos = 0;
+    std::string achado;
+    for (const auto& f : std::filesystem::directory_iterator(entrada.path(), ec)) {
+      if (f.path().extension() == ".mod") {
+        ++quantos;
+        achado = f.path().string();
+      }
+    }
+    if (quantos == 1) {
+      out.ok = true;
+      out.pasta = pasta;
+      out.caminho_do_mod = achado;
+      return out;
+    }
+    out.motivo = "a pasta " + pasta + " declara " + Hex(classe) + " mas tem " +
+                 std::to_string(quantos) + " ficheiros .mod";
+    return out;
+  }
+  out.motivo = "nenhuma das " + std::to_string(varridas) + " pastas de " + pasta_dos_mods +
+               " fornece " + Hex(classe) + " (" + std::to_string(com_mif) + " com .mif lido)";
+  return out;
 }
 
 }  // namespace zb2

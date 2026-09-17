@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -570,6 +571,20 @@ const char* kCaminhosDoMif12875[] = {
     "/media/rafaelfrequiao/8C5F-19E51/zeebo/ROMs/debug_nand/mif/12875.mif",
     "/home/rafaelfrequiao/projects/zeebo-lab/games/brew/mif/12875.mif",
 };
+const char* kCaminhosDoMif274259[] = {
+    "/media/rafaelfrequiao/8C5F-19E51/zeebo/ROMs/debug_nand/mif/274259.mif",
+    "/home/rafaelfrequiao/projects/zeebo-lab/games/brew/mif/274259.mif",
+};
+
+// Um ficheiro para a arvore sintetica da parecao. Escreve e confere -- um
+// `ofstream` que falha em silencio daria um teste que passa por ausencia.
+void EscreverBytes(const std::string& caminho, const std::vector<std::uint8_t>& bytes) {
+  std::ofstream f(caminho, std::ios::binary);
+  f.write(reinterpret_cast<const char*>(bytes.data()),
+          static_cast<std::streamsize>(bytes.size()));
+  f.close();
+  ASSERT_TRUE(std::filesystem::exists(caminho)) << caminho;
+}
 
 }  // namespace
 
@@ -620,6 +635,150 @@ TEST(Carga, OImicro3dNaoTemAppletNoMif) {
   const ClsidDoMif r = LerClsidDoMifDados(bytes);
   EXPECT_FALSE(r.ok);
   EXPECT_FALSE(r.motivo.empty());
+}
+
+// ===========================================================================
+// A EXTENSAO DO TITULO (o `IMicro3D` do `a3d`)
+//
+// A pergunta era: o `a3d` pede a classe `0x010292c3` ao `IShell::CreateInstance`,
+// ela nao esta em cabecalho nenhum do SDK, e o jogo fica preso nessa falta. O
+// modulo que a fornece -- `mod/12875/imicro3d.mod` -- VIAJA NO PROPRIO PACOTE do
+// titulo. Nao e uma classe da consola: e uma extensao em ARM que o jogo trouxe.
+//
+// O que estes testes fixam e a REGRA DE RECONHECIMENTO, que e onde esta o
+// perigo: o mesmo registo de 8 bytes (`<u32 ClassID> <u32 zero>`) aparece nos
+// DOIS lados da relacao -- no manifesto do jogo, declarando a dependencia, e no
+// da extensao, declarando o que fornece. O que distingue e o que vem em volta:
+// um `.mif` COM seccao de applet e de um titulo; um SEM ela e de uma extensao.
+// Sem essa regra, o manifesto do jogo oferecer-se-ia para atender a classe que
+// ele mesmo pede -- e o `a3d` passa a ter uma secao de 20 bytes E um registo de
+// 8 bytes, logo a regra e o unico que os separa.
+// ===========================================================================
+
+// O registo de classe na forma MEDIDA: 8 bytes, `<u32 ClassID> <u32 zero>`.
+std::vector<std::uint8_t> RegistoDeClasse(std::uint32_t clsid) {
+  std::vector<std::uint8_t> s(8, 0);
+  Mif32(&s, 0, clsid);
+  return s;
+}
+
+TEST(Carga, UmMifDeTituloDeclaraClassesEOSeuApplet) {
+  const auto mif = MontarMif({{0x5000, 0, 0, 0}, {0x5000, 1, 0, 1}},
+                             {SeccaoApplet(0x01081970u), RegistoDeClasse(0x010292c3u)});
+  const RegistosDoMif r = LerRegistosDoMifDados(mif);
+  ASSERT_TRUE(r.ok) << r.motivo;
+  EXPECT_EQ(r.applet, 0x01081970u);
+  ASSERT_EQ(r.classes.size(), 1u);
+  EXPECT_EQ(r.classes[0], 0x010292c3u);
+  // E AQUI que a regra se prova: o jogo declara a classe, e NAO e extensao.
+  EXPECT_FALSE(r.EhExtensao());
+}
+
+TEST(Carga, UmMifSemAppletEDeExtensao) {
+  const auto mif = MontarMif({{0x5000, 0, 0, 0}}, {RegistoDeClasse(0x010292c3u)});
+  const RegistosDoMif r = LerRegistosDoMifDados(mif);
+  ASSERT_TRUE(r.ok) << r.motivo;
+  EXPECT_EQ(r.applet, 0u);
+  ASSERT_EQ(r.classes.size(), 1u);
+  EXPECT_EQ(r.classes[0], 0x010292c3u);
+  EXPECT_TRUE(r.EhExtensao());
+}
+
+// Um `.mif` sem classe nenhuma nao e extensao -- e so um manifesto sem applet.
+// Sem esta guarda, um `.mif` truncado passaria a "fornecer" o que la nao esta.
+TEST(Carga, UmMifSemClassesNaoEExtensao) {
+  const auto mif = MontarMif({{0x5000, 0, 0, 0}}, {std::vector<std::uint8_t>(8, 0)});
+  const RegistosDoMif r = LerRegistosDoMifDados(mif);
+  ASSERT_TRUE(r.ok) << r.motivo;
+  EXPECT_EQ(r.applet, 0u);
+  EXPECT_TRUE(r.classes.empty());
+  EXPECT_FALSE(r.EhExtensao());
+}
+
+// OS DOIS `.mif` REAIS DA RELACAO, medidos a 2026-09. O do `a3d` diz as duas
+// coisas ao mesmo tempo (o seu applet E a classe que pede); o do `imicro3d` diz
+// so a classe. E a prova de que a regra nao e uma hipotese: e o que os ficheiros
+// do corpus dizem.
+TEST(Carga, OMifDoA3dDeclaraOImicro3dQueEleMesmoPede) {
+  bool ok = false;
+  std::vector<std::uint8_t> bytes;
+  for (const char* c : kCaminhosDoMif274259) {
+    bytes = LerBytes(c, &ok);
+    if (ok) break;
+  }
+  if (!ok) GTEST_SKIP() << "corpus de 62 titulos nao esta montado nesta maquina";
+  const RegistosDoMif r = LerRegistosDoMifDados(bytes);
+  ASSERT_TRUE(r.ok) << r.motivo;
+  EXPECT_EQ(r.applet, 0x01081970u);
+  bool achou = false;
+  for (const std::uint32_t c : r.classes) achou = achou || (c == 0x010292c3u);
+  EXPECT_TRUE(achou) << "o manifesto do a3d tem de declarar a classe que ele pede";
+  EXPECT_FALSE(r.EhExtensao()) << "o a3d TEM applet: nao pode ser tomado por extensao";
+}
+
+TEST(Carga, OMifDoImicro3dEExtensaoEForneceA0x010292c3) {
+  bool ok = false;
+  std::vector<std::uint8_t> bytes;
+  for (const char* c : kCaminhosDoMif12875) {
+    bytes = LerBytes(c, &ok);
+    if (ok) break;
+  }
+  if (!ok) GTEST_SKIP() << "corpus de 62 titulos nao esta montado nesta maquina";
+  const RegistosDoMif r = LerRegistosDoMifDados(bytes);
+  ASSERT_TRUE(r.ok) << r.motivo;
+  EXPECT_EQ(r.applet, 0u);
+  ASSERT_EQ(r.classes.size(), 1u);
+  EXPECT_EQ(r.classes[0], 0x010292c3u);
+  EXPECT_TRUE(r.EhExtensao());
+}
+
+// A PARECAO PELO NOME DA PASTA, provada numa arvore sintetica: `mods/<nome>/` e
+// `mif/<nome>.mif` ao lado. A pasta do titulo (que tem applet) fica de fora.
+TEST(Carga, OFornecedorAchaOPorNomeDaPastaENaoPeloTitulo) {
+  const std::string raiz =
+      (std::filesystem::temp_directory_path() / "zb2_fornecedor").string();
+  std::filesystem::remove_all(raiz);
+  std::filesystem::create_directories(raiz + "/mod/70001");
+  std::filesystem::create_directories(raiz + "/mod/70002");
+  std::filesystem::create_directories(raiz + "/mif");
+  EscreverBytes(raiz + "/mod/70001/70001.mod", {1, 2, 3});
+  EscreverBytes(raiz + "/mod/70002/70002.mod", {4, 5, 6});
+  // O 70001 e um TITULO (tem applet E declara a classe); o 70002 e a EXTENSAO.
+  EscreverBytes(raiz + "/mif/70001.mif",
+                MontarMif({{0x5000, 0, 0, 0}, {0x5000, 1, 0, 1}},
+                          {SeccaoApplet(0x01081970u), RegistoDeClasse(0x010292c3u)}));
+  EscreverBytes(raiz + "/mif/70002.mif",
+                MontarMif({{0x5000, 0, 0, 0}}, {RegistoDeClasse(0x010292c3u)}));
+  const FornecedorDaClasse f = ProcurarFornecedorDaClasse(raiz + "/mod", 0x010292c3u);
+  ASSERT_TRUE(f.ok) << f.motivo;
+  EXPECT_EQ(f.pasta, "70002") << "quem fornece e a EXTENSAO, e nao o titulo que a pede";
+  EXPECT_EQ(f.caminho_do_mod, raiz + "/mod/70002/70002.mod");
+  // E A RECUSA DIZ O QUE VARREU (P2).
+  const FornecedorDaClasse nada = ProcurarFornecedorDaClasse(raiz + "/mod", 0x0102bbfcu);
+  EXPECT_FALSE(nada.ok);
+  EXPECT_NE(nada.motivo.find("2"), std::string::npos);
+  EXPECT_NE(nada.motivo.find("0x0102bbfc"), std::string::npos);
+  std::filesystem::remove_all(raiz);
+}
+
+// A MESMA PROCURA NO CORPUS DE VERDADE: a classe que o `a3d` pede tem de
+// resolver para a pasta `12875`, e o modulo dentro dela. E a medicao que a
+// implementacao vai consumir.
+TEST(Carga, OCorpusResolveA0x010292c3ParaOPasta12875) {
+  const char* raizes[] = {
+      "/media/rafaelfrequiao/8C5F-19E51/zeebo/ROMs/debug_nand/mod",
+      "/home/rafaelfrequiao/projects/zeebo-lab/games/brew/mod",
+  };
+  for (const char* raiz : raizes) {
+    if (!std::filesystem::exists(std::string(raiz) + "/12875/imicro3d.mod")) continue;
+    const FornecedorDaClasse f =
+        ProcurarFornecedorDaClasse(raiz, 0x010292c3u);
+    ASSERT_TRUE(f.ok) << f.motivo;
+    EXPECT_EQ(f.pasta, "12875");
+    EXPECT_NE(f.caminho_do_mod.find("imicro3d.mod"), std::string::npos);
+    return;
+  }
+  GTEST_SKIP() << "corpus de 62 titulos nao esta montado nesta maquina";
 }
 
 // ===========================================================================

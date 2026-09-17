@@ -20,6 +20,7 @@
 // outro agente, e so se le daqui. O gzip (RFC1952) dos `.bar` e tratado neste
 // ficheiro, por cima dele.
 #include "core/carga/inflate.h"
+#include "core/carga/mod.h"
 // O DESCODIFICADOR DE PNG (`DescodificarPng`), para o `LoadResObject`: o
 // `LoadResDataEx` entrega o bloco CRU e o `LoadResObject` entrega um OBJECTO
 // desenhavel, e o unico formato de imagem que esta arvore sabe virar pixels e
@@ -2424,6 +2425,172 @@ bool Despacho::EntregarEventoAoApplet(ICpu& cpu, std::uint32_t clsapp, std::uint
   return voltou;
 }
 
+// ---------------------------------------------------------------------------
+// A EXTENSAO QUE O TITULO TROUXE
+// ---------------------------------------------------------------------------
+//
+// O `a3d` pede `0x010292c3` ao `IShell::CreateInstance`; a classe nao esta em
+// cabecalho nenhum deste SDK e nao existe em particao nenhuma da consola,
+// porque ela viaja no proprio pacote do titulo -- e o `imicro3d.mod`, um modulo
+// ARM de 90 068 bytes. O mecanismo e o do console:
+//
+//   1. `AEEMod_Load(shell, helpers, &saida)` NA PRIMEIRA VEZ, e a extensao
+//      entrega o `IModule*` dela;
+//   2. `IModule::CreateInstance(modulo, shell, clsid, &saida)` -- o SLOT 2 do
+//      vtable do `IModule`, o mesmo que o applet usa (`tools/bateria.cpp` faz
+//      os dois passos para o titulo: `vtable = Ler32(modulo)` e
+//      `ci = Ler32(vtable + 8)`).
+//
+// O objecto que volta e implementado em ARM PELA EXTENSAO. Daqui em diante o
+// jogo fala directamente com ele e nos NAO precisamos de saber que interface e:
+// nem o `IMICRO3D` nem o motor da Superscape foram implementados aqui -- eles
+// rodam. Fingir um servico completo era o stub silencioso com outra cara (P2);
+// isto e o contrario: entregar o modulo a serio que o titulo trouxe.
+//
+// O DESVIO DE REGRA: isto acontece DENTRO do despacho de uma chamada de API, que
+// e onde entrar no guest era proibido -- quem esta a despachar vai ler o `lr`
+// depois para saber onde retomar o jogo, e perde-lo manda a execucao para o
+// endereco zero. Por isso a chamada e aninhada A SERIO, com o contexto todo
+// salvo e devolvido (`ChamarNoGuest`). A pilha nao precisa de cuidado: a
+// chamada aninhada empilha abaixo do `sp` corrente, que e espaco que ninguem
+// esta a usar -- a mesma garantia que uma interrupcao tem.
+
+bool Despacho::OferecerExtensao(std::uint32_t classe, std::uint32_t base, std::uint32_t tabela,
+                                const std::vector<std::uint8_t>& imagem) {
+  for (const ExtensaoDoTitulo& e : extensoes_) {
+    if (e.classe == classe) {
+      // DUAS extensoes para a mesma classe seria uma escolha, e uma escolha sem
+      // medida nao se faz (P2): diz-se qual ja la estava.
+      traco_.RegistarFalta(Area::Brew, "extensao_repetida",
+                           "classe " + Hex(classe) + " ja oferecida em " + Hex(e.base));
+      return false;
+    }
+  }
+  const ResultadoDaCarga carga = CarregarMod(mem_, imagem, base, tabela, &traco_);
+  if (!carga.ok) {
+    traco_.RegistarFalta(Area::Brew, "extensao_nao_carregada",
+                         "classe " + Hex(classe) + ": " + carga.motivo);
+    return false;
+  }
+  ExtensaoDoTitulo e;
+  e.classe = classe;
+  e.base = carga.base;
+  e.tamanho = carga.tamanho;
+  e.tabela = tabela;
+  extensoes_.push_back(e);
+  char det[160];
+  std::snprintf(det, sizeof(det), "classe=%s base=0x%08x tamanho=%u (mapeada, sem AEEMod_Load)",
+                Hex(classe).c_str(), carga.base, carga.tamanho);
+  traco_.Emitir(Area::Brew, Nivel::Informacao, "EXTENSAO_OFERECIDA", det);
+  return true;
+}
+
+std::uint32_t Despacho::ChamarNoGuest(ICpu& cpu, std::uint32_t funcao, const std::uint32_t args[4],
+                                      bool* voltou, ResultadoFase* fase) {
+  // O `lr` E O QUE NAO SE PODE PERDER, mas guarda-se o contexto todo (r0..r15 e o
+  // CPSR): o jogo pode ter a chamada a meio de uma expressao, e o despacho vai
+  // ler estes registos a seguir.
+  std::uint32_t guardados[16] = {};
+  for (int r = 0; r < 16; ++r) guardados[r] = cpu.Get(static_cast<std::uint32_t>(r));
+  const std::uint32_t cpsr_guardado = cpu.Cpsr();
+
+  cpu.Set(kR0, args[0]);
+  cpu.Set(kR1, args[1]);
+  cpu.Set(kR2, args[2]);
+  cpu.Set(kR3, args[3]);
+  cpu.Set(kLR, kSentinela);  // o retorno da extensao volta para ca
+  cpu.Set(kPC, funcao);
+
+  // CORRER PELO PROPRIO `Correr`, e NAO por um laco de `cpu.Passo()`: a extensao
+  // chama o sistema (ja medido: o `AEEMod_Load` do `imicro3d.mod` comeca por
+  // `ldr r0,[r0,#-4]` e salta para o slot 0x68, o `malloc`), e quem para na faixa
+  // de saida e o `Correr`. O tecto de profundidade e o mesmo dos eventos: uma
+  // cadeia so para com um tecto.
+  if (profundidade_de_evento_ >= kMaxProfundidadeDeEvento) {
+    traco_.RegistarFalta(Area::Brew, "extensao_profunda_demais",
+                         "funcao " + Hex(funcao) + " com profundidade " +
+                             std::to_string(profundidade_de_evento_));
+    for (int r = 0; r < 16; ++r) cpu.Set(static_cast<std::uint32_t>(r), guardados[r]);
+    cpu.SetCpsr(cpsr_guardado);
+    if (voltou != nullptr) *voltou = false;
+    return 0;
+  }
+  ++profundidade_de_evento_;
+  const ResultadoFase r = Correr(cpu, kLimiteDoEvento, 0);
+  --profundidade_de_evento_;
+
+  const std::uint32_t resposta = cpu.Get(kR0);
+  for (int r2 = 0; r2 < 16; ++r2) cpu.Set(static_cast<std::uint32_t>(r2), guardados[r2]);
+  cpu.SetCpsr(cpsr_guardado);
+  if (voltou != nullptr) *voltou = (r.motivo == "retornou");
+  if (fase != nullptr) *fase = r;
+  return resposta;
+}
+
+std::uint32_t Despacho::CriarInstanciaDaExtensao(ICpu& cpu, std::uint32_t shell,
+                                                 std::uint32_t classe) {
+  for (ExtensaoDoTitulo& e : extensoes_) {
+    if (e.classe != classe) continue;
+    // O BLOCO DE APOIO DAS DUAS SAIDAS. Fica DENTRO da faixa da extensao (que e
+    // nossa) e nao na pilha do jogo: e um endereco fixo, reproduzivel, e o jogo
+    // nao escreve la. A faixa da extensao e reservada por quem a oferece.
+    const std::uint32_t p_modulo = e.base + e.tamanho + 64u;
+    const std::uint32_t p_objeto = e.base + e.tamanho + 128u;
+
+    if (!e.carregou) {
+      // 1. `AEEMod_Load(pIShell, pHelpers, &pIModule)` -- UMA vez, e mesmo que
+      //    falhe: uma extensao partida nao se recarrega a cada pedido.
+      e.carregou = true;
+      mem_.Escrever32(p_modulo, 0);
+      const std::uint32_t args[4] = {shell, e.tabela, p_modulo, 0};
+      bool voltou = false;
+      ResultadoFase fase;
+      ChamarNoGuest(cpu, e.base, args, &voltou, &fase);
+      e.modulo = mem_.Ler32(p_modulo);
+      if (!voltou || e.modulo == 0) {
+        traco_.RegistarFalta(Area::Brew, "AEEMod_Load",
+                             "classe " + Hex(classe) + " base " + Hex(e.base) +
+                                 (voltou ? ": devolveu modulo ZERO"
+                                         : ": NAO voltou a sentinela -- " + fase.motivo +
+                                               " com " + std::to_string(fase.passos) + " passos"));
+        return 0;
+      }
+      char det[160];
+      std::snprintf(det, sizeof(det), "classe=%s base=0x%08x pIModule=0x%08x", Hex(classe).c_str(),
+                    e.base, e.modulo);
+      traco_.Emitir(Area::Brew, Nivel::Informacao, "EXTENSAO_CARREGADA", det);
+    }
+
+    // 2. `IModule::CreateInstance(po, pIShell, ClsId, ppApplet)` -- o SLOT 2.
+    //    O `IModule*` aponta para o vtable, e o slot 2 esta em +8 (medido em
+    //    `tools/bateria.cpp:942` para o modulo do titulo: `Ler32(vtable + 8)`).
+    const std::uint32_t vtable = mem_.Ler32(e.modulo);
+    const std::uint32_t criar = mem_.Ler32(vtable + 8u);
+    if (criar == 0) {
+      traco_.RegistarFalta(Area::Brew, "IModule::CreateInstance",
+                           "classe " + Hex(classe) + ": o slot 2 do vtable em " + Hex(vtable) +
+                               " esta a ZERO");
+      return 0;
+    }
+    mem_.Escrever32(p_objeto, 0);
+    const std::uint32_t args[4] = {e.modulo, shell, classe, p_objeto};
+    bool voltou = false;
+    ChamarNoGuest(cpu, criar, args, &voltou);
+    const std::uint32_t objeto = mem_.Ler32(p_objeto);
+    char det[192];
+    std::snprintf(det, sizeof(det),
+                  "classe=%s IModule=0x%08x slot2=0x%08x objeto=0x%08x%s", Hex(classe).c_str(),
+                  e.modulo, criar, objeto, voltou ? "" : " (NAO VOLTOU A SENTINELA)");
+    traco_.Emitir(Area::Brew, Nivel::Informacao, "EXTENSAO_CRIAR_INSTANCIA", det);
+    if (objeto == 0) {
+      traco_.RegistarFalta(Area::Brew, "IShell::CreateInstance IMicro3D (0x010292c3)",
+                           "a extensao respondeu com objecto ZERO (modulo " + Hex(e.modulo) + ")");
+    }
+    return objeto;
+  }
+  return 0;
+}
+
 ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp_saida) {
   ResultadoFase resultado;
   // DOIS CONTADORES (item 1 do PLAN, docs/rewrite/PLAN.md):
@@ -2723,6 +2890,12 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // ECLASSNOTSUPPORT com o ponteiro a zero -- recusar, nao mentir.
         const std::uint32_t iid = cpu.Get(kR1);
         const std::uint32_t ppo = cpu.Get(kR2);
+        // O `IShell` DA CHAMADA, APANHADO AQUI. Os ramos abaixo escrevem no
+        // `r0` (o do `IMedia` chega a fazer `continue`), e a extensao precisa
+        // dele para o `AEEMod_Load` e para o `IModule::CreateInstance` -- e o
+        // mesmo objecto que o applet recebeu no arranque. Ler o `r0` em baixo
+        // seria ler o que o ramo anterior lhe tivesse deixado.
+        const std::uint32_t shell = cpu.Get(kR0);
         std::uint32_t devolver = 0;
         if (media_ && zb2::brew::ClasseDeMidia(iid)) {
           // A FAMILIA AEECLSID_MULTIMEDIA (0x01005500): o objecto de midia, a
@@ -2789,6 +2962,13 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           // com um objecto que se diz completo (P2).
           if (devolver == 0) devolver = zb2::brew::ObjetoDoClsid(iid);
         }
+        // E, POR FIM, A CLASSE QUE VIAJA NO PACOTE DO PROPRIO TITULO. Vem DEPOIS
+        // de tudo o que e nosso e ANTES da recusa: a extensao e a ultima a
+        // tentar, mas nao e uma recusa -- quando ela responde, a criacao foi
+        // SERVIDA. Sem isto o `a3d` fica preso em
+        // `IShell::CreateInstance IMicro3D (0x010292c3)` e nao chega a desenhar
+        // um pixel.
+        if (devolver == 0) devolver = CriarInstanciaDaExtensao(cpu, shell, iid);
         if (ppo != 0) mem_.Escrever32(ppo, devolver);
         cpu.Set(kR0, devolver != 0 ? kAeeSuccess : kAeeClassNotSupported);
         if (devolver == 0) {

@@ -269,6 +269,62 @@ ClsidDoMif LerClsidDoMif(const std::string& caminho);
 // A variante em memoria, para os testes nao precisarem de ficheiro.
 ClsidDoMif LerClsidDoMifDados(const std::vector<std::uint8_t>& bytes);
 
+// ---------------------------------------------------------------------------
+// OS REGISTOS DE CLASSE DE UM `.mif`, e a extensao que eles delimitam
+// ---------------------------------------------------------------------------
+//
+// MEDIDO, com o leitor `.bar` desta arvore, nos 65 `.mif` do corpus:
+//
+//   - a seccao do APPLET tem 20 bytes, com o AEECLSID em +0 e os campos +4 e
+//     +12 a zero -- e o que o `LerClsidDoMif` ja extrai;
+//   - cada CLASSE DECLARADA tem 8 bytes: `<u32 ClassID> <u32 zero>`.
+//
+// O `274259.mif` (o `a3d`) tem as DUAS formas: `[8]` = 20 bytes com
+// `0x01081970` (o seu proprio applet) e `[9]` = 8 bytes com `0x010292c3` (a
+// classe que ele PEDE). O `12875.mif` (o `imicro3d`, 228 bytes) tem SO a
+// segunda: `0x010292c3`, e nenhuma seccao de 20 bytes.
+//
+// A REGRA QUE DISTINGUE OS DOIS LADOS e essa: um `.mif` que declara classes e
+// NAO tem seccao de applet nao e de um titulo, e de uma EXTENSAO que outro
+// titulo trouxe no proprio pacote. Sem ela, o manifesto do jogo -- que tambem
+// declara a classe -- oferecer-se-ia para atender a classe que ele mesmo pede.
+//
+// MEDIDO no corpus inteiro: so DOIS `.mif` sao extensoes -- o `12875.mif`
+// (`0x010292c3`, o servico de 3D da HI Corporation que o `a3d` pede) e o
+// `12876.mif` (`0x0102bbfc`, o motor Superscape que o Kingdom Hearts pede).
+// Onze titulos declaram alguma classe.
+struct RegistosDoMif {
+  bool ok = false;
+  std::string motivo;                  // vazio quando ok
+  std::uint32_t applet = 0;            // 0 quando nao ha seccao de applet
+  std::vector<std::uint32_t> classes;  // os registos de 8 bytes, na ordem do ficheiro
+  // A regra em uma linha, para nao haver duas versoes dela: tem classes e nao
+  // tem applet.
+  bool EhExtensao() const { return ok && applet == 0u && !classes.empty(); }
+};
+
+RegistosDoMif LerRegistosDoMif(const std::string& caminho);
+RegistosDoMif LerRegistosDoMifDados(const std::vector<std::uint8_t>& bytes);
+
+// O modulo que FORNECE uma classe que outro titulo pede.
+//
+// A pareacao `.mod` <-> `.mif` e pelo NOME DA PASTA do modulo, que e a
+// disposicao do BREW: `<dir>/<nome>/` com o modulo dentro e `<dir>/../mif/<nome>.mif`
+// ao lado. Ela e mais estreita que a busca que acha o manifesto do applet, e de
+// proposito: ali, errar da "manifesto nao encontrado"; aqui, daria a classe
+// atendida pelo modulo errado.
+struct FornecedorDaClasse {
+  bool ok = false;
+  std::string motivo;          // vazio quando ok
+  std::string pasta;           // o nome da pasta do modulo, ex. "12875"
+  std::string caminho_do_mod;  // o `.mod` dentro dela
+};
+
+// Varre `<pasta_dos_mods>/*/` e devolve o modulo cujo `.mif` ao lado e uma
+// extensao que declara `classe`. Recusa em voz alta (P2) e diz o que varreu.
+FornecedorDaClasse ProcurarFornecedorDaClasse(const std::string& pasta_dos_mods,
+                                              std::uint32_t classe);
+
 // Os nomes medidos no cabecalho (seccao 1). Ficam aqui para o teste os poder
 // usar sem repetir numeros, e para a recusa poder dizer QUAL campo falhou.
 namespace bar_campos {

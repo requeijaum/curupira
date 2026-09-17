@@ -55,6 +55,14 @@ namespace {
 //
 // O efeito nos 62 titulos: `modulo 48 -> 62` e `applet 22 -> 41`.
 constexpr std::uint32_t kBase = 0x00000000u;
+// ONDE AS EXTENSOES DO TITULO SAO MAPEADAS: logo acima do modulo do titulo, e
+// nao num canto afastado. O `a3d` traz o `imicro3d.mod` (90 068 bytes) no
+// proprio pacote e pede-lhe a classe 0x010292c3. MEDIDO: com a extensao em
+// `0x08000000` o `AEEMod_Load` correu ZERO passos -- a guarda da faixa do modulo
+// do `Correr` recusa correr fora dela, e a extensao E parte do programa do
+// titulo. Este valor deixa de fora os dois slots de apoio da bateria
+// (`kPPMod`/`kPPObj`, em 0x00090000).
+constexpr std::uint32_t kPrimeiraBaseDaExtensao = 0x00100000u;
 constexpr std::uint32_t kPilha = 0x80080000u;
 // O HEAP DO GUEST: 64 MiB em 0x10000000 (o layout do zeebx e o do guia: 128+32 MB).
 //
@@ -747,6 +755,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
                               t.pasta + ": " + do_mif.motivo);
   }
   despacho.SituarTitulo(dir, t.pasta, clsid_do_titulo);
+
   despacho.DefinirVtableBitmap(s);
   despacho.DefinirVtableFicheiro(s.Endereco(zb2::brew::kVtableFileObj));
 
@@ -895,6 +904,78 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   // callback que aponte para fora dela. A base e ZERO (medida); o TAMANHO vem do
   // carregador.
   despacho.DefinirFaixaDoModulo(kBase, carga.tamanho);
+  // A EXTENSAO QUE O TITULO TROUXE (o `IMicro3D` do `a3d`).
+  //
+  // O `a3d` pede `0x010292c3` ao `IShell::CreateInstance` e fica preso nessa
+  // falta (0 px, 1 cor). A classe nao esta em cabecalho nenhum do SDK e nao
+  // existe em particao nenhuma da consola: ela viaja no proprio pacote do
+  // titulo, e o `mod/12875/imicro3d.mod` esta ao lado. O Kingdom Hearts e o
+  // mesmo caso com `0x0102bbfc` e o `swv21brew.mod`.
+  //
+  // MEDIDO nos 65 `.mif` do corpus: a extensao declara a classe num registo de
+  // 8 bytes, `<u32 ClassID> <u32 zero>` -- a MESMA forma que o manifesto do jogo
+  // usa para declarar a dependencia, e por isso o que os separa e nao terem
+  // seccao de applet. So 2 dos 65 sao extensoes, e 11 titulos declaram classes.
+  //
+  // ONDE ELA E MAPEADA, e porque e que isto importa: LOGO ACIMA DO MODULO DO
+  // TITULO, e a FAIXA DO PROGRAMA CRESCE PARA A COBRIR. A faixa e UMA so, porque
+  // a guarda do `Correr` (`saiu_do_modulo_para_...`) recusa correr fora dela -- e
+  // a extensao E parte do programa do titulo, que ele trouxe no proprio pacote.
+  // MEDIDO, e foi o primeiro resultado desta frente: com a extensao em
+  // `0x08000000` o `AEEMod_Load` correu ZERO passos e o motivo foi
+  // `saiu_do_modulo_para_0x08000000`. O `0x00100000` deixa de fora os dois slots
+  // de apoio da bateria (`kPPMod`/`kPPObj` em `0x00090000`), que ficam dentro da
+  // faixa mas nao debaixo de codigo nenhum.
+  //
+  // O QUE NAO TEM FORNECEDOR NAO E FALTA: a maioria das classes declaradas
+  // (`0x0103081d` em 3 titulos, `0x0101e4e1`, `0x01077cf4`) nao vem de modulo
+  // nenhum deste corpus -- sao declaracoes do manifesto, e entram no traco, e
+  // nao nas faltas: uma falta a mais muda o JSON de titulos que nao tem defeito
+  // nenhum.
+  {
+    const zb2::RegistosDoMif registos = zb2::LerRegistosDoMif(dir + "/../mif/" + t.pasta + ".mif");
+    if (registos.ok && !registos.classes.empty()) {
+      std::uint32_t base_da_extensao = kPrimeiraBaseDaExtensao;
+      std::uint32_t oferecidas = 0;
+      for (const std::uint32_t classe : registos.classes) {
+        const zb2::FornecedorDaClasse f = zb2::ProcurarFornecedorDaClasse(dir, classe);
+        if (!f.ok) {
+          char det[256];
+          std::snprintf(det, sizeof(det), "%s declara %s: %s", t.pasta.c_str(),
+                        Hex(classe).c_str(), f.motivo.c_str());
+          traco.Emitir(zb2::Area::Carga, zb2::Nivel::Depuracao, "CLASSE_SEM_FORNECEDOR", det);
+          continue;
+        }
+        bool leu = false;
+        const std::vector<std::uint8_t> imagem_ext = Ler(f.caminho_do_mod, &leu);
+        if (!leu) {
+          traco.RegistarFalta(zb2::Area::Carga, "extensao_ilegivel",
+                              f.pasta + ": nao foi possivel ler " + f.caminho_do_mod);
+          continue;
+        }
+        if (!despacho.OferecerExtensao(classe, base_da_extensao, kTabela, imagem_ext)) {
+          traco.RegistarFalta(zb2::Area::Carga, "extensao_recusada",
+                              f.pasta + " classe " + Hex(classe));
+          continue;
+        }
+        // A PROXIMA FICA ACIMA DESTA, alinhada e com folga: o bloco de apoio das
+        // duas saidas vive em `base + tamanho + 128`, logo a conta leva-o.
+        const std::uint32_t fim_da_extensao =
+            base_da_extensao + static_cast<std::uint32_t>(imagem_ext.size());
+        base_da_extensao = ((fim_da_extensao + 0x1FFFFu) & ~0xFFFFu);
+        ++oferecidas;
+      }
+      if (oferecidas > 0) {
+        // A FAIXA DO PROGRAMA PASSA A COBRIR AS EXTENSOES. Um passo a mais do
+        // que o ultimo `base + tamanho`, e nao menos: o bloco de apoio esta la.
+        despacho.DefinirFaixaDoModulo(kBase, base_da_extensao - kBase);
+        traco.Emitir(zb2::Area::Carga, zb2::Nivel::Informacao, "EXTENSOES_DO_TITULO",
+                     t.pasta + " ofereceu " + std::to_string(oferecidas) + " de " +
+                         std::to_string(registos.classes.size()) + " classes declaradas; faixa do "
+                         "programa ate " + Hex(base_da_extensao));
+      }
+    }
+  }
   // O COLECTOR DAS RECUSAS, por DELTA e nao por leitura absoluta (ver
   // `tools/recusas.h` para o defeito que isto corrige e a medicao dele).
   zb2::tools::ContadorDeRecusas rec;

@@ -436,6 +436,36 @@ class Despacho {
   }
   std::uint32_t ClsidDoTitulo() const { return clsid_titulo_; }
   bool TemClsidDoTitulo() const { return tem_clsid_; }
+
+  // --- A EXTENSAO QUE O TITULO TROUXE (o `IMicro3D` do `a3d`) ---------------
+  //
+  // DOIS titulos do corpus -- o `a3d` (Action Hero 3D) e o Kingdom Hearts --
+  // pedem ao `IShell::CreateInstance` uma classe que NAO esta em cabecalho nenhum
+  // do SDK e nao existe em particao nenhuma da consola: `0x010292c3` e
+  // `0x0102bbfc`. Nao sao classes da consola, sao do PROPRIO PACOTE do jogo: um
+  // modulo de extensao em ARM que viaja ao lado do titulo.
+  //
+  // MEDIDO (nos 65 `.mif` do corpus, com o leitor desta arvore): a extensao
+  // declara a classe num registo de 8 bytes, `<u32 ClassID> <u32 zero>` -- a
+  // MESMA forma que o manifesto do jogo usa para declarar a dependencia. So DOIS
+  // `.mif` sao extensoes: o `12875.mif` (`0x010292c3`, o servico de 3D da HI que
+  // o `a3d` pede) e o `12876.mif` (`0x0102bbfc`, o motor Superscape do Kingdom
+  // Hearts). O que os separa de um titulo e nao terem seccao de applet -- e por
+  // isso que a busca do fornecedor (`ProcurarFornecedorDaClasse`) e pela PASTA do
+  // modulo, que e a pareacao do BREW.
+  //
+  // `OferecerExtensao` MAPEIA o `.mod` na carga (o `CarregarMod` num endereco
+  // nosso); a hora do pedido fica com os dois passos do console, que sao duas
+  // chamadas ANINHADAS ao guest: o `AEEMod_Load` uma vez, e depois o
+  // `IModule::CreateInstance` (slot 2) sempre que o jogo pede a classe.
+  bool OferecerExtensao(std::uint32_t classe, std::uint32_t base, std::uint32_t tabela,
+                        const std::vector<std::uint8_t>& imagem);
+  std::uint32_t ExtensoesOferecidas() const {
+    return static_cast<std::uint32_t>(extensoes_.size());
+  }
+  // Serve a classe: devolve o objecto, ou ZERO e regista a falta COM O MOTIVO.
+  // O `shell` e o `r0` da chamada do jogo -- o mesmo IShell que o applet recebeu.
+  std::uint32_t CriarInstanciaDaExtensao(ICpu& cpu, std::uint32_t shell, std::uint32_t classe);
   // --- O GL (etapa 6) ------------------------------------------------------
   //
   // O `Igl` e o `Egl` vivem AQUI, e nao na ferramenta: a cablagem e do motor.
@@ -711,6 +741,27 @@ class Despacho {
   // seria reentrancia que o BREW nunca faz.
   int profundidade_de_evento_ = 0;
   static constexpr int kMaxProfundidadeDeEvento = 4;
+
+  // UMA EXTENSAO JA MAPEADA. O `modulo` e o `IModule*` que o `AEEMod_Load`
+  // devolveu; `carregou` separa "ainda nao se pediu" de "pediu-se e falhou", para
+  // uma extensao partida nao ser recarregada a cada pedido.
+  struct ExtensaoDoTitulo {
+    std::uint32_t classe = 0;
+    std::uint32_t base = 0;
+    std::uint32_t tamanho = 0;
+    std::uint32_t tabela = 0;
+    std::uint32_t modulo = 0;
+    bool carregou = false;
+  };
+  std::vector<ExtensaoDoTitulo> extensoes_;
+  // Uma chamada ANINHADA ao guest: salva r0..r15 e o CPSR, corre ate a sentinela
+  // e repoe tudo. E o mesmo idioma do `EntregarEventoAoApplet` e da thread
+  // cooperativa -- `hospedeiro`/`kSentinela` existem nesta arvore por causa deles.
+  // `fase`, quando nao e nulo, leva o resultado da corrida aninhada -- o motivo
+  // e os passos. Uma chamada que NAO volta tem de dizer PORQUE nao voltou: sem
+  // isso a recusa e um "nao voltou" que nao se pode perseguir (P2).
+  std::uint32_t ChamarNoGuest(ICpu& cpu, std::uint32_t funcao, const std::uint32_t args[4],
+                              bool* voltou, ResultadoFase* fase = nullptr);
 
   std::uint32_t textos_ = 0;
   std::uint32_t blits_ = 0;
