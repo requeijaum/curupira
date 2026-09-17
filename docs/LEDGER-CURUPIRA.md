@@ -2339,3 +2339,69 @@ REUTILIZADO de outro recurso. Pelo SDK, um buffer pequeno devolve NULL, e e isso
 Conclusao: **nao ha nada a corrigir no nosso lado**; a falta fica como recusa honesta e o campo e do jogo.
 A premissa "servir de qualquer maneira" seria copiar por cima do buffer do chamador -- o que o
 zeebulator-upstream faz (copia sem olhar ao tamanho) e o que a spec proibe.
+
+
+### 17/09 -- o `IMicro3D` do `a3d`: a classe que nao e da consola, e a extensao que o titulo trouxe
+
+O `a3d` (Action Hero 3D, pasta 274259) parava em `IShell::CreateInstance IMicro3D (0x010292c3)`:
+0 pixels, 1 cor, e o resto da fase a bater na parede. A classe nao esta em cabecalho nenhum do SDK
+(`grep -rn` na arvore extraida nao a encontra) e nao existe em particao nenhuma da consola. Ela VIAJA
+NO PROPRIO PACOTE do titulo: `mod/12875/imicro3d.mod`, 90 068 bytes de ARM. O Kingdom Hearts e o
+mesmo caso com `0x0102bbfc` e o `swv21brew.mod`.
+
+**A regra de reconhecimento, medida** nos 65 `.mif` do corpus com o leitor desta arvore: o registo de
+classe tem **8 bytes**, `<u32 ClassID> <u32 zero>`, e aparece IDENTICO nos dois lados da relacao -- no
+manifesto do jogo (declarando a dependencia) e no da extensao (declarando o que fornece). O que os
+separa e o que vem em volta: o titulo tem a **seccao de applet** (20 bytes, AEECLSID em `+0` e `+4`/`+12`
+a zero), a extensao nao. O `274259.mif` tem as DUAS formas ao mesmo tempo -- `0x01081970` (o seu applet,
+no recurso `[8]`) e `0x010292c3` (a classe que PEDE, no `[9]`) -- logo sem essa regra o manifesto do
+proprio jogo oferecer-se-ia para atender a classe que ele pede.
+
+So DOIS dos 65 `.mif` sao extensoes (`12875.mif` -> `0x010292c3` e `12876.mif` -> `0x0102bbfc`) e ONZE
+titulos declaram alguma classe. O fornecedor acha-se pela PASTA do modulo, que e a pareacao do BREW
+(`<dir>/<nome>/` com `<dir>/../mif/<nome>.mif` ao lado), e nao por uma busca larga: aqui, uma busca
+larga daria a classe atendida pelo modulo errado.
+
+**O desenho** (`06ccf7b`): `CarregarMod` mapeia a extensao na carga, e a hora do pedido fica com os
+dois passos do console, que sao DUAS CHAMADAS ANINHADAS ao guest -- `AEEMod_Load(shell, tabela, &modulo)`
+uma vez e depois `IModule::CreateInstance(modulo, shell, classe, &objeto)` no **slot 2** do vtable
+(`Ler32(Ler32(modulo) + 8)`, o mesmo idioma que a bateria ja usa para o modulo do titulo). O contexto do
+hospedeiro e salvo e reposto (r0..r15 e o CPSR) -- o padrao que a thread cooperativa e o
+`EntregarEventoAoApplet` ja tinham. **Nao se implementou o `IMicro3D`**: o objecto que volta e ARM da
+extensao, e daí em diante o jogo fala com ele. A referencia do zeebx faz o mesmo (`git grep -i micro3d`
+no ramo dev deles so devolve carregador e docs; `03-despacho-de-api.md:130-132` diz o mesmo por palavras).
+
+**O primeiro defeito medido desta frente foi de ENDERECO.** Com a extensao em `0x08000000` (o valor da
+referencia) o `AEEMod_Load` correu **ZERO passos** e o motivo foi `saiu_do_modulo_para_0x08000000`: a
+guarda da faixa do `Correr` (`despacho.cpp:5001`) recusa correr fora dela, e a extensao E parte do
+programa do titulo. Ela passa a ficar logo acima do modulo (`0x00100000`, acima dos dois slots de apoio
+da bateria, `kPPMod`/`kPPObj` em `0x00090000`) e a faixa do programa cresce para a cobrir. O zeebx nao
+tem essa guarda -- e e por isso que la o endereco e indiferente.
+
+**MEDIDO, o `a3d` contra a corrida anterior, pela ferramenta** (`zb2_comparar`, mesmo corpus dos dois
+lados): **0 regressoes**, 3 melhorias -- `pixels 0 -> 164156`, `cores 1 -> 14`, `blits 0 -> 2`. Neutros:
+`passos_create 547184 -> 1894176`, `heap_pico 251872 -> 1829240` (246 KiB -> 1,75 MiB de 64 MiB), e a
+falta `IShell::CreateInstance IMicro3D` a ir de 1 para **0**. Nos outros 61 titulos, **nada mudou, campo
+a campo** -- so o `a3d` declara, neste corpus, uma classe que tem fornecedor. Ficaram as SEIS faltas
+seguintes, ja com nome (`IGraphics::SetDestination`, `IMedia::SetMediaParm(MMD_BUFFER)` com `dwSize=85261`
+IMPAR para PCM de 16 bits, `IShell::CreateInstance` com `iid=0`, `IShell::FreeResData`,
+`IShell::GetHandler` com `pszIn` nulo, `IShell::slot18`).
+
+**Tres licoes de instrumento, todas pagas nesta ronda:**
+
+1. **Cabecalho editado -> construir TUDO.** Depois de mexer no `core/brew/despacho.h`, construir so
+   `cmake --build build --target zb2_bateria` deixou o `zb2_tests` DESACTUALIZADO, e o sintoma foi um
+   crash FALSO em `Ajudantes.OStrcatJuntaNoFimEDevolveODestino` (estouro de pilha em `_M_erase` de um
+   `std::map`, com o layout antigo da classe). O que o resolveu foi medir: `git stash` das alteracoes e o
+   teste PASSA; com elas e `cmake --build build` inteiro, passa tambem. E a armadilha ja conhecida
+   (`make -C build zb2_tests` nao reconstroi o `zb2_bateria`) vista na DIRECCAO INVERSA.
+2. **Campo novo no JSON tem de ser declarado no comparador.** O `fd5e144` pos `heap_pico`/`heap_blocos` no
+   JSON por titulo sem os declarar em `tools/comparar.cpp`, e o `zb2_comparar` passou a **RECUSAR a
+   corrida de referencia** (`campo desconhecido 'heap_pico'`) -- nada era comparavel. Corrigido em
+   `5ef03fa`, os dois `kNeutro` (um pico de heap nao tem direcao), com a medicao: `heap_pico` 62 de 62,
+   max 45,3 MiB no `gof` (71% dos 64 MiB); `heap_blocos` = 1 nos 62.
+3. **O corpus dos 62 tem ficheiro e hash.** Ele e
+   `/home/rafaelfrequiao/projects/zeebo-emulator/research/sources/scripts/corpus62.json`
+   (sha256 `348106f14ecfec547a04e634fd65931c73522f9c9f24304c387ee9eb757dad8b`) e tinha-se perdido de
+   `/tmp`. Uma re-serializacao (`json.dump` do kernel) NAO serve: o comparador exige o MESMO sha256 e
+   recusa comparar entradas diferentes -- e tem razao.
