@@ -1288,5 +1288,70 @@ TEST(Classes, ILicenseRespondeComoModuloCompradoESemExpiracao) {
   EXPECT_EQ(b.M().Ler32(kPseq), 0u);
 }
 
+TEST(Classes, IVectorModelManipulaItensComSucesso) {
+  // AEECLSID_VECTORMODEL_1 (0x01028e35) -- IVectorModel (13 slots). AEEIVectorModel.h.
+  // Medido no tectoy (3 pedidos na bateria).
+  const std::uint32_t vec = static_cast<std::uint32_t>(Classe::kVectorModel_1);
+  EXPECT_STREQ(NomeDaInterface(vec), "IVectorModel");
+  EXPECT_STREQ(NomeDaClasse(vec), "AEECLSID_VECTORMODEL_1");
+  EXPECT_STREQ(NomeDoSlotDaClasse(vec, 5), "Size");
+  EXPECT_STREQ(NomeDoSlotDaClasse(vec, 6), "GetAt");
+  EXPECT_STREQ(NomeDoSlotDaClasse(vec, 7), "ReplaceAt");
+  EXPECT_STREQ(NomeDoSlotDaClasse(vec, 8), "InsertAt");
+  EXPECT_STREQ(NomeDoSlotDaClasse(vec, 9), "DeleteAt");
+  EXPECT_STREQ(NomeDoSlotDaClasse(vec, 10), "DeleteAll");
+
+  Bancada b;
+  constexpr std::uint32_t kOut = 0x80200000u;
+
+  // 1. Inicialmente vazio
+  b.Cpu().Set(kR0, ObjetoDaClasse(vec));
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(vec) + 5, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), 0u);
+
+  // 2. InsertAt(0xFFFFFFFF, 0x1234) -> insere no fim
+  b.Cpu().Set(kR0, ObjetoDaClasse(vec));
+  b.Cpu().Set(kR1, 0xFFFFFFFFu);
+  b.Cpu().Set(kR2, 0x1234u);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(vec) + 8, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
+
+  // 3. Size -> 1
+  b.Cpu().Set(kR0, ObjetoDaClasse(vec));
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(vec) + 5, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), 1u);
+
+  // 4. GetAt(0, &out) -> devolve 0x1234
+  b.Cpu().Set(kR0, ObjetoDaClasse(vec));
+  b.Cpu().Set(kR1, 0u);
+  b.Cpu().Set(kR2, kOut);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(vec) + 6, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
+  EXPECT_EQ(b.M().Ler32(kOut), 0x1234u);
+
+  // 5. ReplaceAt(0, 0x5678)
+  b.Cpu().Set(kR0, ObjetoDaClasse(vec));
+  b.Cpu().Set(kR1, 0u);
+  b.Cpu().Set(kR2, 0x5678u);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(vec) + 7, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
+
+  b.Cpu().Set(kR0, ObjetoDaClasse(vec));
+  b.Cpu().Set(kR1, 0u);
+  b.Cpu().Set(kR2, kOut);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(vec) + 6, b.T()));
+  EXPECT_EQ(b.M().Ler32(kOut), 0x5678u);
+
+  // 6. DeleteAt(0) -> lista vazia
+  b.Cpu().Set(kR0, ObjetoDaClasse(vec));
+  b.Cpu().Set(kR1, 0u);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(vec) + 9, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
+
+  b.Cpu().Set(kR0, ObjetoDaClasse(vec));
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(vec) + 5, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), 0u);
+}
+
 }  // namespace
 }  // namespace zb2::brew

@@ -87,6 +87,25 @@ const char* NomeDoSlotLicense(unsigned slot) {
   }
 }
 
+const char* NomeDoSlotVectorModel(unsigned slot) {
+  switch (slot) {
+    case 0: return "AddRef";
+    case 1: return "Release";
+    case 2: return "QueryInterface";
+    case 3: return "AddListener";
+    case 4: return "Notify";
+    case 5: return "Size";
+    case 6: return "GetAt";
+    case 7: return "ReplaceAt";
+    case 8: return "InsertAt";
+    case 9: return "DeleteAt";
+    case 10: return "DeleteAll";
+    case 11: return "EnsureCapacity";
+    case 12: return "SetPfnFree";
+    default: return "?";
+  }
+}
+
 const char* (*const kNomeDoSlot[])(unsigned) = {
     &brew_slots::NomeDeAppHistory,
     &brew_slots::NomeDeValueModel,
@@ -96,6 +115,7 @@ const char* (*const kNomeDoSlot[])(unsigned) = {
     &NomeDoSlotQEGL,
     &NomeDoSlotCM,
     &NomeDoSlotLicense,
+    &NomeDoSlotVectorModel,
 };
 
 // Quantos slots cada interface TEM, do mesmo cabecalho. As cinco primeiras vem
@@ -109,6 +129,7 @@ const std::uint32_t kSlotsDaInterface[] = {
     kQeglSlots,
     29,
     6,
+    13,
 };
 
 // E OS NUMEROS QUE ESTAVAM A MAO, CONFERIDOS. Nao e decoracao: era aqui que o
@@ -142,6 +163,7 @@ constexpr Ficha kFichas[kQuantasClasses] = {
     {0x0103d8ecu, "AEECLSID_QEGL", "QEGL"},
     {0x01011810u, "AEECLSID_CM", "ICM"},
     {brew_clsids::kClsid_LICENSE, "AEECLSID_LICENSE", "ILicense"},
+    {brew_clsids::kClsid_VECTORMODEL_1, "AEECLSID_VECTORMODEL_1", "IVectorModel"},
 };
 
 // OS TRES CLSIDs, lidos do `.inc` gerado. Se um deles divergir do cabecalho, a
@@ -158,6 +180,8 @@ static_assert(brew_clsids::kClsid_PNGDECODER_BREW == 0x01030766u,
               "AEECLSID_PNGDECODER_BREW tem de ser 0x01030766 (AEECPNGDecoderBREW.h:27)");
 static_assert(brew_clsids::kClsid_LICENSE == 0x0100100fu,
               "AEECLSID_LICENSE tem de ser 0x0100100f (AEEClassIDs.h:76)");
+static_assert(brew_clsids::kClsid_VECTORMODEL_1 == 0x01028e35u,
+              "AEECLSID_VECTORMODEL_1 tem de ser 0x01028e35 (AEECLSID_VECTORMODEL_1.bid:31)");
 
 // O `IAppHistory` TEM 16 slots, e o `Top` e o slot 5 -- nao um numero escrito
 // aqui: sai da cadeia de heranca (`INHERIT_IQI` = 3, mais `Forward`, `Back`,
@@ -201,12 +225,18 @@ std::uint32_t g_texto_ativo = 0;
 std::uint32_t g_texto_props = 0;
 std::int32_t g_texto_modo = 0;
 
+// Estado da lista IVectorModel (AEECLSID_VECTORMODEL_1).
+std::vector<std::uint32_t> g_vetor_itens;
+std::uint32_t g_vetor_liberador = 0;
+
 }  // namespace
 
 void ReporEstadoTextCtl() {
   g_texto_ativo = 0;
   g_texto_props = 0;
   g_texto_modo = 0;
+  g_vetor_itens.clear();
+  g_vetor_liberador = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -561,6 +591,9 @@ bool SlotDaClasseImplementado(std::uint32_t k, std::uint32_t slot) {
   }
   if (k == static_cast<std::uint32_t>(Classe::kLicense)) {
     return slot >= 2 && slot <= 5;
+  }
+  if (k == static_cast<std::uint32_t>(Classe::kVectorModel_1)) {
+    return slot >= 3 && slot <= 12;
   }
   return false;
 }
@@ -2391,6 +2424,79 @@ bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
     cpu.Set(kR0, kAeeClassNotSupported);
     return true;
   }
+  const std::uint32_t k_vector = static_cast<std::uint32_t>(Classe::kVectorModel_1);
+  if (k == k_vector) {
+    // IVectorModel (AEECLSID_VECTORMODEL_1, 13 slots). AEEIVectorModel.h.
+    if (slot == 3) { // AddListener
+      cpu.Set(kR0, kAeeSuccess);
+      return true;
+    }
+    if (slot == 4) { // Notify
+      return true; // void
+    }
+    if (slot == 5) { // Size -> int (uint32)
+      cpu.Set(kR0, static_cast<std::uint32_t>(g_vetor_itens.size()));
+      return true;
+    }
+    if (slot == 6) { // GetAt(po, nIndex, ppoItem)
+      const std::uint32_t idx = cpu.Get(kR1);
+      const std::uint32_t out = cpu.Get(kR2);
+      if (idx < g_vetor_itens.size()) {
+        if (out != 0) cpu.Mem().Escrever32(out, g_vetor_itens[idx]);
+        cpu.Set(kR0, kAeeSuccess);
+      } else {
+        cpu.Set(kR0, kAeeBadParm);
+      }
+      return true;
+    }
+    if (slot == 7) { // ReplaceAt(po, nIndex, pvItem)
+      const std::uint32_t idx = cpu.Get(kR1);
+      const std::uint32_t item = cpu.Get(kR2);
+      if (idx < g_vetor_itens.size()) {
+        g_vetor_itens[idx] = item;
+        cpu.Set(kR0, kAeeSuccess);
+      } else {
+        cpu.Set(kR0, kAeeBadParm);
+      }
+      return true;
+    }
+    if (slot == 8) { // InsertAt(po, nIndex, pvItem)
+      const std::uint32_t idx = cpu.Get(kR1);
+      const std::uint32_t item = cpu.Get(kR2);
+      if (idx == 0xFFFFFFFFu || idx >= g_vetor_itens.size()) {
+        g_vetor_itens.push_back(item);
+      } else {
+        g_vetor_itens.insert(g_vetor_itens.begin() + idx, item);
+      }
+      cpu.Set(kR0, kAeeSuccess);
+      return true;
+    }
+    if (slot == 9) { // DeleteAt(po, nIndex)
+      const std::uint32_t idx = cpu.Get(kR1);
+      if (idx < g_vetor_itens.size()) {
+        g_vetor_itens.erase(g_vetor_itens.begin() + idx);
+        cpu.Set(kR0, kAeeSuccess);
+      } else {
+        cpu.Set(kR0, kAeeBadParm);
+      }
+      return true;
+    }
+    if (slot == 10) { // DeleteAll(po)
+      g_vetor_itens.clear();
+      return true; // void
+    }
+    if (slot == 11) { // EnsureCapacity
+      cpu.Set(kR0, kAeeSuccess);
+      return true;
+    }
+    if (slot == 12) { // SetPfnFree(po, pfnFree)
+      const std::uint32_t anterior = g_vetor_liberador;
+      g_vetor_liberador = cpu.Get(kR1);
+      cpu.Set(kR0, anterior);
+      return true;
+    }
+  }
+
   const std::uint32_t k_license = static_cast<std::uint32_t>(Classe::kLicense);
   if (k == k_license) {
     // `ILicense` (0x0100100f, 6 slots). AEEClassIDs.h:76, AEELicense.h.
