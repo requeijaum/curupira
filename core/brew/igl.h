@@ -426,6 +426,10 @@ class Igl {
   // fixasse 1.0 no `glClear` faria do `glClearDepthx` um pedido guardado que
   // ninguem le (P2).
   float profundidade_limpeza_ = 1.0f;
+  // `glDepthRange`: (0, 1) por omissao, como o GL. O pedido do guest TEM de
+  // chegar ao desenho -- o consumidor e o `Rasterizador::Projetar`.
+  float profundidade_perto_ = 0.0f;
+  float profundidade_longe_ = 1.0f;
   // O VALOR DE LIMPEZA DE STENCIL E SO ESTADO: esta arvore NAO TEM buffer de
   // stencil (`core/brew/egl.cpp:151`, `EGL_STENCIL_SIZE 0 -- "nao ha buffer de
   // stencil"`). Fica guardado para o estado nao mentir, e o caso do

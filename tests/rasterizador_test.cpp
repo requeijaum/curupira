@@ -171,8 +171,14 @@ void PorFrustum(EstadoDeRasterizacao* e) {
 // nada.
 EstadoDeRasterizacao EstadoBase() {
   EstadoDeRasterizacao e;
+  // A JANELA E O `Gravador` (640x480) e o `glViewport` CONTA O Y DE BAIXO PARA
+  // CIMA: uma janela de 8x8 no canto de baixo esquerdo e `y = 480 - 8`. Estava
+  // `y = 0`, que e a MESMA coisa enquanto se le o y de cima -- a convencao errada
+  // que o `zeebx` do Kaio corrigiu (`89dcd0f`, vista no Crash Nitro Kart: o
+  // trecho do portal saia espelhado). O que este ficheiro MEDE (os pixeis exactos)
+  // nao muda: muda so onde o retangulo da janela esta.
   e.viewport[0] = 0;
-  e.viewport[1] = 0;
+  e.viewport[1] = 480 - 8;
   e.viewport[2] = 8;
   e.viewport[3] = 8;
   e.cor = Rgba{255, 0, 0, 255};  // vermelho opaco -> RGB565 0xF800
@@ -359,7 +365,10 @@ struct Bancada {
   // argumento com omissao OPACA porque e ele que o alpha test e a mistura leem:
   // um titulo que o mude tem de o poder dizer por este mesmo caminho.
   void PrepararTriangulo(Endereco vertices, float alfa = 1.0f) {
-    Ch(kIgl_Viewport, 0, 0, 8, 8);
+    // A JANELA NO TOPO, PELA CONVENCAO DO GL: o `y` conta de BAIXO, logo um
+    // retangulo de 8x8 no canto de cima e `y = 480 - 8`. Estava `y = 0`, que e o
+    // que os dois rasterizadores do `zeebx` faziam antes do `89dcd0f`.
+    Ch(kIgl_Viewport, 0, 480 - 8, 8, 8);
     PorVertices(mem, vertices, {{-1.0f, 0.75f}, {-1.0f, 0.0f}, {0.0f, 0.0f}});
     EXPECT_EQ(Ch(kIgl_VertexPointer, 3, GL_FLOAT, 12, vertices), zb2::brew::ResultadoGl::Feito);
     EXPECT_EQ(Ch(kIgl_EnableClientState, GL_VERTEX_ARRAY), zb2::brew::ResultadoGl::Feito);
@@ -467,6 +476,7 @@ TEST(Rasterizador, AJanelaPequenaMudaAProjeccao) {
   // primeiras linhas -- e sobra UM pixel, o (0,0), cujo centro (0.5, 0.5) esta
   // dentro (0.5 >= 0.25 + 0.1875*0.5 = 0.34375). ESTE TESTE E O DO MAPA; o do
   // LIMITE e o seguinte.
+  e.viewport[1] = 480 - 2;  // o `y` do GL conta de baixo (ver o `EstadoBase`)
   e.viewport[3] = 2;
   constexpr Endereco kV = 0x00100000;
   PorVertices(mem, kV, {{-1.0f, 0.75f}, {-1.0f, 0.0f}, {0.0f, 0.0f}});
@@ -526,6 +536,10 @@ TEST(Rasterizador, ATexturaAmostraOCantoCerto) {
   g.altura = 8;
   Rasterizador r(mem, g);
   EstadoDeRasterizacao e = EstadoBase();
+  // A SUPERFICIE DESTE TESTE E 8x8 (o `Gravador` acima), e nao 640x480: a janela
+  // do `EstadoBase` e o retangulo do GL contado de baixo (`480 - 8`), e num ecra de
+  // 8 linhas isso cai FORA. Numa superficie de 8x8 a janela `y = 0` cobre-a toda.
+  e.viewport[1] = 0;
   e.viewport[2] = 8;
   e.viewport[3] = 8;
 

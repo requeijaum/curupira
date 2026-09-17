@@ -671,14 +671,31 @@ bool Rasterizador::Projetar(const EstadoDeRasterizacao& e, Vertice* v) const {
   const float y_ndc = v->clip[1] / w;
   const float z_ndc = v->clip[2] / w;
   const double vx = static_cast<double>(e.viewport[0]);
-  const double vy = static_cast<double>(e.viewport[1]);
   const double vw = static_cast<double>(e.viewport[2]);
   const double vh = static_cast<double>(e.viewport[3]);
-  // O Y E INVERTIDO: o GL conta a janela a partir do canto INFERIOR esquerdo e a
-  // `Tela` cresce para baixo. Ver a declaracao no cabecalho.
+  // O Y E INVERTIDO EM DOIS SITIOS, e ate agora so num deles.
+  //
+  // O GL conta a janela a partir do canto INFERIOR esquerdo (`glViewport`), e a
+  // `Tela` cresce para baixo: o topo da caixa do viewport, em coordenadas da tela,
+  // e `altura - vy - vh`. A PROJECCAO ja tratava disso (o `1.0 - y_ndc`), mas a
+  // CAIXA DE RECORTE (`RasterizarTriangulo`) continuava a usar `viewport[1]` como
+  // se fosse contado do TOPO -- as duas pontas discordavam, e so nao se notava
+  // porque a viewport omissa e o ecra inteiro (onde os dois numeros coincidem).
+  //
+  // A FONTE e o `zeebx` do Kaio (`89dcd0f`, "Viewport com o y de baixo para
+  // cima"): o Crash Nitro Kart desenha o trecho seguinte da pista com a viewport no
+  // retangulo do portal, e com o y trocado o trecho saia ESPELHADO na parte de baixo
+  // da tela. A `viewport_em_tela()` e' a conversao, usada pelos DOIS sitios.
+  const double vy_topo = static_cast<double>(superficie_.Altura()) - static_cast<double>(e.viewport[1]) - vh;
   v->x = static_cast<float>(vx + (x_ndc + 1.0) * vw * 0.5);
-  v->y = static_cast<float>(vy + (1.0 - y_ndc) * vh * 0.5);
-  v->z = static_cast<float>(std::min(1.0, std::max(0.0, (z_ndc + 1.0) * 0.5)));
+  v->y = static_cast<float>(vy_topo + (1.0 - y_ndc) * vh * 0.5);
+  // A FAIXA (`glDepthRange`): `[0,1]` por omissao, e o que o guest pediu quando
+  // pediu. Aplica-se AQUI, num sitio so, para o teste de profundidade e a limpeza
+  // nao poderem discordar.
+  const double z_01 = std::min(1.0, std::max(0.0, (z_ndc + 1.0) * 0.5));
+  v->z = static_cast<float>(static_cast<double>(e.profundidade_perto) +
+                            z_01 * (static_cast<double>(e.profundidade_longe) -
+                                    static_cast<double>(e.profundidade_perto)));
   return true;
 }
 
@@ -836,11 +853,15 @@ void Rasterizador::RasterizarTriangulo(const EstadoDeRasterizacao& e, const Vert
   // limite verificado so no destino ja custou mais de 900 s para UM titulo, e
   // esta escrito no `tela.h`).
   const int x0 = std::max(static_cast<int>(e.viewport[0]), static_cast<int>(std::floor(minx)));
-  const int y0 = std::max(static_cast<int>(e.viewport[1]), static_cast<int>(std::floor(miny)));
+  // A CAIXA, em coordenadas da tela: o `y` do viewport vem contado de BAIXO (ver
+  // o `Projetar`), e a caixa tem de usar a MESMA conversao da projeccao -- senao o
+  // recorte corta o que a projeccao desenhou (ou deixa passar o que ela pos fora).
+  const int vp_y_topo = static_cast<int>(superficie_.Altura()) - static_cast<int>(e.viewport[1]) -
+                        static_cast<int>(e.viewport[3]);
+  const int y0 = std::max(vp_y_topo, static_cast<int>(std::floor(miny)));
   const int vp_fim_x = std::min(superficie_.Largura(),
                                 static_cast<int>(e.viewport[0]) + static_cast<int>(e.viewport[2]));
-  const int vp_fim_y = std::min(superficie_.Altura(),
-                                static_cast<int>(e.viewport[1]) + static_cast<int>(e.viewport[3]));
+  const int vp_fim_y = std::min(superficie_.Altura(), vp_y_topo + static_cast<int>(e.viewport[3]));
   const int x1 = std::min(vp_fim_x, static_cast<int>(std::ceil(maxx)));
   const int y1 = std::min(vp_fim_y, static_cast<int>(std::ceil(maxy)));
   if (x1 <= x0 || y1 <= y0) {
@@ -962,7 +983,11 @@ void Rasterizador::RasterizarSegmento(const EstadoDeRasterizacao& e, const Verti
   // teste e de CAIXA (nao ha aqui varrimento): um segmento cuja caixa esta toda
   // fora nao escreve nada.
   const int vp_x0 = static_cast<int>(e.viewport[0]);
-  const int vp_y0 = static_cast<int>(e.viewport[1]);
+  // A MESMA CONVERSAO DO TRIANGULO, e este era o TERCEIRO sitio a discordar: o
+  // `y` do `glViewport` conta de baixo (ver o `Projetar`), e a caixa das linhas
+  // lia-o de cima. Ficam os tres com a mesma conta.
+  const int vp_y0 = static_cast<int>(superficie_.Altura()) - static_cast<int>(e.viewport[1]) -
+                    static_cast<int>(e.viewport[3]);
   const int vp_fim_x = std::min(superficie_.Largura(), vp_x0 + static_cast<int>(e.viewport[2]));
   const int vp_fim_y = std::min(superficie_.Altura(), vp_y0 + static_cast<int>(e.viewport[3]));
   const double minx = std::min(a.x, b.x), maxx = std::max(a.x, b.x);

@@ -263,6 +263,20 @@ struct EstadoDeRasterizacao {
   std::uint32_t orientacao_da_frente = 0x0901u;    // GL_CCW
   float profundidade_de_limpeza = 1.0f;
 
+  // --- A FAIXA DE PROFUNDIDADE (`glDepthRange`) -----------------------------
+  //
+  // A OMISSAO DO GL E (0, 1). O `z` de janela que sai da projeccao vai de 0 a 1 e
+  // e' ESTA faixa que o mapeia para o que o buffer de profundidade guarda. Estava
+  // guardada no `igl.cpp` e **nao aplicada** (no grupo dos "so acumulam
+  // parametros", com o comentario "o consumidor nao existe") -- um pedido do
+  // guest respondido com "feito" e sem efeito, que e o defeito P2 desta casa.
+  //
+  // A FONTE e o `zeebx` do Kaio (`89dcd0f`): ele implementou-a porque o Crash
+  // Nitro Kart ALTERNA faixas para por o brilho do kart por cima do cenario --
+  // sem ela, o brilho fica escondido ou tapa o que devia estar a frente.
+  float profundidade_perto = 0.0f;
+  float profundidade_longe = 1.0f;
+
   // --- A LARGURA DA LINHA (`glLineWidthx`) ---------------------------------
   //
   // A OMISSAO DO GL E 1.0, e o campo existe porque o pedido do guest TEM de

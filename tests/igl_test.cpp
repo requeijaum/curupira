@@ -1496,11 +1496,14 @@ TEST(FrenteAlphafunc, OFragmentoEDescartadoPelaReferenciaEmFloatDoAlphaFunc) {
   constexpr std::uint32_t kV = 0x0002F100u;  // os vertices (2 floats, passo 8)
   constexpr std::uint32_t kI = 0x0002F200u;  // os indices (GL_UNSIGNED_SHORT)
 
-  // Viewport(0, 0, 8, 8): o quarto argumento real (a altura) vem da PILHA.
+  // Viewport(0, 480-8, 8, 8): o quarto argumento real (a altura) vem da PILHA, e o
+  // `y` conta de BAIXO (o `glViewport`), logo a janela de 8x8 no canto de cima de um
+  // ecra de 480 tem `y = 480 - 8`. Estava `y = 0` -- a convencao que o `zeebx` do
+  // Kaio corrigiu (`89dcd0f`).
   b.mem.Escrever32(kPilhaDoTeste, 8u);
   b.cpu.Set(kR0, kObjetoIgles);
   b.cpu.Set(kR1, 0u);
-  b.cpu.Set(kR2, 0u);
+  b.cpu.Set(kR2, 480u - 8u);
   b.cpu.Set(kR3, 8u);
   b.cpu.Set(kSP, kPilhaDoTeste);
   ASSERT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Viewport, b.traco));
@@ -1661,11 +1664,13 @@ TEST(FrenteColor4f, ACorDoColor4fChegaATelaNoDesenho) {
   constexpr std::uint32_t kV = 0x0002F100u;  // os vertices (2 floats, passo 8)
   constexpr std::uint32_t kI = 0x0002F200u;  // os indices (GL_UNSIGNED_SHORT)
 
-  // Viewport(0, 0, 8, 8): o quarto argumento real (a altura) vem da PILHA.
+  // Viewport(0, 480-8, 8, 8): o `y` conta de BAIXO (o `glViewport`), logo a janela
+  // de 8x8 no canto de cima de um ecra de 480 tem `y = 480 - 8` (a convencao do
+  // `89dcd0f` do `zeebx`). O quarto argumento real (a altura) vem da PILHA.
   b.mem.Escrever32(kPilhaDoTeste, 8u);
   b.cpu.Set(kR0, kObjetoIgles);
   b.cpu.Set(kR1, 0u);
-  b.cpu.Set(kR2, 0u);
+  b.cpu.Set(kR2, 480u - 8u);
   b.cpu.Set(kR3, 8u);
   b.cpu.Set(kSP, kPilhaDoTeste);
   ASSERT_TRUE(AtenderClasse(b.cpu, kVtableIgles + igles_slots::kIgles_Viewport, b.traco));
@@ -2350,7 +2355,7 @@ TEST(FrenteMatriz, OFrontFaceChegaAoRasterizadorEPoeOMesmoTrianguloEmLadosOposto
     b.mem.Escrever32(kV + 8u * k + 4u, Real(v[k][1]));
     b.mem.Escrever16(kI + 2u * k, static_cast<std::uint16_t>(k));
   }
-  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_Viewport, 0u, 0u, 8u, 8u), kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_Viewport, 0u, 480u - 8u, 8u, 8u), kAeeSuccess);
   ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_VertexPointer, 2u, GL_FLOAT, 8u, kV),
             kAeeSuccess);
   ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_EnableClientState, GL_VERTEX_ARRAY),
@@ -2494,7 +2499,7 @@ TEST(FrenteTextura, ODesenhoAmostraATexturaLigadaNoEcra) {
   for (std::uint32_t k = 0; k < 6u; ++k) b.mem.Escrever16(kI + 2u * k, idx[k]);
 
   const std::uint32_t pilha[6] = {2u, 2u, 0u, GL_RGBA, GL_UNSIGNED_BYTE, kTexels};
-  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_Viewport, 0u, 0u, 8u, 8u), kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_Viewport, 0u, 480u - 8u, 8u, 8u), kAeeSuccess);
   ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_BindTexture, GL_TEXTURE_2D, 5u),
             kAeeSuccess);
   ASSERT_EQ(PedirComPilhaNaTabela(b, igles_slots::kIgles_TexImage2D, GL_TEXTURE_2D, 0u, GL_RGBA,
@@ -2570,7 +2575,7 @@ TEST(FrenteTextura, AReservaDeTexturaServeOSDesenhoENaoORecusa) {
   }
   for (std::uint32_t k = 0; k < 6u; ++k) b.mem.Escrever16(kI + 2u * k, idx[k]);
 
-  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_Viewport, 0u, 0u, 8u, 8u), kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_Viewport, 0u, 480u - 8u, 8u, 8u), kAeeSuccess);
   ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_BindTexture, GL_TEXTURE_2D, 5u),
             kAeeSuccess);
   // A RESERVA: duas por duas, interior RGBA, pixels NULL.
