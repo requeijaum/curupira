@@ -493,6 +493,10 @@ video::EstadoDeRasterizacao Igl::MontarEstado() const {
   e.cor_de_limpeza = video::Desempacotar(cor_limpeza_);
   e.mascara_de_limpeza = mascara_limpeza_;
   e.profundidade_de_limpeza = profundidade_limpeza_;
+  e.profundidade_perto = profundidade_perto_;
+  e.profundidade_longe = profundidade_longe_;
+  for (int k = 0; k < 4; ++k) e.scissor[k] = scissor_[k];
+  e.teste_de_scissor = InterruptorLigado(gl_slots::GL_SCISSOR_TEST);
 
   // UM ARRAY SO ESTA LIGADO SE AS DUAS COISAS FOREM VERDADE: o
   // `glEnableClientState` e o `gl*Pointer` que o definiu. O `igl.cpp` ja guarda
@@ -669,7 +673,6 @@ video::EstadoDeRasterizacao Igl::MontarEstado() const {
   const struct { std::uint32_t cap; const char* nome; } por_fazer[] = {
       {GL_FOG, "nevoa_de_GL_sem_rasterizador"},
       {GL_POLYGON_OFFSET_FILL, "polygon_offset_sem_rasterizador"},
-      {GL_SCISSOR_TEST, "scissor_sem_rasterizador"},
       {GL_DITHER, "dithering_sem_rasterizador"},
       // O STENCIL: o pedido MEDIDO 9x nos nove titulos TTD
       // (`glDisable(GL_STENCIL_TEST)`), e nao ha buffer de stencil nenhum nesta
@@ -1400,11 +1403,18 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
       viewport_[3] = a.reg[3];
       return feito(4);
     case kIgl_Scissor:
-      // O valor fica guardado, e o rasterizador NAO o aplica (o `glClear` cobre a
-      // tela toda e o desenho nao e limitado por ele). Dizer "feito" aqui e
-      // aceitavel porque o ESTADO mudou mesmo; nao dizer a diferenca nao era.
+      // O RECTANGULO E APLICADO, e nao so guardado. Ate agora dizia-se "o
+      // rasterizador nao aplica o scissor" -- e a justificacao que o `zeebx` do
+      // Kaio derrubou por medicao (`c278514`, no PEGGLE): ignorar o recorte nao e
+      // "desenhar a mais", e desenhar ERRADO quando o titulo conta com ele. O
+      // Peggle desenha a folha de fontes inteira e aperta a tesoura em volta de uma
+      // letra; sem a tesoura, cada letra punha o alfabeto todo no ecra.
+      //
+      // O `y` conta de BAIXO (a mesma convencao do `glViewport`); a conversao vive
+      // no rasterizador, num sitio so.
+      for (int k = 0; k < 4; ++k) scissor_[k] = a.reg[k];
       parametros_[ChaveDeParametro(slot, 0)] = {a.reg[0], a.reg[1], a.reg[2], a.reg[3]};
-      return feito_com(4, "o rectangulo ficou guardado; o rasterizador nao aplica o scissor");
+      return feito_com(4, "o rectangulo vai ao rasterizador (aperta a caixa do desenho)");
     case kIgl_LineWidthx: {
       if (Fixo(0, a) <= 0.0f) return recusa("largura de linha nao positiva");
       parametros_[ChaveDeParametro(slot, 0)] = {a.reg[0]};
@@ -1467,7 +1477,21 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
       alfa_de_referencia_ = Apertar(Real(1, a), 0.0f, 1.0f);
       return feito(2);
     }
-    case kIgl_DepthRangex:
+    case kIgl_DepthRangex: {
+      // `void DepthRangex(GLfixed zNear, GLfixed zFar)` -- os dois valores vao ao
+      // rasterizador. **ESTE RAMO FALTOU no commit `8a46233`**, que dizia que a
+      // faixa era aplicada: os campos existiam, o consumo existia, e o pedido do
+      // guest nao tinha por onde entrar (uma celula de edicao falhou a meio e o
+      // ficheiro nao foi gravado). Um commit que diz o que nao fez e o defeito que
+      // esta casa persegue -- fica registado assim.
+      //
+      // A FONTE e o `zeebx` do Kaio (`89dcd0f`): o Crash Nitro Kart ALTERNA faixas
+      // para por o brilho do kart por cima do cenario.
+      profundidade_perto_ = Apertar(Real(0, a), 0.0f, 1.0f);
+      profundidade_longe_ = Apertar(Real(1, a), 0.0f, 1.0f);
+      parametros_[ChaveDeParametro(slot, 0)] = {a.reg[0], a.reg[1]};
+      return feito_com(2, "a faixa vai ao rasterizador (profundidade_perto/_longe)");
+    }
     case kIgl_Hint:
     case kIgl_PolygonOffsetx:
     case kIgl_SampleCoveragex:

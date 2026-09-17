@@ -277,6 +277,16 @@ struct EstadoDeRasterizacao {
   float profundidade_perto = 0.0f;
   float profundidade_longe = 1.0f;
 
+  // --- O SCISSOR (`glScissor` + `GL_SCISSOR_TEST`) ---------------------------
+  //
+  // A tesoura do desenho. O `y` conta de BAIXO, como o `glViewport`. Estava
+  // "guardado e nao aplicado", com a justificacao de que ignorar o recorte e
+  // "desenhar a mais" -- e o `zeebx` do Kaio mediu que nao e (`c278514`): no PEGGLE
+  // o jogo desenha a FOLHA DE FONTES INTEIRA e conta com a tesoura para aparecer uma
+  // letra so, e ignorada "cada letra punha a folha inteira na tela".
+  std::uint32_t scissor[4] = {0, 0, 0, 0};
+  bool teste_de_scissor = false;
+
   // --- A LARGURA DA LINHA (`glLineWidthx`) ---------------------------------
   //
   // A OMISSAO DO GL E 1.0, e o campo existe porque o pedido do guest TEM de

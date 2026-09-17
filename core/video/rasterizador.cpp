@@ -304,6 +304,12 @@ float Rasterizador::ProfundidadeEm(int x, int y) const {
   return profundidade_[indice];
 }
 
+// A caixa do desenho (superficie x viewport x scissor), declarada aqui porque a
+// `Limpar` (que a usa) vem ANTES da definicao -- que fica junto das outras contas
+// de janela, com a convencao do `y` do GL escrita uma vez.
+bool CaixaEmTela(const EstadoDeRasterizacao& e, int largura, int altura, int* x0, int* y0, int* x1,
+                 int* y1);
+
 std::uint64_t Rasterizador::Limpar(const EstadoDeRasterizacao& estado, std::string* motivo) {
   if (superficie_.Largura() <= 0 || superficie_.Altura() <= 0) {
     if (motivo != nullptr) *motivo = "sem superficie onde escrever";
@@ -311,9 +317,22 @@ std::uint64_t Rasterizador::Limpar(const EstadoDeRasterizacao& estado, std::stri
   }
   std::uint64_t escritos = 0;
   if ((estado.mascara_de_limpeza & GL_COLOR_BUFFER_BIT) != 0) {
-    superficie_.Limpar(Para565(estado.cor_de_limpeza));
-    escritos = static_cast<std::uint64_t>(superficie_.Largura()) *
-               static_cast<std::uint64_t>(superficie_.Altura());
+    // O `glClear` E LIMITADO PELA TESOURA (e nao pelo clip): a especificacao poe o
+    // scissor no caminho de TODA a escrita, limpeza incluida. Sem tesoura ligada o
+    // caminho e o de sempre (a tela toda, que e o caso dos 62 titulos).
+    if (estado.teste_de_scissor) {
+      int cx0 = 0, cy0 = 0, cx1 = 0, cy1 = 0;
+      if (CaixaEmTela(estado, superficie_.Largura(), superficie_.Altura(), &cx0, &cy0, &cx1, &cy1)) {
+        for (int y = cy0; y < cy1; ++y) {
+          for (int x = cx0; x < cx1; ++x) superficie_.Escrever(x, y, Para565(estado.cor_de_limpeza));
+        }
+        escritos = static_cast<std::uint64_t>(cx1 - cx0) * static_cast<std::uint64_t>(cy1 - cy0);
+      }
+    } else {
+      superficie_.Limpar(Para565(estado.cor_de_limpeza));
+      escritos = static_cast<std::uint64_t>(superficie_.Largura()) *
+                 static_cast<std::uint64_t>(superficie_.Altura());
+    }
     pixels_ += escritos;
   }
   if ((estado.mascara_de_limpeza & GL_DEPTH_BUFFER_BIT) != 0) {
@@ -699,6 +718,38 @@ bool Rasterizador::Projetar(const EstadoDeRasterizacao& e, Vertice* v) const {
   return true;
 }
 
+// A CAIXA DO DESENHO, em coordenadas da TELA, com as TRES conversoes num sitio so:
+// a superficie, o viewport (o `y` do GL conta de baixo) e o scissor (a mesma
+// convencao). Devolve `false` quando a caixa fica vazia.
+//
+// PORQUE EXISTE: o `viewport[1]` era lido de cima em DOIS sitios (a caixa do
+// triangulo e a das linhas) enquanto a projecao o convertia -- e as duas pontas so
+// nao discordavam porque a viewport omissa e o ecra inteiro. Com o scissor a
+// tercar, tres sitios a discordar seriam tres defeitos; fica um so.
+bool CaixaEmTela(const EstadoDeRasterizacao& e, int largura, int altura, int* x0, int* y0, int* x1,
+                 int* y1) {
+  int cx0 = 0, cy0 = 0, cx1 = largura, cy1 = altura;
+  const int vp_x = static_cast<int>(e.viewport[0]);
+  const int vp_y = altura - static_cast<int>(e.viewport[1]) - static_cast<int>(e.viewport[3]);
+  cx0 = std::max(cx0, vp_x);
+  cy0 = std::max(cy0, vp_y);
+  cx1 = std::min(cx1, vp_x + static_cast<int>(e.viewport[2]));
+  cy1 = std::min(cy1, vp_y + static_cast<int>(e.viewport[3]));
+  if (e.teste_de_scissor) {
+    const int sc_x = static_cast<int>(e.scissor[0]);
+    const int sc_y = altura - static_cast<int>(e.scissor[1]) - static_cast<int>(e.scissor[3]);
+    cx0 = std::max(cx0, sc_x);
+    cy0 = std::max(cy0, sc_y);
+    cx1 = std::min(cx1, sc_x + static_cast<int>(e.scissor[2]));
+    cy1 = std::min(cy1, sc_y + static_cast<int>(e.scissor[3]));
+  }
+  *x0 = cx0;
+  *y0 = cy0;
+  *x1 = cx1;
+  *y1 = cy1;
+  return cx1 > cx0 && cy1 > cy0;
+}
+
 bool TexturaAmostravel(std::uint32_t formato, std::uint32_t tipo) {
   return (formato == GL_RGBA || formato == GL_RGB || formato == GL_LUMINANCE) &&
          tipo == GL_UNSIGNED_BYTE;
@@ -852,16 +903,20 @@ void Rasterizador::RasterizarTriangulo(const EstadoDeRasterizacao& e, const Vert
   // triangulo enorme nao pode custar `largura * altura` pixels de trabalho (o
   // limite verificado so no destino ja custou mais de 900 s para UM titulo, e
   // esta escrito no `tela.h`).
-  const int x0 = std::max(static_cast<int>(e.viewport[0]), static_cast<int>(std::floor(minx)));
-  // A CAIXA, em coordenadas da tela: o `y` do viewport vem contado de BAIXO (ver
-  // o `Projetar`), e a caixa tem de usar a MESMA conversao da projeccao -- senao o
-  // recorte corta o que a projeccao desenhou (ou deixa passar o que ela pos fora).
-  const int vp_y_topo = static_cast<int>(superficie_.Altura()) - static_cast<int>(e.viewport[1]) -
-                        static_cast<int>(e.viewport[3]);
-  const int y0 = std::max(vp_y_topo, static_cast<int>(std::floor(miny)));
-  const int vp_fim_x = std::min(superficie_.Largura(),
-                                static_cast<int>(e.viewport[0]) + static_cast<int>(e.viewport[2]));
-  const int vp_fim_y = std::min(superficie_.Altura(), vp_y_topo + static_cast<int>(e.viewport[3]));
+  // A CAIXA (superficie x viewport x scissor) vem de UM sitio so -- ver o
+  // `CaixaEmTela`, onde a convencao do `y` do GL esta escrita uma vez. O
+  // `viewport[1]` era lido de cima aqui enquanto a projecao o convertia, e as duas
+  // pontas so nao discordavam porque a viewport omissa e o ecra inteiro.
+  int caixa_x0 = 0, caixa_y0 = 0, caixa_x1 = 0, caixa_y1 = 0;
+  if (!CaixaEmTela(e, superficie_.Largura(), superficie_.Altura(), &caixa_x0, &caixa_y0, &caixa_x1,
+                   &caixa_y1)) {
+    ++descartados_;  // fora do viewport ou da tesoura
+    return;
+  }
+  const int x0 = std::max(caixa_x0, static_cast<int>(std::floor(minx)));
+  const int y0 = std::max(caixa_y0, static_cast<int>(std::floor(miny)));
+  const int vp_fim_x = caixa_x1;
+  const int vp_fim_y = caixa_y1;
   const int x1 = std::min(vp_fim_x, static_cast<int>(std::ceil(maxx)));
   const int y1 = std::min(vp_fim_y, static_cast<int>(std::ceil(maxy)));
   if (x1 <= x0 || y1 <= y0) {
@@ -982,14 +1037,13 @@ void Rasterizador::RasterizarSegmento(const EstadoDeRasterizacao& e, const Verti
   // e so o mapa de NDC para a janela, e tambem o limite do que se desenha. O
   // teste e de CAIXA (nao ha aqui varrimento): um segmento cuja caixa esta toda
   // fora nao escreve nada.
-  const int vp_x0 = static_cast<int>(e.viewport[0]);
-  // A MESMA CONVERSAO DO TRIANGULO, e este era o TERCEIRO sitio a discordar: o
-  // `y` do `glViewport` conta de baixo (ver o `Projetar`), e a caixa das linhas
-  // lia-o de cima. Ficam os tres com a mesma conta.
-  const int vp_y0 = static_cast<int>(superficie_.Altura()) - static_cast<int>(e.viewport[1]) -
-                    static_cast<int>(e.viewport[3]);
-  const int vp_fim_x = std::min(superficie_.Largura(), vp_x0 + static_cast<int>(e.viewport[2]));
-  const int vp_fim_y = std::min(superficie_.Altura(), vp_y0 + static_cast<int>(e.viewport[3]));
+  // A MESMA CAIXA DO TRIANGULO (superficie x viewport x scissor), do mesmo sitio.
+  int vp_x0 = 0, vp_y0 = 0, vp_fim_x = 0, vp_fim_y = 0;
+  if (!CaixaEmTela(e, superficie_.Largura(), superficie_.Altura(), &vp_x0, &vp_y0, &vp_fim_x,
+                   &vp_fim_y)) {
+    ++segmentos_descartados_;
+    return;
+  }
   const double minx = std::min(a.x, b.x), maxx = std::max(a.x, b.x);
   const double miny = std::min(a.y, b.y), maxy = std::max(a.y, b.y);
   if (maxx < static_cast<double>(vp_x0) || minx >= static_cast<double>(vp_fim_x) ||

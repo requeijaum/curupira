@@ -451,6 +451,14 @@ class Igl {
   // copias do mesmo estado inicial sao duas chances de ele divergir** (a licao do
   // `strtowstr`/`aee_GetRand`, noutro sitio).
   std::uint32_t viewport_[4] = {0, 0, zb2::brew::kLarguraDoEcra, zb2::brew::kAlturaDoEcra};
+  // O `glScissor`: a tesoura do desenho. O `y` conta de BAIXO, como o viewport.
+  // O RECTANGULO E APLICADO (o rasterizador aperta a caixa por ele) desde a frente
+  // que trouxe o commit `c278514` do `zeebx` do Kaio: ele mediu no PEGGLE que a
+  // tesoura nao e um detalhe -- o jogo desenha a FOLHA DE FONTES INTEIRA e aperta a
+  // tesoura em volta de uma letra; ignorada, "cada letra punha a folha inteira na
+  // tela" e os menus saiam cobertos de alfabetos. E o mesmo truque do Pac-Mania com
+  // o recorte do `IDisplay`.
+  std::uint32_t scissor_[4] = {0, 0, 0, 0};
   std::uint32_t cull_face_ = gl_slots::GL_BACK;
   std::uint32_t front_face_ = gl_slots::GL_CCW;
   std::uint32_t shade_model_ = gl_slots::GL_SMOOTH;
