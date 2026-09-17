@@ -2405,3 +2405,52 @@ IMPAR para PCM de 16 bits, `IShell::CreateInstance` com `iid=0`, `IShell::FreeRe
    (sha256 `348106f14ecfec547a04e634fd65931c73522f9c9f24304c387ee9eb757dad8b`) e tinha-se perdido de
    `/tmp`. Uma re-serializacao (`json.dump` do kernel) NAO serve: o comparador exige o MESMO sha256 e
    recusa comparar entradas diferentes -- e tem razao.
+
+
+
+### 17/09 (2) -- o `MMD_BUFFER` do `a3d`: o som inventado, e o contador que mente
+
+A frente do audio parecia arrumada: o `SetMediaParm(MM_PARM_MEDIA_DATA)` lia um
+`MMD_BUFFER` como PCM de 16 bits com sinal, exigia um numero par de bytes e
+recusava o resto "para nao inventar som". O rasto do `a3d` (`ZB2_TRACE=1`) mostrou
+as duas metades ao contrario:
+
+    OPENFILE "a3d_sound_bgm_00.mp3"
+    IMEDIA_CRIADO AEECLSID_MEDIAMP3 obj=0x80090000
+    IMEDIA_DADOS MMD_BUFFER 150352 bytes -> 75176 amostras, 75041 nao nulas   <- 99,8%
+    OPENFILE "a3d_sound_bgm_10.mp3"
+    NAO_IMPLEMENTADO: MMD_BUFFER dwSize=85261 impar para PCM de 16 bits
+    GUEST_DBGPRINTF Error SetMediaData (14 EBADPARM)
+    GUEST_DBGPRINTF Error LoadMedia 38 a3d_sound_bgm_10.mp3
+
+1. O caso PAR **inventava som** e dizia SUCCESS: 99,8% de amostras nao nulas e a
+   assinatura de um FLUXO lido como amostras, nao de uma onda. Nenhuma linha no
+   registo -- o defeito era invisivel para o instrumento.
+2. O caso IMPAR era recusado com `EBADPARM` (premissa falsa: nao ha "PCM de 16
+   bits" num `.mp3`) e o jogo **desistia do som** a segunda faixa.
+
+A regra: o que e um `MMD_BUFFER` depende da CLASSE DO OBJECTO. As classes
+concretas da familia nomeiam o seu codec (`MEDIAMP3`, `MEDIAADPCM`, `MEDIAAAC`,
+`MEDIAMPEG4`, ...) e nessas o `pData` e o FLUXO, onde um tamanho impar e o caso
+normal; o `AEECLSID_MEDIAPCM` (`0x01005511`) e o unico com amostras; a de BASE
+(`AEECLSID_MEDIA`) fica com o comportamento antigo, e o comentario diz que ela
+NAO esta medida. Com uma classe de fluxo guarda-se o ponteiro e o tamanho, o
+estado passa a Pronto, NAO se escrevem amostras e a falta fica registada com o
+nome da classe. MEDIDO: `a3d` MMD_BUFFER 1 -> 38, `peggle` 4 -> 46, `abd` 35,
+`ridgeracer` 27, `gof` 25, `torkandkral` 18, `pbc` 17, `toyraidzeebo` 15; e o
+`IMedia::Play` passa a ser pedido (peggle 44) porque a carga ja nao falha.
+
+**E ai o contador mentiu.** O `zb2_comparar` declarou UMA regressao: `peggle`
+pixels 450982426 -> 450203721, com TODOS os outros campos iguais. Mediram-se as
+duas telas (`ZB2_TELA`, o mesmo corpus, binario com e sem a mudanca -- o antigo
+reproduz exactamente o numero da referencia, o que valida o A/B): o ecra NOVO
+desenha um painel de 294x54 (x 172-465, y 216-269) que no antigo era PRETO. O
+`pixels` conta ESCRITAS e nao o que fica desenhado: um blit que sobre-escrevia
+aquela regiao deixou de acontecer, e o painel aparece. Prova em
+`/tmp/pesquisa/tela-peggle-ANTES.png` e `-DEPOIS.png`.
+
+E a MESMA licao que a casa ja tinha pago com `cores` -- "a contagem e cega ao
+valor, usa o `ZB2_TELA`/`ZB2_HIST`" --, agora no `pixels`: um total de escritas
+nao distingue desenhar mais de desenhar o mesmo duas vezes. O campo que responde
+a isto (pixeis do ecra que nao sao o fundo) **ainda nao existe**, e enquanto nao
+existir uma melhoria destas aparece como regressao no instrumento.
