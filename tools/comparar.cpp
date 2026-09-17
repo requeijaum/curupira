@@ -315,6 +315,24 @@ const Campo kCampos[] = {
     {"blits", kNumero, kMaiorMelhor,
      "MEDIDO: soma 0 nos 62 titulos da referencia (`sum(.[].blits) == 0`). "
      "Inerte hoje."},
+    // kNEUTRO PELO MESMO MOTIVO DO CONTADOR DE PASSOS: um pico de heap nao tem
+    // direcao. Um pico MAIOR pode ser um jogo que chegou mais longe (carregou
+    // mais recursos) ou um jogo que passou a alocar mal -- as duas leem-se no
+    // mesmo numero, e por isso ele nao julga. O que ele responde e a pergunta que
+    // nao tinha resposta nesta arvore: "este titulo caberia no heap de 64 MiB?".
+    //
+    // MEDIDO na corrida `corrida_heap2` (a referencia): 62 de 62 com valor, 0 a
+    // zero, min 448, max 47 502 760 = 45,3 MiB no `gof` -- 71% dos 64 MiB do
+    // heap. Os cinco maiores: gof 45,3, pbc 32,7, magdrop3 27,6, footparty 23,0,
+    // activitycenter 23,0 MiB. NENHUM titulo registra falta de memoria.
+    {"heap_pico", kNumero, kNeutro,
+     "O maximo que o alocador chegou a ter alocado (um pico nao desce: o `Free` "
+     "nao lhe toca). MEDIDO: 62 de 62 com valor, max 47 502 760 (45,3 MiB de 64 "
+     "MiB, o `gof`). Sem direcao: mede se o titulo CABE, e nao se andou mais."},
+    {"heap_blocos", kNumero, kNeutro,
+     "Quantos blocos o alocador tem vivos no fim. MEDIDO: 1 em 62 de 62 -- "
+     "nenhum titulo desta corrida chega ao fim com memoria pendurada. Um valor "
+     "que suba acusa fuga; um que caia nao e progresso."},
     // kNEUTRO, e nao kMaiorMelhor. **Um contador de instrucoes executadas NAO TEM
     // DIRECCAO.**
     //
