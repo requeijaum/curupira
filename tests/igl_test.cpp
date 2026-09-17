@@ -2630,5 +2630,78 @@ TEST(FrenteTextura, AReservaDeTexturaServeOSDesenhoENaoORecusa) {
   EXPECT_EQ(tela.CoresEm(0, 0, 8, 8), 4u) << "a textura reservada e depois preenchida nao foi amostrada";
 }
 
+// O FILTRO LINEAR E SERVIDO COMO NEAREST, E ISSO FICA DECLARADO.
+//
+// Precedente do stencil (`OClearStencilGuardaOValorEDeclaraQueNaoHaBuffer`):
+// capacidade que esta arvore nao tem vira PRESSUPOSTO com nome e razao, e nao
+// falta. O rasterizador amostra o texel mais proximo; um titulo que peca
+// GL_LINEAR desenha por inteiro com diferenca sub-texel -- nao ha ausencia
+// para recusar, ha uma aproximacao para declarar. MEDIDO em 7 titulos
+// (`Rolimaz`, `AirRacez`, `gof`, `Bajaz`, `Boiaz`, `pbc`, `tekken2`), 1 pedido
+// cada: com a falta, a lista de demanda escondia os pedidos reais deles.
+TEST(FrenteIgl9, FiltroLinearEServidoComoNearestEDeclarado) {
+  BancoClasses b;
+  Tela tela;
+  ASSERT_NE(EstadoDoIgles11(), nullptr);
+  const_cast<Igl*>(EstadoDoIgles11())->DefinirTela(&tela);
+
+  constexpr std::uint32_t kTexels = 0x0002C000u;
+  constexpr std::uint32_t kV = 0x0002F500u;
+  constexpr std::uint32_t kI = 0x0002F600u;
+  constexpr std::uint32_t kT = 0x0002F700u;
+  b.mem.Escrever32(kTexels + 0u, 0xFF0000FFu);
+  b.mem.Escrever32(kTexels + 4u, 0xFF00FF00u);
+  b.mem.Escrever32(kTexels + 8u, 0xFFFF0000u);
+  b.mem.Escrever32(kTexels + 12u, 0xFFFFFFFFu);
+  const float v[4][2] = {{-1.0f, -1.0f}, {1.0f, -1.0f}, {1.0f, 1.0f}, {-1.0f, 1.0f}};
+  const float uv[4][2] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 1.0f}};
+  const std::uint16_t idx[6] = {0u, 1u, 2u, 0u, 2u, 3u};
+  for (std::uint32_t k = 0; k < 4u; ++k) {
+    b.mem.Escrever32(kV + 8u * k, Real(v[k][0]));
+    b.mem.Escrever32(kV + 8u * k + 4u, Real(v[k][1]));
+    b.mem.Escrever32(kT + 8u * k, Real(uv[k][0]));
+    b.mem.Escrever32(kT + 8u * k + 4u, Real(uv[k][1]));
+  }
+  for (std::uint32_t k = 0; k < 6u; ++k) b.mem.Escrever16(kI + 2u * k, idx[k]);
+
+  // O titulo pede LINEAR nos dois filtros (e o que os 7 fazem).
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_TexParameterx, GL_TEXTURE_2D,
+                                 GL_TEXTURE_MIN_FILTER, GL_LINEAR),
+            kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_TexParameterx, GL_TEXTURE_2D,
+                                 GL_TEXTURE_MAG_FILTER, GL_LINEAR),
+            kAeeSuccess);
+  const std::uint32_t pilha[6] = {2u, 2u, 0u, GL_RGBA, GL_UNSIGNED_BYTE, kTexels};
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_Viewport, 0u, 480u - 8u, 8u, 8u),
+            kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_BindTexture, GL_TEXTURE_2D, 5u),
+            kAeeSuccess);
+  ASSERT_EQ(PedirComPilhaNaTabela(b, igles_slots::kIgles_TexImage2D, GL_TEXTURE_2D, 0u, GL_RGBA,
+                                  pilha, 6u),
+            kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_Enable, GL_TEXTURE_2D), kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_EnableClientState, GL_VERTEX_ARRAY),
+            kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_VertexPointer, 2u, GL_FLOAT, 8u, kV),
+            kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_EnableClientState, GL_TEXTURE_COORD_ARRAY),
+            kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_TexCoordPointer, 2u, GL_FLOAT, 8u, kT),
+            kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_Color4x, Fixo(1.0f), 0u, 0u, Fixo(1.0f)),
+            kAeeSuccess);
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_DrawElements, GL_TRIANGLES, 6u,
+                                 GL_UNSIGNED_SHORT, kI),
+            kAeeSuccess)
+      << b.Detalhe("IGLES11::DrawElements");
+  EXPECT_GT(tela.Escritos(), 0u) << "o desenho com filtro LINEAR tem de escrever pixels";
+  // Sem falta (era `filtro_de_textura_alem_de_GL_NEAREST`), com pressuposto nomeado.
+  EXPECT_EQ(b.Faltas("filtro_de_textura_alem_de_GL_NEAREST"), 0u);
+  const auto& p = b.traco.ContagemPressupostos();
+  const auto it = p.find("filtro_de_textura_alem_de_GL_NEAREST");
+  ASSERT_NE(it, p.end()) << "o filtro LINEAR tem de ficar DECLARADO como NEAREST";
+  EXPECT_EQ(it->second, 1u) << "um pressuposto por corrida, nao um por desenho";
+}
+
 }  // namespace
 }  // namespace zb2::brew

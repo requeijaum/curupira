@@ -710,6 +710,17 @@ void Igl::RegistarRessalvas(const video::EstadoDeRasterizacao& e) {
   for (const std::string& nome : e.capacidades_por_fazer) {
     if (recusas_.find(nome) != recusas_.end()) continue;
     recusas_[nome] = 1;
+    if (nome == "filtro_de_textura_alem_de_GL_NEAREST") {
+      // Precedente do stencil: capacidade que esta arvore nao tem vira
+      // PRESSUPOSTO com nome e razao, e nao falta. O rasterizador amostra o
+      // texel mais proximo; um titulo que peca GL_LINEAR desenha por inteiro
+      // com diferenca sub-texel -- nao ha ausencia para recusar, ha uma
+      // aproximacao para declarar. MEDIDO em 7 titulos, 1 pedido cada.
+      traco_.RegistarPressuposto(Area::Video, nome,
+                                 "filtro LINEAR pedido; rasterizador amostra NEAREST "
+                                 "(texel mais proximo). Titulo desenha por inteiro.");
+      continue;
+    }
     traco_.RegistarFalta(Area::Video, nome,
                          "capacidade ligada pelo titulo e NAO implementada no rasterizador "
                          "(lista no topo de core/video/rasterizador.h)");
