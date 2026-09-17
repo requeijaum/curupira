@@ -1027,8 +1027,24 @@ void ArmInterpreter::TransferenciaSimples(std::uint32_t instr, std::uint32_t pc)
     if (b) {
       valor = mem_.Ler8(endereco);
     } else {
-      valor = mem_.Ler32(endereco);
-      const uint32_t desal = endereco & 3;
+      // A PALAVRA DESALINHADA LE-SE ALINHADA E RODA UMA VEZ.
+      //
+      // Estava `Ler32(endereco)` -- que le os quatro bytes A PARTIR do endereco,
+      // ou seja ja da a "vista rodada" nos tres bytes de baixo -- e DEPOIS rodava
+      // outra vez: uma rotacao a mais, e o byte de cima vinha sempre da palavra
+      // SEGUINTE em vez de embrulhar para o byte inicial da alinhada.
+      //
+      // A regra e do ARM ARM: `ROR(palavra_em(endereco & ~3), 8 * (endereco & 3))`.
+      // A fonte medida esta nas duas referencias (`zeemu memory.cpp:20-24` +
+      // `CPU.cpp:139`; zeebulator `memory.cpp:31-36`, `:47-52`), e o caso concreto
+      // fica no teste `Cpu.OLdrPalavraDesalinhadaRodaUmaVezSo`: com 0x11223344 em
+      // 0x200000, um `ldr` em 0x200001 tem de dar **0x44112233**.
+      const uint32_t desal = endereco & 3u;
+      // O ENDERECO DO GUEST E ANOTADO ANTES da leitura alinhada: e ele que o
+      // motivo da recusa tem de nomear (o teste do `cnk2` exige `0xea000097`, o
+      // endereco que o guest calculou, e nao o `0xea000094` alinhado).
+      if (desal != 0) mem_.AnotarLeituraNaoMapeada(endereco);
+      valor = mem_.Ler32(endereco & ~3u);
       if (desal != 0) valor = (valor >> (desal * 8)) | (valor << (32 - desal * 8));
     }
     if (rd == kPC && !b) {

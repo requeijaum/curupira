@@ -249,6 +249,31 @@ bool V(const Bancada& b) { return (b.Bandeiras() & Cpsr::kV) != 0; }
 // A ARMADILHA MEDIDA: o CPSR inicial tem de ser um modo VALIDO
 // ===========================================================================
 
+TEST(Cpu, OLdrPalavraDesalinhadaRodaUmaVezSo) {
+  // A REGRA DO ARM ARM para um `LDR` de palavra desalinhado e
+  // `ROR(palavra_alinhada, 8 * (endereco & 3))` -- e NAO "ler os quatro bytes a
+  // partir do endereco". As duas leituras diferem SEMPRE no byte de cima: o `ROR`
+  // embrulha para o byte INICIAL da palavra alinhada, e a outra leitura vai buscar
+  // o byte SEGUINTE (o da palavra de cima).
+  //
+  // A frente `est-cpu` mediu-o com dois oraculos (`zeemu memory.cpp:20-24` +
+  // `CPU.cpp:139`; zeebulator `memory.cpp:31-36`) e deu o caso concreto: com a
+  // palavra 0x11223344 em 0x1000, um `ldr` em 0x1001 tem de dar **0x44112233**
+  // (o `ROR` de 8). "Ler 4 bytes a partir de 0x1001" daria 0x??443322.
+  Bancada b;
+  // OS DADOS FORA DA BASE DAS INSTRUCOES (`Bancada` escreve-as em 0x00100000):
+  // na primeira versao deste teste os dados cairam por cima da propria instrucao.
+  constexpr std::uint32_t kPalavra = 0x00200000u;
+  b.Mem().Escrever32(kPalavra, 0x11223344u);
+  b.Mem().Escrever32(kPalavra + 4u, 0xAABBCCDDu);
+  b.R(1, kPalavra + 1u);
+  b.Instrucao(LdrImediato(0, 1, 0));
+  b.Terminar();
+  b.Correr(1);
+  EXPECT_EQ(b.R(0), 0x44112233u)
+      << "o ARM roda a palavra ALINHADA por 8*(endereco&3); ler a partir do endereco da outro byte de cima";
+}
+
 TEST(Cpu, ZeroNaoEUmModoValido) {
   // Esta e a armadilha que custou uma investigacao inteira no Zeebulator
   // antigo, que comecava com `cpsr = 0`. Os cinco bits baixos de um CPSR valido

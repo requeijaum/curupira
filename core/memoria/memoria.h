@@ -162,6 +162,25 @@ class Memoria {
   // `Passo` acabou de declarar). Uma pendencia de outro dono fica por consumir:
   // quem a recolhe e o `RecolherLeituraNaoMapeadaForaDeInstrucao`, no passo
   // seguinte. A atribuicao fica garantida por construcao, e nao por convencao.
+  // ANOTA UMA LEITURA NAO MAPEADA SEM A FAZER (o mesmo registo do `Ler8`, e so
+  // se o endereco nao existir). Existe porque quem PERGUNTA nem sempre e quem LE:
+  //
+  // Um `LDR` de palavra DESALINHADO le a palavra ALINHADA e roda-a -- e o que o
+  // ARM faz -- mas o endereco que interessa a quem depura o guest e o que ele
+  // CALCULOU. Sem isto, o motivo da recusa nomeava `0xea000094` quando o guest
+  // tinha pedido `0xea000097`, e o teste
+  // `Cpu.LeituraDeDadosEmEnderecoNaoMapeadoERecusadaComOEndereco` (medido no
+  // `cnk2`) exige o endereco do guest.
+  void AnotarLeituraNaoMapeada(Endereco a) const {
+    if (Existe(a)) return;
+    ++leituras_nao_mapeadas_;
+    if (!leitura_nao_mapeada_pendente_) {
+      leitura_nao_mapeada_pendente_ = true;
+      endereco_da_leitura_nao_mapeada_pendente_ = a;
+      pc_da_leitura_nao_mapeada_pendente_ = pc_;
+    }
+  }
+
   bool ConsumirLeituraNaoMapeadaPendenteDaInstrucao(Endereco pc, Endereco* primeira) const {
     if (!leitura_nao_mapeada_pendente_) return false;
     if (pc_da_leitura_nao_mapeada_pendente_ != pc) return false;
