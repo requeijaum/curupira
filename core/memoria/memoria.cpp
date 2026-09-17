@@ -1,6 +1,7 @@
 #include "core/memoria/memoria.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 namespace zb2 {
@@ -24,6 +25,18 @@ std::uint8_t* Memoria::Pagina(Endereco a, bool criar) {
   std::memset(nova.get(), 0, kPagina);
   std::uint8_t* p = nova.get();
   paginas_.emplace(n, std::move(nova));
+  const std::uint32_t patamar =
+      static_cast<std::uint32_t>(paginas_.size() / kPaginasPorAvisoDeMemoria);
+  if (patamar > paginas_avisadas_) {
+    paginas_avisadas_ = patamar;
+    if (traco_ != nullptr) {
+      char buf[96];
+      std::snprintf(buf, sizeof(buf), "%u paginas de 4 KiB (%u MiB) escritas pelo guest",
+                    static_cast<unsigned>(paginas_.size()),
+                    static_cast<unsigned>(paginas_.size() / 256u));
+      traco_->Emitir(Area::Memoria, Nivel::Aviso, "PAGINAS_DO_HOSPEDE", buf);
+    }
+  }
   return p;
 }
 

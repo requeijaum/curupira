@@ -227,6 +227,13 @@ class Memoria {
   Traco* traco_;
   std::string autor_;
   std::unordered_map<std::uint32_t, std::unique_ptr<std::uint8_t[]>> paginas_;
+  // Patamar do aviso de consumo do hospedeiro: 65536 paginas de 4 KiB = 256 MiB.
+  // Nao e um teto (escrever continua a funcionar) -- e um marco para que um
+  // OOM futuro tenha nome e numero no traco em vez de ser um misterio. Viu-se
+  // nesta auditoria que nada no corpus chega perto; o dia em que algo chegar,
+  // o aviso diz onde.
+  static constexpr std::uint32_t kPaginasPorAvisoDeMemoria = 65536;
+  std::uint32_t paginas_avisadas_ = 0;
   std::uint64_t escritas_outro_autor_ = 0;
   std::vector<Vigia> vigias_;
   std::vector<std::pair<Endereco, Endereco>> escritas_vigiadas_;

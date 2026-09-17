@@ -237,6 +237,27 @@ TEST(Memoria, LerNaoAlocaPagina) {
   EXPECT_EQ(m.Ler32(0x80001000), 0xDEADBEEFu);
 }
 
+TEST(Memoria, AvisoDeConsumoDoHospedePorPatamarDePaginas) {
+  // Um guest a espalhar escritas pelo espaco de 32 bits alocava paginas de 4 KiB
+  // sem teto e sem rasto -- um OOM futuro seria um misterio. Agora cada 65536
+  // paginas (256 MiB) emite um aviso com nome e numero. Nao e um teto: escrever
+  // continua a funcionar.
+  Tempo t;
+  Traco tr("teste", &t);
+  DestinoMemoria dm;
+  tr.JuntarDestino(&dm);
+  Memoria m(&tr);
+  m.EscritorUnico("cpu");
+  m.Escrever8(0x1000, 1);
+  m.Escrever8(0x2000, 2);
+  EXPECT_EQ(dm.QuantosComNome("PAGINAS_DO_HOSPEDE"), 0u) << "abaixo do patamar, silencio";
+  for (std::uint32_t k = 0; k < 65536u; ++k) {
+    m.Escrever8(0x10000000u + k * 4096u, 1);
+  }
+  EXPECT_EQ(m.PaginasAlocadas(), 65538u);
+  EXPECT_EQ(dm.QuantosComNome("PAGINAS_DO_HOSPEDE"), 1u) << "um aviso por patamar cruzado";
+}
+
 TEST(Memoria, EscreverSemEscritorDeclaradoEsContado) {
   // Principio P6: um escritor por memoria. Escrever sem se ter declarado nao e
   // proibido a forca -- e contado, para nao virar corrida silenciosa.
