@@ -263,6 +263,15 @@ static_assert(kVtableDoMedia + kSlotsPorVtable <= 6000,
 // CreateMedia, EncodeMedia, CreateMediaEx). Com o `CreateMediaEx` no 4, um jogo
 // que chamasse o 4 receberia o `CreateMediaEx` no lugar do `EncodeMedia` -- e o
 // NOME no registo de faltas mentiria sobre o que o jogo pediu.
+// O UNICO CLSID DESTA FAMILIA cujo `MMD_BUFFER` traz AMOSTRAS. Todos os outros
+// (`AEECLSID_MEDIAMP3` 0x01005502, `MEDIAADPCM` 0x0100550a, `MEDIAAAC`,
+// `MEDIAMPEG4`, ...) trazem um FLUXO COMPRIMIDO, e nele um tamanho IMPAR de
+// bytes e o caso normal -- nao um defeito do jogo. MEDIDO no `a3d`: o jogo abre
+// `a3d_sound_bgm_00.mp3`, cria um `AEECLSID_MEDIAMP3` e entrega-lhe o ficheiro
+// inteiro (150352 bytes; a segunda faixa, 85261). Ver `Media::DefinirDados`.
+constexpr std::uint32_t kClsMediaPcm = 0x01005511u;  // AEECLSID_MEDIAPCM
+static_assert(kClsMediaPcm == kClasseMultimidia + 17u,
+              "AEECLSID_MEDIAPCM = AEECLSID_MULTIMEDIA + 17 (AEEClassIDs.h)");
 constexpr std::uint32_t kClsMediaUtil = 0x0100550du;  // AEECLSID_MEDIAUTIL
 static_assert(kClsMediaUtil == kClasseMultimidia + 13u,
               "AEECLSID_MEDIAUTIL = AEECLSID_MULTIMEDIA + 13 (AEEClassIDs.h:340)");

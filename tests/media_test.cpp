@@ -678,9 +678,43 @@ TEST(Media, PlaySemDadosERecusado) {
   EXPECT_GE(b.OTraco().ContagemFaltas().count("IMedia::Play"), 1u);
 }
 
-TEST(Media, OBufferComNumeroImparDeBytesERecusado) {
+// O `MMD_BUFFER` DE UM DESCODIFICADOR NAO E PCM. O `AEECLSID_MEDIAMP3` do
+// `a3d` recebe o ficheiro inteiro (`a3d_sound_bgm_00.mp3`, 150352 bytes; a
+// segunda faixa, 85261) e nos liamos aquilo como amostras de 16 bits: 99,8% de
+// amostras nao nulas, som inventado devolvido com SUCCESS. Estes tres testes
+// prendem a correcao -- e o do meio e o que teria apanhado o defeito, porque o
+// PAR era o caso silencioso.
+TEST(Media, OBufferImparDeUmDescodificadorEGuardadoEOEstadoFicaPronto) {
   Bancada b;
-  const std::uint32_t po = b.CriarMedia(kClasseMultimidia, kPponovo);
+  const std::uint32_t po = b.CriarMedia(0x01005502u /* AEECLSID_MEDIAMP3 */, kPponovo);
+  b.ApontarParaObjeto(po);
+  b.Mem().Escrever32(kMediaData + kOffMidiaClsData, kMmdBuffer);
+  b.Mem().Escrever32(kMediaData + kOffMidiaPData, kBuffer);
+  b.Mem().Escrever32(kMediaData + kOffMidiaDwSize, 85261);  // impar, e o normal num fluxo
+  EXPECT_EQ(b.DefinirDados(), kAeeSucesso);
+  EXPECT_EQ(b.OMedia().EstadoDe(po), kMmEstadoPronto);
+  EXPECT_EQ(b.Mem().Ler32(po + kOffObjAmostrasTotal), 0u);
+  EXPECT_GE(b.OTraco().ContagemFaltas().count("IMedia::SetMediaParm(MMD_BUFFER)"), 1u);
+}
+
+TEST(Media, OBufferParDeUmDescodificadorNAOSeTornaEmAmostras) {
+  Bancada b;
+  const std::uint32_t po = b.CriarMedia(0x01005502u /* AEECLSID_MEDIAMP3 */, kPponovo);
+  b.ApontarParaObjeto(po);
+  b.Mem().Escrever32(kMediaData + kOffMidiaClsData, kMmdBuffer);
+  b.Mem().Escrever32(kMediaData + kOffMidiaPData, kBuffer);
+  b.Mem().Escrever32(kMediaData + kOffMidiaDwSize, 150352);  // par, e era aqui que se inventava
+  EXPECT_EQ(b.DefinirDados(), kAeeSucesso);
+  EXPECT_EQ(b.OMedia().EstadoDe(po), kMmEstadoPronto);
+  EXPECT_EQ(b.Mem().Ler32(po + kOffObjAmostrasTotal), 0u);
+  EXPECT_GE(b.OTraco().ContagemFaltas().count("IMedia::SetMediaParm(MMD_BUFFER)"), 1u);
+}
+
+TEST(Media, OBufferImparDePCMERecusado) {
+  // No PCM o numero impar CONTINUA a ser defeito: nao ha amostras de 16 bits a
+  // sair de um numero impar de bytes, e arredondar seria inventar som.
+  Bancada b;
+  const std::uint32_t po = b.CriarMedia(kClsMediaPcm, kPponovo);
   b.ApontarParaObjeto(po);
   b.Mem().Escrever32(kMediaData + kOffMidiaClsData, kMmdBuffer);
   b.Mem().Escrever32(kMediaData + kOffMidiaPData, kBuffer);

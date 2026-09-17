@@ -605,9 +605,21 @@ std::int32_t Media::DefinirDados(Objeto& o, std::int32_t p1, std::int32_t p2) {
   }
 
   if (cls_data == kMmdBuffer) {
-    // PCM de 16 bits com sinal, que e o que o `pData` de um `MMD_BUFFER` contem
-    // nos titulos que o usam (a arvore antiga mediu `a3d` e `allstarcards` por
-    // este caminho; NAO re-medido aqui).
+    // O QUE ESTE `pData` E depende da CLASSE DO OBJECTO, e nao do `clsData`: um
+    // `MMD_BUFFER` e "os dados" em qualquer uma delas. Num `AEECLSID_MEDIAPCM`
+    // sao AMOSTRAS de 16 bits com sinal; num descodificador comprimido
+    // (`AEECLSID_MEDIAMP3`, ADPCM, AAC, MPEG4, ...) e o FLUXO inteiro, e nele um
+    // tamanho IMPAR de bytes e o caso normal -- nao um defeito do jogo.
+    //
+    // MEDIDO no `a3d` (rasto com `ZB2_TRACE=1`): o jogo abre
+    // `a3d_sound_bgm_00.mp3`, cria um `AEECLSID_MEDIAMP3` e entrega-lhe os 150352
+    // bytes do ficheiro. A leitura antiga (sempre PCM16) deu 75041 amostras nao
+    // nulas em 75176 -- 99,8% --, que e a assinatura de um FLUXO lido como
+    // amostras e nao de uma onda: som inventado, devolvido com SUCCESS e sem uma
+    // palavra no registo. A segunda faixa (85261, impar) era recusada com
+    // `EBADPARM` por essa mesma premissa falsa, e o jogo desistia do som
+    // ("Error SetMediaData (14 EBADPARM)", "Error LoadMedia 38
+    // a3d_sound_bgm_10.mp3" no rasto).
     if (p_data == 0 || tam == 0) {
       Recusar("IMedia::SetMediaParm(MMD_BUFFER)", "pData=0x" + EmHex(p_data) + " dwSize=" +
                                                       std::to_string(tam));
@@ -619,9 +631,44 @@ std::int32_t Media::DefinirDados(Objeto& o, std::int32_t p1, std::int32_t p2) {
                   std::to_string(kMaiorBufer));
       return kAeeParametroErrado;
     }
+
+    // QUAIS CLASSES TRAZEM FLUXO COMPRIMIDO: todas as CONCRETAS da familia, menos
+    // o PCM. A de BASE (`AEECLSID_MEDIA`) fica de fora porque nao nomeia codec
+    // nenhum -- e a unica que `CriarMediaComDados` cria por si, e cria-a
+    // exactamente quando NAO sabe o que vem. Para essa mantem-se o
+    // comportamento antigo (amostras de 16 bits), que e o que a bancada dos
+    // testes usa; o que fica escrito aqui e que ele NAO esta medido.
+    const bool traz_fluxo = (o.classe != kClsMediaPcm) && (o.classe != kClasseMultimidia) &&
+                            (o.classe != kClsMediaUtil);
+    if (traz_fluxo) {
+      // GUARDAR O FLUXO, SEM O DESCODIFICAR. Os bytes ficam para o
+      // `GetMediaParm(MM_PARM_MEDIA_DATA)` os devolver e o estado passa a Pronto
+      // (o SDK, `IMedia_SetMediaData`: "SetMediaData puts IMedia in Ready
+      // state"), para o jogo seguir o seu caminho -- o `a3d` imprimia "Error
+      // SetMediaData (14 EBADPARM)" e "Error LoadMedia 38" a cada faixa e
+      // desistia do som. Mas NAO se escrevem amostras nenhumas: nao ha
+      // descodificador nesta arvore, e apresentar o fluxo como PCM era som
+      // inventado. A falta fica REGISTADA com o nome da CLASSE, que e o que diz
+      // ao instrumento o que o titulo pediu e nao teve.
+      o.cls_data = static_cast<std::int32_t>(cls_data);
+      o.p_data = p_data;
+      o.tam_data = tam;
+      o.amostras.clear();
+      o.tem_dados = false;
+      o.estado = kMmEstadoPronto;
+      o.posicao = 0;
+      mem_.Escrever32(o.endereco + kOffObjAmostrasTotal, 0);
+      mem_.Escrever32(o.endereco + kOffObjPosicao, 0);
+      mem_.Escrever32(o.endereco + kOffObjEstado, static_cast<std::uint32_t>(o.estado));
+      Recusar("IMedia::SetMediaParm(MMD_BUFFER)",
+              std::string(NomeDaClasse(o.classe)) + ": " + std::to_string(tam) +
+                  " bytes de fluxo guardados, e esta arvore nao tem descodificador");
+      return kAeeSucesso;
+    }
+
+    // DAQUI PARA BAIXO E PCM: um numero impar de bytes nao e uma sequencia de
+    // amostras de 16 bits. Aceitar e arredondar seria inventar som.
     if ((tam & 1u) != 0) {
-      // Um numero impar de bytes nao e uma sequencia de amostras de 16 bits.
-      // Aceitar e arredondar seria inventar som.
       Recusar("IMedia::SetMediaParm(MMD_BUFFER)",
               "dwSize=" + std::to_string(tam) + " impar para PCM de 16 bits");
       return kAeeParametroErrado;
