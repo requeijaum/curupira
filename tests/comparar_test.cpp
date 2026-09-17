@@ -54,6 +54,11 @@ struct Ficha {
   long cores = 1;
   long textos = 0;
   long blits = 0;
+  // O PICO DE HEAP e o numero de blocos do titulo (`fd5e144`). Sao declarados
+  // `kNeutro` em `kCampos`: um pico nao tem direcao, e o que respondem e se o
+  // titulo caberia no heap de 64 MiB.
+  long heap_pico = 0;
+  long heap_blocos = 1;
   std::string faltas = "{}";
   // Campo NOVO e OPCIONAL: vazio quer dizer "a ficha nao o tem", que e a forma
   // de todas as corridas anteriores ao commit que o criou.
@@ -81,7 +86,8 @@ std::string Corpo(const std::vector<Ficha>& fichas) {
       << ",\"recusadas\":" << f.recusadas
       << ",\"motivo\":\"" << f.motivo << "\",\"pixels\":" << f.pixels
       << ",\"cores\":" << f.cores << ",\"textos\":" << f.textos
-      << ",\"blits\":" << f.blits << ",\"faltas\":" << f.faltas;
+      << ",\"blits\":" << f.blits << ",\"heap_pico\":" << f.heap_pico
+      << ",\"heap_blocos\":" << f.heap_blocos << ",\"faltas\":" << f.faltas;
     if (!f.pressupostos.empty()) s << ",\"pressupostos\":" << f.pressupostos;
     if (!f.recusadas_por_fase.empty()) s << "," << f.recusadas_por_fase;
     s << "}";
@@ -249,7 +255,8 @@ TEST(Comparar, CampoDesconhecidoERecusado) {
       "\"vtable\":false,\"applet\":true,\"passos_carga\":1,\"passos_create\":1,"
       "\"passos_start\":0,"
       "\"recusadas\":0,\"motivo\":\"x\",\"pixels\":0,\"cores\":1,\"textos\":0,"
-      "\"blits\":0,\"faltas\":{},\"campo_novo_da_bateria\":7}]";
+      "\"blits\":0,\"heap_pico\":0,\"heap_blocos\":1,\"faltas\":{},"
+      "\"campo_novo_da_bateria\":7}]";
   const auto r = CompararTextos(doc, doc, "a.json", "b.json");
   EXPECT_EQ(r.codigo, kFormato) << r.relatorio;
   EXPECT_TRUE(Contem(r.relatorio, "campo desconhecido 'campo_novo_da_bateria'")) << r.relatorio;
@@ -263,6 +270,7 @@ TEST(Comparar, CampoEmFaltaERecusado) {
       "\"vtable\":false,\"applet\":true,\"passos_carga\":1,\"passos_create\":1,"
       "\"passos_start\":0,"
       "\"recusadas\":0,\"motivo\":\"x\",\"pixels\":0,\"textos\":0,\"blits\":0,"
+      "\"heap_pico\":0,\"heap_blocos\":1,"
       "\"faltas\":{}}]";  // sem o campo "cores"
   const auto r = CompararTextos(doc, doc, "a.json", "b.json");
   EXPECT_EQ(r.codigo, kFormato) << r.relatorio;
@@ -415,8 +423,9 @@ TEST(Comparar, FichaComOsCamposDaBateriaEhAceite) {
   const char* campos[] = {"pasta",         "mod",      "tamanho",  "carga",
                           "modulo",        "vtable",   "applet",   "passos_carga",
                           "passos_create", "passos_start", "recusadas", "motivo", "pixels",
-                          "cores",         "textos",   "blits",    "faltas"};
-  ASSERT_EQ(sizeof(campos) / sizeof(campos[0]), 17u);
+                          "cores",         "textos",   "blits",    "heap_pico",
+                          "heap_blocos",   "faltas"};
+  ASSERT_EQ(sizeof(campos) / sizeof(campos[0]), 19u);
   const std::string doc = Montar({{}});
   for (const char* c : campos) {
     EXPECT_TRUE(Contem(doc, std::string("\"") + c + "\":"))
