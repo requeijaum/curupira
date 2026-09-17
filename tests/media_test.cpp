@@ -2,7 +2,9 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include "core/audio/misturador.h"
@@ -114,7 +116,8 @@ Saidas FaixaDeSaidaDoTeste() {
 
 class Bancada {
  public:
-  Bancada() : cpu_(mem_, &traco_), media_(mem_, traco_, saidas_, misturador_, nullptr) {
+  Bancada(Vfs* vfs = nullptr)
+      : cpu_(mem_, &traco_), media_(mem_, traco_, saidas_, misturador_, vfs) {
     mem_.EscritorUnico("teste_de_midia");
     traco_.JuntarDestino(&destino_);
     cpu_.ConfigurarSaidas(saidas_);
@@ -721,6 +724,48 @@ TEST(Media, OBufferImparDePCMERecusado) {
   b.Mem().Escrever32(kMediaData + kOffMidiaDwSize, 7);  // impar
   EXPECT_EQ(b.DefinirDados(), kAeeParametroErrado);
   EXPECT_EQ(b.OMedia().EstadoDe(po), kMmEstadoOcioso);
+}
+
+static std::string RaizDosModsDaMidia() {
+  if (const char* env = std::getenv("ZB2_MODS")) {
+    if (*env != '\0') return env;
+  }
+  return "/media/rafaelfrequiao/8C5F-19E51/zeebo/ROMs/debug_nand/mod";
+}
+
+TEST(Media, ONomeDeFicheiroExistenteGuardaOFluxoESemDecodificador) {
+  // O ficheiro REAL do `gof`, com SKIP se a midia nao estiver nesta maquina
+  // (precedente `Aez.VfsServeOsCaminhosQueOGuestPede`).
+  Vfs vfs;
+  vfs.Registar(RaizDosModsDaMidia() + "/277380");
+  if (!vfs.Existe("GalaxyOnFire1_Won.mp3")) {
+    GTEST_SKIP() << "sem o MP3 do gof nesta maquina -- PULAR";
+  }
+  std::error_code ec;
+  const std::uint64_t tamanho_real =
+      std::filesystem::file_size(RaizDosModsDaMidia() + "/277380/GalaxyOnFire1_Won.mp3", ec);
+  ASSERT_FALSE(ec) << "o ficheiro existe no VFS mas nao no disco";
+
+  Bancada b(&vfs);
+  const std::uint32_t po = b.CriarMedia(kClasseMultimidia, kPponovo);
+  b.ApontarParaObjeto(po);
+  const std::string nome = "GalaxyOnFire1_Won.mp3";
+  for (std::size_t k = 0; k < nome.size(); ++k) {
+    b.Mem().Escrever8(kFicheiro + static_cast<std::uint32_t>(k),
+                      static_cast<std::uint8_t>(nome[k]));
+  }
+  b.Mem().Escrever8(kFicheiro + static_cast<std::uint32_t>(nome.size()), 0);
+  b.Mem().Escrever32(kMediaData + kOffMidiaClsData, kMmdNomeDeFicheiro);
+  b.Mem().Escrever32(kMediaData + kOffMidiaPData, kFicheiro);
+  b.Mem().Escrever32(kMediaData + kOffMidiaDwSize, 0);
+  // VERMELHO NA BASE: `kAeeNaoSuportado` com o fluxo ao alcance. VERDE quando o
+  // nome existente for lido do VFS e guardado como fluxo opaco (sem
+  // descodificador), com o estado em Pronto e a falta NOMEADA.
+  EXPECT_EQ(b.DefinirDados(), kAeeSucesso);
+  EXPECT_EQ(b.OMedia().EstadoDe(po), kMmEstadoPronto);
+  EXPECT_EQ(b.OMedia().TamanhoDoFluxoGuardado(po), static_cast<std::uint32_t>(tamanho_real));
+  const auto& faltas = b.OTraco().ContagemFaltas();
+  EXPECT_GE(faltas.count("IMedia::SetMediaParm(MMD_FILE_NAME)"), 1u);
 }
 
 TEST(Media, ONomeDeFicheiroERecusadoEmVozAltaEComOMotivo) {

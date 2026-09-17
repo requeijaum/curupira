@@ -273,6 +273,11 @@ std::int32_t Media::EstadoDe(std::uint32_t objeto) const {
   return o != nullptr ? o->estado : 0;
 }
 
+std::uint32_t Media::TamanhoDoFluxoGuardado(std::uint32_t objeto) const {
+  const Objeto* o = PorEndereco(objeto);
+  return o != nullptr ? static_cast<std::uint32_t>(o->fluxo.size()) : 0;
+}
+
 bool Media::EnderecoDoAviso(const Objeto& o, std::uint32_t* aviso, std::uint32_t* dados) {
   // UMA CONTA SO, para os DOIS sitios que dela dependem: o `EmitirAviso` (o bloco
   // do `AEEMediaCmdNotify`) e o `GetTotalTime` (os 4 bytes que ele aponta). Duas
@@ -709,16 +714,40 @@ std::int32_t Media::DefinirDados(Objeto& o, std::int32_t p1, std::int32_t p2) {
   if (cls_data == kMmdNomeDeFicheiro) {
     std::string nome;
     if (p_data != 0) mem_.LerCadeia(p_data, &nome, 512);
-    // RECUSA EM VOZ ALTA, com as DUAS causas separadas: um nome que o VFS nao
-    // resolve e um codec que nao existe exigem correcoes completamente
-    // diferentes, e juntas no log sao indistinguiveis (foi uma medicao da
-    // arvore antiga, no `media_hle.cpp`).
-    const bool existe = (vfs_ != nullptr) && vfs_->Existe(nome);
+    // RECUSA EM VOZ ALTA quando o VFS nao resolve: um nome que nao existe e um
+    // codec que nao existe exigem correcoes completamente diferentes, e juntas
+    // no log sao indistinguiveis (foi uma medicao da arvore antiga, no
+    // `media_hle.cpp`).
+    if (vfs_ == nullptr || !vfs_->Existe(nome)) {
+      Recusar("IMedia::SetMediaParm(MMD_FILE_NAME)", "'" + nome + "' nao esta no VFS");
+      return kAeeNaoSuportado;
+    }
+    // O FICHEIRO EXISTE: le-se do VFS e guarda-se o FLUXO, como o `MMD_BUFFER`
+    // de descodificador faz com o `pData` do guest. O estado passa a Pronto (o
+    // SDK: "SetMediaData puts IMedia in Ready state") para o jogo seguir o seu
+    // caminho -- e a falta fica REGISTADA com o nome, porque sem descodificador
+    // nao ha som, e calar isso seria o stub proibido.
+    std::vector<std::uint8_t> bytes;
+    std::string motivo;
+    if (!vfs_->Ler(nome, &bytes, &motivo)) {
+      Recusar("IMedia::SetMediaParm(MMD_FILE_NAME)", "'" + nome + "' no VFS, leitura falhou: " + motivo);
+      return kAeeNaoSuportado;
+    }
+    o.fluxo = std::move(bytes);
+    o.amostras.clear();
+    o.tem_dados = false;
+    o.estado = kMmEstadoPronto;
+    o.posicao = 0;
+    o.cls_data = static_cast<std::int32_t>(cls_data);
+    o.p_data = p_data;
+    o.tam_data = static_cast<std::uint32_t>(o.fluxo.size());
+    mem_.Escrever32(o.endereco + kOffObjAmostrasTotal, 0);
+    mem_.Escrever32(o.endereco + kOffObjPosicao, 0);
+    mem_.Escrever32(o.endereco + kOffObjEstado, static_cast<std::uint32_t>(o.estado));
     Recusar("IMedia::SetMediaParm(MMD_FILE_NAME)",
-            "'" + nome + "' " +
-                (existe ? "esta no VFS, mas NAO ha descodificador de audio nesta arvore"
-                        : "nao esta no VFS"));
-    return kAeeNaoSuportado;
+            "'" + nome + "': " + std::to_string(o.fluxo.size()) +
+                " bytes de fluxo guardados, e esta arvore nao tem descodificador");
+    return kAeeSucesso;
   }
   if (cls_data == kMmdFonte) {
     Recusar("IMedia::SetMediaParm(MMD_ISOURCE)", "fonte ISource nao implementada");

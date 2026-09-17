@@ -617,6 +617,7 @@ class Media {
   std::uint32_t PedidosAceitos() const { return pedidos_aceitos_; }
   std::uint32_t PedidosRecusados() const { return pedidos_recusados_; }
   std::int32_t EstadoDe(std::uint32_t objeto) const;
+  std::uint32_t TamanhoDoFluxoGuardado(std::uint32_t objeto) const;
   const std::map<std::uint32_t, std::uint32_t>& ClassesPedidas() const { return classes_pedidas_; }
   const std::string& UltimoMotivoDeRecusa() const { return ultimo_motivo_; }
 
@@ -643,6 +644,11 @@ class Media {
     std::uint32_t fn = 0;
     std::uint32_t usuario = 0;
     std::vector<std::int16_t> amostras;  // o PCM entregue por MM_PARM_MEDIA_DATA
+    // O FLUXO COMPRIMIDO lido do VFS (`MMD_FILE_NAME`) ou entregue pelo guest
+    // (`MMD_BUFFER` de descodificador): bytes opacos, SEM descodificador nesta
+    // arvore. Existe para o `GetMediaParm` os poder devolver um dia; hoje o que
+    // ele prova e que o pedido foi ACEITE (e nao apenas recusado em voz alta).
+    std::vector<std::uint8_t> fluxo;
     bool tem_dados = false;
     // O ESTADO E O UNICO GUARDA DA REPRODUCAO EM CURSO. Nao ha um `tocando` ao
     // lado dele: duas variaveis que tem de concordar sao zero variaveis, e neste
