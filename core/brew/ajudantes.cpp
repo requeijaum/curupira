@@ -77,6 +77,10 @@ std::uint32_t Alocador::Malloc(std::uint32_t tamanho) {
     atual += c.tamanho;
   }
   ++falhas_;
+  // O MAIOR PEDIDO QUE NAO COUBE, e nao so o pico: um heap com 23 MiB usados de
+  // 64 pode recusar um pedido grande, e era isso que ficava invisivel. Foi o que
+  // o `zeebovolley`/`footparty`/`zeeboids` mostraram.
+  if (tamanho > maior_falha_) maior_falha_ = tamanho;
   return 0;
 }
 

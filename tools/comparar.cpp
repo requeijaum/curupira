@@ -345,6 +345,19 @@ const Campo kCampos[] = {
      "Quantos blocos o alocador tem vivos no fim. MEDIDO: 1 em 62 de 62 -- "
      "nenhum titulo desta corrida chega ao fim com memoria pendurada. Um valor "
      "que suba acusa fuga; um que caia nao e progresso."},
+    {"heap_falhas", kNumero, kMenorMelhor,
+     "Quantas alocacoes o guest pediu e nao couberam. Diferente de `heap_pico`: "
+     "um heap com 23 MiB usados de 64 pode RECUSAR um pedido grande, e isso era "
+     "invisivel -- o contador existia no `Alocador` e a bateria nunca o lia. "
+     "MEDIDO em `zeebovolley`, `footparty` e `zeeboids`: o motor Crazyball "
+     "imprime 'Error Malloc - not enough free memory' "
+     "(`TTDMemoryManager.cpp:830`) com pico de 23 MiB. Menos falhas e melhor; "
+     "zero e o normal de um titulo que corre bem."},
+    {"heap_maior_falha", kNumero, kMenorMelhor,
+     "O MAIOR pedido que nao coube, em bytes. E o numero que diz PORQUE: um "
+     "pedido de 40 MiB num heap de 64 com 23 usados nao cabe por um motivo "
+     "diferente de um pedido de 200 bytes num heap cheio. Sem ele uma falha "
+     "obriga a depurar com o `dbgprintf` do proprio jogo."},
     // kNEUTRO, e nao kMaiorMelhor. **Um contador de instrucoes executadas NAO TEM
     // DIRECCAO.**
     //

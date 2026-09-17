@@ -103,6 +103,12 @@ class Alocador {
   std::uint32_t Pico() const { return pico_; }
   std::uint32_t Blocos() const { return blocos_; }
   std::uint32_t Falhas() const { return falhas_; }
+  // O MAIOR PEDIDO que nao coube. Sem ele uma falta de memoria e INVISIVEL: o
+  // `Pico()` diz o que o titulo chegou a usar, nao se um pedido falhou. MEDIDO em
+  // `zeebovolley`, `footparty` e `zeeboids`: pico de 23 MiB num heap de 64 MiB e o
+  // motor Crazyball a imprimir "Error Malloc - not enough free memory"
+  // (`TTDMemoryManager.cpp:830`) -- o heap nao encheu, um pedido e que nao coube.
+  std::uint32_t MaiorFalha() const { return maior_falha_; }
 
  private:
   // Cabecalho de bloco: 16 bytes, alinhado a 8. Guarda o tamanho do bloco
@@ -129,6 +135,7 @@ class Alocador {
   std::uint32_t pico_ = 0;
   std::uint32_t blocos_ = 0;
   std::uint32_t falhas_ = 0;
+  std::uint32_t maior_falha_ = 0;  // o maior `tamanho` pedido que o `Malloc` recusou
 };
 
 // Uma funcao da tabela. Recebe o nucleo e escreve o resultado em R0.

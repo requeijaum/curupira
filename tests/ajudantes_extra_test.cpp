@@ -2099,3 +2099,39 @@ TEST(AjudantesExtra, OMemstrAcabaNoLimiteENaoNoNulo) {
   EXPECT_EQ(b.traco.ContagemFaltas().count("AEEHelperFuncs[0x0ec] memstr"), 1u)
       << "a recusa tem de dizer o NOME e o offset";
 }
+
+
+// UMA ALOCACAO QUE NAO COUBE FICA CONTADA E COM O TAMANHO. O `Alocador::Falhas()`
+// existia desde sempre e a bateria nunca o lia; o `MaiorFalha()` nasceu com esta
+// correcao, porque um pico de heap nao diz se um pedido falhou. MEDIDO em
+// `zeebovolley`/`footparty`/`zeeboids`: 23 MiB de pico num heap de 64 MiB, e o
+// motor Crazyball a imprimir "Error Malloc - not enough free memory".
+TEST(AjudantesExtra, UmaAlocacaoQueNaoCoubeFicaContadaEComOTamanho) {
+  Tempo tempo;
+  Traco traco{"ajudantes_extra", &tempo};
+  Memoria mem{&traco};
+  mem.EscritorUnico("cpu");
+  Alocador alocador{mem, kHeapInicio, kHeapTamanho, &traco};
+
+  EXPECT_EQ(alocador.Falhas(), 0u);
+  EXPECT_EQ(alocador.MaiorFalha(), 0u);
+
+  // Um pedido maior do que o heap inteiro TEM de falhar, e tem de deixar rasto.
+  const std::uint32_t grande = kHeapTamanho + 4096u;
+  EXPECT_EQ(alocador.Malloc(grande), 0u);
+  EXPECT_EQ(alocador.Falhas(), 1u);
+  EXPECT_EQ(alocador.MaiorFalha(), grande);
+
+  // Uma falha MAIOR subiu o numero; uma mais pequena NAO o desce -- o que se
+  // guarda e o maior pedido recusado, que e o que explica a recusa.
+  EXPECT_EQ(alocador.Malloc(kHeapTamanho + 99999u), 0u);
+  EXPECT_EQ(alocador.MaiorFalha(), kHeapTamanho + 99999u);
+  EXPECT_EQ(alocador.Malloc(kHeapTamanho + 7u), 0u);
+  EXPECT_EQ(alocador.MaiorFalha(), kHeapTamanho + 99999u);
+  EXPECT_EQ(alocador.Falhas(), 3u);
+
+  // E um pedido que CABE nao conta como falha, nem mexe no maior pedido.
+  EXPECT_NE(alocador.Malloc(64u), 0u);
+  EXPECT_EQ(alocador.Falhas(), 3u);
+  EXPECT_EQ(alocador.MaiorFalha(), kHeapTamanho + 99999u);
+}

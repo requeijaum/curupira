@@ -480,6 +480,13 @@ struct Estado {
   // que nunca pediu nada.
   std::uint32_t heap_pico = 0;
   std::uint32_t heap_blocos = 0;
+  // AS FALHAS DE ALOCACAO, que existiam no `Alocador` desde sempre e que a
+  // bateria NUNCA lia (`Falhas()`/`MaiorFalha()`). Um pico de heap nao diz se um
+  // pedido falhou: MEDIDO em `zeebovolley`/`footparty`/`zeeboids`, 23 MiB de pico
+  // num heap de 64 e o motor Crazyball a imprimir "Error Malloc - not enough free
+  // memory". Ate aqui isso era invisivel no instrumento.
+  std::uint32_t heap_falhas = 0;
+  std::uint32_t heap_maior_falha = 0;
   std::uint64_t recusadas = 0;
   std::uint64_t recusadas_carga = 0;
   std::uint64_t recusadas_create = 0;
@@ -1226,6 +1233,8 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   // `Alocador::Pico`.
   e.heap_pico = al.Pico();
   e.heap_blocos = al.Blocos();
+  e.heap_falhas = al.Falhas();
+  e.heap_maior_falha = al.MaiorFalha();
   // ZB2_TELA=<pasta>: despeja o ecra final do titulo em RGB565 cru. E o instrumento
   // que faltava ao lado do `cores` e do `ZB2_HIST`: um numero de cores nao diz o que
   // esta DESENHADO, e "viu-se a imagem" e a unica prova de que um ecra esta certo.
@@ -1400,6 +1409,8 @@ int main(int argc, char** argv) {
             ",\"passos_start\":" + std::to_string(e.passos_start) + ",\"motivo\":\"" + e.motivo + "\"" +
             ",\"heap_pico\":" + std::to_string(e.heap_pico) +
             ",\"heap_blocos\":" + std::to_string(e.heap_blocos) +
+            ",\"heap_falhas\":" + std::to_string(e.heap_falhas) +
+            ",\"heap_maior_falha\":" + std::to_string(e.heap_maior_falha) +
             ",\"pixels\":" + std::to_string(e.pixels) +
             ",\"pixeis_do_ecra\":" + std::to_string(e.pixeis_do_ecra) +
             ",\"cores\":" + std::to_string(e.cores) +

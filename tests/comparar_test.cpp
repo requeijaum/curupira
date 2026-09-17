@@ -60,6 +60,8 @@ struct Ficha {
   // titulo caberia no heap de 64 MiB.
   long heap_pico = 0;
   long heap_blocos = 1;
+  long heap_falhas = 0;
+  long heap_maior_falha = 0;
   std::string faltas = "{}";
   // Campo NOVO e OPCIONAL: vazio quer dizer "a ficha nao o tem", que e a forma
   // de todas as corridas anteriores ao commit que o criou.
@@ -89,7 +91,8 @@ std::string Corpo(const std::vector<Ficha>& fichas) {
       << ",\"pixeis_do_ecra\":" << f.pixeis_do_ecra
       << ",\"cores\":" << f.cores << ",\"textos\":" << f.textos
       << ",\"blits\":" << f.blits << ",\"heap_pico\":" << f.heap_pico
-      << ",\"heap_blocos\":" << f.heap_blocos << ",\"faltas\":" << f.faltas;
+      << ",\"heap_blocos\":" << f.heap_blocos << ",\"heap_falhas\":" << f.heap_falhas
+      << ",\"heap_maior_falha\":" << f.heap_maior_falha << ",\"faltas\":" << f.faltas;
     if (!f.pressupostos.empty()) s << ",\"pressupostos\":" << f.pressupostos;
     if (!f.recusadas_por_fase.empty()) s << "," << f.recusadas_por_fase;
     s << "}";
@@ -257,7 +260,8 @@ TEST(Comparar, CampoDesconhecidoERecusado) {
       "\"vtable\":false,\"applet\":true,\"passos_carga\":1,\"passos_create\":1,"
       "\"passos_start\":0,"
       "\"recusadas\":0,\"motivo\":\"x\",\"pixels\":0,\"cores\":1,\"textos\":0,"
-      "\"blits\":0,\"heap_pico\":0,\"heap_blocos\":1,\"pixeis_do_ecra\":0,"
+      "\"blits\":0,\"heap_pico\":0,\"heap_blocos\":1,\"heap_falhas\":0,"
+      "\"heap_maior_falha\":0,\"pixeis_do_ecra\":0,"
       "\"faltas\":{},\"campo_novo_da_bateria\":7}]";
   const auto r = CompararTextos(doc, doc, "a.json", "b.json");
   EXPECT_EQ(r.codigo, kFormato) << r.relatorio;
@@ -272,7 +276,8 @@ TEST(Comparar, CampoEmFaltaERecusado) {
       "\"vtable\":false,\"applet\":true,\"passos_carga\":1,\"passos_create\":1,"
       "\"passos_start\":0,"
       "\"recusadas\":0,\"motivo\":\"x\",\"pixels\":0,\"textos\":0,\"blits\":0,"
-      "\"heap_pico\":0,\"heap_blocos\":1,\"pixeis_do_ecra\":0,"
+      "\"heap_pico\":0,\"heap_blocos\":1,\"heap_falhas\":0,"
+      "\"heap_maior_falha\":0,\"pixeis_do_ecra\":0,"
       "\"faltas\":{}}]";  // sem o campo "cores"
   const auto r = CompararTextos(doc, doc, "a.json", "b.json");
   EXPECT_EQ(r.codigo, kFormato) << r.relatorio;
@@ -426,8 +431,14 @@ TEST(Comparar, FichaComOsCamposDaBateriaEhAceite) {
                           "modulo",        "vtable",   "applet",   "passos_carga",
                           "passos_create", "passos_start", "recusadas", "motivo", "pixels",
                           "cores",         "textos",   "blits",    "heap_pico",
-                          "heap_blocos",   "faltas"};
-  ASSERT_EQ(sizeof(campos) / sizeof(campos[0]), 19u);
+                          "heap_blocos",   "pixeis_do_ecra", "heap_falhas",
+                          "heap_maior_falha", "faltas"};
+  // OS CAMPOS OPCIONAIS NAO ENTRAM AQUI: `pressupostos` e os quatro
+  // `recusadas_*` faltam de proposito nas corridas mais antigas, e o comparador
+  // nao recusa por eles. Esta lista e a dos que um ficheiro TEM de trazer -- e a
+  // contagem e afirmada para que acrescentar um campo obrigatorio faca isto ficar
+  // vermelho e obrigue a actualizar as fichas NO MESMO commit.
+  ASSERT_EQ(sizeof(campos) / sizeof(campos[0]), 22u);
   const std::string doc = Montar({{}});
   for (const char* c : campos) {
     EXPECT_TRUE(Contem(doc, std::string("\"") + c + "\":"))
