@@ -301,14 +301,26 @@ const Campo kCampos[] = {
      "LEDGER): ganhar ou perder este bit e a mudanca de estado mais grosseira "
      "que a bateria mede."},
     {"pixels", kNumero, kMaiorMelhor,
-     "MEDIDO: 0 nos 62 titulos da referencia (`max(.[].pixels) == 0`). Escrever "
-     "pixel e trabalho de desenho que so existe se o titulo chegou ao desenho, e "
-     "por isso maior e melhor; hoje o campo esta INERTE, e o comparador diz isso "
-     "em vez de fingir que mede desenho."},
+     "MEDIDO na referencia de 17/09: o campo JA NAO esta inerte. Soma 1,40e9 "
+     "escritas de pixel em 37 dos 62 titulos, e o maior e o `peggle` "
+     "(450203721 nesta corrida; 450982426 na anterior). Escrever pixel e trabalho de desenho que so existe se o "
+     "titulo chegou ao desenho, e por isso maior e melhor -- MAS e um contador de "
+     "ESCRITAS, nao do que fica no ecra: o `peggle` desceu 0,17% aqui enquanto "
+     "desenhava 12501 pixeis a mais (ver `pixeis_do_ecra`). As duas leituras "
+     "juntas e que dizem a verdade."},
+    {"pixeis_do_ecra", kNumero, kMaiorMelhor,
+     "MEDIDO: o `peggle` 148342 -> 160843 ao ganhar o som (o painel de 294x54, "
+     "em x 172-465 e y 216-269, que antes era PRETO -- as duas telas estao em "
+     "/tmp/pesquisa/tela-peggle-ANTES.png e -DEPOIS.png), e o `a3d` 76800. Conta "
+     "os pixeis do ecra que NAO sao o fundo (o preto, estado em que a tela nasce) "
+     "e por isso e o que responde a 'o titulo desenhou mais?' -- o campo que "
+     "faltava quando um contador de escritas chamou regressao a uma melhoria."},
     {"cores", kNumero, kMaiorMelhor,
-     "MEDIDO: 1 em 48 titulos e 0 em 14 na referencia (`Counter(.[].cores) == "
-     "{1: 48, 0: 14}`). Mais cores distintas e mais desenho. Um titulo que "
-     "descia de 1 para 0 perdeu o unico pixel que tinha."},
+     "MEDIDO na referencia de 17/09: o campo tambem ja nao esta inerte -- "
+     "`allstarcards` 1405, `heavyweaponbrew` 1234, `toyraidzeebo` 332, "
+     "`tekken2` 174 cores distintas (4 titulos acima de 100). Mais cores "
+     "distintas e mais desenho. A contagem e CEGA ao valor (nao diz QUAL tom "
+     "apareceu): para isso esta o `ZB2_HIST` e o `ZB2_TELA`."},
     {"textos", kNumero, kMaiorMelhor,
      "MEDIDO: soma 0 nos 62 titulos da referencia (`sum(.[].textos) == 0`) -- "
      "nenhum `DrawText` desenhou. Inerte hoje, pela mesma razao que `pixels`."},

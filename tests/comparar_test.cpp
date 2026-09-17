@@ -51,6 +51,7 @@ struct Ficha {
   long recusadas = 0;
   std::string motivo = "retornou | create:retornou";
   long pixels = 0;
+  long pixeis_do_ecra = 0;
   long cores = 1;
   long textos = 0;
   long blits = 0;
@@ -85,6 +86,7 @@ std::string Corpo(const std::vector<Ficha>& fichas) {
       << ",\"passos_create\":" << f.passos_create << ",\"passos_start\":" << f.passos_start
       << ",\"recusadas\":" << f.recusadas
       << ",\"motivo\":\"" << f.motivo << "\",\"pixels\":" << f.pixels
+      << ",\"pixeis_do_ecra\":" << f.pixeis_do_ecra
       << ",\"cores\":" << f.cores << ",\"textos\":" << f.textos
       << ",\"blits\":" << f.blits << ",\"heap_pico\":" << f.heap_pico
       << ",\"heap_blocos\":" << f.heap_blocos << ",\"faltas\":" << f.faltas;
@@ -255,8 +257,8 @@ TEST(Comparar, CampoDesconhecidoERecusado) {
       "\"vtable\":false,\"applet\":true,\"passos_carga\":1,\"passos_create\":1,"
       "\"passos_start\":0,"
       "\"recusadas\":0,\"motivo\":\"x\",\"pixels\":0,\"cores\":1,\"textos\":0,"
-      "\"blits\":0,\"heap_pico\":0,\"heap_blocos\":1,\"faltas\":{},"
-      "\"campo_novo_da_bateria\":7}]";
+      "\"blits\":0,\"heap_pico\":0,\"heap_blocos\":1,\"pixeis_do_ecra\":0,"
+      "\"faltas\":{},\"campo_novo_da_bateria\":7}]";
   const auto r = CompararTextos(doc, doc, "a.json", "b.json");
   EXPECT_EQ(r.codigo, kFormato) << r.relatorio;
   EXPECT_TRUE(Contem(r.relatorio, "campo desconhecido 'campo_novo_da_bateria'")) << r.relatorio;
@@ -270,7 +272,7 @@ TEST(Comparar, CampoEmFaltaERecusado) {
       "\"vtable\":false,\"applet\":true,\"passos_carga\":1,\"passos_create\":1,"
       "\"passos_start\":0,"
       "\"recusadas\":0,\"motivo\":\"x\",\"pixels\":0,\"textos\":0,\"blits\":0,"
-      "\"heap_pico\":0,\"heap_blocos\":1,"
+      "\"heap_pico\":0,\"heap_blocos\":1,\"pixeis_do_ecra\":0,"
       "\"faltas\":{}}]";  // sem o campo "cores"
   const auto r = CompararTextos(doc, doc, "a.json", "b.json");
   EXPECT_EQ(r.codigo, kFormato) << r.relatorio;

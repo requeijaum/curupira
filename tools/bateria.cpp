@@ -486,6 +486,12 @@ struct Estado {
   std::uint64_t recusadas_start = 0;
   std::uint64_t recusadas_quadros = 0;
   std::uint32_t pixels = 0;
+  // OS PIXEIS QUE FICARAM NO ECRA. O `pixels` acima conta ESCRITAS: um blit que
+  // sobre-escreve a mesma regiao conta outra vez, e um titulo que escreve menos e
+  // desenha MAIS aparece como regressao -- foi o que aconteceu ao `peggle` ao
+  // ganhar o som (pixels 450982426 -> 450203721 com 12501 pixeis a mais no ecra).
+  // O fundo e o PRETO, o estado em que a tela nasce; `ZB2_TELA` guarda a prova.
+  std::uint32_t pixeis_do_ecra = 0;
   std::uint32_t cores = 0;
   std::uint32_t textos = 0;
   std::uint32_t blits = 0;
@@ -1205,6 +1211,16 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   for (const auto& par : traco.ContagemPressupostos()) e.pressupostos[par.first] = par.second;
   e.pixels = g_despacho->TelaRef().Escritos();
   e.cores = g_despacho->TelaRef().CoresDistintas();
+  {
+    const int l = zb2::brew::Tela::kLargura, h = zb2::brew::Tela::kAltura;
+    std::uint32_t pintados = 0;
+    for (int y = 0; y < h; ++y) {
+      for (int x = 0; x < l; ++x) {
+        if ((g_despacho->TelaRef().PixelEm(x, y) & 0xFFFFu) != 0u) ++pintados;
+      }
+    }
+    e.pixeis_do_ecra = pintados;
+  }
   // O PICO DO HEAP: o maximo que o titulo chegou a ter pedido, e os blocos no
   // fim. E o numero que responde a "houve estouro de memoria?" -- ver o
   // `Alocador::Pico`.
@@ -1385,6 +1401,7 @@ int main(int argc, char** argv) {
             ",\"heap_pico\":" + std::to_string(e.heap_pico) +
             ",\"heap_blocos\":" + std::to_string(e.heap_blocos) +
             ",\"pixels\":" + std::to_string(e.pixels) +
+            ",\"pixeis_do_ecra\":" + std::to_string(e.pixeis_do_ecra) +
             ",\"cores\":" + std::to_string(e.cores) +
             ",\"textos\":" + std::to_string(e.textos) +
             ",\"blits\":" + std::to_string(e.blits) +
