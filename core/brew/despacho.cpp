@@ -316,6 +316,7 @@ struct LigacaoAjudante {
 Despacho::Despacho(Memoria& mem, Traco& traco, Alocador& alocador, Vfs& vfs)
     : mem_(mem),
       traco_(traco),
+      cheats_(mem_, traco_),
       al_(alocador),
       vfs_(vfs),
       arquivos_(&vfs),
@@ -5089,6 +5090,9 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
       }
     }
 
+    // Cheats com gatilho de PC: um `if` quando a lista esta vazia (o caso de
+    // todas as corridas sem `ZB2_CHEATS`), varredura curta quando nao esta.
+    cheats_.NoPasso(pc);
     if (const char* w = std::getenv("ZB2_SONDA_WATCH")) {
       const std::uint32_t alvo_w = static_cast<std::uint32_t>(std::strtoul(w, nullptr, 0));
       static std::uint32_t ant = 0;

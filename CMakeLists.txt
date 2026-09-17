@@ -73,6 +73,7 @@ add_library(zb2_core STATIC
   core/brew/imedia.cpp
   core/brew/clsids.cpp
   core/brew/classes.cpp
+  core/brew/cheats.cpp
   core/audio/misturador.cpp
   core/video/rasterizador.cpp
 )
@@ -128,6 +129,7 @@ add_executable(zb2_tests
   tests/sql_test.cpp
   tests/ecra_guest_test.cpp
   tests/graficos_test.cpp
+  tests/cheats_test.cpp
 )
 # A RAIZ DO REPOSITORIO, para os testes que abrem ficheiros reais (o
 # `pacmania.bar` e o SDK) poderem dizer ONDE procuraram -- e SALTAR em vez de

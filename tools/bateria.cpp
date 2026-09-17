@@ -688,6 +688,31 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   // A PASTA DOS GUIAOS. Configuracao lida UMA vez no arranque, como as outras:
   // a mesma linha de comando com a mesma pasta da a mesma corrida.
   if (const char* gu = std::getenv("ZB2_GUIAO")) g_pasta_dos_guiaos = gu;
+  // CHEATS DECLARADOS (`ZB2_CHEATS=<ficheiro>`). O ficheiro le-se UMA vez; cada
+  // titulo recebe `ReporPorTitulo` e as fronteiras chamam `NaFase`. Ficheiro
+  // inexistente = aviso em voz alta, e nao corrida silenciosamente sem cheats.
+  // AVISO P2 (igual ao do guiao): cheats MUDAM a corrida -- uma corrida COM
+  // cheats nao e comparavel com uma referencia SEM cheats.
+  static std::string g_texto_cheats;
+  static bool g_cheats_lido = false;
+  if (!g_cheats_lido) {
+    g_cheats_lido = true;
+    if (const char* ch = std::getenv("ZB2_CHEATS")) {
+      std::FILE* f = std::fopen(ch, "rb");
+      if (f == nullptr) {
+        std::fprintf(stderr, "AVISO: ZB2_CHEATS='%s' nao abriu -- corrida SEM cheats\n", ch);
+      } else {
+        char buf[4096];
+        std::size_t n = 0;
+        while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) g_texto_cheats.append(buf, n);
+        std::fclose(f);
+        std::fprintf(stderr,
+                     "AVISO: ZB2_CHEATS='%s' -- corrida COM cheats declarados; nao e comparavel "
+                     "com uma referencia SEM cheats (cada disparo vai no traco como CHEAT_APLICADO)\n",
+                     ch);
+      }
+    }
+  }
   if (!g_pasta_dos_guiaos.empty()) {
     // AVISO EM VOZ ALTA (P2). A entrada faz parte da CORRIDA, e o cabecalho de
     // proveniencia do JSON nao a leva: o `zb2_comparar` compara dois ficheiros e
@@ -734,6 +759,13 @@ Estado Medir(const Titulo& t, const std::string& dir) {
     }
   }
   g_despacho = &despacho;
+  if (!g_texto_cheats.empty()) {
+    // O ficheiro e UM SO (lido no arranque); o FILTRO e por titulo, e os
+    // disparos rearmam a cada titulo -- sem isto o cheat do `a3d` disparava no
+    // `peggle` ou nao disparava duas vezes.
+    g_despacho->RefCheats().LerConteudo(g_texto_cheats);
+    g_despacho->RefCheats().ReporPorTitulo(t.mod);
+  }
   despacho.DefinirFaixaDoModulo(kBase, static_cast<std::uint32_t>(imagem.size()));
   // A TELA E LIMPA AQUI, e nao no inicio do `Medir`: o `Despacho` vive no
   // ambito desta funcao, e um ponteiro guardado de um titulo para o outro
@@ -1013,6 +1045,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
     e.motivo = r.motivo;
   }
   e.recusadas_carga = Colher();
+  if (!g_texto_cheats.empty()) g_despacho->RefCheats().NaFase("carga", 0);
   g_applet = mem.Ler32(kPPObj);  // para o `GetAppInstance`
 
   const std::uint32_t modulo = mem.Ler32(kPPMod);
@@ -1068,6 +1101,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
     motivo_create = r.motivo;
   }
   e.recusadas_create = Colher();
+  if (!g_texto_cheats.empty()) g_despacho->RefCheats().NaFase("create", 0);
   g_applet = mem.Ler32(kPPObj);  // para o `GetAppInstance`
   g_despacho->DefinirApplet(g_applet);
   e.create = mem.Ler32(kPPObj) != 0;
@@ -1137,6 +1171,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
       const zb2::brew::ResultadoFase re = g_despacho->Correr(cpu, limite, kPPObj);
       e.passos_start = re.passos;  // a fase do arranque, contada
       e.recusadas_start = Colher();  // **e esta parcela que NAO chegava ao JSON**
+  if (!g_texto_cheats.empty()) g_despacho->RefCheats().NaFase("start", 0);
       e.motivo += " | start:" + re.motivo;
       ++eventos_dados;
     } else {
@@ -1160,6 +1195,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
     const zb2::brew::ResultadoFase rq = g_despacho->Correr(cpu, limite, kPPObj);
     passos_dos_quadros += rq.passos;
     ++quadros_corridos;
+    if (!g_texto_cheats.empty()) g_despacho->RefCheats().NaFase("quadros", quadros_corridos);
     if (rq.motivo != "retornou") {
       e.motivo += " | quadro:" + rq.motivo;
       break;

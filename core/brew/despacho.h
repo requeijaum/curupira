@@ -22,6 +22,7 @@
 
 #include "core/audio/misturador.h"
 #include "core/brew/ajudantes.h"
+#include "core/brew/cheats.h"
 #include "core/brew/recursos.h"
 #include "core/brew/sql.h"
 
@@ -277,6 +278,10 @@ class Despacho {
   // --- o estado que a ferramenta observa ---------------------------------
   Tela& TelaRef() { return tela_; }
   const Tela& TelaRef() const { return tela_; }
+
+  // Cheats declarados (`ZB2_CHEATS`): a bateria carrega o ficheiro e fixa o
+  // titulo; as fronteiras de fase chamam `NaFase` e o laco chama `NoPasso`.
+  Cheats& RefCheats() { return cheats_; }
 
 
   // `Faltas()`, `VfsRef()`, `ArquivosRef()`, `Blits()` e `Backlights()` SAIRAM.
@@ -680,6 +685,7 @@ class Despacho {
 
   Memoria& mem_;
   Traco& traco_;
+  Cheats cheats_;
   Alocador& al_;
   Vfs& vfs_;
   Arquivos arquivos_;
