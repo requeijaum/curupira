@@ -171,6 +171,8 @@ struct ResumoDeGraficos {
   // O clip em vigor: 0 = a janela (o ecra), 1 = um rectangulo.
   std::uint32_t clip_tipo = 0;
   std::uint32_t clip_x = 0, clip_y = 0, clip_largura = 0, clip_altura = 0;
+  // A origem de coordenadas definida por `Translate` (IGraphics slot 33).
+  int32_t origem_x = 0, origem_y = 0;
   // O viewport em vigor (o ecra, por omissao) e se foi pedido com moldura.
   std::uint32_t viewport_x = 0, viewport_y = 0, viewport_largura = 0, viewport_altura = 0;
   bool viewport_com_moldura = false;

@@ -537,7 +537,6 @@ TEST(Graficos, AsFormasNaoImplementadasRecusamComONome) {
   EXPECT_EQ(b.Pede(kGraphics_DrawCircle, kZona), kAeeUnsupported);
   EXPECT_EQ(b.Pede(kGraphics_DrawEllipse, kZona), kAeeUnsupported);
   EXPECT_EQ(b.Pede(kGraphics_ClearRect, kZona), kAeeUnsupported);
-  EXPECT_EQ(b.Pede(kGraphics_Translate, 1, 2), kAeeUnsupported);
   EXPECT_EQ(b.Pede(kGraphics_StretchBlt), kAeeUnsupported);
   // O NOME, e nao o numero do slot: uma lista de demanda que diga
   // `IGraphics::slot23` obriga a ir ao cabecalho contar em cada ronda.
@@ -557,6 +556,22 @@ TEST(Graficos, UmaFormaDeClipNaoImplementadaRecusaComONome) {
   EXPECT_EQ(b.Pede(kGraphics_SetClip, forma, 0), 0u)
       << "nao se guarda um clip que nao se aplica";
   EXPECT_EQ(b.Faltas("IGraphics::SetClip forma nao implementada"), 1u);
+}
+
+TEST(Graficos, TranslateGuardaOrigemETransladaODesenho) {
+  Bancada b;
+  // Translate define a origem em (10, 20)
+  EXPECT_EQ(b.Pede(kGraphics_Translate, 10, 20), 0u);
+  EXPECT_EQ(b.G().Resumo().origem_x, 10);
+  EXPECT_EQ(b.G().Resumo().origem_y, 20);
+  EXPECT_EQ(b.Faltas("IGraphics::Translate"), 0u);
+
+  // Desenhar rect em (5, 5, 2, 2) deve desenhar em (15, 25, 2, 2)
+  b.Pede(kGraphics_SetColor, 0, 0, 0xFF, 0xFF);  // azul
+  b.EscreverRect(kZona, 5, 5, 2, 2);
+  EXPECT_EQ(b.Pede(kGraphics_DrawRect, kZona), kAeeSuccess);
+  EXPECT_EQ(b.Pixel(15, 25), kAzul565);
+  EXPECT_EQ(b.Pixel(5, 5), 0x0000u) << "sem translate a posicao original nao foi afetada";
 }
 
 TEST(Graficos, OPonteiroDeSaidaForaDoMapaNaoAlocaMemoria) {

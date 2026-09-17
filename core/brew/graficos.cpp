@@ -367,6 +367,14 @@ Atendido Graficos::Atender(ICpu& cpu, std::uint32_t indice) {
   if (slot >= kGraphics_SetBackground && slot <= kGraphics_GetColorDepth) {
     return AtenderEstado(cpu, slot);
   }
+  if (slot == kGraphics_Translate) {
+    // `void Translate(IGraphics *po, int16 x, int16 y)` (AEEGraphics.h:255).
+    // Translada a origem do sistema de coordenadas do mundo em (x, y).
+    estado_.origem_x = static_cast<std::int16_t>(cpu.Get(kR1));
+    estado_.origem_y = static_cast<std::int16_t>(cpu.Get(kR2));
+    cpu.Set(kR0, 0);
+    return Atendido::Feito;
+  }
   if (slot == kGraphics_DrawRect) return DesenharRect(cpu);
   return NaoImplementado(cpu, slot);
 }
@@ -685,6 +693,8 @@ Atendido Graficos::DesenharRect(ICpu& cpu) {
     cpu.Set(kR0, kAeeBadParm);
     return Atendido::NaoImplementado;
   }
+  x += estado_.origem_x;
+  y += estado_.origem_y;
   if (largura < 0 || altura < 0) {
     // `AEERect.dx`/`dy` sao LARGURA e ALTURA (`AEERect.h:35-40`): um valor
     // negativo nao e um rectangulo.
