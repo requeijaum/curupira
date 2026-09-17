@@ -978,6 +978,7 @@ std::uint32_t SlotIglesNoIgl(std::uint32_t slot) {
     case igles_slots::kIgles_ShadeModel: return gl_slots::kIgl_ShadeModel;
     case igles_slots::kIgles_TexParameterx: return gl_slots::kIgl_TexParameterx;
     case igles_slots::kIgles_TexEnvx: return gl_slots::kIgl_TexEnvx;
+    case igles_slots::kIgles_TexEnvfv: return gl_slots::kIgl_TexEnvxv;  // 28 (40 pedidos em 4 titulos)
     case igles_slots::kIgles_Viewport: return gl_slots::kIgl_Viewport;
     // --- os que faltavam, e cada um tem DEMANDA MEDIDA (frente igl2) ---
     // O numero ao lado e o slot do IGLES11 em `tools/igles_slots.inc` (gerado

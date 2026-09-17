@@ -565,4 +565,29 @@ TEST(FrenteIbitmap, OTexEnvxDoIglesRecusaHojeEServeOModoQuandoMapeado) {
   EXPECT_EQ(b.Faltas("IGLES11::TexEnvx"), 0u) << "com o mapa, o motor do IGL serve o modo";
 }
 
+// O IGLES11::TexEnvfv (mesma frente, forma vetorial): 40 pedidos em 4 titulos
+// (`zeebotennis`, `dodgeball`, `zeebopeteca`, `alice`), sempre
+// r1=0x2300 (GL_TEXTURE_ENV) r2=0x2201 (GL_TEXTURE_ENV_MODE) r3=ponteiro.
+// O motor do IGL JA implementa o `kIgl_TexEnvxv` (acumula os 4 valores) -- so
+// falta a entrada do mapa, como foi com o `TexEnvx` acima.
+TEST(FrenteIbitmap, OTexEnvfvDoIglesRecusaHojeEServeOModoQuandoMapeado) {
+  Bancada b;
+  ConstruirIgles(b.Mem(), b.S(), b.Tr());
+  auto& cpu = b.Cpu();
+  constexpr std::uint32_t kParams = 0x80093000u;
+  b.Mem().Escrever32(kParams, 0x00002100u);  // GL_MODULATE como float-vetor de 1
+  b.Mem().Escrever32(kParams + 4u, 0u);
+  b.Mem().Escrever32(kParams + 8u, 0u);
+  b.Mem().Escrever32(kParams + 12u, 0u);
+  cpu.Set(kR0, kObjetoIgles);
+  cpu.Set(kR1, 0x2300u);  // GL_TEXTURE_ENV (medido nos 4 titulos)
+  cpu.Set(kR2, 0x2201u);  // GL_TEXTURE_ENV_MODE (medido nos 4 titulos)
+  cpu.Set(kR3, kParams);
+  ASSERT_TRUE(AtenderClasse(cpu, kVtableIgles + igles_slots::kIgles_TexEnvfv, b.Tr()));
+  // VERMELHO NA BASE: a recusa generica com nome. VERDE com a linha do mapa
+  // `SlotIglesNoIgl(kIgles_TexEnvfv) -> kIgl_TexEnvxv` em classes.cpp.
+  EXPECT_EQ(cpu.Get(kR0), kAeeSuccess) << "hoje o IGLES11::TexEnvfv recusa com nome";
+  EXPECT_EQ(b.Faltas("IGLES11::TexEnvfv"), 0u) << "com o mapa, o motor do IGL serve o modo";
+}
+
 }  // namespace zb2::brew
