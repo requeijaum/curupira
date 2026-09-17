@@ -68,6 +68,10 @@ std::uint32_t Alocador::Malloc(std::uint32_t tamanho) {
         Escrever(atual, ocupado);
       }
       alocado_ += precisa;
+      // O PICO: o `Alocado()` do fim de uma corrida diz o que SOBROU, e nao o que
+      // o titulo chegou a pedir. Para responder "houve estouro de memoria?" o
+      // numero que interessa e o maximo, e e ele que a bateria escreve.
+      if (alocado_ > pico_) pico_ = alocado_;
       return atual + kCabecalho;
     }
     atual += c.tamanho;

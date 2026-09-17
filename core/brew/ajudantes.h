@@ -100,6 +100,7 @@ class Alocador {
   std::uint32_t Inicio() const { return inicio_; }
   std::uint32_t Tamanho() const { return tamanho_; }
   std::uint32_t Alocado() const { return alocado_; }
+  std::uint32_t Pico() const { return pico_; }
   std::uint32_t Blocos() const { return blocos_; }
   std::uint32_t Falhas() const { return falhas_; }
 
@@ -124,6 +125,8 @@ class Alocador {
   std::uint32_t inicio_ = 0;
   std::uint32_t tamanho_ = 0;
   std::uint32_t alocado_ = 0;
+  // O maximo que o `alocado_` atingiu (ver o `Malloc`).
+  std::uint32_t pico_ = 0;
   std::uint32_t blocos_ = 0;
   std::uint32_t falhas_ = 0;
 };

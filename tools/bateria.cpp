@@ -465,6 +465,13 @@ struct Estado {
   // sobrevive a qualquer `Repor` futuro, e as parcelas vao ao JSON ao lado do
   // total para que a soma seja VERIFICAVEL de fora
   // (`tests/bateria_recusadas_test.cpp`).
+  // O PICO DO HEAP DO TITULO. E o unico numero que responde a pergunta
+  // "houve estouro de memoria?": o `Alocado()` no fim diz o que sobrou, e o
+  // que interessa e o MAXIMO que o titulo chegou a pedir (o `Alocador::Pico`).
+  // Sem isto, um titulo que pede 40 MiB e liberta tudo no fim aparece igual a um
+  // que nunca pediu nada.
+  std::uint32_t heap_pico = 0;
+  std::uint32_t heap_blocos = 0;
   std::uint64_t recusadas = 0;
   std::uint64_t recusadas_carga = 0;
   std::uint64_t recusadas_create = 0;
@@ -1117,6 +1124,11 @@ Estado Medir(const Titulo& t, const std::string& dir) {
   for (const auto& par : traco.ContagemPressupostos()) e.pressupostos[par.first] = par.second;
   e.pixels = g_despacho->TelaRef().Escritos();
   e.cores = g_despacho->TelaRef().CoresDistintas();
+  // O PICO DO HEAP: o maximo que o titulo chegou a ter pedido, e os blocos no
+  // fim. E o numero que responde a "houve estouro de memoria?" -- ver o
+  // `Alocador::Pico`.
+  e.heap_pico = al.Pico();
+  e.heap_blocos = al.Blocos();
   // ZB2_TELA=<pasta>: despeja o ecra final do titulo em RGB565 cru. E o instrumento
   // que faltava ao lado do `cores` e do `ZB2_HIST`: um numero de cores nao diz o que
   // esta DESENHADO, e "viu-se a imagem" e a unica prova de que um ecra esta certo.
@@ -1289,6 +1301,8 @@ int main(int argc, char** argv) {
             ",\"recusadas_start\":" + std::to_string(e.recusadas_start) +
             ",\"recusadas_quadros\":" + std::to_string(e.recusadas_quadros) +
             ",\"passos_start\":" + std::to_string(e.passos_start) + ",\"motivo\":\"" + e.motivo + "\"" +
+            ",\"heap_pico\":" + std::to_string(e.heap_pico) +
+            ",\"heap_blocos\":" + std::to_string(e.heap_blocos) +
             ",\"pixels\":" + std::to_string(e.pixels) +
             ",\"cores\":" + std::to_string(e.cores) +
             ",\"textos\":" + std::to_string(e.textos) +
