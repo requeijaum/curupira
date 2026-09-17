@@ -781,6 +781,76 @@ void FazerSysFree(Memoria&, Alocador& al, ICpu& cpu, Traco& traco) {
   EmitirChamada(traco, brew_ajudantes::kAjudante_sysfree, det);
 }
 
+// ---------------------------------------------------------------------------
+// 0x0EC -- `char *(*memstr)(const char *cpHaystack, const char *cpszNeedle, size_t nHaystackLen)`
+// (`AEEStdLib.h:156`; o id em `tools/ajudantes_slots.inc`, gerado do mesmo
+// cabecalho pela guarda dos ajudantes).
+// ---------------------------------------------------------------------------
+//
+// MEDIDO: o `peggle` pede-o **303 vezes** e nao havia resposta -- era a falta
+// MAIS PEDIDA da corrida (`corrida_cls`), e o mesmo titulo tinha a segunda
+// (`IImageDecoder::GetBitmap`, 242). Um titulo que nao passa do arranque
+// costuma ser isto: a primeira funcao que falta.
+//
+// O CONTRATO, e a razao de ele existir ao lado do `strstr`: o `strstr` acaba no
+// ZERO do palheiro, e este acaba em `nHaystackLen` -- o palheiro pode nao ter
+// zero nenhum (e um bloco de bytes, nao uma cadeia). A AGULHA e uma cadeia
+// terminada a zero, e e a unica das duas que se le por `LerCadeia`.
+//
+// A agulha VAZIA casa no inicio do palheiro, como na libc (`strstr(s, "")`
+// devolve o proprio `s`) -- a mesma escolha que a `ProcurarSubcadeia` acima ja
+// faz. E a unica decisao deste ajudante que NAO vem de um cabecalho: fica
+// declarada aqui e presa por teste (ver `memstr_test.cpp`).
+//
+// O TECTO DA BUSCA e o `n` que o TITULO declara, e nao um numero nosso -- mas a
+// leitura para quando a memoria do guest acaba (`Existe`), para um `n` absurdo
+// nao varrer pagina nenhuma a fingir. Se o palheiro mapeado for maior do que
+// `kLimiteDaBusca`, a resposta e uma FALTA COM NOME (nao um silencio): nenhum
+// titulo medido chegou la, e um numero inventado em silencio era pior.
+void FazerMemstr(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
+  constexpr std::uint32_t kLimiteDaBusca = 1u << 24;  // 16 MiB varridos
+  const std::uint32_t p_palheiro = cpu.Get(kR0);
+  const std::uint32_t p_agulha = cpu.Get(kR1);
+  const std::uint32_t n = cpu.Get(kR2);
+  if (p_palheiro == 0 || p_agulha == 0) {
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_memstr, "ponteiro nulo",
+                   DetalheDosRegistos(cpu));
+    cpu.Set(kR0, 0);
+    return;
+  }
+  std::string agulha;
+  mem.LerCadeia(p_agulha, &agulha, kLimiteDeCadeia);
+  std::uint32_t r = 0;
+  if (agulha.empty()) {
+    r = p_palheiro;  // como a libc
+  } else if (agulha.size() <= n) {
+    for (std::uint32_t i = 0; static_cast<std::uint64_t>(i) + agulha.size() <= n; ++i) {
+      if (i >= kLimiteDaBusca) {
+        RegistarRecusa(traco, brew_ajudantes::kAjudante_memstr,
+                       "palheiro maior que o tecto da busca (16 MiB)",
+                       DetalheDosRegistos(cpu));
+        break;
+      }
+      std::size_t k = 0;
+      while (k < agulha.size()) {
+        const std::uint32_t onde = p_palheiro + i + static_cast<std::uint32_t>(k);
+        if (!mem.Existe(onde)) break;  // acabou a memoria do guest: nao ha mais palheiro
+        if (mem.Ler8(onde) != static_cast<std::uint8_t>(agulha[k])) break;
+        ++k;
+      }
+      if (k == agulha.size()) {
+        r = p_palheiro + i;
+        break;
+      }
+    }
+  }
+  cpu.Set(kR0, r);
+  char det[128];
+  std::snprintf(det, sizeof(det), "palheiro=0x%08x agulha=0x%08x n=%u -> 0x%08x", p_palheiro,
+                p_agulha, n, r);
+  EmitirChamada(traco, brew_ajudantes::kAjudante_memstr, det);
+}
+
 void FazerMemcmp(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
   const std::uint32_t a = cpu.Get(kR0);
   const std::uint32_t b = cpu.Get(kR1);
@@ -2143,6 +2213,7 @@ constexpr Implementacao kImplementados[] = {
     {brew_ajudantes::kAjudante_strdup, "strdup", FazerStrdup},
     {brew_ajudantes::kAjudante_strncmp, "strncmp", FazerStrncmp},
     {brew_ajudantes::kAjudante_memcmp, "memcmp", FazerMemcmp},
+    {brew_ajudantes::kAjudante_memstr, "memstr", FazerMemstr},
     {brew_ajudantes::kAjudante_sysfree, "sysfree", FazerSysFree},
     {brew_ajudantes::kAjudante_swaps, "swaps", FazerSwaps},
     {brew_ajudantes::kAjudante_strlower, "strlower", FazerStrlower},
@@ -2198,7 +2269,7 @@ static_assert(brew_ajudantes::kAjudante_aee_GetSeconds == 0x0B4, "0x0b4 e aee_Ge
 static_assert(brew_ajudantes::kAjudante_aee_GetJulianDate == 0x0B8, "0x0b8 e aee_GetJulianDate");
 static_assert(
     sizeof(kImplementados) / sizeof(kImplementados[0]) ==
-        27,
+        28,
     "a lista das implementacoes mudou: actualiza o numero e o teste");
 
 }  // namespace

@@ -685,10 +685,13 @@ TEST(AjudantesExtra, ImplementadosSaoVinteESeteEATodosNoCatalogo) {
   // + o `strlower` (0x114), que o `quake2brew` pede -- e que so ficou alcancavel
   // depois de a bandeira do `malloc` ser servida (`fe1eaad`).
   // + o `strexpand` (0x0e4), que o `ddragonz` pede 1500 vezes.
-  EXPECT_EQ(AjudantesExtra::Implementados(), 27u);
+  // + o `memstr` (0x0ec), que o `peggle` pede 303 vezes -- era a falta MAIS
+  // PEDIDA da corrida dos 62, e o mesmo titulo tinha a segunda
+  // (`IImageDecoder::GetBitmap`, 242).
+  EXPECT_EQ(AjudantesExtra::Implementados(), 28u);
   for (std::uint32_t off : {0x0D8u, 0x044u, 0x050u, 0x054u, 0x0E8u, 0x138u, 0x0F4u, 0x0CCu,
                             0x0D0u, 0x090u, 0x0FCu, 0x0ACu, 0x0B4u, 0x0B8u, 0x03Cu, 0x0DCu,
-                            0x0BCu, 0x130u, 0x114u, 0x0E4u}) {
+                            0x0BCu, 0x130u, 0x114u, 0x0E4u, 0x0ECu}) {
     EXPECT_NE(DeclaracaoDoOffset(off), nullptr) << "0x" << std::hex << off;
   }
 }
@@ -1426,7 +1429,7 @@ TEST(AjudantesExtra, SetupNativeImageEDescodificadoPorEstaTabela) {
   EXPECT_STREQ(DeclaracaoDoOffset(0x064)->assinatura,
                "void *(*SetupNativeImage)(AEECLSID cls, void *pBuffer, AEEImageInfo *pii, "
                "boolean *pbRealloc)");
-  EXPECT_EQ(AjudantesExtra::Implementados(), 27u) << "o 0x064 entrou na tabela";
+  EXPECT_EQ(AjudantesExtra::Implementados(), 28u) << "o 0x064 e o memstr entraram na tabela";
 }
 
 TEST(AjudantesExtra, SetupNativeImageDescodificaBmpDe8BitsComPaleta) {
@@ -2041,4 +2044,58 @@ TEST(AjudantesExtra, OMemcmpNaoTerminaNoNulo) {
   b.cpu.Set(kR2, 5);
   b.Atender(brew_ajudantes::kAjudante_strncmp);
   EXPECT_EQ(b.cpu.Get(kR0), 0u) << "o strncmp para no NUL: e a diferenca medida";
+}
+
+// ---------------------------------------------------------------------------
+// 0x0EC -- `char *memstr(const char *cpHaystack, const char *cpszNeedle, size_t nHaystackLen)`
+// ---------------------------------------------------------------------------
+TEST(AjudantesExtra, OMemstrAcabaNoLimiteENaoNoNulo) {
+  // `AEEStdLib.h:156`. MEDIDO: o `peggle` pede-o **303 vezes** -- a falta mais
+  // pedida da corrida dos 62, e o mesmo titulo tinha a segunda
+  // (`IImageDecoder::GetBitmap`, 242).
+  //
+  // A DIFERENCA PARA O `strstr` (0x0E8) E O `n`: o palheiro NAO tem de ter zero
+  // nenhum, e a busca acaba no limite que o TITULO declara. O teste prova-o dos
+  // dois lados, e e por isso que o palheiro tem um zero A MEIO: a agulha esta
+  // DEPOIS desse zero, onde o `strstr` parava.
+  Bancada b;
+  const std::uint32_t palheiro = kTexto, agulha = kTexto2;
+  const std::uint8_t pb[8] = {'a', 'b', 0, 'c', 'd', 0, 'e', 'f'};
+  const char* ag = "cd";
+  for (int i = 0; i < 8; ++i) b.mem.Escrever8(palheiro + static_cast<std::uint32_t>(i), pb[i]);
+  for (int i = 0; ag[i] != 0; ++i)
+    b.mem.Escrever8(agulha + static_cast<std::uint32_t>(i), static_cast<std::uint8_t>(ag[i]));
+  b.mem.Escrever8(agulha + 2, 0);
+
+  // (1) DENTRO do limite: acha-a, mesmo com o zero pelo meio.
+  b.cpu.Set(kR0, palheiro);
+  b.cpu.Set(kR1, agulha);
+  b.cpu.Set(kR2, 8);
+  EXPECT_EQ(b.Atender(brew_ajudantes::kAjudante_memstr), Atendimento::Implementado);
+  EXPECT_EQ(b.cpu.Get(kR0), palheiro + 3u) << "a agulha esta em 3..4, DEPOIS do zero em 2";
+
+  // (2) O MESMO palheiro, com o limite a acabar antes da agulha: nao ha.
+  b.cpu.Set(kR0, palheiro);
+  b.cpu.Set(kR1, agulha);
+  b.cpu.Set(kR2, 4);
+  b.Atender(brew_ajudantes::kAjudante_memstr);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u) << "de 3 sobram 1 byte para uma agulha de 2: nao cabe";
+
+  // (3) A AGULHA VAZIA casa no inicio -- a escolha declarada (como a libc, e a
+  // mesma que a `ProcurarSubcadeia` do `strstr` ja faz).
+  b.mem.Escrever8(agulha, 0);
+  b.cpu.Set(kR0, palheiro);
+  b.cpu.Set(kR1, agulha);
+  b.cpu.Set(kR2, 8);
+  b.Atender(brew_ajudantes::kAjudante_memstr);
+  EXPECT_EQ(b.cpu.Get(kR0), palheiro);
+
+  // (4) PONTEIRO NULO: recusa COM NOME (a regra P2), e zero no r0.
+  b.cpu.Set(kR0, 0);
+  b.cpu.Set(kR1, agulha);
+  b.cpu.Set(kR2, 8);
+  b.Atender(brew_ajudantes::kAjudante_memstr);
+  EXPECT_EQ(b.cpu.Get(kR0), 0u);
+  EXPECT_EQ(b.traco.ContagemFaltas().count("AEEHelperFuncs[0x0ec] memstr"), 1u)
+      << "a recusa tem de dizer o NOME e o offset";
 }
