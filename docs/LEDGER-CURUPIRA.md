@@ -2490,3 +2490,19 @@ CONCLUSao para a proxima ronda: o que trava o `a3d` nao e desenho nenhum, e o
 gasta 11060 voltas por quadro a percorrer uma lista que nunca enche. E uma decisao
 de desenho desta arvore (a VFS so-de-leitura), e por isso fica dita e medida em
 vez de "arranjada" por baixo.
+
+
+### 17/09 (4) -- QW2 validado nos 62: filtro LINEAR vira pressuposto, zero regressoes
+
+O `RegistarRessalvas` registava `filtro_de_textura_alem_de_GL_NEAREST` como
+FALTA em 7 titulos (`Rolimaz`, `AirRacez`, `gof`, `Bajaz`, `Boiaz`, `pbc`,
+`alice`), 1 pedido cada. O rasterizador amostra o texel mais proximo e os 7
+desenham por inteiro -- a diferenca LINEAR/NEAREST e sub-texel, nao ausencia.
+Precedente do stencil: virou PRESSUPOSTO declarado ("LINEAR pedido,
+amostrado NEAREST"), commit `a811e7c`, teste vermelho-antes-verde-depois
+(`FrenteIgl9.FiltroLinearEServidoComoNearestEDeclarado`).
+
+Bateria completa de validacao (`/tmp/corrida_a811e7c.json` vs `qw4ref`,
+`zb2_comparar`): **0 regressoes, 0 melhorias**, 14 neutros = 7 faltas 1->0 e
+7 pressupostos 0->1, resto dos 62 byte-identico. Bilinear real continua
+pendente como frente propria (exige campo no estado + fiação + sampler).
