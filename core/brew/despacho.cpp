@@ -1520,7 +1520,7 @@ bool Despacho::AtenderLoadResObject(ICpu& cpu) {
   const std::uint32_t p_nome = cpu.Get(kR1);
   const std::uint16_t id = static_cast<std::uint16_t>(cpu.Get(kR2));
   const std::uint32_t cls = cpu.Get(kR3);
-  const std::string nome = LerTextoDe(mem_, p_nome, 512);
+  std::string nome = LerTextoDe(mem_, p_nome, 512);
   // O CONTRATO DE FALHA E `NULL`, e escreve-se ANTES de qualquer trabalho: um
   // caminho de recusa que deixe o r0 com o valor do guest entregava-lhe um
   // ponteiro que ele acredita ser um objecto.
@@ -1534,7 +1534,22 @@ bool Despacho::AtenderLoadResObject(ICpu& cpu) {
   //    VFS), para nao haver duas regras sobre que ficheiro existe.
   std::vector<std::uint8_t> bytes;
   std::string motivo;
-  const LeitorDeRecursos leitor = LeitorDaPasta(dir_ + "/" + pasta_, &vfs_);
+  LeitorDeRecursos leitor = LeitorDaPasta(dir_ + "/" + pasta_, &vfs_);
+  // `fs:/~/../<dir>/<file>` e relativo a raiz dos mods, nao a pasta do
+  // titulo. O a3d pede assim `id1/splash_title.png`. Aceitamos SOMENTE esse
+  // salto unico e um caminho relativo limpo: nunca se deixa o guest escapar da
+  // raiz que a bateria recebeu.
+  constexpr const char* kHomeParent = "fs:/~/../";
+  if (nome.rfind(kHomeParent, 0) == 0) {
+    const std::string relativo = nome.substr(std::char_traits<char>::length(kHomeParent));
+    if (relativo.empty() || relativo.front() == '/' || relativo.find("..") != std::string::npos) {
+      traco_.RegistarFalta(Area::Brew, "IShell::LoadResObject",
+                           nome + ": caminho fs:/~/../ invalido");
+      return true;
+    }
+    nome = relativo;
+    leitor = LeitorDaPasta(dir_, nullptr);
+  }
   if (!leitor(nome, &bytes, &motivo)) {
     traco_.RegistarFalta(Area::Brew, "IShell::LoadResObject",
                          nome + " id=" + std::to_string(id) + ": " + motivo);

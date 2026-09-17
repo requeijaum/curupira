@@ -1962,6 +1962,27 @@ TEST(FrenteIshell2, OLoadResObjectServeUmIdibDoFicheiroEDoContentor) {
   EXPECT_EQ(b.Faltas("IShell::LoadResObject"), 1u);
 }
 
+TEST(FrenteIshell2, OLoadResObjectResolveFsHomeParentSemSairDaRaizDosMods) {
+  PastaDoTitulo pasta;
+  const std::filesystem::path id1 = std::filesystem::path(pasta.Raiz()) / "id1";
+  std::filesystem::create_directories(id1);
+  {
+    std::ofstream f(id1 / "splash_title.png", std::ios::binary);
+    const auto png = PngDoIshell2();
+    f.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+  }
+  Bancada b;
+  b.AcessoAVfs().Registar(pasta.Caminho());
+  b.D().SituarTitulo(pasta.Raiz(), pasta.Nome());
+  ConstruirOShell(b);
+  EscreverCadeia(b.Mem(), kNomeNoGuest, "fs:/~/../id1/splash_title.png");
+  const std::uint32_t obj = b.ChamaSaida(kBaseDoShell + brew_slots::kShell_LoadResObject,
+                                         kObjShell, kNomeNoGuest, 0, 0);
+  ASSERT_NE(obj, 0u);
+  EXPECT_EQ(b.Mem().Ler16(obj + CamposDoIdib::kCx), 2u);
+  EXPECT_EQ(b.Faltas("IShell::LoadResObject"), 0u);
+}
+
 // ===========================================================================
 // A FRENTE slot32: `IShell::GetHandler` (o slot 32 da vtable do shell).
 //
