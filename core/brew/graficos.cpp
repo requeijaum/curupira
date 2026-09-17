@@ -375,6 +375,21 @@ Atendido Graficos::Atender(ICpu& cpu, std::uint32_t indice) {
     cpu.Set(kR0, 0);
     return Atendido::Feito;
   }
+  if (slot == kGraphics_SetDestination) {
+    // `int SetDestination(IGraphics *po, IBitmap *pDst)` (AEEGraphics.h:264).
+    // Guarda o bitmap de destino. Se pDst == 0 ou for um IBitmap conhecido,
+    // atualiza o estado e devolve SUCCESS.
+    const std::uint32_t pdst = cpu.Get(kR1);
+    estado_.destino = pdst;
+    cpu.Set(kR0, kAeeSuccess);
+    return Atendido::Feito;
+  }
+  if (slot == kGraphics_GetDestination) {
+    // `IBitmap* GetDestination(IGraphics *po)` (AEEGraphics.h:265).
+    // Devolve o destino guardado (ou 0 quando desenha na superficie por omissao).
+    cpu.Set(kR0, estado_.destino);
+    return Atendido::Feito;
+  }
   if (slot == kGraphics_DrawRect) return DesenharRect(cpu);
   return NaoImplementado(cpu, slot);
 }

@@ -574,6 +574,15 @@ TEST(Graficos, TranslateGuardaOrigemETransladaODesenho) {
   EXPECT_EQ(b.Pixel(5, 5), 0x0000u) << "sem translate a posicao original nao foi afetada";
 }
 
+TEST(Graficos, SetDestinationEGetDestinationGuardamODestino) {
+  Bancada b;
+  constexpr std::uint32_t kNovoDestino = 0x80050340u;
+
+  EXPECT_EQ(b.Pede(kGraphics_SetDestination, kNovoDestino), kAeeSuccess);
+  EXPECT_EQ(b.Pede(kGraphics_GetDestination), kNovoDestino);
+  EXPECT_EQ(b.Faltas("IGraphics::SetDestination"), 0u);
+}
+
 TEST(Graficos, OPonteiroDeSaidaForaDoMapaNaoAlocaMemoria) {
   Bancada b;
   b.Pede(kGraphics_SetColor, 1, 2, 3, 0);
