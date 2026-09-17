@@ -75,6 +75,18 @@ const char* NomeDoSlotCM(unsigned slot) {
   }
 }
 
+const char* NomeDoSlotLicense(unsigned slot) {
+  switch (slot) {
+    case 0: return "AddRef";
+    case 1: return "Release";
+    case 2: return "IsExpired";
+    case 3: return "GetInfo";
+    case 4: return "SetUsesRemaining";
+    case 5: return "GetPurchaseInfo";
+    default: return "?";
+  }
+}
+
 const char* (*const kNomeDoSlot[])(unsigned) = {
     &brew_slots::NomeDeAppHistory,
     &brew_slots::NomeDeValueModel,
@@ -83,6 +95,7 @@ const char* (*const kNomeDoSlot[])(unsigned) = {
     &brew_slots::NomeDeImageDecoder,
     &NomeDoSlotQEGL,
     &NomeDoSlotCM,
+    &NomeDoSlotLicense,
 };
 
 // Quantos slots cada interface TEM, do mesmo cabecalho. As cinco primeiras vem
@@ -95,6 +108,7 @@ const std::uint32_t kSlotsDaInterface[] = {
     brew_slots::kImageDecoderSlots,
     kQeglSlots,
     29,
+    6,
 };
 
 // E OS NUMEROS QUE ESTAVAM A MAO, CONFERIDOS. Nao e decoracao: era aqui que o
@@ -127,6 +141,7 @@ constexpr Ficha kFichas[kQuantasClasses] = {
     {brew_clsids::kClsid_PNGDECODER_BREW, "AEECLSID_PNGDECODER_BREW", "IImageDecoder"},
     {0x0103d8ecu, "AEECLSID_QEGL", "QEGL"},
     {0x01011810u, "AEECLSID_CM", "ICM"},
+    {brew_clsids::kClsid_LICENSE, "AEECLSID_LICENSE", "ILicense"},
 };
 
 // OS TRES CLSIDs, lidos do `.inc` gerado. Se um deles divergir do cabecalho, a
@@ -141,6 +156,8 @@ static_assert(brew_clsids::kClsid_THREAD == 0x01001017u,
               "AEECLSID_THREAD tem de ser 0x01001017 (AEEClassIDs.h:84)");
 static_assert(brew_clsids::kClsid_PNGDECODER_BREW == 0x01030766u,
               "AEECLSID_PNGDECODER_BREW tem de ser 0x01030766 (AEECPNGDecoderBREW.h:27)");
+static_assert(brew_clsids::kClsid_LICENSE == 0x0100100fu,
+              "AEECLSID_LICENSE tem de ser 0x0100100f (AEEClassIDs.h:76)");
 
 // O `IAppHistory` TEM 16 slots, e o `Top` e o slot 5 -- nao um numero escrito
 // aqui: sai da cadeia de heranca (`INHERIT_IQI` = 3, mais `Forward`, `Back`,
@@ -541,6 +558,9 @@ bool SlotDaClasseImplementado(std::uint32_t k, std::uint32_t slot) {
            slot == brew_slots::kTextCtl_SetActive || slot == brew_slots::kTextCtl_IsActive ||
            slot == brew_slots::kTextCtl_SetRect || slot == brew_slots::kTextCtl_SetProperties ||
            slot == brew_slots::kTextCtl_SetInputMode;
+  }
+  if (k == static_cast<std::uint32_t>(Classe::kLicense)) {
+    return slot >= 2 && slot <= 5;
   }
   return false;
 }
@@ -2371,6 +2391,40 @@ bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
     cpu.Set(kR0, kAeeClassNotSupported);
     return true;
   }
+  const std::uint32_t k_license = static_cast<std::uint32_t>(Classe::kLicense);
+  if (k == k_license) {
+    // `ILicense` (0x0100100f, 6 slots). AEEClassIDs.h:76, AEELicense.h.
+    // Responde o que vale para uma ROM comprada: licenca definitiva (LT_NONE, PT_PURCHASE).
+    if (slot == 2) {
+      // boolean IsExpired(ILicense *po) -> FALSE (0)
+      cpu.Set(kR0, 0);
+      return true;
+    }
+    if (slot == 3) {
+      // AEELicenseType GetInfo(ILicense *po, uint32 *pdwExpire) -> LT_NONE (0)
+      const std::uint32_t pdw = cpu.Get(kR1);
+      if (pdw != 0) cpu.Mem().Escrever32(pdw, 0xFFFFFFFFu); // BV_UNLIMITED
+      cpu.Set(kR0, 0); // LT_NONE
+      return true;
+    }
+    if (slot == 4) {
+      // int SetUsesRemaining(ILicense *po, uint32 nUses) -> EFAILED
+      cpu.Set(kR0, kAeeFailed);
+      return true;
+    }
+    if (slot == 5) {
+      // AEEPriceType GetPurchaseInfo(ILicense *po, AEELicenseType *plt, uint32 *pdwExpire, uint32 *pdSeq)
+      const std::uint32_t plt = cpu.Get(kR1);
+      const std::uint32_t pdw = cpu.Get(kR2);
+      const std::uint32_t pseq = cpu.Get(kR3);
+      if (plt != 0) cpu.Mem().Escrever8(plt, 0); // LT_NONE
+      if (pdw != 0) cpu.Mem().Escrever32(pdw, 0xFFFFFFFFu); // BV_UNLIMITED
+      if (pseq != 0) cpu.Mem().Escrever32(pseq, 0);
+      cpu.Set(kR0, 1); // PT_PURCHASE = 1
+      return true;
+    }
+  }
+
   const std::uint32_t k_cm = static_cast<std::uint32_t>(Classe::kCM);
   if (k == k_cm && slot == 28) {
     // `int GetSSInfo(ICM* po, AEECMSSInfo* pInfo, uint32 nSize)` -- slot 28.

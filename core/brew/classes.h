@@ -114,7 +114,8 @@ enum class Classe : std::uint32_t {
   kPNGDecoderBREW = 4,
   kQEGL = 5,
   kCM = 6,
-  kQuantas = 7,
+  kLicense = 7,
+  kQuantas = 8,
 };
 
 constexpr std::uint32_t kQuantasClasses = static_cast<std::uint32_t>(Classe::kQuantas);

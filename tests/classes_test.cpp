@@ -1240,5 +1240,53 @@ TEST(Classes, OSurfaceScaleCapsDizAVerdadeSemEscalador) {
   EXPECT_EQ(b.M().Ler32(0x80100100u), 1u);   // EGL_TRUE no *ret
 }
 
+TEST(Classes, ILicenseRespondeComoModuloCompradoESemExpiracao) {
+  // AEECLSID_LICENSE (0x0100100f) -- QINTERFACE(ILicense) em AEELicense.h.
+  // Medido em chessbots (1 pedido na bateria).
+  const std::uint32_t lic = static_cast<std::uint32_t>(Classe::kLicense);
+  EXPECT_STREQ(NomeDaInterface(lic), "ILicense");
+  EXPECT_STREQ(NomeDaClasse(lic), "AEECLSID_LICENSE");
+  EXPECT_STREQ(NomeDoSlotDaClasse(lic, 0), "AddRef");
+  EXPECT_STREQ(NomeDoSlotDaClasse(lic, 1), "Release");
+  EXPECT_STREQ(NomeDoSlotDaClasse(lic, 2), "IsExpired");
+  EXPECT_STREQ(NomeDoSlotDaClasse(lic, 3), "GetInfo");
+  EXPECT_STREQ(NomeDoSlotDaClasse(lic, 4), "SetUsesRemaining");
+  EXPECT_STREQ(NomeDoSlotDaClasse(lic, 5), "GetPurchaseInfo");
+
+  Bancada b;
+  constexpr std::uint32_t kPdw = 0x80200000u;
+  constexpr std::uint32_t kPlt = 0x80200004u;
+  constexpr std::uint32_t kPseq = 0x80200008u;
+
+  // 1. IsExpired -> FALSE (0)
+  b.Cpu().Set(kR0, ObjetoDaClasse(lic));
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(lic) + 2, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), 0u);
+
+  // 2. GetInfo -> LT_NONE (0) e escreve BV_UNLIMITED no ponteiro
+  b.Cpu().Set(kR0, ObjetoDaClasse(lic));
+  b.Cpu().Set(kR1, kPdw);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(lic) + 3, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), 0u);
+  EXPECT_EQ(b.M().Ler32(kPdw), 0xFFFFFFFFu);
+
+  // 3. SetUsesRemaining -> EFAILED
+  b.Cpu().Set(kR0, ObjetoDaClasse(lic));
+  b.Cpu().Set(kR1, 10u);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(lic) + 4, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), static_cast<std::uint32_t>(kAeeFailed));
+
+  // 4. GetPurchaseInfo -> PT_PURCHASE (1), LT_NONE em plt, BV_UNLIMITED em pdw, 0 em pseq
+  b.Cpu().Set(kR0, ObjetoDaClasse(lic));
+  b.Cpu().Set(kR1, kPlt);
+  b.Cpu().Set(kR2, kPdw);
+  b.Cpu().Set(kR3, kPseq);
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(lic) + 5, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), 1u);
+  EXPECT_EQ(b.M().Ler8(kPlt), 0u);
+  EXPECT_EQ(b.M().Ler32(kPdw), 0xFFFFFFFFu);
+  EXPECT_EQ(b.M().Ler32(kPseq), 0u);
+}
+
 }  // namespace
 }  // namespace zb2::brew
