@@ -657,6 +657,19 @@ class Despacho {
   // com a ABI (registros/pilha); as três formas de LoadResDataEx têm testes em
   // `tests/recursos_test.cpp`.
   Recursos recursos_;
+  // O TRECHO CORTADO PELO TECTO, pronto a retomar (ver o `Correr`, no `.cpp`).
+  //
+  // E MEMBRO, e nao um estatico de ficheiro: um estatico sobrevive de um titulo
+  // para o outro (e de um TESTE para o outro) e o proximo `Correr` retomava um PC
+  // que ja nao existe -- medido, com tres testes da frente `igfx` a falhar.
+  struct TrechoPendente {
+    bool valido = false;
+    std::uint32_t pc = 0;
+    std::uint32_t regs[16] = {};
+    bool thumb = false;
+  };
+  TrechoPendente trecho_;
+
   Tela tela_;
   // O MISTURADOR e o IMedia. O `Media` tem referencias dentro, logo NAO e
   // atribuivel: nasce no `InstalarAjudantes`, quando a faixa de saida ja esta

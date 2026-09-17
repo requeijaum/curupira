@@ -42,6 +42,26 @@
 // (4096 chega para ver onde o tempo esta) e imprime no fim de cada fase os 12 PCs
 // mais quentes, com a PALAVRA que la estava -- a palavra e o que permite desmontar
 // o sitio sem outra corrida.
+// O TRECHO PENDENTE: o tecto de instrucoes DEVOLVE A VEZ, e nao perde o trabalho.
+//
+// A FONTE e o `zeebx` do Kaio (`1026fb7`, branch `development`): "*O Zeebo Extreme
+// Rolima roda o carregamento inteiro dentro do `EVT_APP_START` sem ceder a vez: o
+// corte descartava o trecho e a sessao terminava sozinha aos 3,8 s*". Ele guarda
+// onde continuar e a volta seguinte RETOMA -- antes de qualquer outra coisa --
+// com o MODO (o bit 0 do endereco diz Thumb) e os REGISTRADORES de entao (a volta
+// ainda entrega sinais e callbacks, e entrar no guest para isso sobrescreve
+// `r0`-`r3` e o `lr`).
+//
+// **O `Rolimaz` do nosso corpus e o mesmo caso** (pasta 276809): a `g2` destravou-o
+// e ele bate no tecto de 16 M passos no `start`. Subir o tecto foi o que fizemos
+// antes (a 16 M, medido); RETOMAR e a resposta certa -- o tecto deixa de ser um
+// limite de trabalho e passa a ser so um pedido de vez.
+//
+// So o trecho de FORA e retomado: um trecho aninhado (um callback chamado de dentro
+// do despacho de uma API) tem quem o espere do lado de ca, e esse quadro ja se foi.
+// Por isso a marca e posta no corte do laco PRINCIPAL, e nao em qualquer saida.
+
+
 std::map<std::uint32_t, std::uint64_t> g_pc_hist;
 std::uint32_t g_pc_amostra = 0;
 std::uint32_t g_pc_hist_lido = 0;
@@ -2437,6 +2457,23 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
   // Capturado no ramo do despacho, lido e reposto no epilogo.
   std::uint32_t pfn_do_ultimo_start = 0;
   std::uint32_t hospedeiro[16] = {};
+  // A RETOMADA DO TRECHO CORTADO, ANTES de qualquer outra coisa: entregar um timer
+  // por cima de um quadro pela metade seria entrega-lo fora de hora (a regra do
+  // `1026fb7`). O PC leva o bit 0 quando o guest estava em Thumb -- e assim que o
+  // ARM diz "continue em Thumb" -- e os registradores voltam ao que eram.
+  if (trecho_.valido) {
+    for (int k = 0; k < 16; ++k) cpu.Set(k, trecho_.regs[k]);
+    cpu.Set(kPC, trecho_.pc);
+    // O MODO vai junto: o bit `T` do CPSR e o que diz ao interpretador que o PC
+    // retomado e Thumb. Sem ele um guest Thumb volta decodificado como ARM -- o
+    // modo em que o proprio `zeebx` mediu o salto para o endereco zero.
+    std::uint32_t cpsr = cpu.Cpsr();
+    if (trecho_.thumb) cpsr |= Cpsr::kT; else cpsr &= ~Cpsr::kT;
+    cpu.SetCpsr(cpsr);
+    trecho_.valido = false;
+    traco_.Emitir(Area::Brew, Nivel::Depuracao, "TRECHO_RETOMADO",
+                  "pc=0x" + Hex(trecho_.pc) + (trecho_.thumb ? " (Thumb)" : " (ARM)"));
+  }
   while (resultado.passos < limite) {
     // O ORCAMENTO DE TEMPO, verificado a cada 65536 passos.
     //
@@ -4860,6 +4897,13 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
   }
   resultado.motivo = "orcamento_esgotado";
   DespejarPcHot("orcamento_esgotado");
+  // O CORTE GUARDA ONDE CONTINUAR. Sem isto o trecho e PERDIDO: o `Rolimaz` carrega
+  // dentro do `EVT_APP_START`, o laco de eventos nao encontra timer nenhum e a
+  // sessao acaba como se o jogo tivesse terminado (medido no `zeebx` do Kaio).
+  trecho_.valido = true;
+  trecho_.pc = cpu.Get(kPC);
+  for (int k = 0; k < 16; ++k) trecho_.regs[k] = cpu.Get(k);
+  trecho_.thumb = (cpu.Cpsr() & Cpsr::kT) != 0;
   // O `return` EXPLICITO nao e estilo: cair fora do fim de uma funcao que devolve
   // por valor e COMPORTAMENTO INDEFINIDO, e o `ResultadoFase` tem um
   // `std::string` dentro -- o resultado medido foi `free(): double free detected`
