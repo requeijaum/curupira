@@ -163,8 +163,11 @@ bool DescodificarPng(const std::uint8_t* dados, std::size_t tamanho, ImagemPng* 
     if (crc_lido != crc_calculado) {
       char det[160];
       const std::string nome(reinterpret_cast<const char*>(tipo), 4);
-      std::snprintf(det, sizeof(det), "CRC do chunk %s: o ficheiro diz 0x%08x e o recalculado e 0x%08x",
-                    nome.c_str(), crc_lido, crc_calculado);
+      std::snprintf(det, sizeof(det),
+                    "CRC do chunk %s: o ficheiro diz 0x%08x e o recalculado e 0x%08x | tipo=[%s] dados=[%s]",
+                    nome.c_str(), crc_lido, crc_calculado,
+                    BytesEmHex(tipo, 4).c_str(),
+                    BytesEmHex(corpo, std::min<std::size_t>(tamanho_do_chunk, 16)).c_str());
       return recusar(det);
     }
 
