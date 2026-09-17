@@ -2136,6 +2136,46 @@ TEST(AjudantesExtra, UmaAlocacaoQueNaoCoubeFicaContadaEComOTamanho) {
   EXPECT_EQ(alocador.MaiorFalha(), kHeapTamanho + 99999u);
 }
 
+// UM PEDIDO QUE ENVOLVE OS 32 BITS RECUSA EM VEZ DE ENTREGAR PONTEIRO. Sem a
+// guarda, `(0xFFFFFFF0 + 16 + 7) & ~7` vira 0 e qualquer bloco "cabe" -- o jogo
+// recebia um ponteiro valido para 4 GiB e corrompia o heap ao escrever.
+TEST(AjudantesExtra, MallocComTamanhoQueEnvolveRecusaEmVezDeEntregarPonteiro) {
+  Tempo tempo;
+  Traco traco{"ajudantes_extra", &tempo};
+  Memoria mem{&traco};
+  mem.EscritorUnico("cpu");
+  Alocador alocador{mem, kHeapInicio, kHeapTamanho, &traco};
+
+  EXPECT_EQ(alocador.Malloc(0xFFFFFFFFu), 0u);
+  EXPECT_EQ(alocador.Malloc(0xFFFFFFF0u), 0u);
+  EXPECT_EQ(alocador.Falhas(), 2u);
+  EXPECT_EQ(alocador.MaiorFalha(), 0xFFFFFFFFu);
+  // E o heap continua inteiro: um pedido normal a seguir funciona.
+  EXPECT_NE(alocador.Malloc(64u), 0u);
+}
+
+// FREE FORA DE BLOCO VIVO NAO TOCA EM NADA. Sem a validacao, um `free` no meio
+// de um bloco marcava bytes de dados como cabecalho livre, e um `free` duplo
+// subtraia o tamanho duas vezes -- corrupcao silenciosa nos dois casos.
+TEST(AjudantesExtra, FreeForaDeBlocoVivoContaFalhaESemCorromper) {
+  Bancada b;
+  const std::uint32_t a = b.alocador.Malloc(64u);
+  ASSERT_NE(a, 0u);
+  const std::uint32_t falhas_antes = b.alocador.Falhas();
+  // No meio do bloco: nao e inicio de bloco vivo.
+  b.alocador.Free(a + 4u);
+  EXPECT_EQ(b.alocador.Falhas(), falhas_antes + 1u);
+  // O bloco segue vivo e valido: liberta-se uma vez, sem falha nova.
+  b.alocador.Free(a);
+  EXPECT_EQ(b.alocador.Falhas(), falhas_antes + 1u);
+  // Duplo: ja esta livre, conta falha e nao subtrai duas vezes.
+  b.alocador.Free(a);
+  EXPECT_EQ(b.alocador.Falhas(), falhas_antes + 2u);
+  EXPECT_EQ(b.alocador.Alocado(), 0u);
+  // E o heap continua inteiro.
+  EXPECT_NE(b.alocador.Malloc(64u), 0u);
+}
+
 // `Caberial` responde com a MESMA conta do `Malloc` e sem tocar em nada: uma
 // pergunta nao e uma tentativa. Existe para o `IHeap::CheckAvail` (slot 6,
 // 1 pedido no `bio4_brew`) responder sem mentir nem adivinhar.

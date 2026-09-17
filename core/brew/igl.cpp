@@ -283,13 +283,6 @@ std::uint64_t ChaveDoAlvo(std::uint32_t alvo, std::uint32_t pname) {
   return (static_cast<std::uint64_t>(alvo) << 32) | pname;
 }
 
-// O NOME DE UM `pname` (o do cabecalho), ou nulo quando nao esta na tabela: e o
-// que falta para a recusa poder dizer QUAL `pname` nao foi servido.
-const char* NomeDoPname(std::uint32_t pname, bool e_luz) {
-  const Pname* p = e_luz ? AcharPname(kPnamesDeLuz, pname) : AcharPname(kPnamesDeMaterial, pname);
-  return p == nullptr ? nullptr : p->nome;
-}
-
 // As capacidades que o estado deste modulo sabe acumular, com o nome no SDK.
 struct Capacidade {
   std::uint32_t cap;

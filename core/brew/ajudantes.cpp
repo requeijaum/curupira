@@ -41,7 +41,20 @@ std::uint32_t Alocador::Malloc(std::uint32_t tamanho) {
     // chamador tratar como falha -- e um modulo que pede zero bytes e legitimo.
     tamanho = kAlinhamento;
   }
-  const std::uint32_t precisa = (tamanho + kCabecalho + kAlinhamento - 1) & ~(kAlinhamento - 1);
+  // OVERFLOW DE 32 BITS: um pedido como 0xFFFFFFF0 ENVOLVE a soma (vira ~0)
+  // e "caberia" em qualquer bloco -- o jogo recebia um ponteiro valido para
+  // 4 GiB e corrompia o heap ao escrever. Um pedido que nem cabe em 32 bits e
+  // falha honesta: conta e devolve zero, como qualquer outro sem espaco.
+  // (O `Caberial` ja tinha a guarda em 64 bits; este ramo fecha o `Malloc`.)
+  const std::uint64_t precisa64 =
+      static_cast<std::uint64_t>(tamanho) + kCabecalho + kAlinhamento - 1;
+  if (precisa64 > 0xFFFFFFFFu) {
+    ++falhas_;
+    if (tamanho > maior_falha_) maior_falha_ = tamanho;
+    return 0;
+  }
+  const std::uint32_t precisa =
+      static_cast<std::uint32_t>(precisa64) & ~(kAlinhamento - 1);
 
   // Primeiro bloco livre que serve. Percorre por endereco, o que mantem a lista
   // ordenada sem estrutura extra.
@@ -138,10 +151,39 @@ void Alocador::Free(std::uint32_t endereco) {
     }
     return;
   }
+  // VALIDACAO: o endereco tem de ser o INICIO de um bloco VIVO. Sem isto um
+  // `free` no meio de um bloco marcava bytes de dados como cabecalho livre, e
+  // um `free` duplo subtraia o tamanho duas vezes -- corrupcao silenciosa nos
+  // dois casos. O que nao e bloco vivo conta falha e nao toca em nada.
+  std::uint32_t procurado = inicio_;
+  const std::uint32_t limite = inicio_ + tamanho_;
+  bool achou_vivo = false;
+  std::uint32_t tamanho_do_bloco = 0;
+  while (procurado + kCabecalho <= limite) {
+    const Cabecalho v = Ler(procurado);
+    if (v.tamanho < kCabecalho || procurado + v.tamanho > limite) break;  // corrompido: nao toca
+    if (procurado == bloco) {
+      if (v.livre == 0) {
+        achou_vivo = true;
+        tamanho_do_bloco = v.tamanho;
+      }
+      break;
+    }
+    procurado += v.tamanho;
+  }
+  if (!achou_vivo) {
+    ++falhas_;
+    if (traco_ != nullptr) {
+      char buf[64];
+      std::snprintf(buf, sizeof(buf), "endereco=0x%08x nao e bloco vivo", endereco);
+      traco_->Emitir(Area::Brew, Nivel::Aviso, "FREE_SEM_BLOCO", buf);
+    }
+    return;
+  }
   Cabecalho c = Ler(bloco);
   c.livre = 1;
   Escrever(bloco, c);
-  alocado_ -= std::min(alocado_, c.tamanho);
+  alocado_ -= std::min(alocado_, tamanho_do_bloco);
 
   // Junta com os vizinhos livres. Sem isto o heap fragmenta e um modulo que
   // aloca e liberta em ciclo acaba sem memoria -- que e o sintoma mais caro de

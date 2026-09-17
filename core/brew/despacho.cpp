@@ -66,7 +66,7 @@
 std::map<std::uint32_t, std::uint64_t> g_pc_hist;
 std::uint32_t g_pc_amostra = 0;
 std::uint32_t g_pc_hist_lido = 0;
-const std::uint32_t LerPcHot() {
+std::uint32_t LerPcHot() {
   if (g_pc_hist_lido == 0) {
     g_pc_hist_lido = 1;
     if (const char* e = std::getenv("ZB2_PC_HOT")) g_pc_amostra = std::strtoul(e, nullptr, 0);
@@ -3131,7 +3131,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         pedido.destino = cpu.Get(kR3);
         pedido.n_bytes = mem_.Ler32(sp);
         const ResultadoDoTexto r = recursos_.ServirTexto(pedido);
-        cpu.Set(kR0, r.ok ? r.caracteres : kAeeUnsupported);
+        cpu.Set(kR0, r.ok ? r.caracteres : static_cast<std::uint32_t>(kAeeUnsupported));
       } else if (idx == kSlotIdFreeResData) {
         // Esta vtable usa endereço específico (1563), não `kBaseDoShell+20`.
         // Só `Recursos` sabe quais ponteiros ele próprio alocou; passar outro ao
