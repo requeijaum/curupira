@@ -116,7 +116,8 @@ enum class Classe : std::uint32_t {
   kCM = 6,
   kLicense = 7,
   kVectorModel_1 = 8,
-  kQuantas = 9,
+  kSourceUtil = 9,
+  kQuantas = 10,
 };
 
 constexpr std::uint32_t kQuantasClasses = static_cast<std::uint32_t>(Classe::kQuantas);

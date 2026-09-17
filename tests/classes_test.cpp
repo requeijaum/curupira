@@ -1353,5 +1353,25 @@ TEST(Classes, IVectorModelManipulaItensComSucesso) {
   EXPECT_EQ(b.Cpu().Get(kR0), 0u);
 }
 
+TEST(Classes, ISourceUtilTemNomeESlotsCorretos) {
+  // AEECLSID_SourceUtil (0x01001011) -- ISourceUtil (7 slots). AEESource.h.
+  // Medido no tectoy (2 pedidos na bateria).
+  const std::uint32_t su = static_cast<std::uint32_t>(Classe::kSourceUtil);
+  EXPECT_STREQ(NomeDaInterface(su), "ISourceUtil");
+  EXPECT_STREQ(NomeDaClasse(su), "AEECLSID_SourceUtil");
+  EXPECT_STREQ(NomeDoSlotDaClasse(su, 0), "AddRef");
+  EXPECT_STREQ(NomeDoSlotDaClasse(su, 1), "Release");
+  EXPECT_STREQ(NomeDoSlotDaClasse(su, 2), "QueryInterface");
+  EXPECT_STREQ(NomeDoSlotDaClasse(su, 3), "PeekSourceFromSource");
+  EXPECT_STREQ(NomeDoSlotDaClasse(su, 4), "SourceFromAStream");
+  EXPECT_STREQ(NomeDoSlotDaClasse(su, 5), "SourceFromMemory");
+  EXPECT_STREQ(NomeDoSlotDaClasse(su, 6), "SourceFromFile");
+
+  Bancada b;
+  b.Cpu().Set(kR0, ObjetoDaClasse(su));
+  EXPECT_TRUE(AtenderClasse(b.Cpu(), VtClasse(su) + 5, b.T()));
+  EXPECT_EQ(b.Cpu().Get(kR0), static_cast<std::uint32_t>(kAeeUnsupported));
+}
+
 }  // namespace
 }  // namespace zb2::brew

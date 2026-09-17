@@ -106,6 +106,19 @@ const char* NomeDoSlotVectorModel(unsigned slot) {
   }
 }
 
+const char* NomeDoSlotSourceUtil(unsigned slot) {
+  switch (slot) {
+    case 0: return "AddRef";
+    case 1: return "Release";
+    case 2: return "QueryInterface";
+    case 3: return "PeekSourceFromSource";
+    case 4: return "SourceFromAStream";
+    case 5: return "SourceFromMemory";
+    case 6: return "SourceFromFile";
+    default: return "?";
+  }
+}
+
 const char* (*const kNomeDoSlot[])(unsigned) = {
     &brew_slots::NomeDeAppHistory,
     &brew_slots::NomeDeValueModel,
@@ -116,6 +129,7 @@ const char* (*const kNomeDoSlot[])(unsigned) = {
     &NomeDoSlotCM,
     &NomeDoSlotLicense,
     &NomeDoSlotVectorModel,
+    &NomeDoSlotSourceUtil,
 };
 
 // Quantos slots cada interface TEM, do mesmo cabecalho. As cinco primeiras vem
@@ -130,6 +144,7 @@ const std::uint32_t kSlotsDaInterface[] = {
     29,
     6,
     13,
+    7,
 };
 
 // E OS NUMEROS QUE ESTAVAM A MAO, CONFERIDOS. Nao e decoracao: era aqui que o
@@ -164,6 +179,7 @@ constexpr Ficha kFichas[kQuantasClasses] = {
     {0x01011810u, "AEECLSID_CM", "ICM"},
     {brew_clsids::kClsid_LICENSE, "AEECLSID_LICENSE", "ILicense"},
     {brew_clsids::kClsid_VECTORMODEL_1, "AEECLSID_VECTORMODEL_1", "IVectorModel"},
+    {brew_clsids::kClsid_SourceUtil, "AEECLSID_SourceUtil", "ISourceUtil"},
 };
 
 // OS TRES CLSIDs, lidos do `.inc` gerado. Se um deles divergir do cabecalho, a
@@ -182,6 +198,8 @@ static_assert(brew_clsids::kClsid_LICENSE == 0x0100100fu,
               "AEECLSID_LICENSE tem de ser 0x0100100f (AEEClassIDs.h:76)");
 static_assert(brew_clsids::kClsid_VECTORMODEL_1 == 0x01028e35u,
               "AEECLSID_VECTORMODEL_1 tem de ser 0x01028e35 (AEECLSID_VECTORMODEL_1.bid:31)");
+static_assert(brew_clsids::kClsid_SourceUtil == 0x01001011u,
+              "AEECLSID_SourceUtil tem de ser 0x01001011 (AEESourceUtil.bid:9)");
 
 // O `IAppHistory` TEM 16 slots, e o `Top` e o slot 5 -- nao um numero escrito
 // aqui: sai da cadeia de heranca (`INHERIT_IQI` = 3, mais `Forward`, `Back`,
@@ -594,6 +612,9 @@ bool SlotDaClasseImplementado(std::uint32_t k, std::uint32_t slot) {
   }
   if (k == static_cast<std::uint32_t>(Classe::kVectorModel_1)) {
     return slot >= 3 && slot <= 12;
+  }
+  if (k == static_cast<std::uint32_t>(Classe::kSourceUtil)) {
+    return slot >= 3 && slot <= 6;
   }
   return false;
 }
@@ -2424,6 +2445,14 @@ bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
     cpu.Set(kR0, kAeeClassNotSupported);
     return true;
   }
+  const std::uint32_t k_sourceutil = static_cast<std::uint32_t>(Classe::kSourceUtil);
+  if (k == k_sourceutil) {
+    // ISourceUtil (AEECLSID_SourceUtil, 7 slots). AEESource.h.
+    // Devolve EUNSUPPORTED ou cria stub de source se pedido.
+    cpu.Set(kR0, kAeeUnsupported);
+    return true;
+  }
+
   const std::uint32_t k_vector = static_cast<std::uint32_t>(Classe::kVectorModel_1);
   if (k == k_vector) {
     // IVectorModel (AEECLSID_VECTORMODEL_1, 13 slots). AEEIVectorModel.h.
