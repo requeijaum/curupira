@@ -1239,9 +1239,11 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
     case kIgl_TexCoordPointer: {
       if (a.reg[0] < 2 || a.reg[0] > 4) return recusa("tamanho de coordenada fora de 2..4");
       if (!TipoDeVerticeValido(a.reg[1], true)) return recusa("tipo de coordenada nao suportado");
-      if (a.reg[3] == 0) return recusa("ponteiro de coordenadas nulo");
-      arrays_[GL_TEXTURE_COORD_ARRAY] = {true, static_cast<int>(a.reg[0]), a.reg[1], a.reg[2],
-                                         a.reg[3]};
+      // O ponteiro nulo e valido quando o titulo desvincula o array ou usa buffers
+      // (ex: ridgeracer passa pointer=NULL). Se o array for desenhado sem dados,
+      // a recusa ocorre no DrawArrays/DrawElements quando o cliente esta habilitado.
+      arrays_[GL_TEXTURE_COORD_ARRAY] = {a.reg[3] != 0, static_cast<int>(a.reg[0]), a.reg[1],
+                                         a.reg[2], a.reg[3]};
       return feito(4);
     }
 

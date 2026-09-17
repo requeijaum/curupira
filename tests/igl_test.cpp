@@ -2703,5 +2703,13 @@ TEST(FrenteIgl9, FiltroLinearEServidoComoNearestEDeclarado) {
   EXPECT_EQ(it->second, 1u) << "um pressuposto por corrida, nao um por desenho";
 }
 
+TEST(FrenteIgl9, TexCoordPointerComPonteiroNuloAceiteParaDesvinculacao) {
+  BancoClasses b;
+  // Chamada com ponteiro nulo (ridgeracer passa 2, GL_FLOAT, 0, 0 para desvincular coordenadas).
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_TexCoordPointer, 2u, GL_FLOAT, 0u, 0u),
+            kAeeSuccess)
+      << b.Detalhe("IGLES11::TexCoordPointer");
+}
+
 }  // namespace
 }  // namespace zb2::brew
