@@ -536,6 +536,22 @@ TEST(BitmapCompativel, OServidorRecusaComNomeForaDaFaixaEComObjectoInvalido) {
 }
 
 
+TEST(BitmapCompativel, OBltInComOrigemNulaDevolveBadParmSemFalta) {
+  Bancada b;
+  auto& cpu = b.Cpu();
+  constexpr std::uint32_t sp = 0x80092000u;
+  cpu.Set(kR0, b.BitmapDoEcra());
+  cpu.Set(kR1, 0); cpu.Set(kR2, 0); cpu.Set(kR3, 1);
+  cpu.Set(kSP, sp);
+  b.Mem().Escrever32(sp + 0, 1);  // dy
+  b.Mem().Escrever32(sp + 4, 0);  // pSrc invalido por contrato
+  b.Mem().Escrever32(sp + 8, 0); b.Mem().Escrever32(sp + 12, 0);
+  b.Mem().Escrever32(sp + 16, kRopCopyTeste);
+  ASSERT_TRUE(AtenderBitmapDaFamilia(cpu, b.Mem(), b.Al(), b.Tr(), kVtableBitmap + 10));
+  EXPECT_EQ(cpu.Get(kR0), kAeeBadParm);
+  EXPECT_EQ(b.Faltas("IBitmap::BltIn"), 0u);
+}
+
 // ---------------------------------------------------------------------------
 // O IGLES11::TexEnvx (mesma frente, tema imagem/estado de textura).
 //

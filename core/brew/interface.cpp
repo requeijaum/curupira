@@ -458,7 +458,9 @@ bool AtenderBitmapDaFamilia(ICpu& cpu, Memoria& mem, Alocador& al, Traco& traco,
       // corte de limites dos dois lados; pixels fora ficam de fora.
       const std::uint32_t outro = arg(5);
       if (outro == 0) {
-        RecusarBitmap(traco, slot, "ponteiro de bitmap nulo");
+        // `pSrc`/`pDst` nulo viola a assinatura. O servidor existe e devolve
+        // o erro do parametro; registrar "nao implementado" aqui esconderia
+        // a diferenca entre uma API ausente e uma chamada invalida do titulo.
         cpu.Set(kR0, kAeeBadParm);
         return true;
       }
