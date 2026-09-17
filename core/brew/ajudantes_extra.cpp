@@ -699,6 +699,54 @@ void FazerStrncmp(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
 //
 // O valor devolvido segue a convencao do C: o sinal da diferenca do PRIMEIRO byte que
 // difere, e zero quando os n bytes sao iguais.
+// 0x0e4 -- `void (*strexpand)(const byte *pSrc, int nCount, AECHAR *pDest, int nSize)`
+// (`AEEStdLib.h:154`). Alarga um texto de BYTES para AECHARs: cada byte vira uma
+// unidade de 16 bits. E o inverso do `wstrcompress` (0x0a0) e o par natural do
+// `wstrncopyn`.
+//
+// MEDIDO no `ddragonz` -- o titulo que a frente `g2` destravou -- que o pede
+// **1500 vezes**, sempre com o MESMO destino (um buffer na pilha, `0x8007fd98`) e
+// comprimentos de 12 a 24 bytes: ele alarga as cadeias para as desenhar. Estava em
+// `tools/ajudantes_slots.inc` **sem implementacao nenhuma** -- o mesmo padrao do
+// `memcmp` (0x0dc) e do `swaps` (0x130).
+//
+// O CONTRATO NAO ESTA ESCRITO NO CABECALHO, so a assinatura. O `nSize` e a
+// CAPACIDADE do destino, em AECHARs, e a leitura conservadora -- a mesma do
+// `wstrncopyn` desta arvore -- reserva o lugar do terminador: escrevem-se
+// `min(nCount, nSize - 1)` unidades e a seguir o NUL. Fica DECLARADO, e nao
+// inventado em silencio: se um titulo precisar dos `nCount` bytes sem terminador,
+// e aqui que se muda, com a medicao dele na mao.
+void FazerStrexpand(Memoria& mem, Alocador&, ICpu& cpu, Traco& traco) {
+  const std::uint32_t p_src = cpu.Get(kR0);
+  const std::int32_t n_count = static_cast<std::int32_t>(cpu.Get(kR1));
+  const std::uint32_t p_dest = cpu.Get(kR2);
+  const std::int32_t n_size = static_cast<std::int32_t>(cpu.Get(kR3));
+  if (p_src == 0 || p_dest == 0) {
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_strexpand, "ponteiro nulo",
+                   DetalheDosRegistos(cpu));
+    return;
+  }
+  if (n_count <= 0 || n_size <= 0) {
+    // Sem espaco no destino (ou nada a copiar) nao se escreve nada -- e o
+    // terminador tambem nao cabe. Conta-se, para o numero nao desaparecer.
+    char det[96];
+    std::snprintf(det, sizeof(det), "nCount=%d nSize=%d: nada cabe", static_cast<int>(n_count),
+                  static_cast<int>(n_size));
+    RegistarRecusa(traco, brew_ajudantes::kAjudante_strexpand, "destino sem espaco", det);
+    return;
+  }
+  const std::uint32_t quantos =
+      std::min(static_cast<std::uint32_t>(n_count), static_cast<std::uint32_t>(n_size - 1));
+  for (std::uint32_t k = 0; k < quantos; ++k) {
+    mem.Escrever16(p_dest + 2u * k, mem.Ler8(p_src + k));
+  }
+  mem.Escrever16(p_dest + 2u * quantos, 0);
+  char det[96];
+  std::snprintf(det, sizeof(det), "src=0x%08x nCount=%d dest=0x%08x nSize=%d -> %u unidades",
+                p_src, static_cast<int>(n_count), p_dest, static_cast<int>(n_size), quantos);
+  EmitirChamada(traco, brew_ajudantes::kAjudante_strexpand, det);
+}
+
 // 0x130 -- `uint16 (*swaps)(uint16 us)` e o par 0x12C `uint32 (*swapl)(uint32 ul)`
 // (`AEEStdLib.h:172-173`; `#define SWAPS GET_HELPER()->swaps`, `:481`).
 //
@@ -2098,6 +2146,7 @@ constexpr Implementacao kImplementados[] = {
     {brew_ajudantes::kAjudante_sysfree, "sysfree", FazerSysFree},
     {brew_ajudantes::kAjudante_swaps, "swaps", FazerSwaps},
     {brew_ajudantes::kAjudante_strlower, "strlower", FazerStrlower},
+    {brew_ajudantes::kAjudante_strexpand, "strexpand", FazerStrexpand},
     {brew_ajudantes::kAjudante_stricmp, "stricmp", FazerStricmp},
     {brew_ajudantes::kAjudante_atoi, "atoi", FazerAtoi},
     {brew_ajudantes::kAjudante_strends, "strends", FazerStrends},
@@ -2130,6 +2179,7 @@ static_assert(brew_ajudantes::kAjudante_memcmp == 0x0DC, "0x0dc e memcmp");
 static_assert(brew_ajudantes::kAjudante_sysfree == 0x0BC, "0x0bc e sysfree");
 static_assert(brew_ajudantes::kAjudante_swaps == 0x130, "0x130 e swaps");
 static_assert(brew_ajudantes::kAjudante_strlower == 0x114, "0x114 e strlower");
+static_assert(brew_ajudantes::kAjudante_strexpand == 0x0E4, "0x0e4 e strexpand");
 static_assert(brew_ajudantes::kAjudante_stricmp == 0x0D0, "0x0d0 e stricmp");
 static_assert(brew_ajudantes::kAjudante_wstrlen == 0x030, "0x030 e wstrlen");
 static_assert(brew_ajudantes::kAjudante_wstrncopyn == 0x080, "0x080 e wstrncopyn, nao strncpy");
@@ -2148,7 +2198,7 @@ static_assert(brew_ajudantes::kAjudante_aee_GetSeconds == 0x0B4, "0x0b4 e aee_Ge
 static_assert(brew_ajudantes::kAjudante_aee_GetJulianDate == 0x0B8, "0x0b8 e aee_GetJulianDate");
 static_assert(
     sizeof(kImplementados) / sizeof(kImplementados[0]) ==
-        26,
+        27,
     "a lista das implementacoes mudou: actualiza o numero e o teste");
 
 }  // namespace

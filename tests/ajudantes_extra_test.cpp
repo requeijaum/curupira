@@ -668,7 +668,7 @@ TEST(AjudantesExtra, OffsetForaDaTabelaNaoERecusadoAqui) {
   EXPECT_TRUE(b.traco.ContagemFaltas().empty());
 }
 
-TEST(AjudantesExtra, ImplementadosSaoVinteESeisEATodosNoCatalogo) {
+TEST(AjudantesExtra, ImplementadosSaoVinteESeteEATodosNoCatalogo) {
   // 7 da etapa anterior + os 6 da frente io2 (wstrlen, wstrncopyn, strtoul,
   // snprintf, strlcpy, strlcat) + o stricmp (0x0d0) da frente park + os 4 da
   // frente ajud2 (atoi, strends, aee_GetTimeMS, wsprintf) + o memcmp (0x0dc),
@@ -684,10 +684,11 @@ TEST(AjudantesExtra, ImplementadosSaoVinteESeisEATodosNoCatalogo) {
   // tabela do cabecalho SEM implementacao. O nome engana: troca BYTES, nao valores.
   // + o `strlower` (0x114), que o `quake2brew` pede -- e que so ficou alcancavel
   // depois de a bandeira do `malloc` ser servida (`fe1eaad`).
-  EXPECT_EQ(AjudantesExtra::Implementados(), 26u);
+  // + o `strexpand` (0x0e4), que o `ddragonz` pede 1500 vezes.
+  EXPECT_EQ(AjudantesExtra::Implementados(), 27u);
   for (std::uint32_t off : {0x0D8u, 0x044u, 0x050u, 0x054u, 0x0E8u, 0x138u, 0x0F4u, 0x0CCu,
                             0x0D0u, 0x090u, 0x0FCu, 0x0ACu, 0x0B4u, 0x0B8u, 0x03Cu, 0x0DCu,
-                            0x0BCu, 0x130u, 0x114u}) {
+                            0x0BCu, 0x130u, 0x114u, 0x0E4u}) {
     EXPECT_NE(DeclaracaoDoOffset(off), nullptr) << "0x" << std::hex << off;
   }
 }
@@ -1425,7 +1426,7 @@ TEST(AjudantesExtra, SetupNativeImageEDescodificadoPorEstaTabela) {
   EXPECT_STREQ(DeclaracaoDoOffset(0x064)->assinatura,
                "void *(*SetupNativeImage)(AEECLSID cls, void *pBuffer, AEEImageInfo *pii, "
                "boolean *pbRealloc)");
-  EXPECT_EQ(AjudantesExtra::Implementados(), 26u) << "o 0x064 entrou na tabela";
+  EXPECT_EQ(AjudantesExtra::Implementados(), 27u) << "o 0x064 entrou na tabela";
 }
 
 TEST(AjudantesExtra, SetupNativeImageDescodificaBmpDe8BitsComPaleta) {
@@ -1901,6 +1902,42 @@ TEST(AjudantesExtra, SobEstresseNenhumBlocoVivoSeSobrepoe) {
     }
     vivos.push_back({endereco, tamanho});
   }
+}
+
+TEST(AjudantesExtra, OStrexpandAlargaBytesParaAecharsComTerminador) {
+  // `void strexpand(const byte *pSrc, int nCount, AECHAR *pDest, int nSize)`:
+  // cada BYTE vira uma unidade de 16 bits. O `ddragonz` pede-o 1500 vezes com um
+  // buffer de pilha reaproveitado -- e o terminador TEM de la estar, senao a
+  // cadeia que ele desenha a seguir le o que ficou do texto anterior.
+  Bancada b;
+  const std::uint32_t origem = 0x0004d000u, destino = 0x0004e000u;
+  const std::string texto = "Kaiotec";
+  for (std::size_t k = 0; k < texto.size(); ++k) {
+    b.mem.Escrever8(origem + static_cast<std::uint32_t>(k), static_cast<std::uint8_t>(texto[k]));
+  }
+  // Antes de escrever, o destino tem LIXO -- e o terminador que o apaga.
+  for (std::uint32_t k = 0; k < 32u; ++k) b.mem.Escrever16(destino + 2u * k, 0xFFFFu);
+  b.cpu.Set(kR0, origem);
+  b.cpu.Set(kR1, static_cast<std::uint32_t>(texto.size()));
+  b.cpu.Set(kR2, destino);
+  b.cpu.Set(kR3, 32u);
+  EXPECT_EQ(b.Atender(brew_ajudantes::kAjudante_strexpand), Atendimento::Implementado);
+  for (std::size_t k = 0; k < texto.size(); ++k) {
+    EXPECT_EQ(b.mem.Ler16(destino + static_cast<std::uint32_t>(2 * k)),
+              static_cast<std::uint16_t>(texto[k]))
+        << "unidade " << k;
+  }
+  EXPECT_EQ(b.mem.Ler16(destino + static_cast<std::uint32_t>(2 * texto.size())), 0u)
+      << "o terminador tem de estar la";
+  // E com `nSize` mais curto que o texto, corta e fecha: nao escreve fora.
+  for (std::uint32_t k = 0; k < 32u; ++k) b.mem.Escrever16(destino + 2u * k, 0xFFFFu);
+  b.cpu.Set(kR3, 4u);
+  EXPECT_EQ(b.Atender(brew_ajudantes::kAjudante_strexpand), Atendimento::Implementado);
+  EXPECT_EQ(b.mem.Ler16(destino + 0u), static_cast<std::uint16_t>('K'));
+  EXPECT_EQ(b.mem.Ler16(destino + 2u), static_cast<std::uint16_t>('a'));
+  EXPECT_EQ(b.mem.Ler16(destino + 4u), static_cast<std::uint16_t>('i'));
+  EXPECT_EQ(b.mem.Ler16(destino + 6u), 0u) << "tres unidades + o terminador (nSize=4)";
+  EXPECT_EQ(b.mem.Ler16(destino + 8u), 0xFFFFu) << "nada foi escrito depois do terminador";
 }
 
 TEST(AjudantesExtra, OStrlowerPoeEmMinusculasNoSitioEDevolveOMesmoPonteiro) {
