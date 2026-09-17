@@ -2454,3 +2454,39 @@ valor, usa o `ZB2_TELA`/`ZB2_HIST`" --, agora no `pixels`: um total de escritas
 nao distingue desenhar mais de desenhar o mesmo duas vezes. O campo que responde
 a isto (pixeis do ecra que nao sao o fundo) **ainda nao existe**, e enquanto nao
 existir uma melhoria destas aparece como regressao no instrumento.
+
+
+
+### 17/09 (3) -- o `a3d` nao esta travado pelo magenta: esta travado pelo `udata/a3d.sav`
+
+O ecra do `a3d` tinha 2110 pixeis de magenta `0xF81F` (a cor-chave do BREW, que
+serve para SALTAR num blit transparente) e a suspeita natural era o emulador a
+saltar a cor errada. O slot 14 e o salto do `interface.cpp:304` ja existiam, e a
+hipotese caiu em dois segundos de medicao com dois tracos novos
+(`BITMAP_BLTIN`/`BITMAP_BLTOUT` e `BITMAP_SETA_TRANSPARENCIA`, commit `f6df3a4`):
+o `a3d` **nunca** chama nenhum deles. Ele desenha por **GL** (`[video]
+RASTERIZADOR`, `IGL_INSTALADO`), e num GL nao ha cor-chave -- o magenta vem de
+uma TEXTURA. Fica escrito para nao se repetir a duvida.
+
+O que a mesma corrida mostrou e muito maior: o `a3d` gasta **22126 recusas de
+CPU** -- exactamente o `recusadas` que a bateria ja lhe contava --, 11060 em cada
+um de DOIS sitios, e o rasto mostra a cadeia inteira:
+
+    OPENFILE_RECUSADO "udata/a3d.sav" modo=0x00000004 | o modo escreve: a VFS e SO DE LEITURA, por decisao
+    PRESSUPOSTO: IFileMgr::RmDir serviu EFAILED: udata/a3d.sav nao existe na VFS
+    [cpu] INSTRUCAO_RECUSADA instr=0xe5903014 pc=0x0000582c -- leitura de dados em endereco nao mapeado 0xea000022
+    [brew] ENTRADA_DO_MODULO_REPETIDA pc=0 lr=0x00005838 r0=0 -- a veneira da ROPI vai correr outra vez sobre a lista zerada
+
+O jogo quer GRAVAR (o ficheiro de save), o VFS recusa por decisao, o jogo fica
+com um ficheiro NULO, o gestor de save/load percorre uma lista zerada e o motor
+corre a veneira da ROPI 11060 vezes por quadro. `0xea00001a`/`0xea000022` sao
+INSTRUCOES ARM (`b`) lidas como enderecos: o jogo le o `+12`/`+20` de um objecto
+cujo `r0` aponta para CODIGO -- a mesma familia do que o `allstarcards` pagou ("o
+jogo chamava pela primeira palavra do modulo por vtable"), agora com nome, sitio
+e contagem.
+
+CONCLUSao para a proxima ronda: o que trava o `a3d` nao e desenho nenhum, e o
+**ficheiro de gravacao**. Enquanto o `udata/*.sav` nao puder ser escrito, o titulo
+gasta 11060 voltas por quadro a percorrer uma lista que nunca enche. E uma decisao
+de desenho desta arvore (a VFS so-de-leitura), e por isso fica dita e medida em
+vez de "arranjada" por baixo.
