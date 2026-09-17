@@ -2460,8 +2460,8 @@ TEST(ZclsidDoZWheel, ODownloadVemDoCreateInstanceEOSeuSlot21RecusaComONome) {
   const std::uint32_t obj = b.Mem().Ler32(kPPo);
   ASSERT_EQ(obj, kObjDownload);
   // O SLOT 21, com os argumentos medidos em `Tectoy_FixupTime`: (po, id, callback
-  // do modulo, contexto). Ele NAO e lido pelo jogo -- a resposta e EFAILED porque
-  // nao ha fila de downloads, e o que fica registado e o motivo.
+  // do modulo, contexto). Ele NAO e lido pelo jogo -- a resposta contratual e
+  // EFAILED porque nao ha fila de downloads; isso e pressuposto declarado, nao falta.
   //
   // O `id` E O QUE O SLOT 45 DEVOLVE (frente `slot45`): 274755, o numero da pasta
   // do modulo. O `0x14` que aqui esteve era o `kAeeUnsupported` do ramo generico
@@ -2469,7 +2469,9 @@ TEST(ZclsidDoZWheel, ODownloadVemDoCreateInstanceEOSeuSlot21RecusaComONome) {
   EXPECT_EQ(b.EntradaDaVtable(obj, 21), b.S().Endereco(kSlotDownloadInfoComCallback));
   EXPECT_EQ(b.ChamaEndereco(b.EntradaDaVtable(obj, 21), obj, 274755u, 0x000735f4u, 0x80200048u),
             kAeeFailed);
-  EXPECT_EQ(b.Faltas("IDownload slot21 (info do item, id/cb/ctx)"), 1u);
+  EXPECT_EQ(b.Faltas("IDownload slot21 (info do item, id/cb/ctx)"), 0u);
+  const auto& pressupostos_download = b.Tr().ContagemPressupostos();
+  EXPECT_NE(pressupostos_download.find("IDownload::GetItemInfo"), pressupostos_download.end());
   // A LISTA DE DOWNLOADS FALHADOS (o slot 3 do segundo sitio medido, o
   // `Gamelib_CheckForFailedDownload`) responde ZERO: nao ha fila, logo nao ha
   // falhados -- e o zero e o valor que o modulo trata como "nada a corrigir".

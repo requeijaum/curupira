@@ -852,7 +852,8 @@ bool Despacho::AtenderDownload(ICpu& cpu, std::uint32_t slot) {
     std::snprintf(det, sizeof(det),
                   "id=0x%08x cb=0x%08x ctx=0x%08x lr=0x%08x (nao ha fila de downloads)",
                   cpu.Get(kR1), cpu.Get(kR2), cpu.Get(kR3), cpu.Get(kLR));
-    traco_.RegistarFalta(Area::Brew, "IDownload slot21 (info do item, id/cb/ctx)", det);
+    traco_.RegistarPressuposto(Area::Brew, "IDownload::GetItemInfo",
+                               std::string(det) + "; serviu EFAILED sem callback");
     cpu.Set(kR0, kAeeFailed);
     return true;
   }
