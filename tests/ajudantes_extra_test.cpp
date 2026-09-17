@@ -1823,6 +1823,86 @@ TEST(AjudantesExtra, VsprintfDaTabelaUsaOMesmoVaLists) {
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// OS TESTES DO HEAP DO KAIOTEC -- portados do `zeebx` dele (`src/brew/heap.rs`)
+// ---------------------------------------------------------------------------
+//
+// A HISTORIA, contada por ele: "*eu tive um BO lascado com estouro de memoria no
+// treino cerebral, a rom em si funcionava PERFEITAMENTE, mas conforme tu avancava
+// ela comecava a morrer aos poucos ate crashar e nao era nada do jogo em si -- era
+// full gerenciamento de memoria que tava esgotando a ram*".
+//
+// A CAUSA no lado dele: cada bloco devolvido virava um buraco ISOLADO na lista de
+// livres, e numa sessao longa (o Treino Cerebral troca de tela centenas de vezes) o
+// heap despedaca -- o pedido de um mega da fase seguinte nao acha onde caber com
+// dezenas de megas livres, o jogo nao confere o ponteiro nulo e morre chamando um
+// metodo em zero.
+//
+// O NOSSO `Alocador` JA FUNDE (esta escrito no `Free`), e estes tres testes existem
+// para o PROVAR em vez de o afirmar -- e para o prender se alguem mexer ali.
+TEST(AjudantesExtra, OHeapFundeOsBlocosLivresVizinhos) {
+  Bancada b;
+  const std::uint32_t a = b.alocador.Malloc(32);
+  const std::uint32_t c = b.alocador.Malloc(32);
+  const std::uint32_t d = b.alocador.Malloc(32);
+  const std::uint32_t depois = b.alocador.Malloc(8);
+  ASSERT_NE(a, 0u);
+  ASSERT_NE(c, 0u);
+  ASSERT_NE(d, 0u);
+  ASSERT_NE(depois, 0u);
+  // Soltos FORA de ordem: e a vizinhanca que tem de ser juntada, nao a ordem.
+  b.alocador.Free(c);
+  b.alocador.Free(a);
+  b.alocador.Free(d);
+  // O pedido de 96 TEM de caber no buraco que os tres formam juntos. Sem a fusao
+  // ele ia para o topo do heap -- e numa sessao longa o topo acaba.
+  EXPECT_EQ(b.alocador.Malloc(96), a) << "os tres blocos deviam ter virado um so";
+  b.alocador.Free(depois);
+}
+
+TEST(AjudantesExtra, OBlocoDoTopoDevolveOEspacoAoHeap) {
+  Bancada b;
+  const std::uint32_t antes = b.alocador.Alocado();
+  const std::uint32_t a = b.alocador.Malloc(32);
+  ASSERT_NE(a, 0u);
+  EXPECT_GT(b.alocador.Alocado(), antes);
+  b.alocador.Free(a);
+  EXPECT_EQ(b.alocador.Alocado(), antes) << "nada pode continuar entregue";
+}
+
+TEST(AjudantesExtra, SobEstresseNenhumBlocoVivoSeSobrepoe) {
+  // O TESTE QUE O KAIOTEC ESCREVEU DEPOIS DO BO: a fusao mexe em VIZINHANCA, e um
+  // erro ali entrega o mesmo endereco duas vezes -- o jogo escreve por cima do que
+  // era dele, e o sintoma aparece longe da causa. Aqui correm 4000 passos de
+  // alocacoes e libertacoes sorteadas com os blocos VIVOS conferidos a cada passo.
+  Bancada b;
+  std::vector<std::pair<std::uint32_t, std::uint32_t>> vivos;
+  std::uint32_t semente = 12345u;
+  const auto sorteia = [&semente]() {
+    semente = semente * 1103515245u + 12345u;
+    return semente >> 8;
+  };
+  for (int passo = 0; passo < 4000; ++passo) {
+    const bool solta = !vivos.empty() && (passo % 3 == 0 || vivos.size() > 40);
+    if (solta) {
+      const std::size_t qual = sorteia() % vivos.size();
+      b.alocador.Free(vivos[qual].first);
+      vivos.erase(vivos.begin() + static_cast<std::ptrdiff_t>(qual));
+      continue;
+    }
+    const std::uint32_t tamanho = 1u + sorteia() % 600u;
+    const std::uint32_t endereco = b.alocador.Malloc(tamanho);
+    if (endereco == 0) continue;
+    const std::uint32_t fim = endereco + tamanho;
+    for (const auto& outro : vivos) {
+      const bool afastado = fim <= outro.first || endereco >= outro.first + outro.second;
+      ASSERT_TRUE(afastado) << "bloco 0x" << std::hex << endereco << "+" << tamanho
+                            << " encosta em 0x" << outro.first << "+" << outro.second;
+    }
+    vivos.push_back({endereco, tamanho});
+  }
+}
+
 TEST(AjudantesExtra, OStrlowerPoeEmMinusculasNoSitioEDevolveOMesmoPonteiro) {
   // `char *(*strlower)(char *psz)`: altera o argumento E devolve-o. Um teste que so
   // olhasse para o valor de retorno nao apanhava um `strlower` que devolvesse uma
