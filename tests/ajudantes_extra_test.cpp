@@ -2135,3 +2135,29 @@ TEST(AjudantesExtra, UmaAlocacaoQueNaoCoubeFicaContadaEComOTamanho) {
   EXPECT_EQ(alocador.Falhas(), 3u);
   EXPECT_EQ(alocador.MaiorFalha(), kHeapTamanho + 99999u);
 }
+
+// `Caberial` responde com a MESMA conta do `Malloc` e sem tocar em nada: uma
+// pergunta nao e uma tentativa. Existe para o `IHeap::CheckAvail` (slot 6,
+// 1 pedido no `bio4_brew`) responder sem mentir nem adivinhar.
+TEST(AjudantesExtra, CaberiaUsaAMesmaContaDoMallocSemContarFalha) {
+  Tempo tempo;
+  Traco traco{"ajudantes_extra", &tempo};
+  Memoria mem{&traco};
+  mem.EscritorUnico("cpu");
+  Alocador alocador{mem, kHeapInicio, kHeapTamanho, &traco};
+
+  EXPECT_TRUE(alocador.Caberia(64u));
+  // O heap INTEIRO nao cabe: o cabecalho de 16 bytes come o espaco do pedido.
+  // (Expectativa corrigida: a primeira versao deste teste pedia o heap todo e
+  // o `Malloc` tambem o recusaria -- a pergunta segue o `Malloc`, nao o desejo.)
+  EXPECT_FALSE(alocador.Caberia(kHeapTamanho));
+  EXPECT_TRUE(alocador.Caberia(kHeapTamanho - 64u));
+  EXPECT_FALSE(alocador.Caberia(kHeapTamanho + 4096u));
+  EXPECT_FALSE(alocador.Caberia(0xFFFFFFFFu));
+  EXPECT_EQ(alocador.Falhas(), 0u) << "perguntar nao conta falha";
+  // O que cabe e o que o `Malloc` aceitaria: fragmenta e confirma.
+  const std::uint32_t a = alocador.Malloc(1024u);
+  ASSERT_NE(a, 0u);
+  EXPECT_TRUE(alocador.Caberia(64u));
+  EXPECT_EQ(alocador.Falhas(), 0u);
+}

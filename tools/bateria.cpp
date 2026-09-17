@@ -321,6 +321,10 @@ constexpr std::uint32_t kSlotIdGetDeviceInfo = 1549;
 constexpr std::uint32_t kSlotIdGetDeviceBitmap = 1550;
 constexpr std::uint32_t kSlotIdGetClipRect = 1551;
 constexpr std::uint32_t kSlotIdCancelTimer = 1552;
+// SEGUNDA COPIA (ver o aviso em `kSlotIdBitmapGetInfo` acima): tem de ser o
+// mesmo que `core/brew/despacho.cpp` usa (1600). A prova e a bateria de 1
+// titulo: com os numeros divergentes a falta `IShell::slot13` continuaria la.
+constexpr std::uint32_t kSlotIdGetTimerExpiration = 1600;
 constexpr std::uint32_t kSlotIdSqlOpen = 1553;
 constexpr std::uint32_t kSlotIdOpenFile = 1554;
 constexpr std::uint32_t kSlotIdFileRead = 1555;
@@ -816,6 +820,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
       {zb2::brew::kVtableShell, brew_slots::kShell_QueryClass, kSlotIdQueryClass},
       {zb2::brew::kVtableShell, brew_slots::kShell_GetDeviceInfo, kSlotIdGetDeviceInfo},
       {zb2::brew::kVtableShell, brew_slots::kShell_CancelTimer, kSlotIdCancelTimer},
+      {zb2::brew::kVtableShell, brew_slots::kShell_GetTimerExpiration, kSlotIdGetTimerExpiration},
       {zb2::brew::kVtableShell, brew_slots::kShell_FreeResData, kSlotIdFreeResData},
       {zb2::brew::kVtableShell, brew_slots::kShell_CheckPrivLevel, kSlotIdCheckPriv},
       {zb2::brew::kVtableDisplay, brew_slots::kDisplay_GetDeviceBitmap, kSlotIdGetDeviceBitmap},

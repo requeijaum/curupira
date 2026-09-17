@@ -84,6 +84,27 @@ std::uint32_t Alocador::Malloc(std::uint32_t tamanho) {
   return 0;
 }
 
+bool Alocador::Caberia(std::uint32_t tamanho) const {
+  if (tamanho == 0) tamanho = kAlinhamento;  // a mesma regra do `Malloc`
+  // A soma em 64 bits: em 32 bits um pedido como 0xFFFFFFFF ENVOLVE
+  // (vira ~22) e "caberia" em qualquer bloco -- o `Malloc` tem a mesma
+  // aritmetica sem guarda (defeito conhecido, impacto nao medido, fora desta
+  // frente). Aqui um pedido que nem cabe em 32 bits e FALSE sem passear.
+  const std::uint64_t precisa64 =
+      static_cast<std::uint64_t>(tamanho) + kCabecalho + kAlinhamento - 1;
+  if (precisa64 > 0xFFFFFFFFu) return false;
+  const std::uint32_t precisa = static_cast<std::uint32_t>(precisa64) & ~(kAlinhamento - 1);
+  std::uint32_t atual = inicio_;
+  const std::uint32_t fim = inicio_ + tamanho_;
+  while (atual + kCabecalho <= fim) {
+    const Cabecalho c = Ler(atual);
+    if (c.tamanho < kCabecalho || atual + c.tamanho > fim) break;  // a mesma guarda do `Malloc`
+    if (c.livre != 0 && c.tamanho >= precisa) return true;
+    atual += c.tamanho;
+  }
+  return false;
+}
+
 std::uint32_t Alocador::TamanhoDoBloco(std::uint32_t endereco) const {
   if (endereco == 0) return 0;
   const std::uint32_t procurado = endereco - kCabecalho;

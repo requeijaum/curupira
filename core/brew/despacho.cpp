@@ -214,6 +214,10 @@ constexpr std::uint32_t kSlotIdMkDir = 1544,
 constexpr std::uint32_t kSlotIdSprintf = 1560, kSlotIdVsprintf = 1561, kSlotIdHeapLock = 1562,
                        kSlotIdVsnprintf = 1566, kSlotIdRealloc = 1567,
                        kSlotIdFreeResData = 1563, kSlotIdCheckPriv = 1564;
+constexpr std::uint32_t kSlotIdGetTimerExpiration = 1600;  // IShell slot 13 (QW4: 1 pedido no `zenonia`)
+constexpr std::uint32_t kSlotIdHeapCheckAvail = 9006;      // IHeap slot 6 (QW4: 1 pedido no `bio4_brew`)
+static_assert(kSlotIdHeapCheckAvail == zb2::brew::VtGenerico(0) + 6,
+              "o CheckAvail e o slot 6 da vtable generica do IHeap (9000+6)");
 // O `dbgprintf` (AEEHelperFuncs 0x09c). **MEDIDO: ele estava a correr o
 // `strtowstr`, e a ESCREVER na memoria do titulo.**
 //
@@ -3393,6 +3397,24 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // indices. MEDIDO: com o ramo depois, o trace de uma corrida de 3
         // titulos e BYTE A BYTE o mesmo da base (o gancho era codigo morto, e
         // a medida dizia "sem regressao" sobre um gancho que nao existia).
+      } else if (idx == kSlotIdHeapCheckAvail) {
+        // `boolean CheckAvail(IHeap *po, uint32 dwSize)` -- IHeap slot 6
+        // (`AEEHeap.h`). Responde se um `Malloc(dwSize)` caberia AGORA, com a
+        // MESMA conta do `Malloc` (`Alocador::Caberia`): TRUE com espaco e
+        // FALSE sem -- sem pressuposto e sem adivinha.
+        cpu.Set(kR0, al_.Caberia(cpu.Get(kR1)) ? 1u : 0u);
+      } else if (idx == kSlotIdGetTimerExpiration) {
+        // `uint32 GetTimerExpiration(IShell *po, void (*pfn)(void *), void *pUser)`
+        // -- IShell slot 13 (`AEEIShell.h`). Devolve o restante em ms do
+        // temporizador armado para esse (pfn, pUser), ou 0 se nao houver.
+        // Devolve NUMERO, nao codigo: 0 e "sem temporizador", e nao erro.
+        const std::uint32_t pfn = cpu.Get(kR1), puser = cpu.Get(kR2);
+        std::uint32_t restante = 0;
+        if (timer_.ativo && timer_.pfn == pfn && timer_.puser == puser &&
+            timer_.vence_em_ms > agora_ms_) {
+          restante = static_cast<std::uint32_t>(timer_.vence_em_ms - agora_ms_);
+        }
+        cpu.Set(kR0, restante);
       } else if (idx >= kBaseDoShell) {
         // O NOME tem de dizer de QUE interface e o slot. Um so "IShell::slot"
         // para tudo dava `IShell::slot4004` para um metodo do IDisplay -- numero

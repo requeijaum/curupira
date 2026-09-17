@@ -2561,4 +2561,33 @@ TEST(RetornoDeSaida, ORegressoVoltaAoModoDoChamador) {
   EXPECT_EQ(b.Cpu().Cpsr() & Cpsr::kT, Cpsr::kT) << "e o CPSR volta a Thumb (bit 0 do `lr`)";
 }
 
+// ===========================================================================
+// QW4: dois slots de 1 pedido que hoje recusam com o numero.
+//
+// `IShell::slot13` e `GetTimerExpiration` (`AEEIShell.h`: `uint32
+// (*GetTimerExpiration)(iname *po, void (*pfn)(void *), void *pUser)`), medido
+// 1x no `zenonia`. `IHeap::slot6` e `CheckAvail` (`AEEHeap.h`: `boolean
+// (*CheckAvail)(IHeap *pIHeap, uint32 dwSize)`), medido 1x no `bio4_brew`.
+// ===========================================================================
+TEST(EntradaNoDespacho, GetTimerExpirationDevolveORestanteDoTemporizadorArmado) {
+  Bancada b;
+  constexpr std::uint32_t kPfn = 0x500u, kPUser = 0x99u;
+  // Sem temporizador: zero exacto, sem depender do relogio.
+  EXPECT_EQ(b.ChamaSaida(1600, kObjShell, kPfn, kPUser), 0u);
+  // Arma 100 ms e pergunta pelo MESMO callback: restante em (0, 100].
+  ASSERT_EQ(b.ChamaSaida(1520, kObjShell, 100u, kPfn, kPUser), kAeeSuccess);
+  const std::uint32_t restante = b.ChamaSaida(1600, kObjShell, kPfn, kPUser);
+  EXPECT_GT(restante, 0u) << "o temporizador de 100 ms nao venceu em poucas instrucoes";
+  EXPECT_LE(restante, 100u) << "o restante nao passa do que se armou";
+  // Outro callback: zero exacto (nao e o temporizador dele).
+  EXPECT_EQ(b.ChamaSaida(1600, kObjShell, 0x501u, kPUser), 0u);
+}
+
+TEST(EntradaNoDespacho, HeapCheckAvailRespondePeloMaiorBlocoLivre) {
+  Bancada b;
+  // Heap de teste com 12 MiB livres no arranque: 1 MiB cabe, 4 GiB nao.
+  EXPECT_EQ(b.ChamaSaida(9006, 0x80060000u, 1048576u), 1u);
+  EXPECT_EQ(b.ChamaSaida(9006, 0x80060000u, 0xFFFFFFFFu), 0u);
+}
+
 }  // namespace zb2::brew

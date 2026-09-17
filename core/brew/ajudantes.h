@@ -109,6 +109,10 @@ class Alocador {
   // motor Crazyball a imprimir "Error Malloc - not enough free memory"
   // (`TTDMemoryManager.cpp:830`) -- o heap nao encheu, um pedido e que nao coube.
   std::uint32_t MaiorFalha() const { return maior_falha_; }
+  // Se um `Malloc(tamanho)` caberia AGORA, com a MESMA conta do `Malloc` e sem
+  // tocar em nada (nem `falhas_`, nem blocos): uma pergunta nao e uma tentativa.
+  // Existe para o `IHeap::CheckAvail` responder sem mentir nem adivinhar.
+  bool Caberia(std::uint32_t tamanho) const;
 
  private:
   // Cabecalho de bloco: 16 bytes, alinhado a 8. Guarda o tamanho do bloco
