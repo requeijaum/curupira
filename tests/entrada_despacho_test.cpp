@@ -1142,6 +1142,25 @@ TEST(FileMgrServido, ORmDirRespondeNosDoisEnderecosDoSlot) {
   EXPECT_EQ(b.Faltas("IFileMgr::slot6"), 0u);
 }
 
+TEST(FileMgrServido, OGetInfoRespondeComAStructDoCabecalhoENomeiaOslot) {
+  // `int GetInfo(IFileMgr *po, const char *pszName, FileInfo *pInfo)` -- slot 3
+  // (`AEEFile.h:213`). MEDIDO: o `ridgeracer` pede-o 2x, e a recusa dava-lhe o
+  // nome GENERICO ("IFileMgr::slot3"): um numero, e nao a operacao.
+  //
+  // Sem VFS registada o ficheiro nao existe -> `EFAILD`, e a falta com o nome
+  // generico tem de DESAPARECER (o ramo atende o slot).
+  Bancada b;
+  constexpr std::uint32_t kNome = 0x00094A00u;
+  const char* ficheiro = "data/ridgeracer.pak";
+  for (std::uint32_t k = 0; ficheiro[k] != 0; ++k)
+    b.Mem().Escrever8(kNome + k, static_cast<std::uint8_t>(ficheiro[k]));
+  b.Mem().Escrever8(kNome + 20, 0);
+  EXPECT_EQ(b.ChamaSaida(kVtableFileMgr + brew_slots::kFileMgr_GetInfo, kObjFileMgr, kNome, 0u),
+            static_cast<std::uint32_t>(kAeeFailed));
+  EXPECT_EQ(b.Faltas("IFileMgr::slot3"), 0u)
+      << "o slot 3 passou a ser atendido pelo nome: a falta generica nao pode ficar";
+}
+
 TEST(FileMgrServido, OEnumNextRespondeFalsoSemEnumeracao) {
   // MEDIDO (corrida do corte): gof, rmp e pbc chamam o slot 11 LOGO NO
   // ARRANQUE, sem `EnumInit` -- e a sonda de saves ("ha entradas?"). O slot 11

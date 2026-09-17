@@ -3130,6 +3130,46 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
                                    existe_end ? "serviu SUCCESS no slot 6 (SDK): " + nome_end
                                               : "serviu EFAILED no slot 6 (SDK): " + nome_end);
         cpu.Set(kR0, static_cast<std::uint32_t>(ultimo_erro_do_fm_));
+      } else if (idx == kVtableFileMgr + brew_slots::kFileMgr_GetInfo) {
+        // `int GetInfo(IFileMgr *po, const char *pszName, FileInfo *pInfo)` --
+        // IFileMgr slot 3 (`AEEFile.h:213`). MEDIDO: o `ridgeracer` pede-o 2x e a
+        // recusa dava-lhe o nome GENERICO ("IFileMgr::slot3") -- um numero, e nao o
+        // nome da operacao, que e o que a regra P2 desta casa exige.
+        //
+        // O `FileInfo` e a struct do `AEEFile.h:73-79`:
+        //   `char attrib; uint32 dwCreationDate; uint32 dwSize; char szName[64]`
+        // (76 bytes, e o `attrib` deixa 3 de enchimento antes da data). O `0` do
+        // `attrib` e o `AEE_FA_NORMAL` do proprio cabecalho.
+        std::string nome_info;
+        mem_.LerCadeia(cpu.Get(kR1), &nome_info, 512);
+        const std::uint32_t p_info = cpu.Get(kR2);
+        std::vector<std::uint8_t> bytes_info;
+        std::string motivo_info;
+        if (!vfs_.Existe(nome_info) || !vfs_.Ler(nome_info, &bytes_info, &motivo_info)) {
+          // NAO EXISTE -> `EFAILD`, e o `szName` NAO se escreve (nao ha nome a dar).
+          ultimo_erro_do_fm_ = kAeeFailed;
+          traco_.Emitir(Area::Brew, Nivel::Aviso, "IFILEMGR_GETINFO",
+                        nome_info + " -> EFAILED (nao existe na VFS)");
+          cpu.Set(kR0, static_cast<std::uint32_t>(kAeeFailed));
+          continue;
+        }
+        if (p_info != 0) {
+          mem_.Escrever8(p_info + 0, 0);                                        // AEE_FA_NORMAL
+          mem_.Escrever32(p_info + 4, 0);                                       // dwCreationDate
+          mem_.Escrever32(p_info + 8, static_cast<std::uint32_t>(bytes_info.size()));
+          for (std::uint32_t k = 0; k < 64u; ++k) mem_.Escrever8(p_info + 12u + k, 0);
+          // O NOME: e o que esta chamada tem de dar e o `EnumNext` nao da (o nosso
+          // `Informacao` deixa-o a zero). Cabem 63 caracteres e o terminador.
+          const std::size_t quantos = std::min<std::size_t>(nome_info.size(), 63u);
+          for (std::size_t k = 0; k < quantos; ++k) {
+            mem_.Escrever8(p_info + 12u + static_cast<std::uint32_t>(k),
+                           static_cast<std::uint8_t>(nome_info[k]));
+          }
+        }
+        ultimo_erro_do_fm_ = kAeeSuccess;
+        traco_.Emitir(Area::Brew, Nivel::Depuracao, "IFILEMGR_GETINFO",
+                      nome_info + " -> " + std::to_string(bytes_info.size()) + " bytes");
+        cpu.Set(kR0, static_cast<std::uint32_t>(kAeeSuccess));
       } else if (idx == kVtableFileMgr + brew_slots::kFileMgr_EnumNext) {
         // `boolean EnumNext(IFileMgr *po, FileInfo *pInfo)` -- IFileMgr slot 11
         // (`kFileMgr_EnumNext`; `AEEFile.h`, `IFILEMGR_EnumNext`).
