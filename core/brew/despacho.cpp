@@ -3308,6 +3308,19 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           resultado.passos += gastos;
           cpu.Set(kR0, entregue ? devolveu : 0);  // FALSE = ninguem tratou
         }
+      } else if (idx == kVtableFileMgr + brew_slots::kFileMgr_MkDir) {
+        // O `MkDir` NO ENDERECO DO SDK (slot 5 = 7000+5), e tambem no id 1544.
+        // A VFS e somente de leitura para reprodutibilidade. Servido com SUCCESS
+        // e pressuposto declarado (padrao do Remove e RmDir).
+        std::string nome_mkdir;
+        mem_.LerCadeia(cpu.Get(kR1), &nome_mkdir, 512);
+        ultimo_erro_do_fm_ = kAeeSuccess;
+        traco_.RegistarPressuposto(Area::Brew, "IFileMgr::MkDir",
+                                   "serviu SUCCESS no slot 5 (SDK): " + nome_mkdir +
+                                       "; diretorio NAO criado no hospedeiro (VFS so de leitura)");
+        traco_.Emitir(Area::Brew, Nivel::Depuracao, "FM_MKDIR",
+                      nome_mkdir + " -> OK (nada criado)");
+        cpu.Set(kR0, static_cast<std::uint32_t>(ultimo_erro_do_fm_));
       } else if (idx == kVtableFileMgr + brew_slots::kFileMgr_RmDir) {
         // O `RmDir` NO ENDERECO QUE O SDK DIZ (slot 6 = 7000+6), e nao so no id
         // que a cablagem da ferramenta produz (1547, acima--o servico responde
@@ -4718,14 +4731,17 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         cpu.Set(kR0, 0);
       } else if (idx == kSlotIdMkDir) {
         // `int MkDir(IFileMgr *po, const char *pszDir)` -- IFileMgr slot 5.
-        // Mesma decisao do RmDir: VFS so de leitura, recusa em voz alta (P2).
+        // Mesma decisao do RmDir/Remove: VFS so de leitura, servido com SUCCESS
+        // e pressuposto declarado (nada criado no hospedeiro).
         std::string nome;
         mem_.LerCadeia(cpu.Get(kR1), &nome, 512);
-        char det[96];
-        std::snprintf(det, sizeof(det), "MkDir %s", nome.c_str());
-        traco_.RegistarFalta(Area::Brew, "IFileMgr::MkDir", det);
-        ultimo_erro_do_fm_ = kAeeUnsupported;
-        cpu.Set(kR0, kAeeUnsupported);
+        ultimo_erro_do_fm_ = kAeeSuccess;
+        traco_.RegistarPressuposto(Area::Brew, "IFileMgr::MkDir",
+                                   "serviu SUCCESS: " + nome +
+                                       "; diretorio NAO criado no hospedeiro (VFS so de leitura)");
+        traco_.Emitir(Area::Brew, Nivel::Depuracao, "FM_MKDIR",
+                      nome + " -> OK (nada criado)");
+        cpu.Set(kR0, static_cast<std::uint32_t>(ultimo_erro_do_fm_));
       } else if (idx == kSlotIdRemove) {
         // `int Remove(IFileMgr *po, const char *pszFile)` -- IFileMgr slot 4
         // (`tools/brew_slots.inc`, gerado de `AEEFile.h`).

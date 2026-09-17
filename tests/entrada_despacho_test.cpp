@@ -1142,6 +1142,23 @@ TEST(FileMgrServido, ORmDirRespondeNosDoisEnderecosDoSlot) {
   EXPECT_EQ(b.Faltas("IFileMgr::slot6"), 0u);
 }
 
+TEST(FileMgrServido, OMkDirRespondeSuccessNosDoisEnderecosDoSlot) {
+  Bancada b;
+  constexpr std::uint32_t kNome = 0x00094980u;
+  const char* dir = "udata";
+  for (std::uint32_t k = 0; dir[k] != 0; ++k)
+    b.Mem().Escrever8(kNome + k, static_cast<std::uint8_t>(dir[k]));
+  b.Mem().Escrever8(kNome + 5, 0);
+
+  EXPECT_EQ(b.ChamaSaida(1544, kObjFileMgr, kNome), static_cast<std::uint32_t>(kAeeSuccess));
+  EXPECT_EQ(b.ChamaSaida(kVtableFileMgr + brew_slots::kFileMgr_MkDir, kObjFileMgr, kNome),
+            static_cast<std::uint32_t>(kAeeSuccess));
+  EXPECT_EQ(b.Faltas("IFileMgr::MkDir"), 0u);
+  EXPECT_EQ(b.Faltas("IFileMgr::slot5"), 0u);
+  const auto& p = b.Tr().ContagemPressupostos();
+  EXPECT_NE(p.find("IFileMgr::MkDir"), p.end());
+}
+
 TEST(FileMgrServido, OGetInfoRespondeComAStructDoCabecalhoENomeiaOslot) {
   // `int GetInfo(IFileMgr *po, const char *pszName, FileInfo *pInfo)` -- slot 3
   // (`AEEFile.h:213`). MEDIDO: o `ridgeracer` pede-o 2x, e a recusa dava-lhe o
