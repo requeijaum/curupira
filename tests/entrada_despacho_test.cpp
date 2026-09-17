@@ -1153,6 +1153,8 @@ TEST(RecursosNoShell, LoadResDataDoSlot18EAtendidoComONome) {
   EXPECT_EQ(b.ChamaSaida(kBaseDoShell + brew_slots::kShell_LoadResData, 0x80020000u,
                          kNome, 5001u, 6u), 0u);
   EXPECT_EQ(b.Faltas("IShell::slot18"), 0u);
+  EXPECT_EQ(b.Faltas("IShell::LoadResData"), 1u);
+  EXPECT_EQ(b.Faltas("IShell::LoadResDataEx"), 0u);
 }
 
 TEST(FileMgrServido, OMkDirRespondeSuccessNosDoisEnderecosDoSlot) {

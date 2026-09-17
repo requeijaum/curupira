@@ -91,7 +91,7 @@ LeitorDeRecursos LeitorDaPasta(const std::string& pasta_do_titulo, const Vfs* vf
 Recursos::Recursos(Memoria& mem, Alocador& alocador, LeitorDeRecursos leitor, Traco* traco)
     : mem_(mem), al_(alocador), leitor_(std::move(leitor)), traco_(traco) {}
 
-void Recursos::Recusar(const std::string& motivo, ResultadoDoRecurso* r) {
+void Recursos::Recusar(const char* nome_da_api, const std::string& motivo, ResultadoDoRecurso* r) {
   r->ok = false;
   r->forma = FormaDoRecurso::Recusado;
   r->motivo = motivo;
@@ -103,7 +103,7 @@ void Recursos::Recusar(const std::string& motivo, ResultadoDoRecurso* r) {
   // isto, um recurso recusado seria indistinguivel de um recurso nunca pedido --
   // que e exactamente o defeito que o ledger chama "os descartes eram
   // invisiveis" (86 377 `glCullFace` descartados em silencio).
-  if (traco_ != nullptr) traco_->RegistarFalta(Area::Brew, "IShell::LoadResDataEx", motivo);
+  if (traco_ != nullptr) traco_->RegistarFalta(Area::Brew, nome_da_api, motivo);
 }
 
 const ArquivoBar* Recursos::Abrir(const std::string& nome, std::string* motivo) {
@@ -174,11 +174,11 @@ ResultadoDoRecurso Recursos::Atender(const PedidoDeRecurso& pedido) {
   //    memoria. `pnBufSize` "Cannot be NULL" (AEEIShell.h:2447): escrever o
   //    tamanho num nulo seria escrever no endereco 0 do guest, que e codigo.
   if (pedido.ficheiro.empty()) {
-    Recusar("pszResFile vazio (o SDK espera o NOME do ficheiro, ex. \"pacmania.bar\")", &r);
+    Recusar(pedido.nome_da_api, "pszResFile vazio (o SDK espera o NOME do ficheiro, ex. \"pacmania.bar\")", &r);
     return r;
   }
   if (pedido.tem_pn_tamanho && pedido.pn_tamanho == 0) {
-    Recusar("pnBufSize nulo, e o cabecalho do SDK diz \"Cannot be NULL\"", &r);
+    Recusar(pedido.nome_da_api, "pnBufSize nulo, e o cabecalho do SDK diz \"Cannot be NULL\"", &r);
     return r;
   }
 
@@ -188,7 +188,7 @@ ResultadoDoRecurso Recursos::Atender(const PedidoDeRecurso& pedido) {
   std::string porque;
   const ArquivoBar* bar = Abrir(pedido.ficheiro, &porque);
   if (bar == nullptr) {
-    Recusar(porque, &r);
+    Recusar(pedido.nome_da_api, porque, &r);
     return r;
   }
 
@@ -198,7 +198,7 @@ ResultadoDoRecurso Recursos::Atender(const PedidoDeRecurso& pedido) {
   //    5127..5127 e 5128..5144). A recusa diz-lo com o id e o tipo.
   const RecursoDoBar recurso = bar->Ler(pedido.id, pedido.tipo);
   if (!recurso.ok) {
-    Recusar(pedido.ficheiro + ": " + recurso.motivo, &r);
+    Recusar(pedido.nome_da_api, pedido.ficheiro + ": " + recurso.motivo, &r);
     return r;
   }
 
@@ -252,7 +252,7 @@ ResultadoDoRecurso Recursos::Atender(const PedidoDeRecurso& pedido) {
     const std::uint32_t bloco = al_.TamanhoDoBloco(pedido.buffer);
     const std::uint32_t capacidade = declarado > bloco ? declarado : bloco;
     if (capacidade < tamanho) {
-      Recusar(pedido.ficheiro + " id=" + std::to_string(pedido.id) + " tipo=" +
+      Recusar(pedido.nome_da_api, pedido.ficheiro + " id=" + std::to_string(pedido.id) + " tipo=" +
                   std::to_string(pedido.tipo) + ": buffer do chamador com " + Hex(declarado) +
                   " bytes (bloco " + Hex(bloco) + ") para um recurso de " + Hex(tamanho) +
                   " (o SDK devolve NULL e nao escreve)",
@@ -278,7 +278,7 @@ ResultadoDoRecurso Recursos::Atender(const PedidoDeRecurso& pedido) {
     // hospedeiro ali seria um endereco que nao existe na memoria do guest.
     const std::uint32_t novo = al_.Malloc(tamanho);
     if (novo == 0) {
-      Recusar(pedido.ficheiro + ": o alocador do guest recusou " + Hex(tamanho) + " bytes", &r);
+      Recusar(pedido.nome_da_api, pedido.ficheiro + ": o alocador do guest recusou " + Hex(tamanho) + " bytes", &r);
       return r;
     }
     mem_.EscreverBloco(novo, recurso.dados, tamanho);

@@ -218,6 +218,7 @@ struct PedidoDeRecurso {
   std::uint32_t pn_tamanho = 0;     // pnBufSize; o cabecalho diz "Cannot be NULL"
   // LoadResDataEx tem pnBufSize; a API legacy LoadResData (slot 18) nao tem.
   bool tem_pn_tamanho = true;
+  const char* nome_da_api = "IShell::LoadResDataEx";
 };
 
 struct ResultadoDoRecurso {
@@ -336,7 +337,7 @@ class Recursos {
 
  private:
   const ArquivoBar* Abrir(const std::string& nome, std::string* motivo);
-  void Recusar(const std::string& motivo, ResultadoDoRecurso* r);
+  void Recusar(const char* nome_da_api, const std::string& motivo, ResultadoDoRecurso* r);
 
   Memoria& mem_;
   Alocador& al_;

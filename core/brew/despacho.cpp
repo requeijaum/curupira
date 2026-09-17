@@ -3113,6 +3113,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         pedido.buffer = 0;  // a API legacy nao recebe pBuf: Recursos aloca.
         pedido.pn_tamanho = 0;
         pedido.tem_pn_tamanho = false;
+        pedido.nome_da_api = "IShell::LoadResData";
         const ResultadoDoRecurso r = recursos_.Atender(pedido);
         cpu.Set(kR0, r.ponteiro);  // zero se o recurso nao existe.
       } else if (idx == kBaseDoShell + brew_slots::kShell_LoadResObject) {
