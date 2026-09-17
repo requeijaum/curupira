@@ -337,6 +337,10 @@ constexpr std::uint32_t kSlotIdHeapLock = 1562;
 constexpr std::uint32_t kSlotIdFreeResData = 1563;
 constexpr std::uint32_t kSlotIdCheckPriv = 1564;
 constexpr std::uint32_t kSlotIdFileWrite = 1559;
+// SEGUNDA COPIA (ver `kSlotIdBitmapGetInfo` acima): tem de ser o mesmo que
+// `core/brew/despacho.cpp` usa (1581; 1601 era engolido pelo ramo-faixa do
+// Unzip). A prova e a bateria de 1 titulo.
+constexpr std::uint32_t kSlotIdDisplaySetFont = 1581;
 
 // OS NUMEROS DE SLOT VEM DO CABECALHO, GERADOS.
 //
@@ -876,6 +880,7 @@ Estado Medir(const Titulo& t, const std::string& dir) {
       {zb2::brew::kVtableDisplay, kDisUpdate, kSlotIdUpdate},
       {zb2::brew::kVtableDisplay, brew_slots::kDisplay_Backlight, kSlotIdBacklight},
       {zb2::brew::kVtableDisplay, kDisCreateDIBitmap, kSlotIdCreateDIBitmap},
+      {zb2::brew::kVtableDisplay, 17, kSlotIdDisplaySetFont},
       {zb2::brew::kVtableDisplay, brew_slots::kDisplay_SetDestination, kSlotIdSetDest},
       {zb2::brew::kVtableDisplay, brew_slots::kDisplay_GetDestination, kSlotIdGetDest},
       // IFileMgr

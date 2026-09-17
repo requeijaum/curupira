@@ -234,6 +234,15 @@ std::uint32_t ObjetoDoClsid(std::uint32_t clsid) {
   return k < kQuantasClasses ? ObjetoDaClasse(k) : 0;
 }
 
+// O objecto da fonte pedida: um por CLSID, para a metrica levar o tamanho
+// nominal certo. Fora da aritmetica `ObjetoDaClasse(k)` (ver `kVtableFonte`).
+std::uint32_t ObjetoDaFonte(std::uint32_t clsid) {
+  if (clsid == brew_clsids::kClsid_FONT_STANDARD11) return kObjetoFonte11;
+  if (clsid == brew_clsids::kClsid_FONT_STANDARD15) return kObjetoFonte15;
+  if (clsid == brew_clsids::kClsid_FONT_STANDARD36) return kObjetoFonte36;
+  return 0;
+}
+
 namespace {
 
 // Estado do unico ITextCtl (0x8F002000). Void methods sem retorno; o guest le
@@ -650,6 +659,28 @@ void ConstruirClasses(Memoria& mem, const Saidas& saidas, Traco& traco) {
     // chega ao despacho e recebe uma recusa COM NOME (`ITextCtl::slot28`).
     ConstruirObjeto(mem, saidas, ObjetoDaClasse(k), saidas.Endereco(VtClasse(k)),
                     kSlotsDaClasse, VtClasse(k));
+  }
+
+  // AS FONTES: uma vtable partilhada e um objecto por CLSID (a metrica leva
+  // o tamanho nominal de cada uma). O mesmo `ConstruirObjeto` das classes.
+  const std::uint32_t fontes[3] = {kObjetoFonte11, kObjetoFonte15, kObjetoFonte36};
+  for (std::uint32_t k = 0; k < 3; ++k) {
+    ConstruirObjeto(mem, saidas, fontes[k], saidas.Endereco(kVtableFonte), kFonteSlots,
+                    kVtableFonte);
+  }
+  {
+    const std::uint32_t vt = saidas.Endereco(kVtableFonte);
+    bool ok = true;
+    for (std::uint32_t k = 0; k < 3 && ok; ++k) {
+      if (mem.Ler32(fontes[k]) != vt) ok = false;
+    }
+    for (std::uint32_t s = 2; s < kFonteSlots && ok; ++s) {
+      if (mem.Ler32(vt + s * 4) != saidas.Endereco(kVtableFonte + s)) ok = false;
+    }
+    if (!ok) {
+      traco.RegistarFalta(Area::Brew, "classes_da_brewm_cablagem_perdida",
+                          "IFont sem vtable cablada");
+    }
   }
 
   // A LEITURA DE VOLTA. Uma cablagem ja se perdeu numa edicao de texto neste
@@ -1606,6 +1637,97 @@ bool DescodificarOFluxo(const Memoria& mem, Traco& traco, std::string* motivo) {
   return true;
 }
 
+// A FONTE STANDARD (frente fontes): os 6 slots do `IFont` (`AEEIFont.h`:
+// IQI 3 + DrawText 3 + MeasureText 4 + GetInfo 5), UM objecto por CLSID com a
+// metrica do seu tamanho nominal (11, 15, 36). O `DrawText` recusa COM O NOME:
+// sem motor de texto raster nao ha desenho honesto a devolver.
+bool AtenderFonte(ICpu& cpu, Traco& traco, std::uint32_t slot) {
+  Memoria& mem = cpu.Mem();
+  const std::uint32_t obj = cpu.Get(kR0);
+  std::uint32_t tamanho = 0;
+  if (obj == kObjetoFonte11) {
+    tamanho = 11;
+  } else if (obj == kObjetoFonte15) {
+    tamanho = 15;
+  } else if (obj == kObjetoFonte36) {
+    tamanho = 36;
+  } else {
+    return false;
+  }
+  if (slot == 0 || slot == 1) {
+    // AddRef/Release na contagem do proprio objecto (a faixa das classes).
+    std::uint32_t n = mem.Ler32(obj + 4);
+    n = (slot == 0) ? n + 1 : (n == 0 ? 0 : n - 1);
+    mem.Escrever32(obj + 4, n);
+    if (slot == 1 && n == 0) {
+      traco.RegistarFalta(Area::Brew, "IFont::Release", "Release de um objecto com contagem zero");
+      cpu.Set(kR0, kAeeUnsupported);
+      return true;
+    }
+    cpu.Set(kR0, n);
+    return true;
+  }
+  if (slot == 2) {
+    // QueryInterface: a propria fonte de volta para o IID dela.
+    const std::uint32_t iid = cpu.Get(kR1);
+    const std::uint32_t ppo = cpu.Get(kR2);
+    if (ppo == 0) {
+      traco.RegistarFalta(Area::Brew, "IFont::QueryInterface", "ppObj nulo");
+      cpu.Set(kR0, kAeeBadParm);
+      return true;
+    }
+    if (iid == kIidFonte) {
+      mem.Escrever32(ppo, obj);
+      cpu.Set(kR0, kAeeSuccess);
+      return true;
+    }
+    mem.Escrever32(ppo, 0);
+    traco.RegistarFalta(Area::Brew, "IFont::QueryInterface", "iid sem objecto nesta fonte");
+    cpu.Set(kR0, kAeeUnsupported);
+    return true;
+  }
+  if (slot == 3) {
+    traco.RegistarFalta(Area::Brew, "IFont::DrawText", "sem motor de texto raster nesta arvore");
+    cpu.Set(kR0, kAeeUnsupported);
+    return true;
+  }
+  if (slot == 4) {
+    // `int MeasureText(po, text, nChars, maxW, *pnFits, *pnPixels)`: largura
+    // DECLARADA em metade da altura nominal (regra de bolso para fonte
+    // proporcional sem a fonte real -- fica dita, nao medida).
+    const std::int32_t nchars = static_cast<std::int32_t>(cpu.Get(kR2));
+    const std::uint32_t nmax = cpu.Get(kR3);
+    const std::uint32_t pn_fits = mem.Ler32(cpu.Get(kSP));
+    const std::uint32_t pn_pixels = mem.Ler32(cpu.Get(kSP) + 4);
+    const std::uint32_t larg = tamanho / 2u;
+    const std::uint32_t cabem =
+        (nchars < 0) ? 0u : (nmax == 0 ? static_cast<std::uint32_t>(nchars)
+                                       : std::min(static_cast<std::uint32_t>(nchars), nmax / larg));
+    if (pn_fits != 0) mem.Escrever32(pn_fits, cabem);
+    if (pn_pixels != 0) mem.Escrever32(pn_pixels, cabem * larg);
+    // Retorna SUCCESS (`IFont_MeasureText.htm`, "Return Value"): o resultado
+    // vai nos ponteiros, nao no r0 -- devolver a contagem seria inventar um
+    // contrato que o cabecalho nao declara.
+    cpu.Set(kR0, kAeeSuccess);
+    return true;
+  }
+  if (slot == 5) {
+    // `int GetInfo(po, pinfo, nSize)`: `AEEFontInfo{nAscent, nDescent}` como
+    // dois int16; regra declarada: ascent = altura nominal, descent = altura/4.
+    const std::uint32_t pinfo = cpu.Get(kR1);
+    const std::uint32_t nsize = cpu.Get(kR2);
+    if (pinfo == 0 || nsize < 4u) {
+      cpu.Set(kR0, kAeeBadParm);
+      return true;
+    }
+    mem.Escrever16(pinfo, static_cast<std::uint16_t>(tamanho));
+    mem.Escrever16(pinfo + 2u, static_cast<std::uint16_t>(tamanho / 4u));
+    cpu.Set(kR0, kAeeSuccess);
+    return true;
+  }
+  return false;
+}
+
 // OS CINCO SLOTS DO `IImageDecoder` (brew_slots.inc: IQI 3 + GetBitmap 3 +
 // GetRop 4). `false` = o slot nao e desta interface (cai no ramo generico, que
 // recusa COM O NOME).
@@ -1812,6 +1934,14 @@ bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
   // (40000 + 7*32 = 40224) e abaixo das extensoes QUALCOMM (40600).
   if (indice >= kVtableForceFeed && indice < kVtableForceFeed + kForceFeedSlots) {
     return AtenderForceFeed(cpu, traco, indice - kVtableForceFeed);
+  }
+
+  // AS FONTES STANDARD, UMA vtable partilhada fora da faixa (ver `kVtableFonte`
+  // em `classes.h` para porque nao entram na aritmetica). O objecto diz o
+  // tamanho nominal: um mapa seria uma segunda lista a concordar com a
+  // `CreateInstance`, e o `r0` ja diz tudo.
+  if (indice >= kVtableFonte && indice < kVtableFonte + kFonteSlots) {
+    return AtenderFonte(cpu, traco, indice - kVtableFonte);
   }
 
   // O IGLES11Ext, faixa propria (15 slots, AEEGLES11Ext.h). A CABECA e os

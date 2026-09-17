@@ -2590,4 +2590,20 @@ TEST(EntradaNoDespacho, HeapCheckAvailRespondePeloMaiorBlocoLivre) {
   EXPECT_EQ(b.ChamaSaida(9006, 0x80060000u, 0xFFFFFFFFu), 0u);
 }
 
+// `IDisplay::SetFont` (slot 17): o `ddragonz` adota as tres fontes que acabou
+// de criar (3x, uma por objeto). Guarda a anterior e devolve-a, como o SDK
+// manda (`IFont *(*SetFont)(iname *po, AEEFont nFont, IFont *piFont)`).
+TEST(EntradaNoDespacho, DisplaySetFontGuardaEDevolveAAnterior) {
+  Bancada b;
+  constexpr std::uint32_t kFonte = 0x8F00B000u;  // kObjetoFonte15
+  constexpr std::uint32_t kSaidaSetFont = 1581;
+  // Sem fonte: anterior e zero, e a nova fica guardada.
+  EXPECT_EQ(b.ChamaSaida(kSaidaSetFont, kObjDisplay, 0u, kFonte), 0u);
+  // Segunda troca devolve a primeira.
+  EXPECT_EQ(b.ChamaSaida(kSaidaSetFont, kObjDisplay, 0u, 0x8F00C000u), kFonte);
+  // Ponteiro que nao e fonte nossa: recusa COM O NOME, sem trocar.
+  EXPECT_EQ(b.ChamaSaida(kSaidaSetFont, kObjDisplay, 0u, 0x10000000u), kAeeUnsupported);
+  EXPECT_EQ(b.ChamaSaida(kSaidaSetFont, kObjDisplay, 0u, kFonte), 0x8F00C000u);
+}
+
 }  // namespace zb2::brew

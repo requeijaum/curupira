@@ -249,6 +249,21 @@ constexpr std::uint32_t kIidForceFeed = 0x0101eb0b;      // AEEIForceFeed.h:27
 // 40520 esta LIVRE no mapa das faixas: 40000-40223 sao as classes, 40300-40447 o
 // IGLES11, 40500-40514 o IGLES11Ext e 40600+ as sete extensoes QUALCOMM.
 constexpr std::uint32_t kVtableForceFeed = 40520;
+// AS FONTES STANDARD: UMA vtable partilhada de 6 slots em 40448 (faixa livre
+// 40448-40499, antes do IglesExt), com UM objecto por CLSID para a metrica
+// levar o tamanho nominal certo. Nao entram na aritmetica das classes
+// (`VtClasse(k)`): os 96 saidas de tres classes 10/11/12 cairiam DENTRO do
+// IGLES11 (40300-40447) e a cablagem de uma apagava a vtable do outro --
+// medido, com 6 testes a falhar. Precedente: o `IForceFeed`, tambem fora da
+// faixa, tambem com ramo explicito.
+constexpr std::uint32_t kVtableFonte = 40448;
+constexpr std::uint32_t kFonteSlots = 6;
+constexpr std::uint32_t kObjetoFonte11 = 0x8F00A000u;
+constexpr std::uint32_t kObjetoFonte15 = 0x8F00B000u;
+constexpr std::uint32_t kObjetoFonte36 = 0x8F00C000u;
+constexpr std::uint32_t kIidFonte = 0x01001022u;  // AEEIID_IFont (AEEIFont.h)
+static_assert(kVtableFonte + kFonteSlots <= 40500,
+              "a vtable das fontes tem de caber antes do IGLES11Ext");
 constexpr std::uint32_t kForceFeedSlots = brew_slots::kForceFeedSlots;
 static_assert(brew_slots::kForceFeedSlots == 5, "o IForceFeed tem 5 slots (IQI 3 + Write + Reset)");
 //
@@ -315,6 +330,8 @@ const char* NomeDoSlotDaClasse(std::uint32_t k, std::uint32_t slot);
 
 // O objecto desta classe, ou 0. Pura: o endereco nao depende de estado nenhum.
 std::uint32_t ObjetoDoClsid(std::uint32_t clsid);
+// O objecto da fonte pedida (0 se nao e fonte). Fora da aritmetica das classes.
+std::uint32_t ObjetoDaFonte(std::uint32_t clsid);
 
 // `true` = este slot tem implementacao (e so o `IAppHistory::Top` o tem hoje).
 bool SlotDaClasseImplementado(std::uint32_t k, std::uint32_t slot);

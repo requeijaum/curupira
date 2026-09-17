@@ -1375,3 +1375,45 @@ TEST(Classes, ISourceUtilTemNomeESlotsCorretos) {
 
 }  // namespace
 }  // namespace zb2::brew
+
+namespace zb2::brew {
+namespace {
+
+// ---------------------------------------------------------------------------
+// 11. AS TRES FONTES STANDARD (frente fontes): um IFont por CLSID, uma so
+//     vtable fora da faixa.
+//
+// MEDIDO (bateria, 62 titulos): o `ddragonz` pede `AEECLSID_FONT_STANDARD11`
+// (0x0102f679), `_STANDARD15` (0x01030852) e `_STANDARD36` (0x0102f681), 1x
+// cada, e nunca chama um metodo delas nos 300 quadros. Servir so o
+// `CreateInstance` e observar o que ele faz com os objectos e o proximo
+// passo honesto -- e e por isso que cada CLSID tem objecto proprio, com a
+// metrica do seu tamanho nominal.
+// ---------------------------------------------------------------------------
+TEST(Classes, AFonteServeMetricasERecusaDesenhoComNome) {
+  BancadaDoDespacho b;
+  // GetInfo devolve ascent/descent do tamanho nominal (regra declarada:
+  // ascent = altura, descent = altura/4).
+  b.M().Escrever32(kCelulaDoTeste, 0u);
+  b.ChamaSaida(kVtableFonte + 5, kObjetoFonte15, kCelulaDoTeste, 4u);
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
+  EXPECT_EQ(b.M().Ler16(kCelulaDoTeste), 15u);
+  EXPECT_EQ(b.M().Ler16(kCelulaDoTeste + 2u), 3u);
+  // MeasureText com ponteiros nulos: so a contagem, sem escrita.
+  b.ChamaSaida(kVtableFonte + 4, kObjetoFonte36, kPngDoTeste, 4u, 0u);
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
+  // MeasureText com saidas: 4 caracteres a (36/2)=18 px cada, sem limite.
+  b.M().Escrever32(0x80080000u, kCelulaDoTeste);
+  b.M().Escrever32(0x80080004u, kCelulaDoTeste + 4u);
+  b.ChamaSaida(kVtableFonte + 4, kObjetoFonte36, kPngDoTeste, 4u, 0x7FFFFFFFu);
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
+  EXPECT_EQ(b.M().Ler32(kCelulaDoTeste), 4u);
+  EXPECT_EQ(b.M().Ler32(kCelulaDoTeste + 4u), 72u);
+  // DrawText nao desenha sem motor de texto: recusa COM O NOME.
+  b.ChamaSaida(kVtableFonte + 3, kObjetoFonte11, 0u, 0u, 0u);
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("IFont::DrawText"), 1u);
+}
+
+}  // namespace
+}  // namespace zb2::brew

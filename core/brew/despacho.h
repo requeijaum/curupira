@@ -776,6 +776,7 @@ class Despacho {
   std::uint32_t dibs_ = 0;
   std::uint32_t applet_ = 0;
   std::uint32_t destino_ = 0;
+  std::uint32_t fonte_do_display_ = 0;  // `IDisplay::SetFont`: a fonte em vigor (0 = nenhuma)
   std::uint32_t vtable_bitmap_ = 0;
   std::uint32_t vtable_ficheiro_ = 0;
   // O `ISQLDatabase` so tem UM objecto: medido, o Z-Wheel abre um banco de cada

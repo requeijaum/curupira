@@ -214,6 +214,11 @@ constexpr std::uint32_t kSlotIdMkDir = 1544,
 constexpr std::uint32_t kSlotIdSprintf = 1560, kSlotIdVsprintf = 1561, kSlotIdHeapLock = 1562,
                        kSlotIdVsnprintf = 1566, kSlotIdRealloc = 1567,
                        kSlotIdFreeResData = 1563, kSlotIdCheckPriv = 1564;
+// 1581, e nao 1600+: o ramo-faixa do Unzip (`1599..1656`, linha ~3560) engole
+// qualquer id ali antes dos ramos de igualdade -- medido, com este proprio
+// `SetFont` a cair no `Unzip slot 8` em vez do seu ramo (nona ocorrencia do
+// erro de ordem desta arvore). 1581 esta abaixo de todas as faixas.
+constexpr std::uint32_t kSlotIdDisplaySetFont = 1581;  // IDisplay slot 17 (QW fontes: 3x no `ddragonz`)
 constexpr std::uint32_t kSlotIdGetTimerExpiration = 1600;  // IShell slot 13 (QW4: 1 pedido no `zenonia`)
 constexpr std::uint32_t kSlotIdHeapCheckAvail = 9006;      // IHeap slot 6 (QW4: 1 pedido no `bio4_brew`)
 static_assert(kSlotIdHeapCheckAvail == zb2::brew::VtGenerico(0) + 6,
@@ -2966,6 +2971,10 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           // serio TAMBEM devolve um objecto. O que nao se faz e devolver sucesso
           // com um objecto que se diz completo (P2).
           if (devolver == 0) devolver = zb2::brew::ObjetoDoClsid(iid);
+          // AS FONTES STANDARD: um objecto por CLSID com a metrica do seu
+          // tamanho nominal (frente fontes). Vem depois das classes e antes
+          // da extensao: e nossa, e nao e recusa.
+          if (devolver == 0) devolver = zb2::brew::ObjetoDaFonte(iid);
         }
         // E, POR FIM, A CLASSE QUE VIAJA NO PACOTE DO PROPRIO TITULO. Vem DEPOIS
         // de tudo o que e nosso e ANTES da recusa: a extensao e a ultima a
@@ -4188,6 +4197,22 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           cpu.Set(kR0, 0);  // SUCCESS
         } else {
           cpu.Set(kR0, kAeeUnsupported);
+        }
+      } else if (idx == kSlotIdDisplaySetFont) {
+        // `IFont *SetFont(IDisplay *po, AEEFont nFont, IFont *piFont)` --
+        // IDisplay slot 17. Guarda a anterior e devolve-a. So se ACEITA uma
+        // fonte nossa (os 3 objectos) ou o zero; outro ponteiro poria na
+        // medida texto que nao existe.
+        const std::uint32_t pif = cpu.Get(kR2);
+        if (pif != 0 && pif != zb2::brew::kObjetoFonte11 &&
+            pif != zb2::brew::kObjetoFonte15 && pif != zb2::brew::kObjetoFonte36) {
+          traco_.RegistarFalta(Area::Brew, "IDisplay::SetFont",
+                               "fonte 0x" + Hex(pif) + " nao e objecto desta arvore");
+          cpu.Set(kR0, kAeeUnsupported);
+        } else {
+          const std::uint32_t anterior = fonte_do_display_;
+          fonte_do_display_ = pif;
+          cpu.Set(kR0, anterior);
         }
       } else if (idx == kSlotIdBitmapGetInfo) {
         // `int GetInfo(IBitmap *po, AEEBitmapInfo *pinfo, int nSize)` -- IBitmap
