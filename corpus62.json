@@ -215,7 +215,8 @@
     "folder": "278986",
     "mod": "cninja",
     "clsid_hex": "0x10924de",
-    "assets": "none"
+    "assets": "none",
+    "max_steps": 50000000
   },
   {
     "folder": "278987",
@@ -239,7 +240,8 @@
     "folder": "279125",
     "mod": "supbtime",
     "clsid_hex": "0x10924e3",
-    "assets": "none"
+    "assets": "none",
+    "max_steps": 50000000
   },
   {
     "folder": "279126",
@@ -269,7 +271,8 @@
     "folder": "279233",
     "mod": "darkseal",
     "clsid_hex": "0x10924df",
-    "assets": "none"
+    "assets": "none",
+    "max_steps": 50000000
   },
   {
     "folder": "279369",
@@ -311,7 +314,8 @@
     "folder": "279889",
     "mod": "hbarrel",
     "clsid_hex": "0x109ec1c",
-    "assets": "none"
+    "assets": "none",
+    "max_steps": 50000000
   },
   {
     "folder": "280173",
