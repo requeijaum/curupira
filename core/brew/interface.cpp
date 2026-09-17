@@ -472,6 +472,18 @@ bool AtenderBitmapDaFamilia(ICpu& cpu, Memoria& mem, Alocador& al, Traco& traco,
         cpu.Set(kR0, kAeeUnsupported);
         return true;
       }
+      // O ROP E A COR TRANSPARENTE DA ORIGEM sao os dois dados que decidem se um
+      // blit COPIA ou SALTA: com `AEE_RO_TRANSPARENT` (7) e o pixel da origem
+      // igual ao `ncTransparent` DELA, o destino nao e tocado (SDK,
+      // `IBitmap_SetTransparencyColor`: "used when this bitmap is the source
+      // bitmap of a transparent bit blit operation"). Sem esta medida nao se
+      // sabe se um magenta no ecra e o jogo a pedir uma copia ou o emulador a
+      // saltar a cor errada -- e foi essa a duvida que obrigou a instrumentar.
+      traco.Emitir(Area::Video, Nivel::Informacao,
+                   slot == 10 ? "BITMAP_BLTIN" : "BITMAP_BLTOUT",
+                   "rop=" + std::to_string(arg(8)) + " origem.transparente=0x" +
+                       Hex(origem.transparente & 0xFFFFu) + " dx=" +
+                       std::to_string(arg(3)) + " dy=" + std::to_string(arg(4)));
       BlitEntreDIBs(mem, origem, alvo, static_cast<int>(arg(1)), static_cast<int>(arg(2)),
                     static_cast<int>(arg(3)), static_cast<int>(arg(4)),
                     static_cast<int>(arg(6)), static_cast<int>(arg(7)), arg(8));
@@ -566,6 +578,8 @@ bool AtenderBitmapDaFamilia(ICpu& cpu, Memoria& mem, Alocador& al, Traco& traco,
       // `int SetTransparencyColor(IBitmap*, NativeColor color)` -- publicada no
       // `ncTransparent` do IDIB, que o `FillRect`/`BltIn` leem com rop
       // TRANSPARENT.
+      traco.Emitir(Area::Video, Nivel::Informacao, "BITMAP_SETA_TRANSPARENCIA",
+                   "po=0x" + Hex(po) + " cor=0x" + Hex(arg(1) & 0xFFFFu));
       mem.Escrever32(po + CamposDoIdib::kNcTransparent, arg(1) & 0xFFFFu);
       cpu.Set(kR0, kAeeSuccess);
       return true;
