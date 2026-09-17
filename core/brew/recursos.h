@@ -216,6 +216,8 @@ struct PedidoDeRecurso {
   std::uint16_t tipo = kTipoImagem; // nType
   std::uint32_t buffer = 0;         // pBuf, tal como o guest o passou
   std::uint32_t pn_tamanho = 0;     // pnBufSize; o cabecalho diz "Cannot be NULL"
+  // LoadResDataEx tem pnBufSize; a API legacy LoadResData (slot 18) nao tem.
+  bool tem_pn_tamanho = true;
 };
 
 struct ResultadoDoRecurso {

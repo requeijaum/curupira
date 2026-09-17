@@ -3086,6 +3086,20 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // contrato, a medicao das 95 chamadas e a tabela do registo estao no
         // comentario do `AtenderGetHandler`, acima.
         (void)AtenderGetHandler(cpu);
+      } else if (idx == kBaseDoShell + brew_slots::kShell_LoadResData) {
+        // `void *LoadResData(IShell*, const char *pszResFile, uint16 id, ResType type)`
+        // (AEEIShell.h:250): a variante antiga de LoadResDataEx sempre aloca o
+        // blob. O a3d pede `font.bar`, id=5001, type=6 e depois passa o retorno
+        // a FreeResData; cair no slot generico devolvia 0x14 como se fosse ponteiro.
+        PedidoDeRecurso pedido;
+        pedido.ficheiro = LerTextoDe(mem_, cpu.Get(kR1), 512);
+        pedido.id = static_cast<std::uint16_t>(cpu.Get(kR2));
+        pedido.tipo = static_cast<std::uint16_t>(cpu.Get(kR3));
+        pedido.buffer = 0;  // a API legacy nao recebe pBuf: Recursos aloca.
+        pedido.pn_tamanho = 0;
+        pedido.tem_pn_tamanho = false;
+        const ResultadoDoRecurso r = recursos_.Atender(pedido);
+        cpu.Set(kR0, r.ponteiro);  // zero se o recurso nao existe.
       } else if (idx == kBaseDoShell + brew_slots::kShell_LoadResObject) {
         // `IBase *LoadResObject(IShell*, const char*, uint16 nResID, AEECLSID)`
         // -- o slot 19, que estava no ramo generico. O comentario da

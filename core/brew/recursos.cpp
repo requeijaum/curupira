@@ -177,7 +177,7 @@ ResultadoDoRecurso Recursos::Atender(const PedidoDeRecurso& pedido) {
     Recusar("pszResFile vazio (o SDK espera o NOME do ficheiro, ex. \"pacmania.bar\")", &r);
     return r;
   }
-  if (pedido.pn_tamanho == 0) {
+  if (pedido.tem_pn_tamanho && pedido.pn_tamanho == 0) {
     Recusar("pnBufSize nulo, e o cabecalho do SDK diz \"Cannot be NULL\"", &r);
     return r;
   }
@@ -282,7 +282,7 @@ ResultadoDoRecurso Recursos::Atender(const PedidoDeRecurso& pedido) {
       return r;
     }
     mem_.EscreverBloco(novo, recurso.dados, tamanho);
-    mem_.Escrever32(pedido.pn_tamanho, tamanho);
+    if (pedido.tem_pn_tamanho) mem_.Escrever32(pedido.pn_tamanho, tamanho);
     alocados_[novo] = tamanho;
     r.ok = true;
     r.forma = FormaDoRecurso::Alocacao;

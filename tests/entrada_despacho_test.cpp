@@ -1142,6 +1142,19 @@ TEST(FileMgrServido, ORmDirRespondeNosDoisEnderecosDoSlot) {
   EXPECT_EQ(b.Faltas("IFileMgr::slot6"), 0u);
 }
 
+TEST(RecursosNoShell, LoadResDataDoSlot18EAtendidoComONome) {
+  Bancada b;
+  constexpr std::uint32_t kNome = 0x000949C0u;
+  const char* ficheiro = "ausente.bar";
+  for (std::uint32_t k = 0; ficheiro[k] != 0; ++k)
+    b.Mem().Escrever8(kNome + k, static_cast<std::uint8_t>(ficheiro[k]));
+  b.Mem().Escrever8(kNome + 10, 0);
+  // Falha de recurso retorna ponteiro nulo, não EUNSUPPORTED do slot genérico.
+  EXPECT_EQ(b.ChamaSaida(kBaseDoShell + brew_slots::kShell_LoadResData, 0x80020000u,
+                         kNome, 5001u, 6u), 0u);
+  EXPECT_EQ(b.Faltas("IShell::slot18"), 0u);
+}
+
 TEST(FileMgrServido, OMkDirRespondeSuccessNosDoisEnderecosDoSlot) {
   Bancada b;
   constexpr std::uint32_t kNome = 0x00094980u;
