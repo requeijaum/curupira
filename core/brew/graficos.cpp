@@ -380,6 +380,12 @@ Atendido Graficos::Atender(ICpu& cpu, std::uint32_t indice) {
     // Guarda o bitmap de destino. Se pDst == 0 ou for um IBitmap conhecido,
     // atualiza o estado e devolve SUCCESS.
     const std::uint32_t pdst = cpu.Get(kR1);
+    if (pdst != 0 && (pdst < kObjDibBase || pdst >= kObjDibBase + 0x1000u)) {
+      RegistarRecusa("IGraphics::SetDestination",
+                     "pDst=0x" + Hex(pdst) + " nao e IBitmap desta arvore");
+      cpu.Set(kR0, kAeeUnsupported);
+      return Atendido::NaoImplementado;
+    }
     estado_.destino = pdst;
     cpu.Set(kR0, kAeeSuccess);
     return Atendido::Feito;

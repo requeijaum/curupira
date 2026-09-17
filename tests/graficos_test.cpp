@@ -581,6 +581,10 @@ TEST(Graficos, SetDestinationEGetDestinationGuardamODestino) {
   EXPECT_EQ(b.Pede(kGraphics_SetDestination, kNovoDestino), kAeeSuccess);
   EXPECT_EQ(b.Pede(kGraphics_GetDestination), kNovoDestino);
   EXPECT_EQ(b.Faltas("IGraphics::SetDestination"), 0u);
+  // Um ponteiro que nao e IBitmap desta arvore nao pode virar destino mudo.
+  EXPECT_EQ(b.Pede(kGraphics_SetDestination, 0x00001234u), kAeeUnsupported);
+  EXPECT_EQ(b.Pede(kGraphics_GetDestination), kNovoDestino);
+  EXPECT_EQ(b.Faltas("IGraphics::SetDestination"), 1u);
 }
 
 TEST(Graficos, OPonteiroDeSaidaForaDoMapaNaoAlocaMemoria) {
