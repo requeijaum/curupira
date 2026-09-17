@@ -3151,8 +3151,24 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           traco_.Emitir(Area::Brew, Nivel::Aviso, "IFILEMGR_GETINFO",
                         nome_info + " -> EFAILED (nao existe na VFS)");
           cpu.Set(kR0, static_cast<std::uint32_t>(kAeeFailed));
-          continue;
-        }
+          // NAO `continue` AQUI. O `++resultado.passos` do laco desta fase esta no
+          // FIM do corpo (`:4936`, sob o `while (resultado.passos < limite)` de
+          // `:2477`): um `continue` SALTA-O, o tecto nunca fecha e a fase nunca
+          // acaba. Foi o que aconteceu -- o ramo de erro do `GetInfo` prendeu o
+          // teste `FileMgrServido.OGetInfo...` para sempre (o teste leva a VFS
+          // VAZIA, logo cai sempre aqui). No titulo nao se via: as 2 chamadas do
+          // `ridgeracer` acertam no ficheiro e seguem pelo caminho bom.
+          //
+          // A FORMA CERTA e a dos ramos vizinhos (o `RmDir`, acima): servir a
+          // chamada e DEIXAR CAIR no fecho comum, que faz o retorno e conta o
+          // passo. Este e o mesmo defeito que matou a varredura do `audit` (um
+          // `continue` antes do `++resultado.passos`, 20 h a 99% de CPU).
+          //
+          // E O `else` NAO E ORNAMENTO: sem ele o fluxo do ERRO cai dentro do
+          // caminho de SUCESSO (logo abaixo), que escreve `kAeeSuccess` por cima
+          // do `EFAILD` -- a chamada respondia 0 a um ficheiro que nao existe. O
+          // teste apanhou-o na primeira assercao.
+        } else {
         if (p_info != 0) {
           mem_.Escrever8(p_info + 0, 0);                                        // AEE_FA_NORMAL
           mem_.Escrever32(p_info + 4, 0);                                       // dwCreationDate
@@ -3170,6 +3186,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         traco_.Emitir(Area::Brew, Nivel::Depuracao, "IFILEMGR_GETINFO",
                       nome_info + " -> " + std::to_string(bytes_info.size()) + " bytes");
         cpu.Set(kR0, static_cast<std::uint32_t>(kAeeSuccess));
+        }
       } else if (idx == kVtableFileMgr + brew_slots::kFileMgr_EnumNext) {
         // `boolean EnumNext(IFileMgr *po, FileInfo *pInfo)` -- IFileMgr slot 11
         // (`kFileMgr_EnumNext`; `AEEFile.h`, `IFILEMGR_EnumNext`).

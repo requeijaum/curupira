@@ -127,8 +127,23 @@ TEST(Classes, OClsidQueOSDKNaoDeclaraNaoRecebeNomeInventado) {
   EXPECT_EQ(NomeDoClsid(0x01011810u), nullptr);
   EXPECT_EQ(DescreverClsid(0x01011810u), "desconhecido (0x01011810)");
   EXPECT_EQ(DescreverClsid(0x0100104fu), "AEECLSID_AppHistory (0x0100104f)");
-  // Um valor absurdo tambem nao inventa nada.
-  EXPECT_EQ(NomeDoClsid(0xDEADBEEFu), nullptr);
+
+  // O `0xDEADBEEF` DEIXOU de servir para esta prova, e a razao e a fonte: o
+  // `classes.txt` do Toolset DECLARA-O --
+  // `AEECLSID_IUIMDBTest,0xdeadbeef,databases,icontacts` (linha 2629 do
+  // `tools/clsids-do-toolset.csv`). O motor passou a dar-lhe esse nome, e esse
+  // e o contrato novo: quem declara a classe e uma FONTE, e nao o nosso juizo
+  // sobre que valores sao "plausiveis". 45 dos 3208 valores do ficheiro saem da
+  // familia `0x01xxxxxx` (`0x000000d0`, `0x12345678`, `0x22222222`,
+  // `0xdeadd00d`...) e ficam, porque sao DELES: filtrar por forma seria inventar.
+  EXPECT_STREQ(NomeDoClsid(0xDEADBEEFu), "AEECLSID_IUIMDBTest");
+
+  // O que continua sem fonte nenhuma continua SEM NOME -- e esta e a prova que
+  // interessa: o valor acima do `tectoy` nao esta em nenhum dos tres sitios
+  // (os `*.bid`, os `*.h` e o `classes.txt`), e a resposta continua a ser
+  // "desconhecido" com o NUMERO, e nao um nome plausivel.
+  EXPECT_EQ(NomeDoClsid(0x01011810u), nullptr);
+  EXPECT_EQ(DescreverClsid(0x01011810u), "desconhecido (0x01011810)");
 }
 
 // ---------------------------------------------------------------------------

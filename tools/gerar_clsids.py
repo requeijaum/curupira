@@ -247,7 +247,37 @@ def main():
         raise SystemExit(f"SDK nao e um directorio: {sdk}")
 
     mapa, conflitos = recolher(sdk)
+    # A LISTA DO TOOLSET, como TERCEIRA fonte.
+    #
+    # O SDK declara as classes em `*.bid` e nos `*.h`, mas ha 3208 delas no
+    # `classes.txt` do Toolset (`utilities/SystemTask/c_systemtaskapp/`) e **1447
+    # nao estao em nenhum daqueles** -- incluindo as FONTES
+    # (`AEECLSID_FONT_STANDARD11` = 0x0102f679, `_15` = 0x01030852), que dois
+    # titulos do corpus pedem e recebiam como "CLSID desconhecido": um numero, e
+    # nao um nome, que e o que a regra P2 desta casa exige.
+    #
+    # O CSV esta VENDORIZADO em `tools/clsids-do-toolset.csv` (ficheiro do SDK,
+    # nao escrito por nos): o Toolset vive FORA da raiz que este gerador recebe, e
+    # uma leitura de um caminho que so existe nesta maquina nao serve para o CI.
+    # Entra como fonte de MENOR prioridade -- quem declara a classe e o `*.bid`.
+    acrescentados = 0
+    csv = Path(__file__).resolve().parent / "clsids-do-toolset.csv"
+    if csv.is_file():
+        for linha in csv.read_text(errors="replace").splitlines():
+            campos = linha.split(",")
+            if len(campos) < 2 or not campos[1].lower().startswith("0x"):
+                continue
+            nome, valor = campos[0].strip(), campos[1].strip()
+            if nome in mapa:
+                continue
+            # O `mapa` guarda o TEXTO da definicao (o mesmo que vem dos `*.h`, onde
+            # muitos sao EXPRESSOES) -- o `resolver` e que avalia. Guardar aqui um
+            # inteiro ja avaliado parte o `avaliar` (foi o erro da primeira versao).
+            mapa[nome] = (valor, "clsids-do-toolset.csv")
+            acrescentados += 1
     ok, maus = resolver(mapa)
+    if acrescentados:
+        print(f"clsids-do-toolset.csv: {acrescentados} nomes que o SDK nao declarava")
     if not ok:
         raise SystemExit("nenhum CLSID resolvido -- o SDK nao e este")
 
