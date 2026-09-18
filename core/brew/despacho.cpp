@@ -248,6 +248,8 @@ static_assert(kSlotIdHeapCheckAvail == zb2::brew::VtGenerico(0) + 6,
 // `grep -n "= 15[0-9][0-9]" core/brew/despacho.cpp`), e a guarda
 // `SemIdsRepetidos` abaixo passa a recusar a proxima colisao no arranque.
 constexpr std::uint32_t kSlotIdDbgPrintf = 1580;
+// 1582 e livre; 1599..1656 sao reservados a IUnzipAStream.
+constexpr std::uint32_t kSlotIdStrrchr = 1582;
 // A FRENTE io2 (etapa 12): IUnzipAStream e IMemAStream, servidos a serio.
 //
 // Os objectos e as vtables sao construidos no `InstalarAjudantes` (indices
@@ -307,6 +309,7 @@ constexpr std::uint32_t kSlotStrstr = brew_ajudantes::kAjudante_strstr;
 constexpr std::uint32_t kSlotSleep = brew_ajudantes::kAjudante_sleep;
 constexpr std::uint32_t kSlotStrcmp = brew_ajudantes::kAjudante_strcmp;
 constexpr std::uint32_t kSlotStrchr = brew_ajudantes::kAjudante_strchr;
+constexpr std::uint32_t kSlotStrrchr = brew_ajudantes::kAjudante_strrchr;
 constexpr std::uint32_t kSlotMemmove = brew_ajudantes::kAjudante_memmove;
 constexpr std::uint32_t kSlotStrtowstr = brew_ajudantes::kAjudante_strtowstr;
 constexpr std::uint32_t kSlotGetAeeVersion = brew_ajudantes::kAjudante_GetAEEVersion;
@@ -2128,6 +2131,7 @@ void Despacho::InstalarAjudantes(const Saidas& saidas, Endereco tabela) {
       {kSlotSleep, kSlotIdSleep},
       {kSlotStrcmp, kSlotIdStrcmp},
       {kSlotStrchr, kSlotIdStrchr},
+      {kSlotStrrchr, kSlotIdStrrchr},
       {kSlotMemmove, kSlotIdMemmove},
       {kSlotStrtowstr, kSlotIdStrtowstr},
       {kSlotGetAeeVersion, kSlotIdGetAeeVersion},
@@ -3802,6 +3806,17 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           ++i;
         }
         cpu.Set(kR0, achou);
+      } else if (idx == kSlotIdStrrchr) {
+        // `char *strrchr(const char *s1, int ch)` -- AEEHelperFuncs[0x01C].
+        // Procura inclusive o NUL: strrchr("abc", 0) aponta para o terminador.
+        const std::uint8_t procurado = static_cast<std::uint8_t>(cpu.Get(kR1));
+        std::uint32_t ultimo = 0;
+        for (std::uint32_t i = 0;; ++i) {
+          const std::uint8_t byte = mem_.Ler8(r0 + i);
+          if (byte == procurado) ultimo = r0 + i;
+          if (byte == 0) break;
+        }
+        cpu.Set(kR0, ultimo);
       } else if (idx == kSlotIdMemmove) {
         const std::uint32_t src = cpu.Get(kR1), n = cpu.Get(kR2);
         constexpr std::uint32_t kLimiteDaCopia = 0x04000000u;  // 64 MiB

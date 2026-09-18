@@ -595,6 +595,26 @@ TEST(Ajudantes, OStrstrEstaEm0x0D8EDistingueMaiusculas) {
 // familia `emulator_neo` em 640 pixels e 1 cor. Cada teste diz o que MEDIU.
 // ===========================================================================
 
+TEST(Ajudantes, OStrrchrDevolveAUltimaOcorrenciaInclusiveNoNul) {
+  // `char *strrchr(const char *s1, int ch)` e AEEHelperFuncs[0x01C].
+  // ConfTest/Dragon Vs Chicken usa-o para separar extensoes de media.
+  Bancada b;
+  constexpr std::uint32_t kTexto = 0x80210600u;
+  const char* texto = "media/right.wav";
+  for (std::uint32_t i = 0;; ++i) {
+    b.Mem().Escrever8(kTexto + i, static_cast<std::uint8_t>(texto[i]));
+    if (texto[i] == 0) break;
+  }
+  EXPECT_EQ(b.ChamaSaida(1582, kTexto, '.'), kTexto + 11);
+  EXPECT_EQ(b.ChamaSaida(1582, kTexto, '/'), kTexto + 5);
+  EXPECT_EQ(b.ChamaSaida(1582, kTexto, 'x'), 0u);
+  // Como libc, procurar NUL devolve o endereco do terminador.
+  EXPECT_EQ(b.ChamaSaida(1582, kTexto, 0), kTexto + 15);
+  EXPECT_EQ(b.Mem().Ler32(kTabela + 0x01Cu),
+            b.S().Endereco(1582));
+  EXPECT_EQ(b.Faltas("AEEHelperFuncs[0x01c] strrchr"), 0u);
+}
+
 TEST(DrawRect, RectNuloComFillLimpaOEcraInteiro) {
   // `AEEIDisplay.h:1043-1045`: "If pRect is NULL and dwFlags contains
   // IDF_RECT_FILL, this function clears the entire destination bitmap (or
