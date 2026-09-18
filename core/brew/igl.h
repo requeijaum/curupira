@@ -284,6 +284,9 @@ constexpr int kModoTexture = 2;
 // titulo ("qual e o maior lado que a maquina aceita?"), e a resposta e a do
 // console.
 constexpr std::uint32_t kTexturaMaxima = 1024;
+// O estado desta arvore guarda apenas GL_TEXTURE0; ActiveTexture recusa GL_TEXTURE1+.
+constexpr std::uint32_t GL_MAX_TEXTURE_UNITS = 0x84E2u;
+constexpr std::uint32_t kUnidadesDeTextura = 1u;
 
 struct PilhaDeMatrizes {
   float m[kFundosMax][16];

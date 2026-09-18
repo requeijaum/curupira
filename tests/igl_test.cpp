@@ -1800,9 +1800,10 @@ TEST(FrenteGetint, OMaxTextureSizeDoIgles11EhServidoPelaTabela) {
 
   // O `GL_MAX_TEXTURE_SIZE` DEIXOU DE SER O UNICO: as tres profundidades de pilha
   // continuam servidas pelo mesmo caminho, com os mesmos numeros do motor.
-  const std::uint32_t casos[3][2] = {{GL_MAX_MODELVIEW_STACK_DEPTH, 16u},
+  const std::uint32_t casos[4][2] = {{GL_MAX_MODELVIEW_STACK_DEPTH, 16u},
                                      {GL_MAX_PROJECTION_STACK_DEPTH, 2u},
-                                     {GL_MAX_TEXTURE_STACK_DEPTH, 2u}};
+                                     {GL_MAX_TEXTURE_STACK_DEPTH, 2u},
+                                     {GL_MAX_TEXTURE_UNITS, kUnidadesDeTextura}};
   for (const auto& caso : casos) {
     b.mem.Escrever32(kDestino, 0xDEADBEEFu);
     b.cpu.Set(kR0, kObjetoIgles);

@@ -1776,14 +1776,16 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
         // buffer" e "nao ha estado nenhum".
         valor = stencil_limpeza_;
       } else if (pname == GL_MAX_TEXTURE_SIZE) {
-        // O UNICO `pname` QUE OS TITULOS PEDEM A SERIO, e o numero e o do
-        // console, com a fonte: `kTexturaMaxima` (`igl.h`), do guia 0.97:1254
-        // ("texture sizes of up to 1024 x 1024"). Esta linha era uma RECUSA ate
-        // agora, com o motivo "a memoria de texturas nao existe nesta etapa" --
-        // que era verdade para o rasterizador de entao e deixou de ser: quem
-        // amostra a textura e o `AmostrarTextura`, que calcula o endereco do
-        // texel na memoria do guest e nao tem orcamento de textura nenhum.
+        // O UNICO `pname` QUE OS TITULOS PEDIAM no corpus original, e o numero
+        // e o do console, com a fonte: `kTexturaMaxima` (`igl.h`).
         valor = kTexturaMaxima;
+      } else if (pname == GL_MAX_TEXTURE_UNITS) {
+        // Dragon Vs Chicken (ConfTest da SDK) consulta isto antes de carregar
+        // QX. Este e estado do NOSSO motor, nao uma alegacao sobre GPU Zeebo:
+        // ActiveTexture/ClientActiveTexture aceitam somente GL_TEXTURE0 e so
+        // existe uma textura ligada/array de texcoords. Declarar 2 (o hardware
+        // suporta duas) faria QX usar GL_TEXTURE1, que este motor recusa.
+        valor = kUnidadesDeTextura;
       } else {
         char det[192];
         const char* nome = NomeDoPnameDeConsulta(pname);
