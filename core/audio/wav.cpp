@@ -71,13 +71,17 @@ std::vector<std::int16_t> DescodificarIma(const std::uint8_t* dados, std::size_t
 std::optional<Wav> DescodificarWav(const std::vector<std::uint8_t>& bytes) {
   if (bytes.size() < 12 || std::memcmp(bytes.data(), "RIFF", 4) != 0 ||
       std::memcmp(bytes.data() + 8, "WAVE", 4) != 0) return std::nullopt;
+  // O RIFF pode estar dentro de um resource blob. So os bytes declarados pelo
+  // proprio RIFF pertencem a onda; o sufixo e do recipiente, nao outro chunk.
+  const std::size_t fim_riff = std::size_t(Ler32(bytes.data() + 4)) + 8;
+  if (fim_riff < 12 || fim_riff > bytes.size()) return std::nullopt;
   std::uint16_t formato = 0, canais = 0, alinhamento = 0, bits = 0;
   std::uint32_t taxa = 0;
   const std::uint8_t* dados = nullptr; std::size_t tamanho = 0; bool tem_formato = false;
-  for (std::size_t p = 12; p + 8 <= bytes.size();) {
+  for (std::size_t p = 12; p + 8 <= fim_riff;) {
     const std::uint32_t n = Ler32(bytes.data() + p + 4);
     const std::size_t corpo = p + 8;
-    if (n > bytes.size() - corpo) return std::nullopt;
+    if (n > fim_riff - corpo) return std::nullopt;
     if (std::memcmp(bytes.data() + p, "fmt ", 4) == 0 && n >= 16) {
       formato = Ler16(bytes.data() + corpo); canais = Ler16(bytes.data() + corpo + 2);
       taxa = Ler32(bytes.data() + corpo + 4); alinhamento = Ler16(bytes.data() + corpo + 12);

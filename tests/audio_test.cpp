@@ -23,6 +23,18 @@ std::vector<std::int16_t> Onda(std::size_t quantas, std::int16_t amplitude) {
   return v;
 }
 
+TEST(Wav, IgnoraSufixoDepoisDoTamanhoDeclaradoNoRiff) {
+  std::vector<std::uint8_t> wav = {
+      'R','I','F','F', 38,0,0,0, 'W','A','V','E',
+      'f','m','t',' ', 16,0,0,0, 1,0, 1,0, 0x22,0x56,0,0,
+      0x44,0xac,0,0, 2,0,16,0, 'd','a','t','a', 2,0,0,0, 0x34,0x12,
+      'J','U','N','K', 0xff,0xff,0xff,0xff};
+  const auto som = zb2::audio::DescodificarWav(wav);
+  ASSERT_TRUE(som.has_value());
+  ASSERT_EQ(som->amostras.size(), 1u);
+  EXPECT_EQ(som->amostras[0], 0x1234);
+}
+
 TEST(Wav, IMAAdpcmMonoDecodificaPreditorEOrdemDosNibbles) {
   // RIFF/WAVE, fmt IMA-ADPCM mono, bloco de 5 bytes: predictor 0, indice 0,
   // nibbles 7 e 7. A tabela IMA produz 0, 11, 41.

@@ -687,6 +687,41 @@ TEST(Media, PlaySemDadosERecusado) {
 // amostras nao nulas, som inventado devolvido com SUCCESS. Estes tres testes
 // prendem a correcao -- e o do meio e o que teria apanhado o defeito, porque o
 // PAR era o caso silencioso.
+TEST(Media, OBufferWavPcmRecebeAmostrasReais) {
+  Bancada b;
+  const std::uint32_t po = b.CriarMedia(0x01005503u /* AEECLSID_MEDIAADPCM */, kPponovo);
+  b.ApontarParaObjeto(po);
+  const std::vector<std::uint8_t> wav = {
+      'R','I','F','F', 38,0,0,0, 'W','A','V','E',
+      'f','m','t',' ', 16,0,0,0, 1,0, 1,0, 0x22,0x56,0,0,
+      0x44,0xac,0,0, 2,0,16,0, 'd','a','t','a', 2,0,0,0, 0x34,0x12};
+  for (std::size_t i = 0; i < wav.size(); ++i) b.Mem().Escrever8(kBuffer + i, wav[i]);
+  b.Mem().Escrever32(kMediaData + kOffMidiaClsData, kMmdBuffer);
+  b.Mem().Escrever32(kMediaData + kOffMidiaPData, kBuffer);
+  b.Mem().Escrever32(kMediaData + kOffMidiaDwSize, static_cast<std::uint32_t>(wav.size()));
+  EXPECT_EQ(b.DefinirDados(), kAeeSucesso);
+  EXPECT_EQ(b.OMedia().EstadoDe(po), kMmEstadoPronto);
+  EXPECT_EQ(b.Mem().Ler32(po + kOffObjAmostrasTotal), 1u);
+  EXPECT_EQ(b.OTraco().ContagemFaltas().count("IMedia::SetMediaParm(MMD_BUFFER)"), 0u);
+}
+
+TEST(Media, OBufferWavImaRecebeAmostrasDescodificadas) {
+  Bancada b;
+  const std::uint32_t po = b.CriarMedia(0x01005503u /* AEECLSID_MEDIAADPCM */, kPponovo);
+  b.ApontarParaObjeto(po);
+  const std::vector<std::uint8_t> wav = {
+      'R','I','F','F',45,0,0,0,'W','A','V','E','f','m','t',' ',20,0,0,0,
+      17,0,1,0,0x22,0x56,0,0,0,0,0,0,5,0,4,0,2,0,3,0,
+      'd','a','t','a',5,0,0,0,0,0,0,0,0x77,0};
+  for (std::size_t i = 0; i < wav.size(); ++i) b.Mem().Escrever8(kBuffer + i, wav[i]);
+  b.Mem().Escrever32(kMediaData + kOffMidiaClsData, kMmdBuffer);
+  b.Mem().Escrever32(kMediaData + kOffMidiaPData, kBuffer);
+  b.Mem().Escrever32(kMediaData + kOffMidiaDwSize, static_cast<std::uint32_t>(wav.size()));
+  EXPECT_EQ(b.DefinirDados(), kAeeSucesso);
+  EXPECT_EQ(b.Mem().Ler32(po + kOffObjAmostrasTotal), 3u);
+  EXPECT_EQ(b.OTraco().ContagemFaltas().count("IMedia::SetMediaParm(MMD_BUFFER)"), 0u);
+}
+
 TEST(Media, OBufferMp3RecebeRelogioVirtual) {
   Bancada b;
   const std::uint32_t po = b.CriarMedia(0x01005502u /* AEECLSID_MEDIAMP3 */, kPponovo);

@@ -687,6 +687,23 @@ std::int32_t Media::DefinirDados(Objeto& o, std::int32_t p1, std::int32_t p2) {
       o.tem_dados = false;
       o.estado = kMmEstadoPronto;
       o.posicao = 0;
+      if (const auto onda = audio::DescodificarWav(o.fluxo); onda.has_value()) {
+        o.amostras = ReamostrarParaOMisturador(*onda);
+        o.tem_dados = !o.amostras.empty();
+        if (o.tem_dados) {
+          mem_.Escrever32(o.endereco + kOffObjAmostrasTotal,
+                          static_cast<std::uint32_t>(o.amostras.size()));
+          mem_.Escrever32(o.endereco + kOffObjPosicao, 0);
+          mem_.Escrever32(o.endereco + kOffObjEstado, static_cast<std::uint32_t>(o.estado));
+          ++pedidos_aceitos_;
+          traco_.Emitir(Area::Audio, Nivel::Informacao, "IMEDIA_WAV",
+                        std::to_string(tam) + " bytes RIFF IMA/PCM descodificados para " +
+                            std::to_string(o.amostras.size()) + " amostras virtuais");
+          traco_.RegistarPressuposto(Area::Audio, "saida_de_audio_do_host_indisponivel",
+                                     "WAV descodificado e cronometrado; misturador virtual sem sink de audio");
+          return kAeeSucesso;
+        }
+      }
       if (const auto tempo = audio::CronometrarFluxo(o.fluxo); tempo.has_value()) {
         const std::uint64_t total = std::uint64_t(tempo->milissegundos) * kAmostrasPorMs;
         if (total > 0 && total <= 32u * 1024u * 1024u) {
