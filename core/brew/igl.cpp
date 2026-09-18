@@ -1476,7 +1476,9 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
       return feito(1);
     }
     case kIgl_PixelStorei: {
-      if (a.reg[0] != GL_UNPACK_ALIGNMENT) return recusa("pname de PixelStore desconhecido");
+      if (a.reg[0] != GL_UNPACK_ALIGNMENT && a.reg[0] != GL_PACK_ALIGNMENT) {
+        return recusa("pname de PixelStore desconhecido");
+      }
       if (a.reg[1] != 1 && a.reg[1] != 2 && a.reg[1] != 4 && a.reg[1] != 8) {
         return recusa("alinhamento de desempacotamento invalido");
       }

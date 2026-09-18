@@ -586,6 +586,25 @@ TEST(RegistoGl, ParametroAcumuladoEObservavel) {
   EXPECT_EQ((*v)[0], Fixo(0.25f));
 }
 
+TEST(RegistoGl, PixelStoreiAceitaPackAlignmentMedidoNoDdragonz) {
+  Banco b;
+  EXPECT_EQ(b.igl.Executar(kIgl_PixelStorei, Args(GL_PACK_ALIGNMENT, 2), nullptr), ResultadoGl::Feito);
+  const auto* valor = b.igl.Parametro(kIgl_PixelStorei, GL_PACK_ALIGNMENT);
+  ASSERT_NE(valor, nullptr);
+  ASSERT_EQ(valor->size(), 1u);
+  EXPECT_EQ((*valor)[0], 2u);
+}
+
+TEST(RegistoGl, PixelStoreiMantemAlinhamentoValidoQuandoRecusaValor) {
+  Banco b;
+  EXPECT_EQ(b.igl.Executar(kIgl_PixelStorei, Args(GL_UNPACK_ALIGNMENT, 2), nullptr), ResultadoGl::Feito);
+  EXPECT_EQ(b.igl.Executar(kIgl_PixelStorei, Args(GL_PACK_ALIGNMENT, 3), nullptr), ResultadoGl::Recusado);
+  const auto* valor = b.igl.Parametro(kIgl_PixelStorei, GL_UNPACK_ALIGNMENT);
+  ASSERT_NE(valor, nullptr);
+  EXPECT_EQ((*valor)[0], 2u);
+  EXPECT_EQ(b.igl.Executar(kIgl_PixelStorei, Args(0xdead, 2), nullptr), ResultadoGl::Recusado);
+}
+
 TEST(RegistoGl, ALarguraDeLinhaDizOQueFazENaoPrometeOLinAlem) {
   Banco b;
   // O DEFEITO QUE ESTE TESTE APANHA (o padrao P2): o `kIgl_LineWidthx` guardava o

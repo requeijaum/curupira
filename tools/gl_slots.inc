@@ -216,6 +216,7 @@ constexpr unsigned GL_FASTEST = 0x1101u;
 constexpr unsigned GL_NICEST = 0x1102u;
 constexpr unsigned GL_DONT_CARE = 0x1100u;
 constexpr unsigned GL_UNPACK_ALIGNMENT = 0x0CF5u;
+constexpr unsigned GL_PACK_ALIGNMENT = 0x0D05u;
 constexpr unsigned GL_MAX_TEXTURE_SIZE = 0x0D33u;
 constexpr unsigned GL_MAX_MODELVIEW_STACK_DEPTH = 0x0D36u;
 constexpr unsigned GL_MAX_PROJECTION_STACK_DEPTH = 0x0D38u;
