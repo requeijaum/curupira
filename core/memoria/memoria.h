@@ -154,9 +154,15 @@ class Memoria {
   // QUEM LEU SABE-SE PELO PC DECLARADO A MEMORIA (`PcAtual`, que o `Passo` poe
   // no inicio de cada instrucao): a leitura nasce com o PC de quem a fez.
   struct LeituraNaoMapeada {
-    Endereco endereco = 0;  // o endereco que nao existe
-    Endereco pc = 0;        // o PC declarado a memoria no instante da leitura
+    Endereco endereco = 0;
+    Endereco pc = 0;
+    std::string leitor_host;
+    Endereco r0 = 0, r1 = 0, lr = 0;
   };
+  // Contexto observacional da chamada C++ que le memoria guest.
+  void ContextoLeitorHost(std::string leitor, Endereco r0, Endereco r1, Endereco lr) {
+    leitor_host_ = std::move(leitor); leitor_r0_ = r0; leitor_r1_ = r1; leitor_lr_ = lr;
+  }
 
   // Consome a pendencia, mas SO se ela for da instrucao `pc` (o mesmo PC que o
   // `Passo` acabou de declarar). Uma pendencia de outro dono fica por consumir:
@@ -178,6 +184,8 @@ class Memoria {
       leitura_nao_mapeada_pendente_ = true;
       endereco_da_leitura_nao_mapeada_pendente_ = a;
       pc_da_leitura_nao_mapeada_pendente_ = pc_;
+      leitura_pendente_.leitor_host = leitor_host_;
+      leitura_pendente_.r0 = leitor_r0_; leitura_pendente_.r1 = leitor_r1_; leitura_pendente_.lr = leitor_lr_;
     }
   }
 
@@ -201,6 +209,8 @@ class Memoria {
     if (!leitura_nao_mapeada_pendente_) return false;
     lida->endereco = endereco_da_leitura_nao_mapeada_pendente_;
     lida->pc = pc_da_leitura_nao_mapeada_pendente_;
+    lida->leitor_host = leitura_pendente_.leitor_host;
+    lida->r0 = leitura_pendente_.r0; lida->r1 = leitura_pendente_.r1; lida->lr = leitura_pendente_.lr;
     leitura_nao_mapeada_pendente_ = false;
     ++leituras_nao_mapeadas_fora_de_instrucao_;
     ultima_leitura_fora_de_instrucao_ = *lida;
@@ -256,6 +266,9 @@ class Memoria {
   mutable Endereco pc_da_leitura_nao_mapeada_pendente_ = 0;
   mutable std::uint64_t leituras_nao_mapeadas_fora_de_instrucao_ = 0;
   mutable LeituraNaoMapeada ultima_leitura_fora_de_instrucao_;
+  std::string leitor_host_;
+  Endereco leitor_r0_ = 0, leitor_r1_ = 0, leitor_lr_ = 0;
+  mutable LeituraNaoMapeada leitura_pendente_;
 };
 
 }  // namespace zb2

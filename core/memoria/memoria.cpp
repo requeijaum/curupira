@@ -58,6 +58,8 @@ std::uint8_t Memoria::Ler8(Endereco a) const {
       // leitura feita entre passos (o hospedeiro) fica com o PC da ultima
       // instrucao do guest a correr -- que e quem a provocou, no caso medido.
       pc_da_leitura_nao_mapeada_pendente_ = pc_;
+      leitura_pendente_.leitor_host = leitor_host_;
+      leitura_pendente_.r0 = leitor_r0_; leitura_pendente_.r1 = leitor_r1_; leitura_pendente_.lr = leitor_lr_;
     }
     return 0;
   }

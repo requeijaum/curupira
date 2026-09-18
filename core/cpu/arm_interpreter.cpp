@@ -2168,11 +2168,12 @@ std::uint64_t ArmInterpreter::Passo() {
     Memoria::LeituraNaoMapeada fora;
     if (mem_.RecolherLeituraNaoMapeadaForaDeInstrucao(&fora) && fora.endereco != pc) {
       if (traco_ != nullptr) {
-        char buf[160];
+        char buf[320];
         std::snprintf(buf, sizeof(buf),
-                      "endereco=0x%08x pc_de_quem_leu=0x%08x -- leitura fora de instrucao "
-                      "(hospedeiro); o PC e o da ultima instrucao do guest a correr",
-                      fora.endereco, fora.pc);
+                      "endereco=0x%08x pc_de_quem_leu=0x%08x leitor=%s r0=0x%08x r1=0x%08x lr=0x%08x "
+                      "-- leitura fora de instrucao (hospedeiro)", fora.endereco, fora.pc,
+                      fora.leitor_host.empty() ? "(nao etiquetado)" : fora.leitor_host.c_str(),
+                      fora.r0, fora.r1, fora.lr);
         traco_->RegistarFalta(Area::Memoria, "Memoria::Ler fora de instrucao", buf);
       }
     }
@@ -2183,6 +2184,7 @@ std::uint64_t ArmInterpreter::Passo() {
   // memoria e meio instrumento (P7). **E agora tambem e o PC que fica gravado
   // na leitura nao mapeada: e ele que diz DE QUEM e a leitura.**
   mem_.PcAtual(pc);
+  mem_.ContextoLeitorHost("", 0, 0, 0);  // instrucao guest nao e leitor host
   const bool thumb = (Cpsr() & Cpsr::kT) != 0;
   // BUSCAR UMA INSTRUCAO NUM ENDERECO NAO MAPEADO e o defeito mais silencioso
   // deste CPU: o `Ler32` devolvia 0, o 0 era executado como `andeq` (NOP) e a

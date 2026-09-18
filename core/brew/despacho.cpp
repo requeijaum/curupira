@@ -2740,6 +2740,9 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
       // (`ldr r0,[r4,#0xc]` lido a deslocado) e a deriva para fora do modulo.
       const std::uint32_t kernel_retorno_ = lr;
       const std::uint32_t r0 = cpu.Get(kR0);
+      // Etiqueta observacional: se C++ ler argumento guest nao mapeado, o
+      // proximo Passo sabe qual saida host o fez. Nao muda bytes nem retorno.
+      mem_.ContextoLeitorHost("saida=" + std::to_string(idx), r0, cpu.Get(kR1), lr);
       // Esta saida RECUSOU? Os ramos de recusa marcam-no; o epilogo do bloco
       // usa-o para decidir se a sequencia de recusas recomeca.
       bool recusou_agora = false;

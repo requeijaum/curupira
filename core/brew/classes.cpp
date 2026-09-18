@@ -2357,7 +2357,10 @@ bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
         return true;
       }
       Memoria& mem = cpu.Mem();
-      std::uint32_t contador = mem.Ler32(kIglesContador);
+      // O contador e estado host/guest inicializado a zero. GenTextures pode
+      // ser a primeira chamada GL; ler a pagina antes da primeira escrita
+      // criava uma falta host falsa em 0x8f03002c (brainchallenge/Rolimaz).
+      std::uint32_t contador = mem.Existe(kIglesContador) ? mem.Ler32(kIglesContador) : 0;
       for (std::uint32_t k = 0; k < n; ++k) {
         mem.Escrever32(lista + 4u * k, ++contador);
       }
