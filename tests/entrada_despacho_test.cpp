@@ -1047,7 +1047,7 @@ TEST(GetLastError, DevolveOErroDaUltimaOperacaoQueFalhou) {
 
 // ===========================================================================
 // O IFileMgr A SERVIR: `Remove` (slot 4), `RmDir` (slot 6) e `EnumNext`
-// (slot 11), com o contrato do SDK sobre a VFS.
+// (slots 10/11), com o contrato do SDK sobre a VFS.
 //
 // A NUMERACAO E A DO CABECALHO, e nao a da cablagem da ferramenta: o primeiro
 // teste le `tools/brew_slots.inc`, GERADO de `AEEFile.h` (a guarda
@@ -1193,20 +1193,41 @@ TEST(FileMgrServido, OGetInfoRespondeComAStructDoCabecalhoENomeiaOslot) {
       << "o slot 3 passou a ser atendido pelo nome: a falta generica nao pode ficar";
 }
 
-TEST(FileMgrServido, OEnumNextRespondeFalsoSemEnumeracao) {
-  // MEDIDO (corrida do corte): gof, rmp e pbc chamam o slot 11 LOGO NO
-  // ARRANQUE, sem `EnumInit` -- e a sonda de saves ("ha entradas?"). O slot 11
-  // do SDK e o `EnumNext` (`kFileMgr_EnumNext`; ver tambem a chamada em
-  // `gof.mod` 0x3688c: `ldr r2,[r1,#44]` = vtable[11]). Sem estado de
-  // enumeracao a resposta honesta e FALSE (iteracao vazia), e o `GetLastError`
-  // passa a EFAILED -- o contrato (`AEEFile.h`, `IFILEMGR_EnumNext`: FALSE
-  // seguido de GetLastError devolve EFAILED mesmo quando a enumeracao acabou
-  // bem).
+TEST(FileMgrServido, OEnumInitDaRaizDeclaraEnumeracaoVazia) {
+  Bancada b;
+  constexpr std::uint32_t kSlot = kVtableFileMgr + brew_slots::kFileMgr_EnumInit;
+  constexpr std::uint32_t kSaidaLastErr = 1512;
+  EXPECT_EQ(kSlot, 7010u);
+  // NULL e cadeia vazia significam a raiz. A VFS ainda nao expoe lista de
+  // assets: inicia-se uma enumeracao vazia, mas a API existe e responde sucesso.
+  EXPECT_EQ(b.ChamaSaida(kSlot, kObjFileMgr, 0, 0), static_cast<std::uint32_t>(kAeeSuccess));
+  EXPECT_EQ(b.ChamaSaida(kSaidaLastErr, kObjFileMgr), static_cast<std::uint32_t>(kAeeSuccess));
+  constexpr std::uint32_t kRaiz = 0x00094A80u;
+  b.Mem().Escrever8(kRaiz, 0);
+  EXPECT_EQ(b.ChamaSaida(kSlot, kObjFileMgr, kRaiz, 1), static_cast<std::uint32_t>(kAeeSuccess));
+  constexpr std::uint32_t kFsRaiz = 0x00094AC0u;
+  const char* fs_raiz = "fs:/~/";
+  for (std::uint32_t i = 0; fs_raiz[i] != 0; ++i)
+    b.Mem().Escrever8(kFsRaiz + i, static_cast<std::uint8_t>(fs_raiz[i]));
+  b.Mem().Escrever8(kFsRaiz + 6, 0);
+  EXPECT_EQ(b.ChamaSaida(kSlot, kObjFileMgr, kFsRaiz, 0), static_cast<std::uint32_t>(kAeeSuccess));
+  EXPECT_EQ(b.Faltas("IFileMgr::slot10"), 0u);
+}
+
+TEST(FileMgrServido, OEnumNextRespondeFalsoDepoisDoEnumInitVazio) {
+  // MEDIDO no gof/rmp/pbc apos a cablagem correta: slot 10 (`EnumInit`) recebe
+  // cadeia vazia e bDirs=FALSE, devolve SUCCESS; em seguida slot 11 (`EnumNext`)
+  // e a sonda de saves "ha entradas?". A raiz vazia tem iteracao vazia: FALSE
+  // sem tocar FileInfo e GetLastError=EFAILED, como AEEFile.h documenta para o
+  // fim normal da enumeracao.
   Bancada b;
   constexpr std::uint32_t kSlot =
       kVtableFileMgr + brew_slots::kFileMgr_EnumNext;  // 7000 + 11 = 7011
   constexpr std::uint32_t kInfo = 0x00094a00u;
   EXPECT_EQ(kSlot, 7011u);
+  ASSERT_EQ(b.ChamaSaida(kVtableFileMgr + brew_slots::kFileMgr_EnumInit,
+                          kObjFileMgr, 0, 0),
+            static_cast<std::uint32_t>(kAeeSuccess));
   // FALSE = 0, e o FileInfo nao e tocado.
   b.Mem().Escrever32(kInfo, 0xDEADBEEFu);
   EXPECT_EQ(b.ChamaSaida(kSlot, kObjFileMgr, kInfo), 0u);
@@ -1215,9 +1236,10 @@ TEST(FileMgrServido, OEnumNextRespondeFalsoSemEnumeracao) {
   constexpr std::uint32_t kSaidaLastErr = 1512;
   EXPECT_EQ(b.ChamaSaida(kSaidaLastErr, kObjFileMgr),
             static_cast<std::uint32_t>(kAeeFailed));
-  const auto& p = b.Tr().ContagemPressupostos();
-  EXPECT_NE(p.find("IFileMgr::EnumNext"), p.end());
+  const auto& pressupostos = b.Tr().ContagemPressupostos();
+  EXPECT_NE(pressupostos.find("IFileMgr::EnumNext"), pressupostos.end());
 }
+
 
 TEST(GetFreeSpace, OTotalEODoGuiaEOLivreFicaDeclaradoEContado) {
   // `ZeeboDeveloperGuide0.97.md:794`: "The total file system size available on

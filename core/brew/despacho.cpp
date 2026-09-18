@@ -3431,20 +3431,38 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
                       nome_info + " -> " + std::to_string(bytes_info.size()) + " bytes");
         cpu.Set(kR0, static_cast<std::uint32_t>(kAeeSuccess));
         }
+      } else if (idx == kVtableFileMgr + brew_slots::kFileMgr_EnumInit) {
+        // `int EnumInit(IFileMgr*, const char *pszDir, boolean bDirs)` -- slot 10.
+        // A raiz (NULL ou "") e uma enumeracao vazia legitima enquanto a VFS
+        // ainda nao expoe uma lista de assets/scratch. Directorio nomeado fica
+        // recusado explicitamente, para nao prometer uma lista parcial.
+        const std::string diretorio = LerTextoDe(mem_, cpu.Get(kR1), 512);
+        const bool raiz = diretorio.empty() || diretorio == "~/" ||
+                           diretorio == "fs:/~" || diretorio == "fs:/~/";
+        if (raiz) {
+          ultimo_erro_do_fm_ = kAeeSuccess;
+          traco_.RegistarPressuposto(Area::Brew, "IFileMgr::EnumInit",
+                                     "raiz: enumeracao vazia declarada (sem lista de VFS)");
+          cpu.Set(kR0, kAeeSuccess);
+        } else {
+          ultimo_erro_do_fm_ = kAeeFailed;
+          traco_.RegistarFalta(Area::Brew, "IFileMgr::EnumInit",
+                               "diretorio ainda nao enumeravel: " + diretorio);
+          cpu.Set(kR0, kAeeFailed);
+        }
       } else if (idx == kVtableFileMgr + brew_slots::kFileMgr_EnumNext) {
         // `boolean EnumNext(IFileMgr *po, FileInfo *pInfo)` -- IFileMgr slot 11
         // (`kFileMgr_EnumNext`; `AEEFile.h`, `IFILEMGR_EnumNext`).
         //
-        // MEDIDO (corrida do corte): gof, rmp e pbc chamam o slot 11 LOGO NO
-        // ARRANQUE, sem `EnumInit` antes -- e a sonda de saves "ha entradas?".
-        // A demonstracao esta no proprio guest: `gof.mod` 0x3688c le a vtable e
-        // `ldr r2,[r1,#44]` (vtable[11]) e usa o retorno como boolean
-        // (`cmp r0,#1` em 0x36898). Sem estado de enumeracao a resposta
-        // honesta e FALSE (iteracao vazia), e o `GetLastError` passa a EFAILED
+        // MEDIDO no gof/rmp/pbc: o slot 10 (`EnumInit`) recebe raiz vazia e
+        // SUCCESS antes deste slot. A demonstracao do Next esta no proprio
+        // guest: `gof.mod` 0x3688c le a vtable +44 (slot 11) e usa o retorno
+        // como boolean (`cmp r0,#1` em 0x36898). A enumeracao de raiz e vazia;
+        // a resposta honesta e FALSE e `GetLastError` passa a EFAILED
         // -- o contrato do SDK manda exactamente isto: FALSE seguido de
         // GetLastError devolve EFAILED mesmo quando a enumeracao terminou bem.
         traco_.RegistarPressuposto(Area::Brew, "IFileMgr::EnumNext",
-                                   "sem EnumInit servido: iteracao vazia, devolve FALSE (nao ha entradas)");
+                                   "iteracao vazia: devolve FALSE (nao ha entradas)");
         ultimo_erro_do_fm_ = kAeeFailed;
         cpu.Set(kR0, 0);  // FALSE
       } else if (idx >= zb2::brew::kVtableBitmap + 2 &&
