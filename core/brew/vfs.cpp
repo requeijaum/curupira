@@ -50,6 +50,12 @@ std::string Lista(const std::set<std::string>& v) {
 
 void Vfs::Registar(const std::string& pasta) {
   pasta_ = pasta;
+  // Uma Vfs pertence a uma corrida/titulo: nunca deixa save de uma Registar
+  // aparecer no seguinte. `udata` e o unico diretorio gravavel inicial.
+  scratch_.clear();
+  diretorios_scratch_.clear();
+  diretorios_scratch_.insert("udata");
+  declarado_ = false;
   nomes_.clear();
   nomes_por_caixa_.clear();
   pacotes_.clear();
@@ -301,83 +307,86 @@ std::string Vfs::NomeReal(const std::string& limpo) const {
   return it == nomes_por_caixa_.end() ? std::string() : it->second;
 }
 
-std::string Vfs::Normalizar(const std::string& bruto) const {
-  std::string limpo = bruto;
-  for (char& ch : limpo) {
-    if (ch == '\\') ch = '/';
+std::string Vfs::ChaveScratch(const std::string& bruto) {
+  // Nao usar `filesystem::path`: a semantica do caminho e BREW, nao a da
+  // maquina hospedeira. A chave fica sempre dentro da raiz virtual.
+  std::vector<std::string> partes;
+  std::string parte;
+  const auto consumir = [&]() {
+    if (parte.empty() || parte == ".") {
+      parte.clear();
+      return;
+    }
+    if (parte == "..") {
+      if (!partes.empty()) partes.pop_back();
+    } else {
+      partes.push_back(parte);
+    }
+    parte.clear();
+  };
+  for (char c : bruto) {
+    if (c == '/' || c == '\\') {
+      consumir();
+    } else {
+      parte += c;
+    }
   }
-  while (limpo.find("//") != std::string::npos) limpo.replace(limpo.find("//"), 2, "/");
-  while (!limpo.empty() && limpo.front() == '/') limpo.erase(0, 1);
-  while (limpo.rfind("./", 0) == 0) limpo.erase(0, 2);
-  // `..` NAO sai da pasta do modulo: e retirado, e nao resolvido para o pai.
-  // Um titulo que peca `../../x` fica com `x` dentro da sua propria pasta.
-  while (limpo.rfind("../", 0) == 0) limpo.erase(0, 3);
+  consumir();
+  std::string chave;
+  for (const std::string& p : partes) {
+    if (!chave.empty()) chave += '/';
+    chave += p;
+  }
+  return Minusculas(chave);
+}
 
+std::string Vfs::NormalizarBase(const std::string& limpo) const {
+  // Esta e a regra historica dos assets: a pasta do titulo e plana, e pacotes
+  // tem os aliases proprios. O scratch usa `ChaveScratch`, acima, para nao
+  // transformar um save `udata/x` no asset solto `x`.
   const std::size_t barra = limpo.rfind('/');
   if (barra == std::string::npos) {
     const std::string solto = NomeReal(limpo);
     if (!solto.empty()) return solto;
-    // UM NOME SEM BARRA NENHUMA (`pt.lang`, `gb.lang`): o ficheiro SOLTO manda
-    // (a linha acima), e so depois a UNIAO -- que so tem nomes crus quando um
-    // `.aez` os traz (`/pt.lang` e um registo do `res.aez` do gof, e e assim,
-    // cru, que o jogo o pede). Nos `.pkg`/`.pakz` a uniao e `<dir>/<nome>` e
-    // isto continua a nao resolver nada: e o que o `Pakz.VfsServeOAlicePakz`
-    // prova do outro lado (`z1.lua` so existe como `alice/z1.lua`).
     return CaminhoDePacote(limpo);
   }
-  // "pasta/ficheiro" para recursos soltos na pasta do titulo. O CAMINHO
-  // INTEIRO nao existe no disco (a pasta do titulo e plana), logo o casamento
-  // util e pelo nome final -- e com a caixa ignorada, como a consola.
   const std::string inteiro = NomeReal(limpo);
   if (!inteiro.empty()) return inteiro;
   const std::string so_nome = NomeReal(limpo.substr(barra + 1));
   if (!so_nome.empty()) return so_nome;
-  // E, por fim, a UNIAO DOS PACOTES: `<dir>/<nome>`, com os prefixos `roms\` e
-  // `roms\neogeo\` retirados.
   return CaminhoDePacote(limpo);
+}
+
+std::string Vfs::Normalizar(const std::string& bruto) const {
+  const std::string chave = ChaveScratch(bruto);
+  if (chave.empty()) return {};
+  // O scratch e sempre a primeira camada. Depois vem o nome que a base de fato
+  // resolveu (por exemplo o alias plano `dir/asset` -> `asset`).
+  if (scratch_.count(chave) != 0 || diretorios_scratch_.count(chave) != 0) return chave;
+  const std::string base = NormalizarBase(chave);
+  if (base.empty()) return {};
+  const std::string chave_base = ChaveScratch(base);
+  if (scratch_.count(chave_base) != 0) return chave_base;
+  return base;
 }
 
 bool Vfs::Existe(const std::string& caminho) const { return !Normalizar(caminho).empty(); }
 
-bool Vfs::Ler(const std::string& caminho, std::vector<std::uint8_t>* bytes, std::string* motivo) const {
-  if (motivo != nullptr) motivo->clear();
-  if (bytes == nullptr) {
-    if (motivo != nullptr) *motivo = "destino nulo";
-    return false;
-  }
-  bytes->clear();
-  const std::string canonico = Normalizar(caminho);
-  if (canonico.empty()) {
-    if (motivo != nullptr) *motivo = "nao existe na VFS: " + caminho;
-    return false;
-  }
+bool Vfs::LerBaseCanonico(const std::string& canonico, std::vector<std::uint8_t>* bytes,
+                          std::string* motivo) const {
   const std::size_t barra = canonico.rfind('/');
   if (barra != std::string::npos) {
     const auto it = alias_.find(Chave(canonico.substr(0, barra), canonico.substr(barra + 1)));
     if (it != alias_.end()) {
-      if (it->second.aez) {
-        return conteudo_aez_[it->second.conteudo_aez].Extrair(it->second.entrada, bytes, motivo);
-      }
-      if (it->second.pakz) {
-        return conteudo_pakz_[it->second.conteudo_pakz].Extrair(it->second.entrada, bytes, motivo);
-      }
+      if (it->second.aez) return conteudo_aez_[it->second.conteudo_aez].Extrair(it->second.entrada, bytes, motivo);
+      if (it->second.pakz) return conteudo_pakz_[it->second.conteudo_pakz].Extrair(it->second.entrada, bytes, motivo);
       return conteudo_[it->second.conteudo].Extrair(it->second.entrada, bytes, motivo);
     }
   } else if (nomes_.count(canonico) == 0) {
-    // UM NOME SEM BARRA NENHUMA (`pt.lang`, `gb.lang`) nao chega aqui pelo
-    // `Chave(dir, nome)` -- nao ha directorio. So o `.aez` serve entradas
-    // assim, e o guest pede-as CRUAS (`/pt.lang`, medido no gof). O ficheiro
-    // SOLTO tem prioridade: e a mesma ordem que o `Normalizar` ja segue, e
-    // quem esta no disco da pasta nao passa a vir de dentro de um recipiente
-    // por causa desta linha.
     const auto it = alias_.find(Minusculas(canonico));
     if (it != alias_.end()) {
-      if (it->second.aez) {
-        return conteudo_aez_[it->second.conteudo_aez].Extrair(it->second.entrada, bytes, motivo);
-      }
-      if (it->second.pakz) {
-        return conteudo_pakz_[it->second.conteudo_pakz].Extrair(it->second.entrada, bytes, motivo);
-      }
+      if (it->second.aez) return conteudo_aez_[it->second.conteudo_aez].Extrair(it->second.entrada, bytes, motivo);
+      if (it->second.pakz) return conteudo_pakz_[it->second.conteudo_pakz].Extrair(it->second.entrada, bytes, motivo);
       return conteudo_[it->second.conteudo].Extrair(it->second.entrada, bytes, motivo);
     }
   }
@@ -387,6 +396,127 @@ bool Vfs::Ler(const std::string& caminho, std::vector<std::uint8_t>* bytes, std:
     return false;
   }
   bytes->assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+  return true;
+}
+
+bool Vfs::AbrirParaLeitura(const std::string& caminho, Bytes* bytes, std::string* motivo) const {
+  if (motivo != nullptr) motivo->clear();
+  if (bytes == nullptr) {
+    if (motivo != nullptr) *motivo = "destino nulo";
+    return false;
+  }
+  bytes->reset();
+  const std::string chave = ChaveScratch(caminho);
+  if (chave.empty() || diretorios_scratch_.count(chave) != 0) {
+    if (motivo != nullptr) *motivo = "nao e ficheiro na VFS: " + caminho;
+    return false;
+  }
+  const auto local = scratch_.find(chave);
+  if (local != scratch_.end()) {
+    *bytes = local->second;
+    return true;
+  }
+  const std::string base = NormalizarBase(chave);
+  if (base.empty()) {
+    if (motivo != nullptr) *motivo = "nao existe na VFS: " + caminho;
+    return false;
+  }
+  const auto cow = scratch_.find(ChaveScratch(base));
+  if (cow != scratch_.end()) {
+    *bytes = cow->second;
+    return true;
+  }
+  Bytes copia = std::make_shared<std::vector<std::uint8_t>>();
+  if (!LerBaseCanonico(base, copia.get(), motivo)) return false;
+  *bytes = std::move(copia);
+  return true;
+}
+
+bool Vfs::Criar(const std::string& caminho, Bytes* bytes, std::string* motivo) {
+  if (motivo != nullptr) motivo->clear();
+  if (bytes == nullptr) {
+    if (motivo != nullptr) *motivo = "destino nulo";
+    return false;
+  }
+  bytes->reset();
+  const std::string chave = ChaveScratch(caminho);
+  if (chave.empty() || diretorios_scratch_.count(chave) != 0) {
+    if (motivo != nullptr) *motivo = "nome de ficheiro invalido: " + caminho;
+    return false;
+  }
+  if (scratch_.count(chave) != 0) {
+    if (motivo != nullptr) *motivo = "ja existe na VFS: " + caminho;
+    return false;
+  }
+  // A base plana pode resolver `udata/dados.bin` pelo seu nome final
+  // `dados.bin`, mas isto NAO ocupa a rota hierarquica de save. So a base cujo
+  // proprio nome canonico e a mesma chave bloqueia CREATE.
+  const std::string base = NormalizarBase(chave);
+  if (!base.empty() && ChaveScratch(base) == chave) {
+    if (motivo != nullptr) *motivo = "ja existe na VFS: " + caminho;
+    return false;
+  }
+  Bytes novo = std::make_shared<std::vector<std::uint8_t>>();
+  scratch_.insert({chave, novo});
+  *bytes = std::move(novo);
+  return true;
+}
+
+bool Vfs::AbrirParaEscrita(const std::string& caminho, Bytes* bytes, std::string* motivo) {
+  if (motivo != nullptr) motivo->clear();
+  if (bytes == nullptr) {
+    if (motivo != nullptr) *motivo = "destino nulo";
+    return false;
+  }
+  bytes->reset();
+  const std::string chave = ChaveScratch(caminho);
+  if (chave.empty() || diretorios_scratch_.count(chave) != 0) {
+    if (motivo != nullptr) *motivo = "nao e ficheiro na VFS: " + caminho;
+    return false;
+  }
+  auto local = scratch_.find(chave);
+  if (local != scratch_.end()) {
+    *bytes = local->second;
+    return true;
+  }
+  const std::string base = NormalizarBase(chave);
+  // RW/APPEND tambem nao podem transformar uma procura hierarquica que a base
+  // plana achata pelo nome final em COW de outro ficheiro. O save criado acima
+  // e encontrado no scratch; sem ele, esta rota nao existe para escrita.
+  if (base.empty() || ChaveScratch(base) != chave) {
+    if (motivo != nullptr) *motivo = "nao existe na VFS: " + caminho;
+    return false;
+  }
+  const std::string chave_base = ChaveScratch(base);
+  local = scratch_.find(chave_base);
+  if (local != scratch_.end()) {
+    *bytes = local->second;
+    return true;
+  }
+  // COW: le o asset uma vez e passa a servi-lo do overlay; nunca abre a base
+  // para escrita nem toca no sistema de ficheiros do hospedeiro.
+  Bytes copia = std::make_shared<std::vector<std::uint8_t>>();
+  if (!LerBaseCanonico(base, copia.get(), motivo)) return false;
+  scratch_.insert({chave_base, copia});
+  *bytes = std::move(copia);
+  return true;
+}
+
+bool Vfs::EDoScratch(const std::string& caminho) const {
+  const std::string chave = ChaveScratch(caminho);
+  if (scratch_.count(chave) != 0) return true;
+  const std::string base = NormalizarBase(chave);
+  return !base.empty() && scratch_.count(ChaveScratch(base)) != 0;
+}
+
+bool Vfs::Ler(const std::string& caminho, std::vector<std::uint8_t>* bytes, std::string* motivo) const {
+  if (bytes == nullptr) {
+    if (motivo != nullptr) *motivo = "destino nulo";
+    return false;
+  }
+  Bytes origem;
+  if (!AbrirParaLeitura(caminho, &origem, motivo)) return false;
+  *bytes = *origem;
   return true;
 }
 

@@ -224,16 +224,74 @@ TEST_F(ArquivosTeste, InformacaoTrazOTamanho) {
   EXPECT_EQ(mem_.Ler32(kInfo + 8), 256u);
 }
 
-TEST_F(ArquivosTeste, ModoQueMudaOFicheiroERecusado) {
-  // `_OFM_CREATE` (4) e `_OFM_APPEND` (8) mudam o ficheiro. A VFS e so de leitura
-  // por DECISAO, e a recusa e em voz alta: um objecto nulo, e nao um ficheiro que
-  // finge aceitar escrita.
+TEST_F(ArquivosTeste, ScratchCriaEscreveEPartilhaBytesSemTocarOHospedeiro) {
   Arquivos a(&vfs_);
-  EXPECT_EQ(a.Abrir("novo.bin", 0x0004u, pasta_.string()), 0u);
-  EXPECT_EQ(a.Abrir("dados.bin", 0x0008u, pasta_.string()), 0u);
-  EXPECT_EQ(a.Abrir("dados.bin", 0x0002u, pasta_.string()), 0u);
-  EXPECT_TRUE(a.ModoMudaOFicheiro(0x0004u | 0x0001u));
-  EXPECT_FALSE(a.ModoMudaOFicheiro(0x0001u));
+  constexpr Endereco kFonte = 0x00101000, kDestino = 0x00102000;
+  mem_.Escrever8(kFonte + 0, 's');
+  mem_.Escrever8(kFonte + 1, 'a');
+  mem_.Escrever8(kFonte + 2, 'v');
+  const std::uint32_t criado = a.Abrir("./udata\\save.dat", 0x0004u, pasta_.string());
+  ASSERT_NE(criado, 0u);
+  EXPECT_TRUE(a.UltimoVeioDoScratch());
+  EXPECT_EQ(a.Escrever(criado, mem_, kFonte, 3), 3);
+  EXPECT_FALSE(std::filesystem::exists(pasta_ / "udata" / "save.dat"));
+  EXPECT_TRUE(vfs_.Existe("udata/save.dat"));
+
+  // Os descritores veem os MESMOS bytes, mas cada um tem cursor proprio.
+  const std::uint32_t leitor = a.Abrir("udata/save.dat", 0x0001u, pasta_.string());
+  ASSERT_NE(leitor, 0u);
+  EXPECT_EQ(a.Ler(leitor, mem_, kDestino, 3), 3);
+  EXPECT_EQ(mem_.Ler8(kDestino + 0), 's');
+  EXPECT_EQ(mem_.Ler8(kDestino + 2), 'v');
+  EXPECT_EQ(a.Ler(leitor, mem_, kDestino, 1), 0);
+  EXPECT_EQ(a.Posicionar(criado, 2, 0), 3);
+}
+
+TEST_F(ArquivosTeste, ScratchReadwriteFazCowDoAssetEAppendComecaNoFim) {
+  Arquivos a(&vfs_);
+  constexpr Endereco kFonte = 0x00101000, kDestino = 0x00102000;
+  mem_.Escrever8(kFonte + 0, 0xfe);
+  const std::uint32_t rw = a.Abrir("dados.bin", 0x0002u, pasta_.string());
+  ASSERT_NE(rw, 0u);
+  EXPECT_EQ(a.Escrever(rw, mem_, kFonte, 1), 1);
+  EXPECT_EQ(std::ifstream(pasta_ / "dados.bin", std::ios::binary).get(), 0);
+
+  mem_.Escrever8(kFonte + 0, 0xaa);
+  mem_.Escrever8(kFonte + 1, 0xbb);
+  const std::uint32_t append = a.Abrir("dados.bin", 0x0008u, pasta_.string());
+  ASSERT_NE(append, 0u);
+  EXPECT_EQ(a.Escrever(append, mem_, kFonte, 2), 2);
+  EXPECT_EQ(a.Posicionar(rw, 0, 0), 0);
+  EXPECT_EQ(a.Ler(rw, mem_, kDestino, 1), 1);
+  EXPECT_EQ(mem_.Ler8(kDestino), 0xfe);
+  EXPECT_EQ(a.Posicionar(rw, 1, -2), 256);
+  EXPECT_EQ(a.Ler(rw, mem_, kDestino, 2), 2);
+  EXPECT_EQ(mem_.Ler8(kDestino + 0), 0xaa);
+  EXPECT_EQ(mem_.Ler8(kDestino + 1), 0xbb);
+}
+
+TEST_F(ArquivosTeste, ScratchModosEResetSaoEstritos) {
+  Arquivos a(&vfs_);
+  EXPECT_TRUE(vfs_.Existe("udata"));  // diretorio de saves semeado em cada titulo
+  EXPECT_EQ(a.Abrir("dados.bin", 0x0004u, pasta_.string()), 0u);      // CREATE existente
+  // A chave gravavel e HIERARQUICA: o asset plano nao ocupa udata/dados.bin.
+  const std::uint32_t save = a.Abrir("udata/dados.bin", 0x0004u, pasta_.string());
+  ASSERT_NE(save, 0u);
+  a.Fechar(save);
+  const std::uint32_t save_rw = a.Abrir("udata/dados.bin", 0x0002u, pasta_.string());
+  ASSERT_NE(save_rw, 0u);
+  constexpr Endereco kFonte = 0x00101000, kDestino = 0x00102000;
+  mem_.Escrever8(kFonte, 0x5a);
+  EXPECT_EQ(a.Escrever(save_rw, mem_, kFonte, 1), 1);
+  EXPECT_EQ(a.Posicionar(save_rw, 0, 0), 0);
+  EXPECT_EQ(a.Ler(save_rw, mem_, kDestino, 1), 1);
+  EXPECT_EQ(mem_.Ler8(kDestino), 0x5a);  // nao abriu/COW o dados.bin plano
+  EXPECT_EQ(a.Abrir("nao.bin", 0x0002u, pasta_.string()), 0u);        // RW inexistente
+  EXPECT_EQ(a.Abrir("nao.bin", 0x0008u, pasta_.string()), 0u);        // APPEND inexistente
+  ASSERT_NE(a.Abrir("udata/transitorio", 0x0004u, pasta_.string()), 0u);
+  vfs_.Registar(pasta_.string());
+  EXPECT_TRUE(vfs_.Existe("udata"));
+  EXPECT_FALSE(vfs_.Existe("udata/transitorio"));
 }
 
 TEST_F(ArquivosTeste, FicheiroInexistenteNaoAbre) {

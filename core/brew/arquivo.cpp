@@ -1,6 +1,7 @@
 #include "core/brew/arquivo.h"
 
 #include <iterator>
+#include <limits>
 #include <utility>
 
 #include "core/traco/traco.h"  // Hex()
@@ -9,7 +10,10 @@ namespace zb2::brew {
 
 namespace {
 constexpr std::uint32_t kOfmLeitura = 0x0001u;
-constexpr std::uint32_t kOfmEscrita = 0x000Eu;  // READWRITE | CREATE | APPEND
+constexpr std::uint32_t kOfmReadwrite = 0x0002u;
+constexpr std::uint32_t kOfmCriar = 0x0004u;
+constexpr std::uint32_t kOfmAppend = 0x0008u;
+constexpr std::uint32_t kOfmEscrita = kOfmReadwrite | kOfmCriar | kOfmAppend;
 }  // namespace
 
 bool Arquivos::ModoMudaOFicheiro(std::uint32_t modo) const {
@@ -18,45 +22,48 @@ bool Arquivos::ModoMudaOFicheiro(std::uint32_t modo) const {
 
 std::uint32_t Arquivos::Abrir(const std::string& nome, std::uint32_t modo,
                               const std::string& pasta_do_titulo) {
-  // A PASTA DEIXOU DE SER LIDA AQUI, e o argumento fica na assinatura por uma
-  // razao so: quem a sabe e a VFS, que foi registada com ela (`Vfs::Registar`).
-  // Duas fontes para "onde esta o ficheiro" e a forma de ler duas pastas
-  // diferentes conforme quem pergunta -- e o argumento continua a ser passado
-  // pelas chamadas que ja existiam (`tests/brew_test.cpp`).
-  (void)pasta_do_titulo;
+  (void)pasta_do_titulo;  // a Vfs registada e a unica fonte da pasta do titulo
   ultimo_motivo_.clear();
   ultimo_caminho_.clear();
   ultimo_de_pacote_ = false;
+  ultimo_do_scratch_ = false;
   if (vfs_ == nullptr) {
     ultimo_motivo_ = "sem VFS";
     return 0;
   }
-  if (ModoMudaOFicheiro(modo)) {
-    ultimo_motivo_ = "o modo 0x" + Hex(modo) + " escreve: a VFS e SO DE LEITURA, por decisao";
-    return 0;
-  }
-  if ((modo & kOfmLeitura) == 0) {
-    ultimo_motivo_ = "o modo 0x" + Hex(modo) + " nao pede leitura";
+  const bool criar = (modo & kOfmCriar) != 0;
+  const bool gravavel = (modo & kOfmEscrita) != 0;
+  const bool append = (modo & kOfmAppend) != 0;
+  const bool leitura = (modo & kOfmLeitura) != 0;
+  // Nao aceitar bits desconhecidos nem modo vazio. CREATE e uma operacao de
+  // escrita mesmo sem READWRITE explicito, como define o OpenFileMode.
+  if ((modo & ~(kOfmLeitura | kOfmEscrita)) != 0 || (!leitura && !gravavel)) {
+    ultimo_motivo_ = "modo invalido 0x" + Hex(modo);
     return 0;
   }
 
-  // A LEITURA PASSA TODA PELA VFS -- ficheiro solto na pasta do titulo, ou
-  // entrada de um `.pkg` descomprimida. E o mesmo caminho para os dois casos, e
-  // e por isso que o `Test` do `IFileMgr` e o `OpenFile` nao podem divergir
-  // sobre o que existe.
   Aberto a;
   std::string porque;
-  if (!vfs_->Ler(nome, &a.dados, &porque)) {
+  bool ok = false;
+  if (criar) {
+    // Mesmo CREATE|READWRITE/APPEND nao pode truncar/sobrescrever: existente
+    // falha estritamente, antes de haver qualquer COW.
+    ok = vfs_->Criar(nome, &a.dados, &porque);
+  } else if (gravavel) {
+    ok = vfs_->AbrirParaEscrita(nome, &a.dados, &porque);
+  } else {
+    ok = vfs_->AbrirParaLeitura(nome, &a.dados, &porque);
+  }
+  if (!ok) {
     ultimo_motivo_ = porque;
     return 0;
   }
-  if (a.dados.empty()) {
-    ultimo_motivo_ = "ficheiro vazio: " + vfs_->Normalizar(nome);
-    return 0;
-  }
   ultimo_caminho_ = vfs_->Normalizar(nome);
-  ultimo_de_pacote_ = ultimo_caminho_.find('/') != std::string::npos;
+  ultimo_de_pacote_ = vfs_->OrigemDe(nome, nullptr, nullptr);
+  ultimo_do_scratch_ = vfs_->EDoScratch(nome);
   a.id = proximo_id_++;
+  a.gravavel = gravavel;
+  if (append) a.pos = static_cast<std::uint32_t>(a.dados->size());
   abertos_.push_back(std::move(a));
   return abertos_.back().id;
 }
@@ -79,20 +86,34 @@ std::int32_t Arquivos::Ler(std::uint32_t id, Memoria& mem, Endereco pDestino,
                            std::uint32_t quer) {
   Aberto* a = Procurar(id);
   if (a == nullptr) return -1;
-  const std::uint32_t resta = static_cast<std::uint32_t>(a->dados.size() - a->pos);
+  const std::uint32_t resta = static_cast<std::uint32_t>(a->dados->size() - a->pos);
   const std::uint32_t n = quer < resta ? quer : resta;
   for (std::uint32_t i = 0; i < n; ++i) {
-    mem.Escrever8(pDestino + i, a->dados[a->pos + i]);
+    mem.Escrever8(pDestino + i, (*a->dados)[a->pos + i]);
   }
   a->pos += n;
   // Curto se chegar ao fim: e o contrato do `Read`. Devolver mais seria inventar.
   return static_cast<std::int32_t>(n);
 }
 
+std::int32_t Arquivos::Escrever(std::uint32_t id, const Memoria& mem, Endereco pFonte,
+                                std::uint32_t quer) {
+  Aberto* a = Procurar(id);
+  if (a == nullptr || !a->gravavel || a->dados == nullptr) return -1;
+  // `uint32` do guest cabe no endereco do vector neste processo; recusar em vez
+  // de deixar a soma transbordar e escrever antes do cursor.
+  if (quer > std::numeric_limits<std::uint32_t>::max() - a->pos) return -1;
+  const std::uint32_t fim = a->pos + quer;
+  if (a->dados->size() < fim) a->dados->resize(fim, 0);
+  for (std::uint32_t i = 0; i < quer; ++i) (*a->dados)[a->pos + i] = mem.Ler8(pFonte + i);
+  a->pos = fim;
+  return static_cast<std::int32_t>(quer);
+}
+
 std::int32_t Arquivos::Posicionar(std::uint32_t id, std::uint32_t tipo, std::int32_t posicao) {
   Aberto* a = Procurar(id);
   if (a == nullptr) return -1;
-  const std::int64_t tamanho = static_cast<std::int64_t>(a->dados.size());
+  const std::int64_t tamanho = static_cast<std::int64_t>(a->dados->size());
   std::int64_t novo = -1;
   // OS TRES VALORES SAO OS DO SDK, e nao os do `SEEK_SET/CUR/END` do `stdio`.
   //
@@ -132,7 +153,7 @@ bool Arquivos::Informacao(std::uint32_t id, Memoria& mem, Endereco pInfo) const 
   //              char szName[AEE_MAX_FILE_NAME]`.
   mem.Escrever8(pInfo + 0, 0);  // AEE_FA_NORMAL
   mem.Escrever32(pInfo + 4, 0);
-  mem.Escrever32(pInfo + 8, static_cast<std::uint32_t>(a->dados.size()));
+  mem.Escrever32(pInfo + 8, static_cast<std::uint32_t>(a->dados->size()));
   for (std::uint32_t i = 0; i < 64; ++i) mem.Escrever8(pInfo + 12 + i, 0);
   return true;
 }

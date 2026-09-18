@@ -1,8 +1,8 @@
 #ifndef ZB2_CORE_BREW_VFS_H
 #define ZB2_CORE_BREW_VFS_H
 
-// A VFS do modulo: a pasta irma do `.mod`, SO DE LEITURA -- e as ROMs que vivem
-// dentro dos `.pkg` dessa pasta.
+// A VFS do modulo: a pasta irma do `.mod` e as ROMs dentro dos `.pkg` dela.
+// A base e so de leitura; saves vivem no overlay COW em memoria desta instancia.
 //
 // VIVE NO MOTOR. A VFS e uma decisao do emulador (nao escrever no modulo do jogo
 // preserva a reprodutibilidade), e nao um pormenor do instrumento.
@@ -97,13 +97,14 @@
 // tentativa, e so para os ficheiros SOLTOS (as entradas de um recipiente ja
 // eram casadas sem caixa).
 //
-// A VFS CONTINUA SO DE LEITURA. Nada aqui escreve na pasta do titulo, e o
-// `IFileMgr` recusa os modos que mudam o ficheiro (ver `core/brew/arquivo.h`).
+// A BASE da VFS continua so de leitura. `IFileMgr` pode gravar somente no
+// overlay COW em memoria desta instancia; nada aqui escreve na pasta do titulo.
 
 #include <cstddef>
 #include <cstdint>
 #include <map>
 #include <set>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -148,8 +149,18 @@ class Vfs {
   // mesma `Vfs` nao acumula -- e uma pasta por titulo, como a corrida.
   void Registar(const std::string& pasta);
 
+  // O overlay gravavel, por instancia/titulo. Nunca escreve em `pasta_`.
+  // CREATE usa `Criar`; READWRITE/APPEND usam `AbrirParaEscrita`, que faz COW
+  // do asset da base quando necessario. Todos os descritores recebem o MESMO
+  // vector compartilhado; o cursor pertence a `Arquivos`.
+  using Bytes = std::shared_ptr<std::vector<std::uint8_t>>;
+  bool Criar(const std::string& caminho, Bytes* bytes, std::string* motivo);
+  bool AbrirParaLeitura(const std::string& caminho, Bytes* bytes, std::string* motivo) const;
+  bool AbrirParaEscrita(const std::string& caminho, Bytes* bytes, std::string* motivo);
+  bool EDoScratch(const std::string& caminho) const;
+
   bool Existe(const std::string& caminho) const;
-  std::size_t Quantos() const { return nomes_.size(); }
+  std::size_t Quantos() const { return nomes_.size() + scratch_.size(); }
   const std::set<std::string>& Nomes() const { return nomes_; }
 
   // A normalizacao das rotas do BREW, num so sitio: barras invertidas viram
@@ -187,6 +198,13 @@ class Vfs {
   void DeclararNoTraco(Traco* traco);
 
  private:
+  // Chave do overlay: rota hierarquica, sem caixa, sem `.`/`..`; nunca sai da
+  // raiz virtual. Diferente da base plana, `udata/a` nao colide com `a`.
+  static std::string ChaveScratch(const std::string& bruto);
+  std::string NormalizarBase(const std::string& limpo) const;
+  bool LerBaseCanonico(const std::string& canonico, std::vector<std::uint8_t>* bytes,
+                       std::string* motivo) const;
+
   // O caminho canonico `<dir>/<nome>` quando um pacote serve este pedido, ou
   // vazio. Aceita e retira os prefixos `roms/` e `roms/neogeo/`.
   std::string CaminhoDePacote(const std::string& limpo) const;
@@ -197,6 +215,10 @@ class Vfs {
   std::string NomeReal(const std::string& limpo) const;
 
   std::string pasta_;
+  // O scratch e limpo em Registar: uma Vfs e um titulo/corrida. `udata` nasce
+  // sempre como diretorio virtual, sem mkdir no hospedeiro.
+  std::map<std::string, Bytes> scratch_;
+  std::set<std::string> diretorios_scratch_;
   std::set<std::string> nomes_;
   // `nomes_` com a caixa ignorada: minusculas -> o nome REAL. Existe porque a
   // pasta do titulo e um sistema de ficheiros de CONSOLA (FAT, insensivel a

@@ -4550,19 +4550,19 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         const std::string nome = LerTextoDe(mem_, cpu.Get(kR1), 512);
         const std::uint32_t id = arquivos_.Abrir(nome, cpu.Get(kR2), dir_ + "/" + pasta_);
         if (id == 0) {
-          // A RECUSA FICA DITA. Este ramo nao escrevia nada no traco, e o
-          // efeito medido foi um instrumento cego: 10 titulos andaram 742 mil
-          // passos no arranque sem que se pudesse ver QUE ficheiro pediam, nem
-          // que o pedido tinha sido recusado. Com o nome e o motivo, a pergunta
-          // "o que e que falta a este jogo?" passa a ter resposta no log.
+          // A RECUSA FICA DITA. Inclui CREATE existente e RW/APPEND inexistente:
+          // o contrato estrito vive em `Arquivos`, numa unica regra testada.
+          ultimo_erro_do_fm_ = kAeeFailed;
           traco_.Emitir(Area::Brew, Nivel::Depuracao, "OPENFILE_RECUSADO",
                         "\"" + nome + "\" modo=" + Hex(cpu.Get(kR2)) + " | " +
                             arquivos_.UltimoMotivo());
           cpu.Set(kR0, 0);  // NULL -- nao ha IFile
         } else {
+          ultimo_erro_do_fm_ = kAeeSuccess;
           traco_.Emitir(Area::Brew, Nivel::Depuracao, "OPENFILE",
                         "\"" + nome + "\" -> " + arquivos_.UltimoCaminho() +
                             (arquivos_.UltimoVeioDePacote() ? " (entrada de .pkg)"
+                             : arquivos_.UltimoVeioDoScratch() ? " (overlay scratch)"
                                                             : " (ficheiro solto)"));
           const std::uint32_t obj = kObjFileBase + id * 0x40;
           mem_.Escrever32(obj + 0, vtable_ficheiro_);
@@ -4589,19 +4589,25 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
                                              cpu.Get(kR1));
         cpu.Set(kR0, ok ? kAeeSuccess : kAeeUnsupported);
       } else if (idx == kSlotIdFileWrite) {
-        // `uint32 Write(IFile*, const void *p, uint32 n)` -- slot 5.
-        // A VFS e SO DE LEITURA por DECISAO. Recusa declarada, zero bytes.
-        //
-        // "Declarada" onde? Nao havia registo nenhum. E este e o pior dos tres
-        // silencios desta familia: o `Write` devolve o NUMERO DE BYTES
-        // ESCRITOS, logo zero e uma resposta legitima do contrato -- um jogo que
-        // nao confira o retorno continua como se tivesse gravado.
-        char det_w[64];
-        std::snprintf(det_w, sizeof(det_w), "%u bytes pedidos",
-                      static_cast<unsigned>(cpu.Get(kR2)));
-        traco_.RegistarFalta(Area::Brew, "IFile::Write", det_w);
-        ultimo_erro_do_fm_ = kAeeUnsupported;
-        cpu.Set(kR0, 0);
+        // `uint32 Write(IFile*, const void *p, uint32 n)` -- slot 5. O buffer
+        // pertence ao overlay COW da Vfs; portanto nunca ha escrita/flush na
+        // pasta host do titulo.
+        const std::int32_t n = arquivos_.Escrever(IdentificadorDeFicheiro(cpu.Get(kR0)), mem_,
+                                                  cpu.Get(kR1), cpu.Get(kR2));
+        if (n < 0) {
+          // Um objecto invalido ou descritor aberto sem modo gravavel continua
+          // sendo recusa: Write devolve zero, valor legitimamente ambiguo, logo
+          // fica contado no traco em vez de desaparecer em silencio.
+          char det_w[64];
+          std::snprintf(det_w, sizeof(det_w), "%u bytes pedidos",
+                        static_cast<unsigned>(cpu.Get(kR2)));
+          traco_.RegistarFalta(Area::Brew, "IFile::Write", det_w);
+          ultimo_erro_do_fm_ = kAeeFailed;
+          cpu.Set(kR0, 0);
+        } else {
+          ultimo_erro_do_fm_ = kAeeSuccess;
+          cpu.Set(kR0, static_cast<std::uint32_t>(n));
+        }
       } else if (idx == kSlotIdSqlOpen) {
         // `int OpenDatabase(ISQLMgr *po, const char *pszName, ISQLDatabase **ppDB)`
         // -- ISQLMgr slot 3.
