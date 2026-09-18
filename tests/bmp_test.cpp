@@ -20,6 +20,21 @@ void Le32(std::vector<std::uint8_t>* v, std::uint32_t n) {
   v->push_back(static_cast<std::uint8_t>(n >> 24));
 }
 
+std::vector<std::uint8_t> Bmp8DoTeste() {
+  // BITMAPINFOHEADER + quatro entradas BGR0 de paleta + duas linhas 2x8bpp.
+  // Positivo e bottom-up: a segunda linha e a primeira linha visual.
+  return {0x42, 0x4d, 78, 0, 0, 0, 0, 0, 0, 0, 70, 0, 0, 0,
+          40, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 1, 0, 8, 0,
+          0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0,
+          0, 0, 0, 0,  // biClrImportant
+          0, 0, 0, 0,  // paleta 0: preto
+          0, 0, 255, 0,  // paleta 1: vermelho
+          0, 255, 0, 0,  // paleta 2: verde
+          255, 0, 0, 0,  // paleta 3: azul
+          3, 0, 0, 0,  // fundo: azul, preto, padding
+          1, 2, 0, 0};  // topo: vermelho, verde, padding
+}
+
 std::vector<std::uint8_t> Bmp24DoTeste() {
   std::vector<std::uint8_t> v;
   v.push_back('B'); v.push_back('M'); Le32(&v, 70); Le32(&v, 0); Le32(&v, 54);
@@ -39,6 +54,18 @@ TEST(Bmp, Descodifica24BppBiRgbComStrideEOrdemBottomUp) {
   ASSERT_TRUE(DescodificarBmp(dados.data(), dados.size(), &imagem, &motivo)) << motivo;
   EXPECT_EQ(imagem.largura, 2u);
   EXPECT_EQ(imagem.altura, 2u);
+  ASSERT_EQ(imagem.pixels.size(), 4u);
+  EXPECT_EQ(imagem.pixels[0], ImagemBmp::Rgb565(255, 0, 0));
+  EXPECT_EQ(imagem.pixels[1], ImagemBmp::Rgb565(0, 255, 0));
+  EXPECT_EQ(imagem.pixels[2], ImagemBmp::Rgb565(0, 0, 255));
+  EXPECT_EQ(imagem.pixels[3], ImagemBmp::Rgb565(0, 0, 0));
+}
+
+TEST(Bmp, Descodifica8BppBiRgbComPaletaEOrdemBottomUp) {
+  const std::vector<std::uint8_t> dados = Bmp8DoTeste();
+  ImagemBmp imagem;
+  std::string motivo;
+  ASSERT_TRUE(DescodificarBmp(dados.data(), dados.size(), &imagem, &motivo)) << motivo;
   ASSERT_EQ(imagem.pixels.size(), 4u);
   EXPECT_EQ(imagem.pixels[0], ImagemBmp::Rgb565(255, 0, 0));
   EXPECT_EQ(imagem.pixels[1], ImagemBmp::Rgb565(0, 255, 0));
@@ -75,7 +102,7 @@ TEST(Bmp, RecusaCabecalhosOffsetsFormatosEBytesDePixelInvalidos) {
   auto ruim_magic = valido; ruim_magic[0] = 'Z'; recusa(ruim_magic, "BM");
   auto dib_curto = valido; dib_curto[14] = 12; recusa(dib_curto, "DIB");
   auto offset_no_dib = valido; offset_no_dib[10] = 20; recusa(offset_no_dib, "offset");
-  auto bpp = valido; bpp[28] = 8; recusa(bpp, "bpp");
+  auto bpp = valido; bpp[28] = 4; recusa(bpp, "bpp");
   auto rle = valido; rle[30] = 1; recusa(rle, "comprimido");
   auto truncado = valido; truncado.pop_back(); recusa(truncado, "truncados");
   auto tamanho = valido; tamanho[2] = 55; recusa(tamanho, "tamanho declarado");

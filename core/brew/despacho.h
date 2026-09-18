@@ -46,6 +46,7 @@
 #include "core/brew/ihiddevice.h"
 #include "core/brew/arquivo.h"
 #include "core/brew/imedia.h"
+#include "core/brew/menuctl.h"
 #include "core/brew/interface.h"
 #include "core/brew/tela.h"
 #include "core/brew/vfs.h"
@@ -742,6 +743,7 @@ class Despacho {
   // O WIDGET. Depois de `tela_` e dos objectos do shell, porque e construido por
   // `InstalarAjudantes` e nao no construtor.
   Widgets widgets_;
+  MenuCtl menu_;
 
   // A PROFUNDIDADE DA ENTREGA DE EVENTOS (guarda de reentrancia): o
   // `HandleEvent` do applet pode mandar outro evento, e isso e uma cadeia que

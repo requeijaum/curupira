@@ -24,11 +24,10 @@
 // ficheiro, por cima dele.
 #include "core/carga/inflate.h"
 #include "core/carga/mod.h"
-// O DESCODIFICADOR DE PNG (`DescodificarPng`), para o `LoadResObject`: o
-// `LoadResDataEx` entrega o bloco CRU e o `LoadResObject` entrega um OBJECTO
-// desenhavel, e o unico formato de imagem que esta arvore sabe virar pixels e
-// este (`core/carga/png.h`). Nao se acrescenta descodificador nenhum a
-// `core/carga`: quem nao for PNG e recusado COM O NOME.
+// `LoadResDataEx` entrega o bloco CRU; `LoadResObject` entrega um OBJECTO
+// desenhavel. Os descodificadores recebem os bytes reais e o IDIB recebe os
+// pixels que eles validaram; nao se cai no bitmap generico nem se inventa raster.
+#include "core/carga/bmp.h"
 #include "core/carga/png.h"
 
 // ---------------------------------------------------------------------------
@@ -347,7 +346,8 @@ Despacho::Despacho(Memoria& mem, Traco& traco, Alocador& alocador, Vfs& vfs)
       // não pela ordem que parece aqui. O -Wreorder apanhou esta divergência.
       igl_(mem, traco),
       egl_(mem, traco),
-      widgets_(mem, traco) {}
+      widgets_(mem, traco),
+      menu_(mem, traco) {}
 
 // A INSTALACAO DO GL. Devolve quantos slots foram cablados NO TOTAL (0 = falhou).
 //
@@ -1608,17 +1608,43 @@ bool Despacho::AtenderLoadResObject(ICpu& cpu) {
     if (blob.ok) mime = blob.mime;
   }
 
-  // 2. A IMAGEM. So o PNG tem descodificador nesta arvore (`core/carga/png.h`);
-  //    o resto e recusado COM O NOME do que se viu, e nao com um "falhou".
-  zb2::ImagemPng img;
+  // 2. A IMAGEM. O MIME do `AEEResBlob` escolhe BMP quando o contentor o
+  //    declarou; para um ficheiro inteiro sem blob, a assinatura BM escolhe o
+  //    mesmo caminho. PNG conserva o caminho anterior para todo o resto.
+  const bool e_bmp = mime == "image/bmp" ||
+                     (mime.empty() && n >= 2u && dados[0] == 'B' && dados[1] == 'M');
+  zb2::ImagemPng png;
+  zb2::ImagemBmp bmp;
+  const std::vector<std::uint16_t>* pixels_da_imagem = nullptr;
+  std::uint32_t largura = 0;
+  std::uint32_t altura = 0;
+  bool tem_alpha = false;
   std::string porque;
-  if (!zb2::DescodificarPng(dados, n, &img, &porque)) {
-    traco_.RegistarFalta(Area::Brew, "IShell::LoadResObject",
-                         nome + " id=" + std::to_string(id) + " (" +
-                             std::to_string(n) + " bytes" +
-                             (mime.empty() ? "" : ", mime=" + mime) +
-                             "): nao descodifica como PNG: " + porque);
-    return true;
+  if (e_bmp) {
+    if (!zb2::DescodificarBmp(dados, n, &bmp, &porque)) {
+      traco_.RegistarFalta(Area::Brew, "IShell::LoadResObject",
+                           nome + " id=" + std::to_string(id) + " (" +
+                               std::to_string(n) + " bytes" +
+                               (mime.empty() ? "" : ", mime=" + mime) +
+                               "): nao descodifica como BMP: " + porque);
+      return true;
+    }
+    pixels_da_imagem = &bmp.pixels;
+    largura = bmp.largura;
+    altura = bmp.altura;
+  } else {
+    if (!zb2::DescodificarPng(dados, n, &png, &porque)) {
+      traco_.RegistarFalta(Area::Brew, "IShell::LoadResObject",
+                           nome + " id=" + std::to_string(id) + " (" +
+                               std::to_string(n) + " bytes" +
+                               (mime.empty() ? "" : ", mime=" + mime) +
+                               "): nao descodifica como PNG: " + porque);
+      return true;
+    }
+    pixels_da_imagem = &png.pixels;
+    largura = png.largura;
+    altura = png.altura;
+    tem_alpha = png.tem_alpha;
   }
 
   // 3. O OBJECT. Os pixels vivem no heap do GUEST (e o jogo que os le), e o
@@ -1631,20 +1657,20 @@ bool Despacho::AtenderLoadResObject(ICpu& cpu) {
                              ": a banda dos bitmaps compativeis esta cheia");
     return true;
   }
-  const std::uint32_t bytes_dos_pixels = img.largura * 2u * img.altura;
+  const std::uint32_t bytes_dos_pixels = largura * 2u * altura;
   const std::uint32_t pixels = al_.Malloc(bytes_dos_pixels);
   if (pixels == 0) {
     char det[96];
     std::snprintf(det, sizeof(det), "%ux%u pede %u bytes e o heap do guest nao os deu",
-                  static_cast<unsigned>(img.largura), static_cast<unsigned>(img.altura),
+                  static_cast<unsigned>(largura), static_cast<unsigned>(altura),
                   static_cast<unsigned>(bytes_dos_pixels));
     traco_.RegistarFalta(Area::Brew, "IShell::LoadResObject", det);
     return true;
   }
-  for (std::uint32_t k = 0; k < img.pixels.size(); ++k) {
-    mem_.Escrever16(pixels + k * 2u, img.pixels[k]);
+  for (std::uint32_t k = 0; k < pixels_da_imagem->size(); ++k) {
+    mem_.Escrever16(pixels + k * 2u, (*pixels_da_imagem)[k]);
   }
-  EscreverCabecalhoDeIdib(obj, pixels, img.largura, img.altura);
+  EscreverCabecalhoDeIdib(obj, pixels, largura, altura);
   // A LEITURA DE VOLTA, e a mesma guarda do `CriarDibDoPng`: um objecto com o
   // `+0` a zero e um `blx 0` no primeiro metodo que o jogo lhe chamar.
   if (mem_.Ler32(obj + zb2::brew::CamposDoIdib::kPvt) != vtable_bitmap_ ||
@@ -1656,8 +1682,8 @@ bool Despacho::AtenderLoadResObject(ICpu& cpu) {
   cpu.Set(kR0, obj);
   traco_.Emitir(Area::Brew, Nivel::Depuracao, "ISHELL_LOADRESOBJECT",
                 nome + " id=" + std::to_string(id) + " cls=" + Hex(cls) + " -> IBitmap " +
-                    Hex(obj) + " " + std::to_string(img.largura) + "x" +
-                    std::to_string(img.altura) + (img.tem_alpha ? " com alfa" : ""));
+                    Hex(obj) + " " + std::to_string(largura) + "x" +
+                    std::to_string(altura) + (tem_alpha ? " com alfa" : ""));
   return true;
 }
 
@@ -2379,6 +2405,7 @@ void Despacho::InstalarAjudantes(const Saidas& saidas, Endereco tabela) {
   // construcao do sistema, e nao num sitio que a bateria tenha de chamar --
   // `tools/bateria.cpp` e partilhado e esta frente nao o altera.
   ConstruirClasses(mem_, saidas, traco_);
+  menu_.Instalar(saidas);
   ConstruirNetMgr(mem_, saidas, traco_);
 
   // A TELA DO MOTOR DO IGLES11 (frente tela). O `ConstruirIgles` -- chamado
@@ -3003,6 +3030,8 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // broad IShell fallback, or its slots would be named as IShell slots.
       } else if (AtenderNetMgr(cpu, idx, traco_)) {
         // INetMgr: explicit named refusals; it has no QueryInterface slot.
+      } else if (menu_.Atender(cpu, idx)) {
+        // IMenuCtl has per-instance state and an explicit refusal for each unsupported slot.
       } else if (AtenderClasse(cpu, idx, traco_)) {
         // AS CLASSES CONHECIDAS (`core/brew/classes.h`). ESTE RAMO VEM ANTES DO
         // `idx >= kBaseDoShell`, e nao e gosto: os indices desta faixa sao 40000+
@@ -3073,6 +3102,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         else if (iid == kClsidMemAStream) devolver = kObjMemStream;
         else if (iid == brew_clsids::kClsid_MD5Ctx) devolver = zb2::brew::kObjetoMd5Ctx;
         else if (iid == zb2::brew::kAeeClsidNet) devolver = zb2::brew::kObjetoNetMgr;
+        else if (iid == kClsidSoftKeyCtl) devolver = menu_.Criar();
         // OS DOIS CLSIDs DO Z-WHEEL (frente zclsid): cada um recebe o objecto da
         // SUA interface. Este ramo vem ANTES do dos genericos, e nao e gosto: o
         // `0x01000000` e tambem o `AEECLSID_PRIV` (a base de toda a familia), e um

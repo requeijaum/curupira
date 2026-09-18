@@ -21,9 +21,10 @@ struct ImagemBmp {
   }
 };
 
-// Descodifica um BMP completo com BITMAPINFOHEADER (DIB >= 40), BI_RGB, 24 ou
-// 32 bpp. Confere todos os limites antes de alocar ou ler pixels. Formatos que
-// exigem paleta, mascaras ou descompressao devolvem false com motivo explicito.
+// Descodifica um BMP completo com BITMAPINFOHEADER (DIB >= 40), BI_RGB, 8 bpp
+// indexado por paleta BGR0, ou 24/32 bpp directo. Confere todos os limites antes
+// de alocar ou ler pixels. Formatos que exigem mascaras ou descompressao devolvem
+// false com motivo explicito.
 bool DescodificarBmp(const std::uint8_t* dados, std::size_t tamanho, ImagemBmp* saida,
                      std::string* motivo, std::uint32_t teto_de_pixels = 0u);
 

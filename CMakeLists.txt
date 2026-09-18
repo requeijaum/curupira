@@ -67,6 +67,7 @@ add_library(zb2_core STATIC
   core/brew/recursos.cpp
   core/brew/sha256.cpp
   core/brew/md5ctx.cpp
+  core/brew/menuctl.cpp
   core/brew/inetmgr.cpp
   core/brew/despacho.cpp
   core/brew/sql.cpp
@@ -143,6 +144,7 @@ add_executable(zb2_tests
   tests/classes_test.cpp
   tests/md5ctx_test.cpp
   tests/inetmgr_test.cpp
+  tests/menuctl_test.cpp
   tests/pack_test.cpp
   tests/pakz_test.cpp
   tests/aez_test.cpp

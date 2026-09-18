@@ -59,10 +59,27 @@ bool DescodificarBmp(const std::uint8_t* dados, std::size_t tamanho, ImagemBmp* 
   const std::uint16_t bpp = LerLE16(dados + 28);
   const std::uint32_t compressao = LerLE32(dados + 30);
   if (planos != 1u) return recusar("BMP tem numero de planos diferente de 1");
-  if (bpp != 24u && bpp != 32u) {
-    return recusar("BMP usa bpp nao suportado (so BI_RGB 24/32 bpp)");
+  if (bpp != 8u && bpp != 24u && bpp != 32u) {
+    return recusar("BMP usa bpp nao suportado (so BI_RGB 8/24/32 bpp)");
   }
   if (compressao != 0u) return recusar("BMP comprimido ou com mascaras nao suportado (so BI_RGB)");
+
+  // BI_RGB 8 bpp e uma tabela BGR0 entre o DIB e os pixels. `biClrUsed=0`
+  // significa a paleta inteira de 256 entradas; qualquer numero explicito tem
+  // de caber nessa paleta e na area antes de bfOffBits. Nao se aceita indice
+  // sem entrada: seria fabricar uma cor a partir de bytes arbitrarios.
+  const std::uint8_t* paleta = nullptr;
+  std::uint32_t cores_da_paleta = 0;
+  if (bpp == 8u) {
+    const std::uint32_t cores_declaradas = LerLE32(dados + 46);
+    cores_da_paleta = cores_declaradas == 0u ? 256u : cores_declaradas;
+    if (cores_da_paleta > 256u) return recusar("BMP 8 bpp declara mais de 256 cores");
+    const std::uint64_t fim_paleta = fim_dib + 4ull * cores_da_paleta;
+    if (fim_paleta > offset_pixels || fim_paleta > tamanho) {
+      return recusar("paleta BMP 8 bpp truncada ou sobrepoe os pixels");
+    }
+    paleta = dados + fim_dib;
+  }
 
   const std::uint64_t pixels = largura * altura;
   const std::uint64_t teto = teto_de_pixels != 0u ? teto_de_pixels : kTetoDePixelsPorOmissao;
@@ -70,7 +87,7 @@ bool DescodificarBmp(const std::uint8_t* dados, std::size_t tamanho, ImagemBmp* 
       altura > std::numeric_limits<std::uint32_t>::max() || pixels > teto) {
     return recusar("dimensoes BMP excedem o teto de pixels");
   }
-  const std::uint64_t bytes_por_pixel = bpp / 8u;
+  const std::uint64_t bytes_por_pixel = bpp == 8u ? 1u : bpp / 8u;
   const std::uint64_t bytes_linha_sem_pad = largura * bytes_por_pixel;
   const std::uint64_t stride = (bytes_linha_sem_pad + 3u) & ~3ull;
   const std::uint64_t bytes_pixels = stride * altura;
@@ -95,6 +112,11 @@ bool DescodificarBmp(const std::uint8_t* dados, std::size_t tamanho, ImagemBmp* 
     const std::uint8_t* linha = dados + offset_pixels + linha_no_ficheiro * stride;
     for (std::uint64_t x = 0; x < largura; ++x) {
       const std::uint8_t* bgr = linha + x * bytes_por_pixel;
+      if (bpp == 8u) {
+        const std::uint32_t indice = bgr[0];
+        if (indice >= cores_da_paleta) return recusar("indice BMP 8 bpp fora da paleta");
+        bgr = paleta + 4u * indice;
+      }
       imagem.pixels[static_cast<std::size_t>(y * largura + x)] =
           ImagemBmp::Rgb565(bgr[2], bgr[1], bgr[0]);
     }

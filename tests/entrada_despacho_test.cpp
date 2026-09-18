@@ -66,6 +66,7 @@ class Bancada {
     saidas_.ativa = true;
     cpu_.ConfigurarSaidas(saidas_);
     al_ = new Alocador(mem_, kHeap, kHeapTam, nullptr);
+    traco_.JuntarDestino(&destino_);
     despacho_ = new Despacho(mem_, traco_, *al_, vfs_);
     despacho_->DefinirVtableBitmap(saidas_);
     despacho_->DefinirVtableFicheiro(saidas_.Endereco(kVtableFileObj));
@@ -143,10 +144,12 @@ class Bancada {
   const Saidas& S() const { return saidas_; }
   bool Instalada() const { return instalada_; }
   Traco& Tr() { return traco_; }
+  const std::vector<Evento>& Eventos() const { return destino_.eventos; }
 
  private:
   Memoria mem_;
   Traco traco_{"teste_entrada_despacho", nullptr};
+  DestinoMemoria destino_;
   Vfs vfs_;
   Alocador* al_ = nullptr;
   Despacho* despacho_ = nullptr;
@@ -1862,6 +1865,24 @@ std::vector<std::uint8_t> PngDoIshell2() {
   return v;
 }
 
+// BMP BI_RGB 8 bpp 2x2 completo, com paleta BGR0. A primeira linha visual e
+// vermelho/verde; o ficheiro positivo guarda-a por ultimo. Os pixels permitem
+// provar que o LoadResObject nao devolveu um IDIB vazio ou inventado.
+std::vector<std::uint8_t> BmpDoIshell2() {
+  // BITMAPINFOHEADER + paleta BGR0 de quatro cores + 2 linhas 8bpp. O BMP
+  // positivo guarda a linha visual superior (vermelho/verde) por ultimo.
+  return {0x42, 0x4d, 78, 0, 0, 0, 0, 0, 0, 0, 70, 0, 0, 0,
+          40, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 1, 0, 8, 0,
+          0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0,
+          0, 0, 0, 0,  // biClrImportant
+          0, 0, 0, 0,  // paleta 0: preto
+          0, 0, 255, 0,  // paleta 1: vermelho
+          0, 255, 0, 0,  // paleta 2: verde
+          255, 0, 0, 0,  // paleta 3: azul
+          3, 0, 0, 0,  // fundo: azul, preto, padding
+          1, 2, 0, 0};  // topo: vermelho, verde, padding
+}
+
 // O CONTENTOR DO `.bar`/`.pod`, montado com as regras medidas (`tests/bar_test.cpp`:
 // cabecalho de 32 bytes, registos de 8 e a tabela de deslocamentos; o ultimo
 // deslocamento E o tamanho do ficheiro).
@@ -2092,6 +2113,47 @@ TEST(FrenteIshell2, OLoadResObjectServeUmIdibDoFicheiroEDoContentor) {
                                           kObjShell, kNomeNoGuest, 0, 0);
   EXPECT_EQ(nulo, 0u);
   EXPECT_EQ(b.Faltas("IShell::LoadResObject"), 1u);
+}
+
+// `rocketweb` pede `app.bar`, recurso 5008, como `image/bmp`. A entrada
+// devolve um IDIB com os pixels que o BMP declarou, nao o bitmap generico nem
+// um raster sintetico. Um BMP invalido conserva o contrato NULL e diz a razao.
+TEST(FrenteIshell2, OLoadResObjectServeOBmpDoAppBarDoRocketwebComMotivoNaRecusa) {
+  PastaDoTitulo pasta;
+  pasta.Escrever("app.bar", ContentorDoIshell2(
+                                {{6, 5008, 0, 0}},
+                                {BlobDoIshell2(12, "image/bmp", BmpDoIshell2())}));
+  pasta.Escrever("app-invalido.bar", ContentorDoIshell2(
+                                         {{6, 5008, 0, 0}},
+                                         {BlobDoIshell2(12, "image/bmp", {0x42, 0x4d})}));
+  Bancada b;
+  b.AcessoAVfs().Registar(pasta.Caminho());
+  b.D().SituarTitulo(pasta.Raiz(), pasta.Nome());
+  ConstruirOShell(b);
+
+  EscreverCadeia(b.Mem(), kNomeNoGuest, "app.bar");
+  const std::uint32_t obj = b.ChamaSaida(kBaseDoShell + brew_slots::kShell_LoadResObject,
+                                         kObjShell, kNomeNoGuest, 5008, 0x01001021u);
+  ASSERT_NE(obj, 0u);
+  EXPECT_EQ(b.Mem().Ler32(obj), b.S().Endereco(kVtableBitmap));
+  EXPECT_EQ(b.Mem().Ler16(obj + CamposDoIdib::kCx), 2u);
+  EXPECT_EQ(b.Mem().Ler16(obj + CamposDoIdib::kCy), 2u);
+  const std::uint32_t pixels = b.Mem().Ler32(obj + CamposDoIdib::kPBmp);
+  ASSERT_NE(pixels, 0u);
+  EXPECT_EQ(b.Mem().Ler16(pixels), ImagemBmp::Rgb565(255, 0, 0));
+  EXPECT_EQ(b.Mem().Ler16(pixels + 2), ImagemBmp::Rgb565(0, 255, 0));
+  EXPECT_EQ(b.Mem().Ler16(pixels + 4), ImagemBmp::Rgb565(0, 0, 255));
+  EXPECT_EQ(b.Faltas("IShell::LoadResObject"), 0u);
+
+  EscreverCadeia(b.Mem(), kNomeNoGuest, "app-invalido.bar");
+  EXPECT_EQ(b.ChamaSaida(kBaseDoShell + brew_slots::kShell_LoadResObject,
+                         kObjShell, kNomeNoGuest, 5008, 0x01001021u), 0u);
+  EXPECT_EQ(b.Faltas("IShell::LoadResObject"), 1u);
+  ASSERT_FALSE(b.Eventos().empty());
+  const Evento& recusa = b.Eventos().back();
+  EXPECT_EQ(recusa.nome, "NAO_IMPLEMENTADO: IShell::LoadResObject");
+  EXPECT_NE(recusa.detalhe.find("nao descodifica como BMP"), std::string::npos);
+  EXPECT_NE(recusa.detalhe.find("stream BMP menor que o cabecalho"), std::string::npos);
 }
 
 TEST(FrenteIshell2, OLoadResObjectResolveFsHomeParentSemSairDaRaizDosMods) {
