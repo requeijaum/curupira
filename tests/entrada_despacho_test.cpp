@@ -155,6 +155,92 @@ class Bancada {
 
 }  // namespace
 
+TEST(PrefsDoShell, GuardaCopiaPorClasseESubstituiAVersao) {
+  Bancada b;
+  constexpr std::uint32_t kClasse = 0x0102f00du;
+  constexpr std::uint16_t kVersao1 = 1u, kVersao2 = 2u;
+  constexpr std::uint32_t kOrigem = 0x0020d000u, kDestino = 0x0020d100u;
+  constexpr std::uint8_t kPrimeiro[] = {0x11u, 0x22u, 0x33u, 0x44u};
+  constexpr std::uint8_t kSegundo[] = {0xaau, 0xbbu};
+
+  // Sem registro, GetPrefs falha e nao toca no buffer do chamador.
+  for (std::uint32_t i = 0; i < 4; ++i)
+    b.Mem().Escrever8(kDestino + i, 0xe0u + i);
+  EXPECT_EQ(b.ChamaSaida(kBaseDoShell + brew_slots::kShell_GetPrefs, kObjShell,
+                         kClasse, kVersao1, kDestino, 4),
+            static_cast<std::uint32_t>(kAeeFailed));
+  for (std::uint32_t i = 0; i < 4; ++i)
+    EXPECT_EQ(b.Mem().Ler8(kDestino + i), 0xe0u + i);
+
+  for (std::uint32_t i = 0; i < sizeof(kPrimeiro); ++i)
+    b.Mem().Escrever8(kOrigem + i, kPrimeiro[i]);
+  EXPECT_EQ(b.ChamaSaida(kBaseDoShell + brew_slots::kShell_SetPrefs, kObjShell,
+                         kClasse, kVersao1, kOrigem, sizeof(kPrimeiro)),
+            static_cast<std::uint32_t>(kAeeSuccess));
+  // A cache e dona dos bytes: o chamador pode reutilizar a origem.
+  b.Mem().Escrever8(kOrigem, 0xffu);
+
+  EXPECT_EQ(b.ChamaSaida(kBaseDoShell + brew_slots::kShell_GetPrefs, kObjShell,
+                         kClasse, kVersao1, 0, 0),
+            sizeof(kPrimeiro));
+  for (std::uint32_t i = 0; i < 4; ++i)
+    b.Mem().Escrever8(kDestino + i, 0xd0u + i);
+  EXPECT_EQ(b.ChamaSaida(kBaseDoShell + brew_slots::kShell_GetPrefs, kObjShell,
+                         kClasse, kVersao1, kDestino, 3),
+            sizeof(kPrimeiro));
+  for (std::uint32_t i = 0; i < 4; ++i)
+    EXPECT_EQ(b.Mem().Ler8(kDestino + i), 0xd0u + i);
+  EXPECT_EQ(b.ChamaSaida(kBaseDoShell + brew_slots::kShell_GetPrefs, kObjShell,
+                         kClasse, kVersao1, kDestino, 4),
+            static_cast<std::uint32_t>(kAeeSuccess));
+  for (std::uint32_t i = 0; i < sizeof(kPrimeiro); ++i)
+    EXPECT_EQ(b.Mem().Ler8(kDestino + i), kPrimeiro[i]);
+
+  // Outra versao do mesmo CLSID substitui o registro anterior.
+  for (std::uint32_t i = 0; i < sizeof(kSegundo); ++i)
+    b.Mem().Escrever8(kOrigem + i, kSegundo[i]);
+  EXPECT_EQ(b.ChamaSaida(kBaseDoShell + brew_slots::kShell_SetPrefs, kObjShell,
+                         kClasse, kVersao2, kOrigem, sizeof(kSegundo)),
+            static_cast<std::uint32_t>(kAeeSuccess));
+  b.Mem().Escrever8(kDestino, 0x7eu);
+  EXPECT_EQ(b.ChamaSaida(kBaseDoShell + brew_slots::kShell_GetPrefs, kObjShell,
+                         kClasse, kVersao1, kDestino, 4),
+            static_cast<std::uint32_t>(kAeeFailed));
+  EXPECT_EQ(b.Mem().Ler8(kDestino), 0x7eu);
+  EXPECT_EQ(b.ChamaSaida(kBaseDoShell + brew_slots::kShell_GetPrefs, kObjShell,
+                         kClasse, kVersao2, kDestino, sizeof(kSegundo)),
+            static_cast<std::uint32_t>(kAeeSuccess));
+  for (std::uint32_t i = 0; i < sizeof(kSegundo); ++i)
+    EXPECT_EQ(b.Mem().Ler8(kDestino + i), kSegundo[i]);
+}
+
+TEST(PrefsDoShell, ValidaBufferEExplicitaPedidoSincronoSemPersistir) {
+  Bancada b;
+  constexpr std::uint32_t kClasse = 0x0102f00eu;
+  constexpr std::uint32_t kOrigem = 0x0020e000u, kFimDaPagina = 0x0020efffu;
+
+  EXPECT_EQ(b.ChamaSaida(kBaseDoShell + brew_slots::kShell_SetPrefs, kObjShell,
+                         kClasse, 1, 0, 1),
+            static_cast<std::uint32_t>(kAeeBadParm));
+  // So o ultimo byte da pagina existe; dois bytes ultrapassam a memoria do
+  // guest.
+  b.Mem().Escrever8(kFimDaPagina, 0x5au);
+  EXPECT_EQ(b.ChamaSaida(kBaseDoShell + brew_slots::kShell_SetPrefs, kObjShell,
+                         kClasse, 1, kFimDaPagina, 2),
+            static_cast<std::uint32_t>(kAeeBadParm));
+
+  b.Mem().Escrever8(kOrigem, 0x91u);
+  b.Mem().Escrever8(kOrigem + 1, 0x92u);
+  // O bit alto pede gravacao sincrona em NAND. A copia fica so neste processo;
+  // a persistencia pedida e recusada explicitamente.
+  EXPECT_EQ(b.ChamaSaida(kBaseDoShell + brew_slots::kShell_SetPrefs, kObjShell,
+                         kClasse, 1, kOrigem, 0x8002u),
+            static_cast<std::uint32_t>(kAeeUnsupported));
+  EXPECT_EQ(b.ChamaSaida(kBaseDoShell + brew_slots::kShell_GetPrefs, kObjShell,
+                         kClasse, 1, 0, 0),
+            2u);
+}
+
 TEST(EntradaNoDespacho, AEntradaInstalaSeNaFaixaPedida) {
   Bancada b;
   ASSERT_TRUE(b.Instalada());

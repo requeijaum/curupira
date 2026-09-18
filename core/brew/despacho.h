@@ -627,6 +627,12 @@ class Despacho {
   // o consome e a prova do numero estao no comentario do
   // `AtenderGetClassItemID`, em `despacho.cpp`.
   bool AtenderGetClassItemID(ICpu& cpu);
+
+  // `GetPrefs`/`SetPrefs` sao os slots 23/24 do IShell. A cache e por CLSID:
+  // gravar uma versao diferente substitui o registro anterior, como manda o
+  // SDK. Ela vive somente neste Despacho; nao ha formato de NAND conhecido.
+  bool AtenderPrefs(ICpu& cpu, bool gravar);
+
   // O primeiro IDIB LIVRE da banda dos bitmaps compativeis, ACIMA do ecra
   // (`kObjDibBase + 0x300`), que e a mesma escolha do servico da familia
   // (`core/brew/interface.cpp`, `ProcurarObjectoLivre`) e a razao que la esta
@@ -820,6 +826,14 @@ class Despacho {
   std::map<std::uint32_t, std::vector<std::uint8_t>> itens_do_config_;
   std::uint32_t config_escritas_ = 0;
   std::uint32_t config_lidas_ = 0;
+
+  // Preferencias do IShell. A versao pertence ao registro, mas o CLSID e a
+  // chave: SetPrefs com outra versao substitui o valor anterior.
+  struct PreferenciaDoShell {
+    std::uint16_t versao = 0;
+    std::vector<std::uint8_t> bytes;
+  };
+  std::map<std::uint32_t, PreferenciaDoShell> prefs_do_shell_;
 
   // A FRENTE io2: o estado dos objectos IUnzipAStream e IMemAStream, por
   // endereco de objecto. Os objectos nascem no `InstalarAjudantes` (kObjUnzip /

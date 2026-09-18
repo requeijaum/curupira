@@ -1661,6 +1661,95 @@ bool Despacho::AtenderLoadResObject(ICpu& cpu) {
 }
 
 // ---------------------------------------------------------------------------
+// `IShell::GetPrefs` / `IShell::SetPrefs` (slots 23 / 24).
+//
+// `AEEIShell.h:255-256, 311-312`: r0=IShell, r1=CLSID, r2=uint16 versao,
+// r3=pCfg, [sp]=uint16 nSize. O SDK tambem diz que uma versao diferente do
+// mesmo CLSID substitui o registro anterior (`:3226`). A copia e deste
+// Despacho, nao da NAND: nao se inventa o formato persistente do console.
+bool Despacho::AtenderPrefs(ICpu& cpu, bool gravar) {
+  const std::uint32_t sp = cpu.Get(kSP);
+  const std::uint32_t cls = cpu.Get(kR1);
+  const std::uint16_t versao = static_cast<std::uint16_t>(cpu.Get(kR2));
+  const std::uint32_t cfg = cpu.Get(kR3);
+
+  // `Memoria` e esparsa: ler ou escrever um ponteiro invalido fabrica zeros ou
+  // paginas. A ABI tem de ser lida so se os quatro bytes da pilha existem.
+  const auto intervalo_do_guest = [this](std::uint32_t onde, std::uint32_t n) {
+    if (n == 0) return true;
+    if (onde == 0 || static_cast<std::uint64_t>(onde) + n > 0x100000000ull) return false;
+    const std::uint64_t fim = static_cast<std::uint64_t>(onde) + n;
+    for (std::uint64_t p = onde; p < fim; p = (p & ~0xfffull) + Memoria::kPagina) {
+      if (!mem_.Existe(static_cast<std::uint32_t>(p))) return false;
+    }
+    return true;
+  };
+  if (!intervalo_do_guest(sp, 4)) {
+    traco_.RegistarFalta(Area::Brew, gravar ? "IShell::SetPrefs" : "IShell::GetPrefs",
+                         "nSize em [sp] nao mapeado");
+    cpu.Set(kR0, kAeeBadParm);
+    return true;
+  }
+
+  const std::uint16_t tamanho_bruto = static_cast<std::uint16_t>(mem_.Ler32(sp));
+  const std::uint32_t tamanho = gravar ? (tamanho_bruto & 0x7fffu) : tamanho_bruto;
+  if (gravar) {
+    if (!intervalo_do_guest(cfg, tamanho)) {
+      traco_.RegistarFalta(Area::Brew, "IShell::SetPrefs",
+                           "pCfg nulo ou nao mapeado para " + std::to_string(tamanho) +
+                               " bytes");
+      cpu.Set(kR0, kAeeBadParm);
+      return true;
+    }
+
+    PreferenciaDoShell pref;
+    pref.versao = versao;
+    pref.bytes.resize(tamanho);
+    if (tamanho != 0) mem_.LerBloco(cfg, pref.bytes.data(), tamanho);
+    // A vector propria e a copia COW: reutilizar ou alterar pCfg depois do
+    // retorno nao muda o registro.
+    prefs_do_shell_[cls] = std::move(pref);
+
+    if ((tamanho_bruto & 0x8000u) != 0) {
+      // O bit pede escrita SINCRONA no filesystem (`AEEIShell.h:3195-3198`).
+      // Nao ha NAND nem formato persistente implementados; a copia em RAM fica
+      // disponivel nesta execucao, mas a garantia extra e recusada claramente.
+      traco_.RegistarFalta(Area::Brew, "IShell::SetPrefs(persistencia sincrona)",
+                           "nSize=0x" + Hex(tamanho_bruto) +
+                               ": cache so em memoria, sem NAND");
+      cpu.Set(kR0, kAeeUnsupported);
+    } else {
+      cpu.Set(kR0, kAeeSuccess);
+    }
+    return true;
+  }
+
+  const auto it = prefs_do_shell_.find(cls);
+  // A versao faz parte do registro salvo, mas NAO da chave: uma SetPrefs numa
+  // versao nova apagou a antiga. Sem registro, GetPrefs nao altera pCfg.
+  if (it == prefs_do_shell_.end() || it->second.versao != versao) {
+    cpu.Set(kR0, kAeeFailed);
+    return true;
+  }
+  const std::uint32_t necessario = static_cast<std::uint32_t>(it->second.bytes.size());
+  // `AEEIShell.h:3131-3133`: sem destino ou sem espaco, devolve o tamanho
+  // NAO-zero do registro e nao escreve nada.
+  if (cfg == 0 || tamanho < necessario) {
+    cpu.Set(kR0, necessario);
+    return true;
+  }
+  if (!intervalo_do_guest(cfg, necessario)) {
+    traco_.RegistarFalta(Area::Brew, "IShell::GetPrefs",
+                         "pCfg nao mapeado para " + std::to_string(necessario) + " bytes");
+    cpu.Set(kR0, kAeeBadParm);
+    return true;
+  }
+  if (necessario != 0) mem_.EscreverBloco(cfg, it->second.bytes.data(), necessario);
+  cpu.Set(kR0, kAeeSuccess);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // O REGISTO DE HANDLERS (`IShell::GetHandler`, slot 32).
 //
 // ===========================================================================
@@ -3109,6 +3198,15 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // `IShell::slot43`). O contrato MEDIDO e a implementacao estao no
         // comentario do detector, acima.
         (void)AtenderDetectType(cpu);
+      } else if (idx == kBaseDoShell + brew_slots::kShell_GetPrefs) {
+        // `int GetPrefs(IShell*, AEECLSID, uint16, void*, uint16)` -- r1/r2/r3
+        // e nSize em [sp]. A cache por CLSID e a regra da versao ficam em
+        // `AtenderPrefs`; este ramo vem antes do generico, que devolvia 20.
+        (void)AtenderPrefs(cpu, false);
+      } else if (idx == kBaseDoShell + brew_slots::kShell_SetPrefs) {
+        // Mesmo ABI do GetPrefs. O Set copia os bytes do guest; persistencia
+        // sincrona marcada no bit alto e recusada pelo proprio atendente.
+        (void)AtenderPrefs(cpu, true);
       } else if (idx == kBaseDoShell + brew_slots::kShell_GetHandler) {
         // `AEECLSID GetHandler(IShell*, AEECLSID clsBase, const char *pszIn)` --
         // o slot 32, que estava no ramo generico (recusava e dizia
