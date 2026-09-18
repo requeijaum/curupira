@@ -203,6 +203,64 @@ TEST(Pakz, RecipienteSinteticoComNomesRepetidosConta) {
   EXPECT_EQ(p.Procurar("a.bin")->offset, p.ListaDeEntradas()[0].offset) << "o PRIMEIRO ganha";
 }
 
+TEST(Pakz, IndiceDeFicheiroLeSomenteEstruturaEExtraiSobDemanda) {
+  const std::vector<std::uint8_t> pequeno = {9, 8, 7, 6};
+  const std::vector<std::uint8_t> maior = Padrao(4096, 0x42);
+  const std::vector<std::uint8_t> bytes = MontarPakz({{"cfg/a.cfg", pequeno}, {"data/b.bin", maior}});
+  const std::filesystem::path caminho = std::filesystem::temp_directory_path() / "zb2_pakz_indice_lazy.pakz";
+  {
+    std::ofstream saida(caminho, std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(saida);
+    saida.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    ASSERT_TRUE(saida);
+  }
+
+  Pakz p;
+  std::string motivo;
+  ASSERT_TRUE(p.IndexarFicheiro(caminho.string(), &motivo)) << motivo;
+  ASSERT_TRUE(p.Valido());
+  ASSERT_EQ(p.NumeroDeEntradas(), 2u);
+  EXPECT_EQ(p.ListaDeEntradas()[0].nome, "cfg/a.cfg");
+
+  std::vector<std::uint8_t> extraido;
+  ASSERT_TRUE(p.ExtrairPorNome("DATA/B.BIN", &extraido, &motivo)) << motivo;
+  EXPECT_EQ(extraido, maior);
+  std::error_code ec;
+  std::filesystem::remove(caminho, ec);
+  EXPECT_FALSE(ec) << ec.message();
+}
+
+TEST(Pakz, IndiceDeFicheiroRecusaTabelaTruncada) {
+  std::vector<std::uint8_t> bytes = MontarPakz({{"cfg/a.cfg", {1, 2, 3}}});
+  bytes.pop_back();  // o cabecalho ainda aponta para a tabela completa.
+  const std::filesystem::path caminho = std::filesystem::temp_directory_path() / "zb2_pakz_indice_truncado.pakz";
+  {
+    std::ofstream saida(caminho, std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(saida);
+    saida.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  }
+  Pakz p;
+  std::string motivo;
+  EXPECT_FALSE(p.IndexarFicheiro(caminho.string(), &motivo));
+  EXPECT_FALSE(motivo.empty());
+  std::error_code ec;
+  std::filesystem::remove(caminho, ec);
+}
+
+TEST(Pakz, IndiceDoQuake2ResRealNaoExtraiPayload) {
+  const std::string raiz = RaizDosMods();
+  const std::string caminho = raiz.empty() ? "" : raiz + "/quake2res/pak0.pakz";
+  std::error_code ec;
+  if (caminho.empty() || !std::filesystem::is_regular_file(caminho, ec)) {
+    GTEST_SKIP() << "quake2res/pak0.pakz ausente";
+  }
+  Pakz p;
+  std::string motivo;
+  ASSERT_TRUE(p.IndexarFicheiro(caminho, &motivo)) << motivo;
+  EXPECT_EQ(p.NumeroDeEntradas(), 3330u);
+  EXPECT_EQ(p.Procurar("autoexec.cfg"), nullptr);
+}
+
 // ---------------------------------------------------------------------------
 // (b) As guardas
 // ---------------------------------------------------------------------------

@@ -38,6 +38,9 @@ std::string Minusculas(const std::string& s) {
 
 bool Pakz::Parse(std::vector<std::uint8_t> bytes, std::string* motivo) {
   if (motivo != nullptr) motivo->clear();
+  if (ficheiro_.is_open()) ficheiro_.close();
+  indexado_de_ficheiro_ = false;
+  tamanho_do_ficheiro_ = 0;
   bytes_ = std::move(bytes);
   entradas_.clear();
   nomes_repetidos_ = 0;
@@ -207,6 +210,165 @@ bool Pakz::Parse(std::vector<std::uint8_t> bytes, std::string* motivo) {
   return true;
 }
 
+bool Pakz::IndexarFicheiro(const std::string& caminho, std::string* motivo) {
+  if (motivo != nullptr) motivo->clear();
+  if (ficheiro_.is_open()) ficheiro_.close();
+  bytes_.clear();
+  entradas_.clear();
+  nomes_repetidos_ = 0;
+  nomes_no_campo_inteiro_ = 0;
+  valido_ = false;
+  motivo_.clear();
+  indexado_de_ficheiro_ = false;
+  tamanho_do_ficheiro_ = 0;
+
+  ficheiro_.open(caminho, std::ios::binary);
+  if (!ficheiro_) {
+    motivo_ = "nao consegui abrir para indice: " + caminho;
+    Recusar(motivo, motivo_);
+    return false;
+  }
+  ficheiro_.seekg(0, std::ios::end);
+  const std::streampos fim = ficheiro_.tellg();
+  if (fim < 0) {
+    motivo_ = "nao consegui medir o ficheiro";
+    Recusar(motivo, motivo_);
+    ficheiro_.close();
+    return false;
+  }
+  tamanho_do_ficheiro_ = static_cast<std::uint64_t>(fim);
+  if (tamanho_do_ficheiro_ < pakz_campos::kCabecalho) {
+    motivo_ = "ficheiro com " + std::to_string(tamanho_do_ficheiro_) +
+              " bytes: o cabecalho do PAKZ ocupa " + std::to_string(pakz_campos::kCabecalho);
+    Recusar(motivo, motivo_);
+    ficheiro_.close();
+    return false;
+  }
+
+  std::uint8_t cabecalho[pakz_campos::kCabecalho];
+  ficheiro_.seekg(0, std::ios::beg);
+  ficheiro_.read(reinterpret_cast<char*>(cabecalho), sizeof(cabecalho));
+  if (ficheiro_.gcount() != static_cast<std::streamsize>(sizeof(cabecalho))) {
+    motivo_ = "nao consegui ler o cabecalho inteiro";
+    Recusar(motivo, motivo_);
+    ficheiro_.close();
+    return false;
+  }
+  if (std::memcmp(cabecalho, pakz_campos::kAssinatura, 4) != 0) {
+    char b[96];
+    std::snprintf(b, sizeof(b), "assinatura \"%c%c%c%c\" em vez de \"PACK\"", cabecalho[0],
+                  cabecalho[1], cabecalho[2], cabecalho[3]);
+    motivo_ = b;
+    Recusar(motivo, motivo_);
+    ficheiro_.close();
+    return false;
+  }
+  const std::uint32_t offset_da_tabela = Ler32(cabecalho + 4);
+  const std::uint32_t tamanho_da_tabela = Ler32(cabecalho + 8);
+  if (tamanho_da_tabela == 0 || tamanho_da_tabela % pakz_campos::kRegisto != 0) {
+    motivo_ = "tabela com " + std::to_string(tamanho_da_tabela) +
+              " bytes: tem de ser multiplo dos " + std::to_string(pakz_campos::kRegisto) +
+              " do registo (e maior que zero)";
+    Recusar(motivo, motivo_);
+    ficheiro_.close();
+    return false;
+  }
+  const std::uint64_t fim_da_tabela = static_cast<std::uint64_t>(offset_da_tabela) + tamanho_da_tabela;
+  if (offset_da_tabela < pakz_campos::kCabecalho || fim_da_tabela > tamanho_do_ficheiro_) {
+    motivo_ = "tabela fora do ficheiro";
+    Recusar(motivo, motivo_);
+    ficheiro_.close();
+    return false;
+  }
+
+  std::vector<std::uint8_t> tabela(tamanho_da_tabela);
+  ficheiro_.seekg(offset_da_tabela, std::ios::beg);
+  ficheiro_.read(reinterpret_cast<char*>(tabela.data()), static_cast<std::streamsize>(tabela.size()));
+  if (ficheiro_.gcount() != static_cast<std::streamsize>(tabela.size())) {
+    motivo_ = "nao consegui ler a tabela inteira";
+    Recusar(motivo, motivo_);
+    ficheiro_.close();
+    return false;
+  }
+  const std::uint32_t count = tamanho_da_tabela / pakz_campos::kRegisto;
+  entradas_.reserve(count);
+  std::uint64_t soma = 0;
+  for (std::uint32_t i = 0; i < count; ++i) {
+    const std::uint8_t* r = &tabela[static_cast<std::size_t>(i) * pakz_campos::kRegisto];
+    std::size_t comprimento = 0;
+    while (comprimento < pakz_campos::kCampoDoNome && r[comprimento] != 0) ++comprimento;
+    if (comprimento == 0 || comprimento == pakz_campos::kCampoDoNome) {
+      motivo_ = "nome invalido da entrada " + std::to_string(i);
+      Recusar(motivo, motivo_);
+      ficheiro_.close();
+      return false;
+    }
+    if (comprimento >= 40u) ++nomes_no_campo_inteiro_;
+    std::string nome(reinterpret_cast<const char*>(r), comprimento);
+    for (char c : nome) {
+      if (static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7e) {
+        motivo_ = "nome da entrada " + std::to_string(i) + " com byte nao imprimivel";
+        Recusar(motivo, motivo_);
+        ficheiro_.close();
+        return false;
+      }
+    }
+    EntradaDoPakz e;
+    e.nome = std::move(nome);
+    e.offset = Ler32(r + pakz_campos::kOffsetDoOffset);
+    e.tamanho_comprimido = Ler32(r + pakz_campos::kOffsetDoTamanho);
+    if (e.tamanho_comprimido < pakz_campos::kPropsDoLzma + pakz_campos::kTamanhoDeclaradoDoLzma ||
+        static_cast<std::uint64_t>(e.offset) + e.tamanho_comprimido > tamanho_do_ficheiro_ ||
+        e.offset != pakz_campos::kCabecalho + soma) {
+      motivo_ = "geometria invalida da entrada " + std::to_string(i) + " (\"" + e.nome + "\")";
+      Recusar(motivo, motivo_);
+      ficheiro_.close();
+      return false;
+    }
+    soma += e.tamanho_comprimido;
+    entradas_.push_back(std::move(e));
+  }
+  if (soma != static_cast<std::uint64_t>(offset_da_tabela) - pakz_campos::kCabecalho) {
+    motivo_ = "dados comprimidos nao acabam no inicio da tabela";
+    Recusar(motivo, motivo_);
+    ficheiro_.close();
+    return false;
+  }
+  for (EntradaDoPakz& e : entradas_) {
+    std::uint8_t tamanho_lzma[pakz_campos::kTamanhoDeclaradoDoLzma];
+    ficheiro_.seekg(static_cast<std::uint64_t>(e.offset) + pakz_campos::kPropsDoLzma, std::ios::beg);
+    ficheiro_.read(reinterpret_cast<char*>(tamanho_lzma), sizeof(tamanho_lzma));
+    if (ficheiro_.gcount() != static_cast<std::streamsize>(sizeof(tamanho_lzma))) {
+      motivo_ = "nao consegui ler o tamanho LZMA de \"" + e.nome + "\"";
+      Recusar(motivo, motivo_);
+      ficheiro_.close();
+      return false;
+    }
+    const std::uint64_t declarado = Ler64(tamanho_lzma);
+    if (declarado != pakz_campos::kTamanhoDesconhecidoDoLzma) {
+      if (declarado > 0xffffffffull) {
+        motivo_ = "entrada \"" + e.nome + "\": tamanho descomprimido acima de 4 GiB";
+        Recusar(motivo, motivo_);
+        ficheiro_.close();
+        return false;
+      }
+      e.tamanho_descomprimido = static_cast<std::uint32_t>(declarado);
+    }
+  }
+  std::vector<std::string> vistos;
+  vistos.reserve(entradas_.size());
+  for (const EntradaDoPakz& e : entradas_) vistos.push_back(Minusculas(e.nome));
+  std::sort(vistos.begin(), vistos.end());
+  for (std::size_t i = 1; i < vistos.size(); ++i) {
+    if (vistos[i] == vistos[i - 1]) ++nomes_repetidos_;
+  }
+  ficheiro_.clear();
+  ficheiro_.seekg(0, std::ios::beg);
+  indexado_de_ficheiro_ = true;
+  valido_ = true;
+  return true;
+}
+
 const EntradaDoPakz* Pakz::Procurar(const std::string& nome) const {
   const std::string alvo = Minusculas(nome);
   for (const EntradaDoPakz& e : entradas_) {
@@ -228,16 +390,36 @@ bool Pakz::Extrair(const EntradaDoPakz& entrada, std::vector<std::uint8_t>* said
     return false;
   }
   const std::string prefixo = "entrada \"" + entrada.nome + "\": ";
-  if (static_cast<std::uint64_t>(entrada.offset) + entrada.tamanho_comprimido > bytes_.size()) {
-    Recusar(motivo, prefixo + "os dados saem do ficheiro");
-    return false;
+  std::vector<std::uint8_t> bloco_do_ficheiro;
+  const std::uint8_t* stream = nullptr;
+  const std::uint64_t fim_da_entrada = static_cast<std::uint64_t>(entrada.offset) + entrada.tamanho_comprimido;
+  if (indexado_de_ficheiro_) {
+    if (!ficheiro_.is_open() || fim_da_entrada > tamanho_do_ficheiro_) {
+      Recusar(motivo, prefixo + "os dados saem do ficheiro indexado");
+      return false;
+    }
+    bloco_do_ficheiro.resize(entrada.tamanho_comprimido);
+    ficheiro_.clear();
+    ficheiro_.seekg(entrada.offset, std::ios::beg);
+    ficheiro_.read(reinterpret_cast<char*>(bloco_do_ficheiro.data()),
+                   static_cast<std::streamsize>(bloco_do_ficheiro.size()));
+    if (ficheiro_.gcount() != static_cast<std::streamsize>(bloco_do_ficheiro.size())) {
+      Recusar(motivo, prefixo + "nao consegui ler o bloco comprimido");
+      return false;
+    }
+    stream = bloco_do_ficheiro.data();
+  } else {
+    if (fim_da_entrada > bytes_.size()) {
+      Recusar(motivo, prefixo + "os dados saem do ficheiro");
+      return false;
+    }
+    stream = &bytes_[entrada.offset];
   }
 
   // O cabecalho do proprio stream diz o tamanho descomprimido (bytes 5..12).
   // Medido: bate com o que o liblzma produz em 7 486 de 7 486. Pre-alocar esse
   // tamanho e a mesma regra do `teto` do Inflar: sem ele, um registo com o
   // tamanho certo e um corpo mentiroso enchia o hospedeiro.
-  const std::uint8_t* stream = &bytes_[entrada.offset];
   const std::uint64_t declarado = Ler64(stream + pakz_campos::kPropsDoLzma);
 
   lzma_stream strm = LZMA_STREAM_INIT;
@@ -255,6 +437,13 @@ bool Pakz::Extrair(const EntradaDoPakz& entrada, std::vector<std::uint8_t>* said
       lzma_end(&strm);
       Recusar(motivo, prefixo + "declara " + std::to_string(declarado) +
                           " bytes descomprimidos, mais do que um vector desta maquina");
+      return false;
+    }
+    if (declarado > pakz_campos::kTetoSemTamanhoDeclarado) {
+      lzma_end(&strm);
+      Recusar(motivo, prefixo + "declara " + std::to_string(declarado) +
+                          " bytes descomprimidos, acima do teto de " +
+                          std::to_string(pakz_campos::kTetoSemTamanhoDeclarado));
       return false;
     }
     destino.resize(static_cast<std::size_t>(declarado));

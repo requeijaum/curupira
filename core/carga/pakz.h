@@ -60,6 +60,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -90,6 +91,11 @@ class Pakz {
   // comprimidos tem de ser exactamente `offset_da_tabela - 12`). Nunca lanca.
   bool Parse(std::vector<std::uint8_t> bytes, std::string* motivo);
 
+  // Indexa um PAKZ que permanece em disco sem trazer os payloads para memoria.
+  // Le somente cabecalho, tabela e os 13 bytes LZMA de cada entrada. O handle
+  // continua aberto; Extrair le depois apenas o bloco comprimido pedido.
+  bool IndexarFicheiro(const std::string& caminho, std::string* motivo);
+
   bool Valido() const { return valido_; }
   const std::string& Motivo() const { return motivo_; }
 
@@ -117,6 +123,11 @@ class Pakz {
                       std::string* motivo) const;
 
  private:
+  // Em modo IndexarFicheiro, `ficheiro_` e a fonte dos payloads. O stream e
+  // mutavel pois Extrair e uma consulta logica const, mas move-se com Pakz.
+  mutable std::ifstream ficheiro_;
+  bool indexado_de_ficheiro_ = false;
+  std::uint64_t tamanho_do_ficheiro_ = 0;
   std::vector<std::uint8_t> bytes_;
   std::vector<EntradaDoPakz> entradas_;
   bool valido_ = false;
