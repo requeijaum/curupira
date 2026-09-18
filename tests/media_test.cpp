@@ -687,6 +687,22 @@ TEST(Media, PlaySemDadosERecusado) {
 // amostras nao nulas, som inventado devolvido com SUCCESS. Estes tres testes
 // prendem a correcao -- e o do meio e o que teria apanhado o defeito, porque o
 // PAR era o caso silencioso.
+TEST(Media, OBufferMp3RecebeRelogioVirtual) {
+  Bancada b;
+  const std::uint32_t po = b.CriarMedia(0x01005502u /* AEECLSID_MEDIAMP3 */, kPponovo);
+  b.ApontarParaObjeto(po);
+  // MPEG-1 Layer III, 128 kb/s, 44.1 kHz: uma moldura de 417 bytes, 27 ms.
+  b.Mem().Escrever8(kBuffer, 0xff); b.Mem().Escrever8(kBuffer + 1, 0xfb);
+  b.Mem().Escrever8(kBuffer + 2, 0x90); b.Mem().Escrever8(kBuffer + 3, 0);
+  b.Mem().Escrever32(kMediaData + kOffMidiaClsData, kMmdBuffer);
+  b.Mem().Escrever32(kMediaData + kOffMidiaPData, kBuffer);
+  b.Mem().Escrever32(kMediaData + kOffMidiaDwSize, 417);
+  EXPECT_EQ(b.DefinirDados(), kAeeSucesso);
+  EXPECT_EQ(b.OMedia().EstadoDe(po), kMmEstadoPronto);
+  EXPECT_EQ(b.Mem().Ler32(po + kOffObjAmostrasTotal), 27u * 22u);
+  EXPECT_EQ(b.OTraco().ContagemFaltas().count("IMedia::SetMediaParm(MMD_BUFFER)"), 0u);
+}
+
 TEST(Media, OBufferImparDeUmDescodificadorEGuardadoEOEstadoFicaPronto) {
   Bancada b;
   const std::uint32_t po = b.CriarMedia(0x01005502u /* AEECLSID_MEDIAMP3 */, kPponovo);

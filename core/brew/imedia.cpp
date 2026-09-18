@@ -681,10 +681,28 @@ std::int32_t Media::DefinirDados(Objeto& o, std::int32_t p1, std::int32_t p2) {
       o.cls_data = static_cast<std::int32_t>(cls_data);
       o.p_data = p_data;
       o.tam_data = tam;
+      o.fluxo.resize(tam);
+      for (std::uint32_t i = 0; i < tam; ++i) o.fluxo[i] = mem_.Ler8(p_data + i);
       o.amostras.clear();
       o.tem_dados = false;
       o.estado = kMmEstadoPronto;
       o.posicao = 0;
+      if (const auto tempo = audio::CronometrarFluxo(o.fluxo); tempo.has_value()) {
+        const std::uint64_t total = std::uint64_t(tempo->milissegundos) * kAmostrasPorMs;
+        if (total > 0 && total <= 32u * 1024u * 1024u) {
+          o.amostras.assign(static_cast<std::size_t>(total), 0);
+          o.tem_dados = true;
+          mem_.Escrever32(o.endereco + kOffObjAmostrasTotal, static_cast<std::uint32_t>(total));
+          mem_.Escrever32(o.endereco + kOffObjPosicao, 0);
+          mem_.Escrever32(o.endereco + kOffObjEstado, static_cast<std::uint32_t>(o.estado));
+          ++pedidos_aceitos_;
+          traco_.Emitir(Area::Audio, Nivel::Informacao, "IMEDIA_CRONOMETRADA",
+                        std::to_string(tempo->milissegundos) + " ms de fluxo no relogio virtual");
+          traco_.RegistarPressuposto(Area::Audio, "fluxo_comprimido_sem_saida_de_audio",
+                                     "MP3/MIDI tem duracao/callback real; decoder e sink do host ausentes");
+          return kAeeSucesso;
+        }
+      }
       mem_.Escrever32(o.endereco + kOffObjAmostrasTotal, 0);
       mem_.Escrever32(o.endereco + kOffObjPosicao, 0);
       mem_.Escrever32(o.endereco + kOffObjEstado, static_cast<std::uint32_t>(o.estado));

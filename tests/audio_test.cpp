@@ -77,6 +77,23 @@ TEST(Cronometragem, Mp3Layer3ContaFramesPelaMoldura) {
   EXPECT_EQ(t->milissegundos, 27u);  // ceil(1152 / 44100 s)
 }
 
+TEST(Cronometragem, Mp3ContaMoldurasCompletasAntesDaCaudaTruncada) {
+  std::vector<std::uint8_t> mp3(418, 0);
+  mp3[0] = 0xff; mp3[1] = 0xfb; mp3[2] = 0x90;
+  const auto t = zb2::audio::CronometrarFluxo(mp3);
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->milissegundos, 27u);
+}
+
+TEST(Cronometragem, Mp3SaltaFooterDeId3v24) {
+  std::vector<std::uint8_t> mp3(10 + 10 + 417, 0);
+  mp3[0] = 'I'; mp3[1] = 'D'; mp3[2] = '3'; mp3[3] = 4; mp3[5] = 0x10;
+  mp3[20] = 0xff; mp3[21] = 0xfb; mp3[22] = 0x90;
+  const auto t = zb2::audio::CronometrarFluxo(mp3);
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->milissegundos, 27u);
+}
+
 TEST(Cronometragem, MidiUsaTempoETicksDoTrack) {
   const std::vector<std::uint8_t> midi = {
       'M','T','h','d', 0,0,0,6, 0,0, 0,1, 1,0xe0,
@@ -87,6 +104,34 @@ TEST(Cronometragem, MidiUsaTempoETicksDoTrack) {
   ASSERT_TRUE(t.has_value());
   EXPECT_EQ(t->tipo, zb2::audio::TipoCronometrado::Midi);
   EXPECT_EQ(t->milissegundos, 500u);
+}
+
+TEST(Cronometragem, MidiRespeitaUltimoTempoNoMesmoTick) {
+  const std::vector<std::uint8_t> midi = {
+      'M','T','h','d', 0,0,0,6, 0,0, 0,1, 0,96,
+      'M','T','r','k', 0,0,0,18,
+      0,0xff,0x51,3, 0x0f,0x42,0x40,  // 1000000 us/qn
+      0,0xff,0x51,3, 0x07,0xa1,0x20,  // 500000 us/qn; vence no mesmo tick
+      96, 0xff,0x2f,0};
+  const auto t = zb2::audio::CronometrarFluxo(midi);
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->milissegundos, 500u);
+}
+
+TEST(Cronometragem, MidiSmpteCronometraSemMapaDeTempo) {
+  const std::vector<std::uint8_t> midi = {
+      'M','T','h','d', 0,0,0,6, 0,0, 0,1, 0xe7,40,  // -25 fps, 40 ticks/frame
+      'M','T','r','k', 0,0,0,5, 0x87,0x68, 0xff,0x2f,0};  // tick 1000
+  const auto t = zb2::audio::CronometrarFluxo(midi);
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->milissegundos, 1000u);
+}
+
+TEST(Cronometragem, MidiComDuracaoForaDeUint32ERecusado) {
+  const std::vector<std::uint8_t> midi = {
+      'M','T','h','d', 0,0,0,6, 0,0, 0,1, 0,1,
+      'M','T','r','k', 0,0,0,8, 0xff,0xff,0xff,0x7f, 0xff,0x2f,0};
+  EXPECT_FALSE(zb2::audio::CronometrarFluxo(midi).has_value());
 }
 
 TEST(Misturador, ContaAsAmostrasEAsNaoNulas) {

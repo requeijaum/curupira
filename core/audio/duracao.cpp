@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <utility>
 
 namespace zb2::audio {
@@ -23,9 +24,15 @@ bool Vlq(const std::vector<std::uint8_t>& d, std::size_t* p, std::size_t fim, st
 std::optional<Cronometragem> Mp3(const std::vector<std::uint8_t>& d) {
   std::size_t p = 0;
   if (d.size() >= 10 && d[0] == 'I' && d[1] == 'D' && d[2] == '3') {
+    if (d[3] == 0xff || d[4] == 0xff) return std::nullopt;
     std::size_t tag = 0;
-    for (int i = 6; i < 10; ++i) tag = (tag << 7) | (d[i] & 127);
+    for (int i = 6; i < 10; ++i) {
+      if (d[i] & 0x80) return std::nullopt;  // ID3 size is sync-safe.
+      tag = (tag << 7) | d[i];
+    }
     p = tag + 10;
+    if (d[3] == 4 && (d[5] & 0x10)) p += 10;  // v2.4 footer
+    if (p > d.size()) return std::nullopt;
   }
   constexpr std::uint32_t taxa1[] = {44100,48000,32000}, taxa2[] = {22050,24000,16000}, taxa25[] = {11025,12000,8000};
   constexpr std::uint32_t bit1[] = {0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,0};
@@ -39,7 +46,10 @@ std::optional<Cronometragem> Mp3(const std::vector<std::uint8_t>& d) {
     const bool mpeg1=versao==3; const std::uint32_t rate=(mpeg1?taxa1:versao==2?taxa2:taxa25)[ri];
     const std::uint32_t bitrate=(mpeg1?bit1:bit2)[bi]*1000, por_frame=mpeg1?1152:576;
     const std::size_t tamanho=(mpeg1?144:72)*bitrate/rate + ((c>>1)&1);
-    if (tamanho < 4 || p + tamanho > d.size()) return std::nullopt;
+    // Alguns ficheiros reais terminam com uma moldura incompleta. As molduras
+    // completas anteriores ainda definem um relogio; bytes finais nao viram
+    // uma moldura inventada.
+    if (tamanho < 4 || p + tamanho > d.size()) break;
     if (taxa != 0 && taxa != rate) return std::nullopt;
     taxa=rate; amostras += por_frame; p += tamanho;
   }
@@ -48,9 +58,14 @@ std::optional<Cronometragem> Mp3(const std::vector<std::uint8_t>& d) {
 }
 std::optional<Cronometragem> Midi(const std::vector<std::uint8_t>& d) {
   if (d.size() < 14 || std::memcmp(d.data(), "MThd", 4) != 0 || Be32(d.data() + 4) != 6) return std::nullopt;
+  const std::uint16_t formato = (std::uint16_t(d[8]) << 8) | d[9];
   const std::uint16_t tracks = (std::uint16_t(d[10]) << 8) | d[11];
   const std::uint16_t divisao = (std::uint16_t(d[12]) << 8) | d[13];
-  if (tracks == 0 || divisao == 0 || (divisao & 0x8000)) return std::nullopt;
+  if (formato > 1 || (formato == 0 && tracks != 1) || tracks == 0 || divisao == 0) return std::nullopt;
+  const bool smpte = (divisao & 0x8000) != 0;
+  const std::uint32_t fps = smpte ? std::uint32_t(-std::int8_t(divisao >> 8)) : 0;
+  const std::uint32_t ticks_por_frame = smpte ? (divisao & 0xff) : 0;
+  if (smpte && (fps == 0 || ticks_por_frame == 0)) return std::nullopt;
   std::size_t p = 14;
   std::uint64_t max_tick = 0;
   std::vector<std::pair<std::uint64_t, std::uint32_t>> tempos;
@@ -61,6 +76,7 @@ std::optional<Cronometragem> Midi(const std::vector<std::uint8_t>& d) {
     if (fim > d.size()) return std::nullopt;
     std::uint64_t tick = 0;
     std::uint8_t running = 0;
+    bool fim_de_track = false;
     while (p < fim) {
       std::uint32_t delta = 0;
       if (!Vlq(d, &p, fim, &delta)) return std::nullopt;
@@ -77,11 +93,16 @@ std::optional<Cronometragem> Midi(const std::vector<std::uint8_t>& d) {
         const std::uint8_t tipo = d[p++];
         std::uint32_t n = 0;
         if (!Vlq(d, &p, fim, &n) || n > fim - p) return std::nullopt;
-        if (tipo == 0x51 && n == 3) {
+        if (tipo == 0x51 && n == 3 && !smpte) {
           tempos.emplace_back(tick, (std::uint32_t(d[p]) << 16) |
                                        (std::uint32_t(d[p + 1]) << 8) | d[p + 2]);
         }
         p += n;
+        if (tipo == 0x2f) {
+          if (n != 0 || p != fim) return std::nullopt;
+          fim_de_track = true;
+          break;
+        }
       } else if (status == 0xf0 || status == 0xf7) {
         std::uint32_t n = 0;
         if (!Vlq(d, &p, fim, &n) || n > fim - p) return std::nullopt;
@@ -90,22 +111,37 @@ std::optional<Cronometragem> Midi(const std::vector<std::uint8_t>& d) {
         running = status;
         const unsigned n = ((status & 0xe0) == 0xc0 || (status & 0xe0) == 0xd0) ? 1 : 2;
         if (n > fim - p) return std::nullopt;
+        for (unsigned i = 0; i < n; ++i) if (d[p + i] & 0x80) return std::nullopt;
         p += n;
       } else return std::nullopt;
     }
+    if (!fim_de_track) return std::nullopt;
     max_tick = std::max(max_tick, tick);
   }
-  std::sort(tempos.begin(), tempos.end());
-  std::uint64_t anterior = 0, micros = 0;
-  std::uint32_t tempo = 500000;
-  for (const auto& e : tempos) {
-    if (e.first > max_tick) break;
-    micros += (e.first - anterior) * tempo / divisao;
-    anterior = e.first;
-    tempo = e.second;
+  using Largo = unsigned __int128;
+  Largo numerador = 0, denominador = 0;
+  if (smpte) {
+    numerador = Largo(max_tick) * 1000000;
+    denominador = Largo(fps) * ticks_por_frame;
+  } else {
+    std::stable_sort(tempos.begin(), tempos.end(),
+                     [](const auto& a, const auto& b) { return a.first < b.first; });
+    std::uint64_t anterior = 0;
+    std::uint32_t tempo = 500000;
+    for (const auto& e : tempos) {
+      if (e.first > max_tick) break;
+      numerador += Largo(e.first - anterior) * tempo;
+      anterior = e.first;
+      tempo = e.second;
+    }
+    numerador += Largo(max_tick - anterior) * tempo;
+    denominador = divisao;
   }
-  micros += (max_tick - anterior) * tempo / divisao;
-  return Cronometragem{TipoCronometrado::Midi, static_cast<std::uint32_t>((micros + 999) / 1000)};
+  const Largo maximo = Largo(std::numeric_limits<std::uint32_t>::max()) * denominador * 1000;
+  if (numerador > maximo) return std::nullopt;
+  return Cronometragem{TipoCronometrado::Midi,
+                        static_cast<std::uint32_t>((numerador + denominador * 1000 - 1) /
+                                                   (denominador * 1000))};
 }
 } // namespace
 std::optional<Cronometragem> CronometrarFluxo(const std::vector<std::uint8_t>& bytes) {
