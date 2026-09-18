@@ -288,7 +288,7 @@ constexpr int kModoTexture = 2;
 // titulo ("qual e o maior lado que a maquina aceita?"), e a resposta e a do
 // console.
 constexpr std::uint32_t kTexturaMaxima = 1024;
-// O estado desta arvore guarda apenas GL_TEXTURE0; ActiveTexture recusa GL_TEXTURE1+.
+// A unidade 1 e isolada: preserva a base, mas ainda nao e composta pelo rasterizador.
 constexpr std::uint32_t GL_MAX_TEXTURE_UNITS = 0x84E2u;
 constexpr std::uint32_t kUnidadesDeTextura = 1u;
 
@@ -335,6 +335,7 @@ class Igl {
   std::uint32_t MascaraDeLimpeza() const { return mascara_limpeza_; }
   std::uint32_t TexturaLigada() const { return textura_ligada_; }
   std::uint32_t TexturaActiva() const { return textura_activa_; }
+  std::uint32_t TexturaClienteActiva() const { return textura_cliente_activa_; }
   std::uint64_t TexturasGeradas() const { return texturas_geradas_; }
   const EstadoDaTextura* Textura(std::uint32_t id) const;
   bool InterruptorLigado(std::uint32_t cap) const;
@@ -486,7 +487,8 @@ class Igl {
   std::map<std::uint32_t, bool> arrays_de_cliente_;
   std::map<std::uint32_t, ArrayDeVertices> arrays_;
   std::uint32_t textura_ligada_ = 0;
-  std::uint32_t textura_activa_ = 0;
+  std::uint32_t textura_activa_ = gl_slots::GL_TEXTURE0;
+  std::uint32_t textura_cliente_activa_ = gl_slots::GL_TEXTURE0;
   std::uint64_t texturas_geradas_ = 0;
   std::map<std::uint32_t, EstadoDaTextura> texturas_;
   std::map<std::uint64_t, std::vector<std::uint32_t>> parametros_;

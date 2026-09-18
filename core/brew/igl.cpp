@@ -1202,6 +1202,9 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
       if (NomeDaCapacidade(cap) == nullptr && NomeDoArray(cap) == nullptr) {
         return recusa("capacidade desconhecida (sem nome no cabecalho deste modulo)");
       }
+      if (cap == GL_TEXTURE_2D && textura_activa_ != GL_TEXTURE0) {
+        return feito_com(1, "GL_TEXTURE_2D da unidade 1 isolado");
+      }
       interruptores_[cap] = (slot == kIgl_Enable) ? 1u : 0u;
       // SO os arrays de cliente entram em `arrays_de_cliente_`. O
       // `glEnable(GL_TEXTURE_2D)` NAO liga o array de coordenadas: misturar os
@@ -1213,6 +1216,9 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
     case kIgl_DisableClientState: {
       const std::uint32_t alvo = a.reg[0];
       if (NomeDoArray(alvo) == nullptr) return recusa("array de cliente desconhecido");
+      if (alvo == GL_TEXTURE_COORD_ARRAY && textura_cliente_activa_ != GL_TEXTURE0) {
+        return feito_com(1, "array de coordenadas da unidade 1 isolado");
+      }
       arrays_de_cliente_[alvo] = (slot == kIgl_EnableClientState);
       return feito(1);
     }
@@ -1241,6 +1247,9 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
     case kIgl_TexCoordPointer: {
       if (a.reg[0] < 2 || a.reg[0] > 4) return recusa("tamanho de coordenada fora de 2..4");
       if (!TipoDeVerticeValido(a.reg[1], true)) return recusa("tipo de coordenada nao suportado");
+      if (textura_cliente_activa_ != GL_TEXTURE0) {
+        return feito_com(4, "coordenadas da unidade 1 isoladas; rasterizador so amostra a unidade 0");
+      }
       // O ponteiro nulo e valido quando o titulo desvincula o array ou usa buffers
       // (ex: ridgeracer passa pointer=NULL). Se o array for desenhado sem dados,
       // a recusa ocorre no DrawArrays/DrawElements quando o cliente esta habilitado.
@@ -1273,39 +1282,40 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
     }
     case kIgl_BindTexture: {
       if (a.reg[0] != GL_TEXTURE_2D) return recusa("alvo diferente de GL_TEXTURE_2D");
+      if (textura_activa_ != GL_TEXTURE0) {
+        return feito_com(2, "bind da unidade 1 isolado; textura base preservada");
+      }
       textura_ligada_ = a.reg[1];
       return feito(2);
     }
     case kIgl_ActiveTexture:
     case kIgl_ClientActiveTexture: {
-      // Uma so unidade de textura: o GL ES 1.x garante pelo menos uma, e e a
-      // unica que este modulo acumula. `GL_TEXTURE0` vem gerado de `gles/gl.h`.
-      //
-      // O MOTIVO DIZ O VALOR PEDIDO. `GL_TEXTURE1`+ e MULTITEXTURE (mais de uma
-      // unidade, `GL_MAX_TEXTURE_UNITS`), que no GL ES 1.x e EXTENSAO e nao
-      // existe nesta arvore: um "so a unidade GL_TEXTURE0 existe aqui" obrigava
-      // quem le o traco a ir buscar o numero a outro sitio para saber o que o
-      // titulo pediu, e o valor e a unica forma de distinguir `glActiveTexture`
-      // de uma chamada lida no sitio errado. A recusa continua a ser recusa: nada
-      // muda de estado (P2, nunca "sucesso" sem efeito).
-      if (a.reg[0] != GL_TEXTURE0) {
-        char det[192];
-        std::snprintf(det, sizeof(det),
-                      "unidade 0x%08x: GL_TEXTURE1+ e multitexture (extensao) e esta arvore "
-                      "tem UMA unidade de textura, GL_TEXTURE0 (0x%08x)",
-                      a.reg[0], static_cast<std::uint32_t>(GL_TEXTURE0));
-        return recusa(det);
+      // O aparelho tem duas unidades, mas o rasterizador actual so combina a
+      // base. A unidade 1 e um estado isolado: aceita o fluxo real do titulo e
+      // impede que uploads/arrays da camada extra corrompam a unidade 0.
+      constexpr std::uint32_t kTexture1 = GL_TEXTURE0 + 1u;
+      if (a.reg[0] != GL_TEXTURE0 && a.reg[0] != kTexture1) {
+        return recusa("unidade de textura fora das duas unidades conhecidas");
       }
       if (slot == kIgl_ActiveTexture) textura_activa_ = a.reg[0];
+      else textura_cliente_activa_ = a.reg[0];
+      if (a.reg[0] == kTexture1) {
+        traco_.RegistarPressuposto(Area::Video, "segunda_unidade_de_textura_sem_combinacao",
+                                   "unidade 1 isolada para preservar a camada base; "
+                                   "rasterizador ainda nao combina duas texturas");
+        return feito_com(1, "unidade 1 isolada; camada extra ainda nao e rasterizada");
+      }
       return feito(1);
     }
     case kIgl_TexParameterx: {
       if (a.reg[0] != GL_TEXTURE_2D) return recusa("alvo diferente de GL_TEXTURE_2D");
+      if (textura_activa_ != GL_TEXTURE0) return feito_com(3, "parametro da unidade 1 isolado");
       parametros_[ChaveDeParametro(slot, a.reg[1])] = {a.reg[2]};
       return feito(3);
     }
     case kIgl_TexImage2D: {
       if (!esp(9)) return recusa("argumentos na pilha sem sp valido");
+      if (textura_activa_ != GL_TEXTURE0) return feito_com(9, "upload da unidade 1 isolado");
       // NOVE argumentos: a partir do quinto vem da pilha. `a.reg[4]` NAO existe
       // (o array tem quatro) e o compilador avisa com `-Warray-bounds` -- foi
       // assim que se apanhou um `alt` a ler o `sp` da struct.
@@ -1339,6 +1349,7 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
     }
     case kIgl_TexSubImage2D: {
       if (!esp(9)) return recusa("argumentos na pilha sem sp valido");
+      if (textura_activa_ != GL_TEXTURE0) return feito_com(9, "upload da unidade 1 isolado");
       if (textura_ligada_ == 0) return recusa("sem textura ligada");
       // Os argumentos sao (alvo, nivel, x, y, larg, alt, formato, tipo, pixels).
       // Guarda-se o ponteiro tal como veio: a amostragem le os texels dessa
@@ -1354,6 +1365,7 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
     }
     case kIgl_CompressedTexImage2D: {
       if (!esp(8)) return recusa("argumentos na pilha sem sp valido");
+      if (textura_activa_ != GL_TEXTURE0) return feito_com(8, "ATITC da unidade 1 isolado");
       if (a.reg[0] != GL_TEXTURE_2D) return recusa("alvo diferente de GL_TEXTURE_2D");
       // Os oito argumentos sao target, level, internalformat, width, height,
       // border, imageSize e data. QX ja retirou o header QXT: `data` aponta
@@ -1599,6 +1611,7 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
     case kIgl_Lightx:
     case kIgl_Materialx:
     case kIgl_TexEnvx:
+      if (textura_activa_ != GL_TEXTURE0) return feito_com(2, "ambiente da unidade 1 isolado");
       parametros_[ChaveDeParametro(slot, a.reg[0])] = {a.reg[1]};
       return feito_com(2, "parametro acumulado; sem rasterizador que o use");
     case kIgl_Fogxv:
@@ -1607,6 +1620,9 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
     case kIgl_TexEnvxv: {
       const std::uint32_t pname = a.reg[0], p = a.reg[1];
       if (p == 0) return recusa("vector de parametros nulo");
+      if (slot == kIgl_TexEnvxv && textura_activa_ != GL_TEXTURE0) {
+        return feito_com(2, "ambiente da unidade 1 isolado");
+      }
       std::vector<std::uint32_t> valores;
       for (int k = 0; k < 4; ++k) valores.push_back(mem_.Ler32(p + 4u * k));
       parametros_[ChaveDeParametro(slot, pname)] = valores;

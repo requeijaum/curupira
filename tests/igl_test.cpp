@@ -334,6 +334,29 @@ TEST(EstadoGl, GenTexturesEscreveOsIdentificadoresNoGuest) {
   EXPECT_EQ(b.igl.Executar(kIgl_GenTextures, Args(0, lista), nullptr), ResultadoGl::Recusado);
 }
 
+TEST(EstadoGl, SegundaUnidadePreservaATexturaBaseEASeuArray) {
+  Banco b;
+  constexpr std::uint32_t kTextura1 = 0x84c1u;
+  ASSERT_EQ(b.igl.Executar(kIgl_BindTexture, Args(GL_TEXTURE_2D, 7u), nullptr), ResultadoGl::Feito);
+  ASSERT_EQ(b.igl.Executar(kIgl_ActiveTexture, Args(kTextura1), nullptr), ResultadoGl::Feito);
+  EXPECT_EQ(b.igl.TexturaActiva(), kTextura1);
+  // A unidade extra e aceita para compatibilidade, mas nao pode trocar a base
+  // que o rasterizador de uma textura realmente amostra.
+  ASSERT_EQ(b.igl.Executar(kIgl_BindTexture, Args(GL_TEXTURE_2D, 9u), nullptr), ResultadoGl::Feito);
+  EXPECT_EQ(b.igl.TexturaLigada(), 7u);
+  ASSERT_EQ(b.igl.Executar(kIgl_ActiveTexture, Args(GL_TEXTURE0), nullptr), ResultadoGl::Feito);
+  ASSERT_EQ(b.igl.Executar(kIgl_BindTexture, Args(GL_TEXTURE_2D, 11u), nullptr), ResultadoGl::Feito);
+  EXPECT_EQ(b.igl.TexturaLigada(), 11u);
+  ASSERT_EQ(b.igl.Executar(kIgl_TexCoordPointer, Args(2u, GL_FLOAT, 8u, 0x00101000u), nullptr),
+            ResultadoGl::Feito);
+  ASSERT_EQ(b.igl.Executar(kIgl_ClientActiveTexture, Args(kTextura1), nullptr), ResultadoGl::Feito);
+  ASSERT_EQ(b.igl.Executar(kIgl_TexCoordPointer, Args(2u, GL_FLOAT, 8u, 0x00102000u), nullptr),
+            ResultadoGl::Feito);
+  EXPECT_EQ(b.igl.TexturaClienteActiva(), kTextura1);
+  ASSERT_NE(b.igl.Array(GL_TEXTURE_COORD_ARRAY), nullptr);
+  EXPECT_EQ(b.igl.Array(GL_TEXTURE_COORD_ARRAY)->ponteiro, 0x00101000u);
+}
+
 TEST(EstadoGl, TexImage2DRegistraAsDimensoesSemCopiarPixeis) {
   Banco b;
   const std::uint32_t pilha = 0x00050000u;
@@ -2291,14 +2314,13 @@ TEST(FrenteMatriz, OsCincoSlotsDaFamiliaTectoyRespondemPelaTabela) {
   // multitexture, uma EXTENSAO, e RECUSA COM O VALOR NOMEADO no motivo.
   EXPECT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_ActiveTexture, GL_TEXTURE0), kAeeSuccess);
   EXPECT_EQ(EstadoDoIgles11()->TexturaActiva(), GL_TEXTURE0);
+  // O jogo pode montar uma segunda camada. Ela e isolada explicitamente: o
+  // rasterizador so amostra a unidade 0, mas bind/upload da unidade 1 nao pode
+  // destruir a textura base.
   EXPECT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_ActiveTexture, kGLTexture1),
-            kAeeUnsupported);
-  EXPECT_EQ(b.Faltas("IGLES11::ActiveTexture"), 1u);
-  const std::string d_tex = b.Detalhe("IGLES11::ActiveTexture");
-  EXPECT_NE(d_tex.find("0x000084c1"), std::string::npos) << d_tex;
-  EXPECT_NE(d_tex.find("GL_TEXTURE0"), std::string::npos) << d_tex;
-  // E a unidade activa NAO mudou por um pedido recusado.
-  EXPECT_EQ(EstadoDoIgles11()->TexturaActiva(), GL_TEXTURE0);
+            kAeeSuccess);
+  EXPECT_EQ(b.Faltas("IGLES11::ActiveTexture"), 0u);
+  EXPECT_EQ(EstadoDoIgles11()->TexturaActiva(), kGLTexture1);
 }
 
 TEST(FrenteMatriz, APilhaDeMatrizesEmpilhaMudaERepoePeloCaminhoDoTitulo) {
