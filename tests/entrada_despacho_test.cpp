@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 #include "core/brew/ajudantes.h"
 #include "core/brew/classes.h"
@@ -15,6 +16,7 @@
 // haver.
 #include "core/carga/inflate.h"
 #include "core/carga/png.h"
+#include "core/carga/bmp.h"
 #include "core/brew/ihiddevice.h"
 #include "core/cpu/arm_interpreter.h"
 #include "core/memoria/memoria.h"
@@ -2185,6 +2187,62 @@ TEST(FrenteSlot32, OSlot32DaVtableRespondeOHandlerDoMimeMedido) {
 // direto num `CreateInstance` (0x16e8 `strne r0,[sb]`, e o pedido seguinte no
 // codigo do titulo): uma classe que o `CreateInstance` recusasse deixaria o jogo
 // sem objecto de midia e a recusa mudava so de nome.
+std::vector<std::uint8_t> Bmp24DoA3d() {
+  // BITMAPFILEHEADER + BITMAPINFOHEADER + 2 linhas de 2 pixels (stride 8).
+  // A primeira linha visual e vermelho/verde; BMP positivo guarda-a por ultimo.
+  return {0x42, 0x4d, 0x46, 0, 0, 0, 0, 0, 0, 0, 0x36, 0, 0, 0,
+          0x28, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 1, 0, 24, 0,
+          0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+          0, 0, 0, 0,
+          255, 0, 0, 0, 0, 0, 0, 0,  // fundo: azul, preto, padding
+          0, 0, 255, 0, 255, 0, 0, 0};  // topo: vermelho, verde, padding
+}
+
+// Cadeia que o a3d usa para BMP: GetHandler(HTYPE_VIEWER=0,"image/bmp")
+// devolve AEECLSID_BMPDECODER, que entra no CreateInstance. Cada salto abaixo
+// lê a entrada da vtable do guest; não chama índice interno.
+TEST(FrenteA3dBmp, GetHandlerCriaDecoderAlimentaEDevolveBitmap) {
+  Bancada b;
+  ConstruirOShell(b);
+  constexpr std::uint32_t kPpoDecoder = 0x80094000u;
+  constexpr std::uint32_t kPpoFeed = 0x80094004u;
+  constexpr std::uint32_t kPpoBitmap = 0x80094008u;
+  constexpr std::uint32_t kBmpNoGuest = 0x80095000u;
+  EscreverCadeia(b.Mem(), kNomeNoGuest, "image/bmp");
+
+  const std::uint32_t cls = b.ChamaEndereco(
+      b.EntradaDaVtable(kObjShell, brew_slots::kShell_GetHandler), kObjShell, 0u, kNomeNoGuest);
+  ASSERT_EQ(cls, 0x01026e21u) << "AEECLSID_BMPDECODER";
+  ASSERT_EQ(b.ChamaEndereco(b.EntradaDaVtable(kObjShell, 2), kObjShell, cls, kPpoDecoder),
+            static_cast<std::uint32_t>(kAeeSuccess));
+  const std::uint32_t decoder = b.Mem().Ler32(kPpoDecoder);
+  ASSERT_EQ(decoder, kObjetoBmpDecoder);
+
+  ASSERT_EQ(b.ChamaEndereco(b.EntradaDaVtable(decoder, brew_slots::kImageDecoder_QueryInterface),
+                            decoder, kIidForceFeed, kPpoFeed),
+            static_cast<std::uint32_t>(kAeeSuccess));
+  const std::uint32_t feed = b.Mem().Ler32(kPpoFeed);
+  ASSERT_EQ(feed, kObjetoForceFeedBmp);
+  const std::vector<std::uint8_t> bmp = Bmp24DoA3d();
+  b.Mem().EscreverBloco(kBmpNoGuest, bmp.data(), static_cast<std::uint32_t>(bmp.size()));
+  ASSERT_EQ(b.ChamaEndereco(b.EntradaDaVtable(feed, brew_slots::kForceFeed_Write), feed,
+                            kBmpNoGuest, static_cast<std::uint32_t>(bmp.size())),
+            static_cast<std::uint32_t>(kAeeSuccess));
+  ASSERT_EQ(b.ChamaEndereco(b.EntradaDaVtable(decoder, brew_slots::kImageDecoder_GetBitmap),
+                            decoder, kPpoBitmap),
+            static_cast<std::uint32_t>(kAeeSuccess));
+  const std::uint32_t bitmap = b.Mem().Ler32(kPpoBitmap);
+  ASSERT_NE(bitmap, 0u);
+  EXPECT_EQ(b.Mem().Ler16(bitmap + CamposDoIdib::kCx), 2u);
+  EXPECT_EQ(b.Mem().Ler16(bitmap + CamposDoIdib::kCy), 2u);
+  const std::uint32_t pixels = b.Mem().Ler32(bitmap + CamposDoIdib::kPBmp);
+  EXPECT_EQ(b.Mem().Ler16(pixels), ImagemBmp::Rgb565(255, 0, 0));
+  EXPECT_EQ(b.Mem().Ler16(pixels + 2), ImagemBmp::Rgb565(0, 255, 0));
+  EXPECT_EQ(b.Mem().Ler16(pixels + 4), ImagemBmp::Rgb565(0, 0, 255));
+  EXPECT_EQ(b.Faltas("IShell::GetHandler sem registo para o clsBase"), 0u);
+  EXPECT_EQ(b.Faltas("IShell::CreateInstance CLSID desconhecido"), 0u);
+}
+
 TEST(FrenteSlot32, OHandlerQueSaiDoSlot32ECriadoPeloCreateInstance) {
   Bancada b;
   ConstruirOShell(b);

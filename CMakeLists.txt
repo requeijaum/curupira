@@ -48,6 +48,7 @@ add_library(zb2_core STATIC
   core/cpu/arm_interpreter.cpp
   core/carga/mod.cpp
   core/carga/bar.cpp
+  core/carga/bmp.cpp
   core/carga/inflate.cpp
   core/carga/png.cpp
   core/carga/jpeg.cpp
@@ -121,6 +122,7 @@ add_executable(zb2_tests
   tests/fundacao_test.cpp
   tests/cpu_test.cpp
   tests/carga_test.cpp
+  tests/bmp_test.cpp
   tests/jpeg_test.cpp
   tests/brew_test.cpp
   tests/comparar_test.cpp

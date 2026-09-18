@@ -6,6 +6,7 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,7 @@
 // descodificadores de contentor (inflate, pack, bar).
 #include "core/carga/png.h"
 #include "core/carga/jpeg.h"
+#include "core/carga/bmp.h"
 #include "core/brew/ecra.h"
 #include "core/brew/egl.h"   // NomeDoIidDaFamiliaGl + kIidEgl10/11
 #include "core/brew/igl.h"
@@ -233,6 +235,7 @@ const char* NomeDoSlotDaClasse(std::uint32_t k, std::uint32_t slot) {
 
 std::uint32_t ObjetoDoClsid(std::uint32_t clsid) {
   if (clsid == brew_clsids::kClsid_JPEGDECODER_BREW) return kObjetoJpegDecoder;
+  if (clsid == brew_clsids::kClsid_BMPDECODER) return kObjetoBmpDecoder;
   if (clsid == brew_clsids::kClsid_Web) return kObjetoWeb;
   const std::uint32_t k = IndiceDaClasse(clsid);
   return k < kQuantasClasses ? ObjetoDaClasse(k) : 0;
@@ -672,6 +675,7 @@ void ConstruirClasses(Memoria& mem, const Saidas& saidas, Traco& traco) {
   // nao pode ser a imagem de outro (o mesmo motivo do `ReporEstadoThreads`).
   ReporEstadoDoPng();
   ReporEstadoDoJpeg();
+  ReporEstadoDoBmp();
   // O ESTADO DAS THREADS TAMBEM E POR CORRIDA. Sem isto, a segunda Bancada de
   // um teste (ou o segundo titulo da bateria) via a thread da primeira: o
   // `Start` respondia EALREADY a quem nao tinha iniciado nada.
@@ -809,6 +813,25 @@ void ConstruirClasses(Memoria& mem, const Saidas& saidas, Traco& traco) {
       ok = mem.Ler32(vt_feed + s * 4) == saidas.Endereco(kVtableForceFeedJpeg + s);
     if (!ok) traco.RegistarFalta(Area::Brew, "classes_da_brewm_cablagem_perdida",
                                  "JPEG IImageDecoder/IForceFeed sem vtables cabladas");
+  }
+
+  // BMP tem o mesmo ABI IImageDecoder/IForceFeed, mas objectos, vtables e fluxo
+  // separados. Um Write BMP nunca pode contaminar PNG/JPEG.
+  ConstruirObjeto(mem, saidas, kObjetoBmpDecoder, saidas.Endereco(kVtableBmpDecoder),
+                  brew_slots::kImageDecoderSlots, kVtableBmpDecoder);
+  ConstruirObjeto(mem, saidas, kObjetoForceFeedBmp, saidas.Endereco(kVtableForceFeedBmp),
+                  kForceFeedSlots, kVtableForceFeedBmp);
+  {
+    const std::uint32_t vt_dec = saidas.Endereco(kVtableBmpDecoder);
+    const std::uint32_t vt_feed = saidas.Endereco(kVtableForceFeedBmp);
+    bool ok = mem.Ler32(kObjetoBmpDecoder) == vt_dec &&
+              mem.Ler32(kObjetoForceFeedBmp) == vt_feed;
+    for (std::uint32_t s = 2; s < brew_slots::kImageDecoderSlots && ok; ++s)
+      ok = mem.Ler32(vt_dec + s * 4) == saidas.Endereco(kVtableBmpDecoder + s);
+    for (std::uint32_t s = 2; s < kForceFeedSlots && ok; ++s)
+      ok = mem.Ler32(vt_feed + s * 4) == saidas.Endereco(kVtableForceFeedBmp + s);
+    if (!ok) traco.RegistarFalta(Area::Brew, "classes_da_brewm_cablagem_perdida",
+                                 "BMP IImageDecoder/IForceFeed sem vtables cabladas");
   }
 
   // AS SETE EXTENSOES QUALCOMM (frente qualcomm): CINCO objectos para SETE
@@ -1584,6 +1607,18 @@ void ReporEstadoDoPng() {
 }
 
 namespace {
+std::vector<std::uint8_t> g_bmp_fluxo;
+zb2::ImagemPng g_bmp_imagem;
+bool g_bmp_tem_imagem = false;
+}
+
+void ReporEstadoDoBmp() {
+  g_bmp_fluxo.clear();
+  g_bmp_imagem = zb2::ImagemPng{};
+  g_bmp_tem_imagem = false;
+}
+
+namespace {
 std::vector<std::uint8_t> g_jpeg_fluxo;
 zb2::ImagemPng g_jpeg_imagem;
 bool g_jpeg_tem_imagem = false;
@@ -1606,7 +1641,7 @@ namespace {
 // outra frente: ler o ponteiro que ja esta no objecto do ecra e o que mantem a
 // cablagem numa fonte so. Se o objecto do ecra ainda nao tiver vtable, RECUSA --
 // um bitmap com o `+0` a zero e um `blx 0` no primeiro `AddRef` do jogo.
-bool CriarDibDoPng(Memoria& mem, Traco& traco, const zb2::ImagemPng& img,
+bool CriarDibDescodificado(Memoria& mem, Traco& traco, const zb2::ImagemPng& img,
                    std::uint32_t* objeto) {
   const std::uint32_t bytes = img.largura * 2u * img.altura;
   if (g_png_objetos_dib >= kMaximoDeObjetosDibDoPng) {
@@ -1907,7 +1942,7 @@ bool AtenderDecodificadorPng(ICpu& cpu, Traco& traco, std::uint32_t slot) {
       return true;
     }
     std::uint32_t bitmap = 0;
-    if (!CriarDibDoPng(mem, traco, g_png_imagem, &bitmap)) {
+    if (!CriarDibDescodificado(mem, traco, g_png_imagem, &bitmap)) {
       cpu.Set(kR0, kAeeNoMemory);
       return true;
     }
@@ -2029,6 +2064,101 @@ bool AtenderForceFeed(ICpu& cpu, Traco& traco, std::uint32_t slot) {
   return false;
 }
 
+// BMP: apenas o BMP DIB Windows BI_RGB de 24/32 bpp que DescodificarBmp
+// declara. Nao se procura assinatura no prefixo: GetHandler aceita exactamente
+// image/bmp, e um AEEResBlob nao foi medido neste caminho.
+bool DescodificarOFluxoBmp(Traco& traco, std::string* motivo) {
+  if (g_bmp_tem_imagem) return true;
+  if (g_bmp_fluxo.empty()) {
+    *motivo = "fluxo vazio: nenhum IForceFeed::Write antes deste pedido";
+    return false;
+  }
+  zb2::ImagemBmp cru;
+  std::string porque;
+  if (!zb2::DescodificarBmp(g_bmp_fluxo.data(), g_bmp_fluxo.size(), &cru, &porque)) {
+    *motivo = "fluxo BMP de " + std::to_string(g_bmp_fluxo.size()) + " bytes: " + porque;
+    return false;
+  }
+  g_bmp_imagem.largura = cru.largura;
+  g_bmp_imagem.altura = cru.altura;
+  g_bmp_imagem.tem_alpha = false;
+  g_bmp_imagem.pixels = std::move(cru.pixels);
+  g_bmp_tem_imagem = true;
+  traco.Emitir(Area::Brew, Nivel::Depuracao, "BMP_DESCODIFICADOR",
+               "descodificados " + std::to_string(g_bmp_fluxo.size()) + " bytes em " +
+                   std::to_string(g_bmp_imagem.largura) + "x" +
+                   std::to_string(g_bmp_imagem.altura) + " RGB565 opaco");
+  return true;
+}
+
+bool AtenderDecodificadorBmp(ICpu& cpu, Traco& traco, std::uint32_t slot) {
+  Memoria& mem = cpu.Mem();
+  if (slot == brew_slots::kImageDecoder_AddRef) {
+    const std::uint32_t n = mem.Ler32(kObjetoBmpDecoder + 4) + 1;
+    mem.Escrever32(kObjetoBmpDecoder + 4, n); cpu.Set(kR0, n); return true;
+  }
+  if (slot == brew_slots::kImageDecoder_Release) {
+    const std::uint32_t n = mem.Ler32(kObjetoBmpDecoder + 4);
+    if (n == 0) { traco.RegistarFalta(Area::Brew, "IImageDecoder::Release", "Release BMP com contagem zero"); cpu.Set(kR0, kAeeUnsupported); return true; }
+    mem.Escrever32(kObjetoBmpDecoder + 4, n - 1); cpu.Set(kR0, n - 1); return true;
+  }
+  if (slot == brew_slots::kImageDecoder_QueryInterface) {
+    const std::uint32_t iid = cpu.Get(kR1), ppo = cpu.Get(kR2);
+    if (ppo == 0) { traco.RegistarFalta(Area::Brew, "IImageDecoder::QueryInterface", "ppObj nulo"); cpu.Set(kR0, kAeeBadParm); return true; }
+    if (iid == kIidImageDecoder) mem.Escrever32(ppo, kObjetoBmpDecoder);
+    else if (iid == kIidForceFeed) mem.Escrever32(ppo, kObjetoForceFeedBmp);
+    else { mem.Escrever32(ppo, 0); traco.RegistarFalta(Area::Brew, "IImageDecoder::QueryInterface", "iid sem objecto no BMP"); cpu.Set(kR0, kAeeUnsupported); return true; }
+    cpu.Set(kR0, kAeeSuccess); return true;
+  }
+  if (slot == brew_slots::kImageDecoder_GetBitmap) {
+    const std::uint32_t ppi = cpu.Get(kR1);
+    if (ppi == 0) { traco.RegistarFalta(Area::Brew, "IImageDecoder::GetBitmap", "ppiBitmap nulo"); cpu.Set(kR0, kAeeBadParm); return true; }
+    mem.Escrever32(ppi, 0);
+    std::string motivo;
+    if (!DescodificarOFluxoBmp(traco, &motivo)) { traco.RegistarFalta(Area::Brew, "IImageDecoder::GetBitmap", motivo); cpu.Set(kR0, kAeeFailed); return true; }
+    std::uint32_t bitmap = 0;
+    if (!CriarDibDescodificado(mem, traco, g_bmp_imagem, &bitmap)) { cpu.Set(kR0, kAeeNoMemory); return true; }
+    mem.Escrever32(ppi, bitmap); cpu.Set(kR0, kAeeSuccess); return true;
+  }
+  if (slot == brew_slots::kImageDecoder_GetRop) { cpu.Set(kR0, kRasterOpCopy); return true; }
+  return false;
+}
+
+bool AtenderForceFeedBmp(ICpu& cpu, Traco& traco, std::uint32_t slot) {
+  Memoria& mem = cpu.Mem();
+  if (slot == brew_slots::kForceFeed_AddRef) { const std::uint32_t n = mem.Ler32(kObjetoForceFeedBmp + 4) + 1; mem.Escrever32(kObjetoForceFeedBmp + 4, n); cpu.Set(kR0, n); return true; }
+  if (slot == brew_slots::kForceFeed_Release) {
+    const std::uint32_t n = mem.Ler32(kObjetoForceFeedBmp + 4);
+    if (n == 0) { traco.RegistarFalta(Area::Brew, "IForceFeed::Release", "Release BMP com contagem zero"); cpu.Set(kR0, kAeeUnsupported); return true; }
+    mem.Escrever32(kObjetoForceFeedBmp + 4, n - 1); cpu.Set(kR0, n - 1); return true;
+  }
+  if (slot == brew_slots::kForceFeed_QueryInterface) {
+    const std::uint32_t iid = cpu.Get(kR1), ppo = cpu.Get(kR2);
+    if (ppo == 0) { traco.RegistarFalta(Area::Brew, "IForceFeed::QueryInterface", "ppObj nulo"); cpu.Set(kR0, kAeeBadParm); return true; }
+    if (iid == kIidForceFeed) mem.Escrever32(ppo, kObjetoForceFeedBmp);
+    else if (iid == kIidImageDecoder) mem.Escrever32(ppo, kObjetoBmpDecoder);
+    else { mem.Escrever32(ppo, 0); traco.RegistarFalta(Area::Brew, "IForceFeed::QueryInterface", "iid sem objecto no BMP"); cpu.Set(kR0, kAeeUnsupported); return true; }
+    cpu.Set(kR0, kAeeSuccess); return true;
+  }
+  if (slot == brew_slots::kForceFeed_Write) {
+    const std::uint32_t pbuf = cpu.Get(kR1); const std::int32_t cb = static_cast<std::int32_t>(cpu.Get(kR2));
+    if (pbuf == 0 || cb <= 0) { cpu.Set(kR0, kAeeSuccess); return true; }
+    if (static_cast<std::uint32_t>(cb) > kMaximoDoFluxo - g_bmp_fluxo.size()) { traco.RegistarFalta(Area::Brew, "IForceFeed::Write", "BMP excede limite de 4 MiB"); cpu.Set(kR0, kAeeNoMemory); return true; }
+    const std::size_t antes = g_bmp_fluxo.size();
+    try {
+      g_bmp_fluxo.resize(antes + static_cast<std::size_t>(cb));
+    } catch (const std::bad_alloc&) {
+      traco.RegistarFalta(Area::Brew, "IForceFeed::Write", "sem memoria para o fluxo BMP");
+      cpu.Set(kR0, kAeeNoMemory);
+      return true;
+    }
+    mem.LerBloco(pbuf, g_bmp_fluxo.data() + antes, static_cast<std::uint32_t>(cb));
+    g_bmp_tem_imagem = false; g_bmp_imagem = zb2::ImagemPng{}; cpu.Set(kR0, kAeeSuccess); return true;
+  }
+  if (slot == brew_slots::kForceFeed_Reset) { ReporEstadoDoBmp(); return true; }
+  return false;
+}
+
 // JPEG: o formato nao carrega alfa; GetRop portanto e sempre COPY. A busca do
 // SOI nos primeiros 64 bytes aceita AEEResBlob sem tratar qualquer prefixo como
 // imagem e recusa o que nao for JPEG em vez de delegar uma heuristica ao libjpeg.
@@ -2102,7 +2232,7 @@ bool AtenderDecodificadorJpeg(ICpu& cpu, Traco& traco, std::uint32_t slot) {
     std::string motivo;
     if (!DescodificarOFluxoJpeg(traco, &motivo)) { traco.RegistarFalta(Area::Brew, "IImageDecoder::GetBitmap", motivo); cpu.Set(kR0, kAeeFailed); return true; }
     std::uint32_t bitmap = 0;
-    if (!CriarDibDoPng(mem, traco, g_jpeg_imagem, &bitmap)) { cpu.Set(kR0, kAeeNoMemory); return true; }
+    if (!CriarDibDescodificado(mem, traco, g_jpeg_imagem, &bitmap)) { cpu.Set(kR0, kAeeNoMemory); return true; }
     mem.Escrever32(ppi, bitmap); cpu.Set(kR0, kAeeSuccess); return true;
   }
   if (slot == brew_slots::kImageDecoder_GetRop) { cpu.Set(kR0, kRasterOpCopy); return true; }
@@ -2321,6 +2451,10 @@ bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
     cpu.Set(kR0, kAeeUnsupported);
     return true;
   }
+  if (indice >= kVtableBmpDecoder && indice < kVtableBmpDecoder + brew_slots::kImageDecoderSlots)
+    return AtenderDecodificadorBmp(cpu, traco, indice - kVtableBmpDecoder);
+  if (indice >= kVtableForceFeedBmp && indice < kVtableForceFeedBmp + kForceFeedSlots)
+    return AtenderForceFeedBmp(cpu, traco, indice - kVtableForceFeedBmp);
   if (indice >= kVtableJpegDecoder && indice < kVtableJpegDecoder + brew_slots::kImageDecoderSlots)
     return AtenderDecodificadorJpeg(cpu, traco, indice - kVtableJpegDecoder);
   if (indice >= kVtableForceFeedJpeg && indice < kVtableForceFeedJpeg + kForceFeedSlots)

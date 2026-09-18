@@ -1894,6 +1894,9 @@ struct LinhaDoRegisto {
 constexpr std::uint32_t kClsBaseMedia = 0x01005500u;
 
 const LinhaDoRegisto kRegistoDeHandlers[] = {
+    // O caminho legado do a3d pede HTYPE_VIEWER (0), nao AEECLSID_MEDIA:
+    // image/bmp -> o decoder BMP que CreateInstance desta arvore realmente cria.
+    {0u, "image/bmp", brew_clsids::kClsid_BMPDECODER, "AEEBMPDecoder.bid:14 AEECLSID_BMPDECODER"},
     // O PAR MEDIDO nesta arvore (87+8 chamadas): e o unico que o corpus pede.
     {kClsBaseMedia, "audio/wav", 0x0100550au, "AEEMimeTypes.h:71 MT_AUDIO_ADPCM"},
     {kClsBaseMedia, "audio/mpeg", 0x01005502u, "AEEMimeTypes.h:64 MT_AUDIO_MP3"},
@@ -1972,7 +1975,9 @@ bool Despacho::AtenderGetHandler(ICpu& cpu) {
   // nao mapeado ficaria registada com o PC da instrucao seguinte e mudaria o que
   // a bateria mede (ver a memoria
   // `a_leitura_de_dados_em_endereco_nao_mapeado_do_curupira`).
-  const bool tem_ponteiro = (p_entrada >= 0x00100000u && p_entrada < 0x81000000u);
+  // Modulos base-zero, como a3d, guardam o MIME na propria imagem abaixo de
+  // 1 MiB. A regra segura e pagina mapeada, nao uma faixa numerica arbitraria.
+  const bool tem_ponteiro = p_entrada != 0 && mem_.Existe(p_entrada);
   const std::string entrada = tem_ponteiro ? LerTextoDe(mem_, p_entrada, 64) : std::string();
 
   // A ABI CRUA, SO COM `ZB2_TRACE=1`: foi esta linha que mediu o `clsBase`
@@ -1992,7 +1997,9 @@ bool Despacho::AtenderGetHandler(ICpu& cpu) {
   // para uma classe que o `CreateInstance` desta arvore recusaria, o jogo
   // ficaria com um AEECLSID que nao da em nada -- e o pedido seguinte, esse
   // sim, e que apareceria como "CLSID desconhecido". Aqui ve-se antes.
-  if (resposta != 0 && (media_ == nullptr || !zb2::brew::ClasseDeMidia(resposta))) {
+  if (resposta != 0 &&
+      ((zb2::brew::ClasseDeMidia(resposta) && media_ == nullptr) ||
+       (!zb2::brew::ClasseDeMidia(resposta) && !zb2::brew::ObjetoDoClsid(resposta)))) {
     traco_.RegistarFalta(Area::Brew, "IShell::GetHandler handler nao criavel",
                          std::string(linha->origem) + ": 0x" + Hex(resposta) + " para '" +
                              entrada + "' nao e classe desta arvore");

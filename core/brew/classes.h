@@ -281,6 +281,13 @@ constexpr std::uint32_t kObjetoForceFeedJpeg = 0x8F010200u;
 constexpr std::uint32_t kVtableForceFeedJpeg = 40530u;
 constexpr std::uint32_t kVtableJpegDecoder = 40540u;
 constexpr std::uint32_t kObjetoJpegDecoder = 0x8F010300u;
+// BMP e uma instância IImageDecoder/IForceFeed separada. Os endereços ficam no
+// intervalo livre antes dos objectos Qualcomm (0x8F240000) e vtables antes de
+// 40600; assim streams simultâneos não compartilham estado.
+constexpr std::uint32_t kObjetoForceFeedBmp = 0x8F010400u;
+constexpr std::uint32_t kObjetoBmpDecoder = 0x8F010500u;
+constexpr std::uint32_t kVtableForceFeedBmp = 40550u;
+constexpr std::uint32_t kVtableBmpDecoder = 40560u;
 
 // IWeb (AEECLSID_Web, 0x01005000): a tabela medida tem 13 slots. Ela fica
 // fora da faixa das classes (40000..40223) e depois do IHashCtx (41200..41206),
@@ -386,6 +393,7 @@ void ReporEstadoTextCtl();
 // seria a imagem do titulo seguinte.
 void ReporEstadoDoPng();
 void ReporEstadoDoJpeg();
+void ReporEstadoDoBmp();
 
 // --- O IThread cooperativo ---------------------------------------------------
 //
