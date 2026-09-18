@@ -764,7 +764,11 @@ Rgba Rasterizador::AmostrarTextura(const EstadoDeRasterizacao& e, float u, float
   int ty = static_cast<int>(std::floor(v * static_cast<float>(t.altura)));
   tx = std::min(static_cast<int>(t.largura) - 1, std::max(0, tx));
   ty = std::min(static_cast<int>(t.altura) - 1, std::max(0, ty));
-  const Endereco base = t.ponteiro + static_cast<Endereco>((ty * static_cast<int>(t.largura) + tx));
+  const std::size_t indice = static_cast<std::size_t>(ty) * t.largura + tx;
+  if (t.texels_descodificados != nullptr && indice < t.texels_descodificados->size()) {
+    return (*t.texels_descodificados)[indice];
+  }
+  const Endereco base = t.ponteiro + static_cast<Endereco>(indice);
   if (t.formato == GL_RGBA && t.tipo == GL_UNSIGNED_BYTE) {
     const Endereco p = t.ponteiro + static_cast<Endereco>(
                                          (ty * static_cast<int>(t.largura) + tx) * 4);
@@ -1194,7 +1198,8 @@ bool Rasterizador::Desenhar(const EstadoDeRasterizacao& estado, const PedidoDeDe
     *motivo = "desenho com zero vertices";
     return false;
   }
-  if (estado.textura_ligada && estado.textura.comprimida) {
+  if (estado.textura_ligada && estado.textura.comprimida &&
+      estado.textura.texels_descodificados == nullptr) {
     ++recusadas_;
     *motivo = "textura comprimida: nao ha descodificador (ATITC/ETC) nesta arvore";
     return false;
@@ -1203,7 +1208,8 @@ bool Rasterizador::Desenhar(const EstadoDeRasterizacao& estado, const PedidoDeDe
     // A MESMA LISTA do `AmostrarTextura` (uma so, em `TexturaAmostravel`): o
     // `Desenhar` recusa o que ele nao sabe amostrar, e nao desenha com a cor do
     // vertice em silencio.
-    if (!TexturaAmostravel(estado.textura.formato, estado.textura.tipo)) {
+    if (estado.textura.texels_descodificados == nullptr &&
+        !TexturaAmostravel(estado.textura.formato, estado.textura.tipo)) {
       ++recusadas_;
       char d[128];
       std::snprintf(d, sizeof(d), "textura com formato 0x%04x e tipo 0x%04x sem caminho de amostragem",

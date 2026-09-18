@@ -354,6 +354,30 @@ TEST(EstadoGl, TexImage2DRegistraAsDimensoesSemCopiarPixeis) {
   EXPECT_FALSE(t->comprimida);
 }
 
+TEST(EstadoGl, CompressedTexImage2DDecodificaAtitcParaTexturaDoHost) {
+  Banco b;
+  constexpr std::uint32_t kPilha = 0x00050000u, kDados = 0x00051000u;
+  // ATITC RGB 4x4: vermelho/verde e seletores 0..3 repetidos.
+  const std::uint8_t bruto[8] = {0x00, 0x7c, 0xe0, 0x07, 0xe4, 0xe4, 0xe4, 0xe4};
+  for (std::uint32_t i = 0; i < 8; ++i) b.mem.Escrever8(kDados + i, bruto[i]);
+  // Args 4..7: altura, border, imageSize, data.
+  const std::uint32_t resto[4] = {4u, 0u, 8u, kDados};
+  for (int i = 0; i < 4; ++i) b.mem.Escrever32(kPilha + 4u * i, resto[i]);
+  ArgumentosGl a = Args(GL_TEXTURE_2D, 0u, 0x8c92u, 4u);
+  a.sp = kPilha;
+  ASSERT_EQ(b.igl.Executar(kIgl_BindTexture, Args(GL_TEXTURE_2D, 33u), nullptr), ResultadoGl::Feito);
+  ASSERT_EQ(b.igl.Executar(kIgl_CompressedTexImage2D, a, nullptr), ResultadoGl::Feito);
+  const EstadoDaTextura* t = b.igl.Textura(33u);
+  ASSERT_NE(t, nullptr);
+  ASSERT_TRUE(t->comprimida);
+  ASSERT_NE(t->texels_descodificados, nullptr);
+  ASSERT_EQ(t->texels_descodificados->size(), 16u);
+  EXPECT_EQ((*t->texels_descodificados)[0].r, 255);
+  EXPECT_EQ((*t->texels_descodificados)[1].r, 170);
+  EXPECT_EQ((*t->texels_descodificados)[2].g, 159);
+  EXPECT_EQ((*t->texels_descodificados)[3].g, 255);
+}
+
 TEST(EstadoGl, TexImage2DSemSpValidoRecusa) {
   Banco b;
   // Sem argumentos na pilha, o `Arg` leria o endereco 0. Recusar aqui e o que

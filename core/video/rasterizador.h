@@ -125,6 +125,7 @@
 // que escreve mesmo na `Tela`); o `Superficie` NAO e um segundo framebuffer.
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -226,6 +227,9 @@ struct Textura {
   std::uint32_t formato = 0;   // o 6.o argumento: o formato do texel (GL_RGBA, GL_RGB, ...)
   std::uint32_t tipo = 0;      // o 8.o argumento: o tipo do elemento (GL_UNSIGNED_BYTE, ...)
   std::uint32_t ponteiro = 0;  // o 9.o argumento: os texels, no espaco do guest
+  // Textura comprimida ja decodificada, de posse do host. Texturas comuns
+  // continuam lendo o ponteiro do guest para preservar sua semantica atual.
+  std::shared_ptr<const std::vector<Rgba>> texels_descodificados;
 };
 
 // O estado do pipeline NO INSTANTE do desenho. E um retrato, e nao uma

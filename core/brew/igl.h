@@ -43,6 +43,7 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -224,6 +225,9 @@ struct EstadoDaTextura {
   std::uint32_t ponteiro = 0;
   std::uint32_t uploade = 0;
   bool comprimida = false;
+  // ATITC e descodificado no upload: o snapshot do rasterizador conserva estes
+  // texels mesmo que o guest reutilize o buffer comprimido.
+  std::shared_ptr<const std::vector<video::Rgba>> texels_descodificados;
 };
 
 // Um array de vertices ligado por `glVertexPointer` e companhia. O ponteiro e um

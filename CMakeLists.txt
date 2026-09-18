@@ -77,6 +77,7 @@ add_library(zb2_core STATIC
   core/brew/cheats.cpp
   core/audio/misturador.cpp
   core/video/rasterizador.cpp
+  core/video/atitc.cpp
 )
 target_include_directories(zb2_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(zb2_core PRIVATE -Wall -Wextra)
@@ -121,6 +122,7 @@ add_executable(zb2_tests
   tests/recursos_test.cpp
   tests/audio_test.cpp
   tests/rasterizador_test.cpp
+  tests/atitc_test.cpp
   tests/classes_test.cpp
   tests/md5ctx_test.cpp
   tests/pack_test.cpp

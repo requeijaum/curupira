@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "core/brew/interface.h"
+#include "core/video/atitc.h"
 
 namespace zb2::brew {
 
@@ -524,9 +525,9 @@ video::EstadoDeRasterizacao Igl::MontarEstado() const {
   if (InterruptorLigado(GL_TEXTURE_2D) && textura_ligada_ != 0) {
     const EstadoDaTextura* t = Textura(textura_ligada_);
     if (t != nullptr) {
-      if (t->comprimida) {
+      if (t->comprimida && t->texels_descodificados == nullptr) {
         e.capacidades_por_fazer.push_back("textura_comprimida_sem_descodificador");
-      } else if (t->ponteiro == 0) {
+      } else if (!t->comprimida && t->ponteiro == 0) {
         // A RESERVA: `glTexImage2D(..., pixels = NULL)` registou dimensoes e
         // formato, e os texels ainda nao chegaram (`glTexSubImage2D`).
         e.capacidades_por_fazer.push_back("textura_reservada_sem_texels");
@@ -541,6 +542,7 @@ video::EstadoDeRasterizacao Igl::MontarEstado() const {
         e.textura.formato = t->formato_do_pixel;
         e.textura.tipo = t->tipo;
         e.textura.ponteiro = t->ponteiro;
+        e.textura.texels_descodificados = t->texels_descodificados;
       }
     }
   }
@@ -1353,19 +1355,41 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
     case kIgl_CompressedTexImage2D: {
       if (!esp(8)) return recusa("argumentos na pilha sem sp valido");
       if (a.reg[0] != GL_TEXTURE_2D) return recusa("alvo diferente de GL_TEXTURE_2D");
-      // A ALTURA VEM DA PILHA: os oito argumentos nao cabem em quatro registos.
-      // Ler `a.reg[4]` seria ler o campo seguinte da struct (o `sp`) -- e o
-      // compilador avisou com `-Warray-bounds`, que e a razao de o `-Wall
-      // -Wextra` estar ligado nesta arvore.
+      // Os oito argumentos sao target, level, internalformat, width, height,
+      // border, imageSize e data. QX ja retirou o header QXT: `data` aponta
+      // para blocos ATITC crus, nunca para um arquivo QXT do host.
+      const std::uint32_t nivel = a.reg[1], formato = a.reg[2];
       const std::uint32_t largura = a.reg[3], altura = Arg(4, a);
-      if (largura == 0 || altura == 0) return recusa("textura comprimida com dimensao zero");
+      const std::uint32_t tamanho = Arg(6, a), dados = Arg(7, a);
+      if (nivel != 0) return recusa("mipmap ATITC diferente do nivel base nao e suportado");
+      if (largura == 0 || altura == 0 || dados == 0) return recusa("textura comprimida sem dimensao ou dados");
+      if (largura > kTexturaMaxima || altura > kTexturaMaxima) {
+        return recusa("textura ATITC acima de GL_MAX_TEXTURE_SIZE");
+      }
+      video::FormatoAtitc tipo;
+      // GL_ATC_RGB_AMD / GL_ATC_RGBA_EXPLICIT_ALPHA_AMD: extensao ATI do SDK.
+      if (formato == 0x8c92u) tipo = video::FormatoAtitc::Rgb;
+      else if (formato == 0x8c93u) tipo = video::FormatoAtitc::RgbaExplicito;
+      else return recusa("formato comprimido diferente de ATITC RGB/RGBA explicito");
+      const std::uint64_t blocos = ((std::uint64_t(largura) + 3) / 4) *
+                                   ((std::uint64_t(altura) + 3) / 4);
+      const std::uint64_t minimo = blocos * (tipo == video::FormatoAtitc::Rgb ? 8u : 16u);
+      if (minimo > tamanho) return recusa("imageSize ATITC menor que os blocos declarados");
+      std::vector<std::uint8_t> bruto(static_cast<std::size_t>(minimo));
+      mem_.LerBloco(dados, bruto.data(), bruto.size());
+      auto texels = video::DescodificarAtitc(bruto.data(), bruto.size(), largura, altura, tipo);
+      if (!texels.has_value()) return recusa("blocos ATITC invalidos ou truncados");
       EstadoDaTextura& t = texturas_[textura_ligada_];
       t.largura = largura;
       t.altura = altura;
-      t.formato = a.reg[2];
+      t.formato = formato;
+      t.formato_do_pixel = GL_RGBA;
+      t.tipo = GL_UNSIGNED_BYTE;
+      t.ponteiro = 0;
       t.comprimida = true;
+      t.texels_descodificados = std::make_shared<const std::vector<video::Rgba>>(std::move(*texels));
       ++t.uploade;
-      return feito_com(8, "formato comprimido registado, sem descodificacao nesta etapa");
+      return feito_com(8, "ATITC descodificado para RGBA8 em memoria do host");
     }
     case kIgl_CompressedTexSubImage2D:
     case kIgl_CopyTexImage2D:
