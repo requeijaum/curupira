@@ -66,21 +66,48 @@ void Vfs::Registar(const std::string& pasta) {
   nomes_de_entrada_.clear();
   diretorios_.clear();
 
-  // A LISTA E ORDENADA ANTES DE SER USADA: a ordem de uma `directory_iterator`
-  // e a ordem do sistema de ficheiros, e o P4 (determinismo por construcao) nao
-  // admite duas corridas com indices de pacotes trocados.
+  // A LISTA DA RAIZ e ordenada antes de ser usada: os recipientes (.pkg,
+  // .pakz, .aez) continuam a ser descobertos SOMENTE aqui. Descer no scan de
+  // recipientes mudaria quais arquivos sao containers do titulo.
   std::vector<std::string> ficheiros;
   std::error_code ec;
   for (const auto& entrada : std::filesystem::directory_iterator(pasta, ec)) {
     if (!entrada.is_regular_file(ec)) continue;
-    const std::string nome = entrada.path().filename().string();
-    nomes_.insert(nome);
-    // O mapa da caixa ignorada: o PRIMEIRO na ordem do `std::set` fica (a
-    // insercao de uma chave que ja existe nao faz nada).
-    nomes_por_caixa_.insert({Minusculas(nome), nome});
-    ficheiros.push_back(nome);
+    ficheiros.push_back(entrada.path().filename().string());
   }
   std::sort(ficheiros.begin(), ficheiros.end());
+  for (const std::string& nome : ficheiros) {
+    nomes_.insert(nome);
+    // A insercao acontece APOS ordenar: colisao de caixa FAT e deterministica.
+    nomes_por_caixa_.insert({Minusculas(nome), nome});
+  }
+
+  // Os assets fisicos podem estar abaixo do modulo (ConfTest da SDK pede
+  // data/config.cnf). Eles entram pelo caminho RELATIVO completo, mas nao viram
+  // recipientes nem aliases. Nao se segue symlink, e udata fica exclusivamente
+  // no scratch COW: saves preexistentes do host nunca entram na VFS.
+  std::vector<std::string> aninhados;
+  std::filesystem::recursive_directory_iterator it(pasta,
+      std::filesystem::directory_options::none, ec), fim;
+  while (!ec && it != fim) {
+    const std::filesystem::directory_entry entrada = *it;
+    it.increment(ec);
+    std::error_code estado_ec;
+    const auto estado = entrada.symlink_status(estado_ec);
+    if (estado_ec || estado.type() != std::filesystem::file_type::regular) continue;
+    std::error_code relativo_ec;
+    const std::string relativo = std::filesystem::relative(entrada.path(), pasta, relativo_ec)
+                                     .generic_string();
+    if (relativo_ec || relativo.empty() || relativo.find('/') == std::string::npos) continue;
+    const std::size_t barra = relativo.find('/');
+    if (Minusculas(relativo.substr(0, barra)) == "udata") continue;
+    aninhados.push_back(relativo);
+  }
+  std::sort(aninhados.begin(), aninhados.end());
+  for (const std::string& nome : aninhados) {
+    nomes_.insert(nome);
+    nomes_por_caixa_.insert({Minusculas(nome), nome});
+  }
 
   // O DIRECTORIO DA UNIAO E O STEM DO `.mod` -- e nao o nome da pasta: e o
   // mesmo numero (a pasta `279126` tem o `karnovr.mod`), mas quem manda no nome

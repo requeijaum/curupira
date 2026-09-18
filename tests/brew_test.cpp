@@ -155,6 +155,15 @@ class ArquivosTeste : public ::testing::Test {
     std::ofstream f(pasta_ / "dados.bin", std::ios::binary);
     for (int k = 0; k < 256; ++k) f.put(static_cast<char>(k));
     f.close();
+    std::filesystem::create_directories(pasta_ / "data");
+    std::ofstream config(pasta_ / "data" / "config.cnf", std::ios::binary);
+    config << "dragon-config";
+    config.close();
+    // Estado real de host jamais e save do guest: udata e reservado ao scratch.
+    std::filesystem::create_directories(pasta_ / "udata");
+    std::ofstream legado(pasta_ / "udata" / "host-save.bin", std::ios::binary);
+    legado << "host";
+    legado.close();
     vfs_.Registar(pasta_.string());
   }
   void TearDown() override { std::filesystem::remove_all(pasta_); }
@@ -298,6 +307,47 @@ TEST_F(ArquivosTeste, FicheiroInexistenteNaoAbre) {
   Arquivos a(&vfs_);
   EXPECT_EQ(a.Abrir("nao_existe.dat", 0x0001u, pasta_.string()), 0u);
 }
+
+TEST_F(ArquivosTeste, FicheiroFisicoEmSubdiretorioEIndexadoSemAchatarOCaminho) {
+  // ConfTest / Dragon Vs Chicken da SDK abre data/config.cnf. A VFS deve
+  // indexar o caminho relativo inteiro, aceitar barras/caixa BREW, e nao fazer
+  // um config.cnf aninhado fingir que e um ficheiro plano.
+  EXPECT_EQ(vfs_.Normalizar("/data\\CONFIG.CNF"), "data/config.cnf");
+  EXPECT_TRUE(vfs_.Existe("data/config.cnf"));
+  EXPECT_FALSE(vfs_.Existe("config.cnf"));
+  Arquivos a(&vfs_);
+  const std::uint32_t id = a.Abrir("data/config.cnf", 0x0001u, pasta_.string());
+  ASSERT_NE(id, 0u);
+  constexpr Endereco kDestino = 0x00103000;
+  EXPECT_EQ(a.Ler(id, mem_, kDestino, 32), 13);
+  EXPECT_EQ(LerCadeia(mem_, kDestino), "dragon-config");
+}
+
+TEST_F(ArquivosTeste, ScanRecursivoNaoImportaSavesDoHostEmUdata) {
+  // `udata` e reservado ao overlay COW. Mesmo se o dump traz um save velho, ele
+  // nao pode influir neste titulo nem aparecer depois de Registar().
+  EXPECT_TRUE(std::filesystem::exists(pasta_ / "udata" / "host-save.bin"));
+  EXPECT_FALSE(vfs_.Existe("udata/host-save.bin"));
+  Arquivos a(&vfs_);
+  EXPECT_EQ(a.Abrir("udata/host-save.bin", 0x0001u, pasta_.string()), 0u);
+}
+
+TEST_F(ArquivosTeste, ScanRecursivoNaoSegueLinkDeArquivo) {
+  const auto fora = pasta_.parent_path() / "zb2_segredo_fora_da_vfs.bin";
+  { std::ofstream segredo(fora, std::ios::binary); segredo << "segredo"; }
+  std::error_code ec;
+  std::filesystem::create_symlink(fora, pasta_ / "data" / "fuga", ec);
+  if (ec) {
+    std::filesystem::remove(fora);
+    GTEST_SKIP() << "o sistema nao permitiu criar symlink: " << ec.message();
+  }
+  vfs_.Registar(pasta_.string());
+  EXPECT_FALSE(vfs_.Existe("data/fuga"));
+  Arquivos a(&vfs_);
+  EXPECT_EQ(a.Abrir("data/fuga", 0x0001u, pasta_.string()), 0u);
+  std::filesystem::remove(fora);
+}
+
 
 // ---------------------------------------------------------------------------
 // INTERFACE. A construcao dos objectos e a cablagem das vtables.
