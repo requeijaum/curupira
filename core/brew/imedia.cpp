@@ -1,4 +1,5 @@
 #include "core/brew/imedia.h"
+#include "core/audio/wav.h"
 
 #include <algorithm>
 #include <array>
@@ -111,6 +112,27 @@ std::string EmHex(std::uint32_t v) {
   char b[16];
   std::snprintf(b, sizeof(b), "0x%08x", v);
   return b;
+}
+
+// O misturador virtual usa 22050 amostras mono/s. Converte a onda real para
+// essa grade antes de o relogio virtual avancar, preservando a duracao e os
+// callbacks sem depender de relogio/dispositivo do host.
+std::vector<std::int16_t> ReamostrarParaOMisturador(const audio::Wav& onda) {
+  if (onda.taxa == 0 || onda.canais == 0) return {};
+  const std::size_t quadros = onda.amostras.size() / onda.canais;
+  if (quadros == 0) return {};
+  const std::uint64_t saida64 =
+      (std::uint64_t(quadros) * Media::kTaxaDeclarada + onda.taxa - 1) / onda.taxa;
+  if (saida64 == 0 || saida64 > 32u * 1024u * 1024u) return {};
+  std::vector<std::int16_t> saida(static_cast<std::size_t>(saida64));
+  for (std::size_t i = 0; i < saida.size(); ++i) {
+    const std::size_t origem = std::min(quadros - 1,
+        static_cast<std::size_t>((std::uint64_t(i) * onda.taxa) / Media::kTaxaDeclarada));
+    std::int32_t soma = 0;
+    for (std::uint16_t c = 0; c < onda.canais; ++c) soma += onda.amostras[origem * onda.canais + c];
+    saida[i] = static_cast<std::int16_t>(soma / onda.canais);
+  }
+  return saida;
 }
 
 }  // namespace
@@ -741,6 +763,23 @@ std::int32_t Media::DefinirDados(Objeto& o, std::int32_t p1, std::int32_t p2) {
     o.cls_data = static_cast<std::int32_t>(cls_data);
     o.p_data = p_data;
     o.tam_data = static_cast<std::uint32_t>(o.fluxo.size());
+    if (const auto onda = audio::DescodificarWav(o.fluxo); onda.has_value()) {
+      o.amostras = ReamostrarParaOMisturador(*onda);
+      o.tem_dados = !o.amostras.empty();
+      if (o.tem_dados) {
+        mem_.Escrever32(o.endereco + kOffObjAmostrasTotal,
+                        static_cast<std::uint32_t>(o.amostras.size()));
+        mem_.Escrever32(o.endereco + kOffObjPosicao, 0);
+        mem_.Escrever32(o.endereco + kOffObjEstado, static_cast<std::uint32_t>(o.estado));
+        ++pedidos_aceitos_;
+        traco_.Emitir(Area::Audio, Nivel::Informacao, "IMEDIA_WAV",
+                      "'" + nome + "': IMA/PCM descodificado para " +
+                          std::to_string(o.amostras.size()) + " amostras virtuais");
+        traco_.RegistarPressuposto(Area::Audio, "saida_de_audio_do_host_indisponivel",
+                                   "WAV descodificado e cronometrado; misturador virtual sem sink de audio");
+        return kAeeSucesso;
+      }
+    }
     mem_.Escrever32(o.endereco + kOffObjAmostrasTotal, 0);
     mem_.Escrever32(o.endereco + kOffObjPosicao, 0);
     mem_.Escrever32(o.endereco + kOffObjEstado, static_cast<std::uint32_t>(o.estado));

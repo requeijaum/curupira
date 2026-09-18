@@ -76,6 +76,7 @@ add_library(zb2_core STATIC
   core/brew/classes.cpp
   core/brew/cheats.cpp
   core/audio/misturador.cpp
+  core/audio/wav.cpp
   core/video/rasterizador.cpp
   core/video/atitc.cpp
 )

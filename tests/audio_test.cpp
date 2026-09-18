@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "core/audio/misturador.h"
+#include "core/audio/wav.h"
 
 using zb2::audio::kLimitePcm16;
 using zb2::audio::kVolumeMaximo;
@@ -19,6 +20,50 @@ std::vector<std::int16_t> Onda(std::size_t quantas, std::int16_t amplitude) {
     v[k] = ((k % 4) < 2) ? amplitude : static_cast<std::int16_t>(-amplitude);
   }
   return v;
+}
+
+TEST(Wav, IMAAdpcmMonoDecodificaPreditorEOrdemDosNibbles) {
+  // RIFF/WAVE, fmt IMA-ADPCM mono, bloco de 5 bytes: predictor 0, indice 0,
+  // nibbles 7 e 7. A tabela IMA produz 0, 11, 41.
+  const std::vector<std::uint8_t> wav = {
+      'R','I','F','F', 45,0,0,0, 'W','A','V','E',
+      'f','m','t',' ', 20,0,0,0, 17,0, 1,0, 0x22,0x56,0,0,
+      0,0,0,0, 5,0, 4,0, 2,0, 3,0,
+      'd','a','t','a', 5,0,0,0, 0,0,0,0, 0x77, 0};
+  const auto som = zb2::audio::DescodificarWav(wav);
+  ASSERT_TRUE(som.has_value());
+  EXPECT_EQ(som->taxa, 22050u);
+  EXPECT_EQ(som->canais, 1u);
+  ASSERT_EQ(som->amostras.size(), 3u);
+  EXPECT_EQ(som->amostras[0], 0);
+  EXPECT_EQ(som->amostras[1], 11);
+  EXPECT_EQ(som->amostras[2], 41);
+}
+
+TEST(Wav, IMAAdpcmUsaATabelaPadraoNoPasso50) {
+  // Indice inicial 20 corresponde ao passo IMA 50. Nibble 4: 50 + 50/8 = 56.
+  const std::vector<std::uint8_t> wav = {
+      'R','I','F','F', 45,0,0,0, 'W','A','V','E',
+      'f','m','t',' ', 20,0,0,0, 17,0, 1,0, 0x22,0x56,0,0,
+      0,0,0,0, 5,0, 4,0, 2,0, 3,0,
+      'd','a','t','a', 5,0,0,0, 0,0,20,0, 0x04, 0};
+  const auto som = zb2::audio::DescodificarWav(wav);
+  ASSERT_TRUE(som.has_value());
+  ASSERT_GE(som->amostras.size(), 2u);
+  EXPECT_EQ(som->amostras[1], 56);
+}
+
+TEST(Wav, IMAAdpcmUsaATabelaPadraoNoPasso6484) {
+  // Indice 71 e passo IMA 6484; nibble 4 soma 6484 + floor(6484/8) = 7294.
+  const std::vector<std::uint8_t> wav = {
+      'R','I','F','F', 45,0,0,0, 'W','A','V','E',
+      'f','m','t',' ', 20,0,0,0, 17,0, 1,0, 0x22,0x56,0,0,
+      0,0,0,0, 5,0, 4,0, 2,0, 3,0,
+      'd','a','t','a', 5,0,0,0, 0,0,71,0, 0x04, 0};
+  const auto som = zb2::audio::DescodificarWav(wav);
+  ASSERT_TRUE(som.has_value());
+  ASSERT_GE(som->amostras.size(), 2u);
+  EXPECT_EQ(som->amostras[1], 7294);
 }
 
 TEST(Misturador, ContaAsAmostrasEAsNaoNulas) {
