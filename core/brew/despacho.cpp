@@ -3090,6 +3090,12 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           // O NOME -- o `CreateInstance` de um `AEECLSID_TEXTCTL` no aparelho a
           // serio TAMBEM devolve um objecto. O que nao se faz e devolver sucesso
           // com um objecto que se diz completo (P2).
+          // IStatic is the exception to the fixed class objects: each
+          // CreateInstance owns active/rect/properties/text state, so the
+          // factory must allocate a new object before the singleton lookup.
+          if (devolver == 0 && iid == brew_clsids::kClsid_STATIC) {
+            devolver = zb2::brew::CriarIStatic(mem_);
+          }
           if (devolver == 0) devolver = zb2::brew::ObjetoDoClsid(iid);
           // AS FONTES STANDARD: um objecto por CLSID com a metrica do seu
           // tamanho nominal (frente fontes). Vem depois das classes e antes

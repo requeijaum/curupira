@@ -256,6 +256,29 @@ std::uint32_t g_texto_ativo = 0;
 std::uint32_t g_texto_props = 0;
 std::int32_t g_texto_modo = 0;
 
+// IStatic is intentionally not a Classe: its factory makes a fresh object on
+// every call.  A shared CLSID object would leak active/rect/text state between
+// controls in rocketweb.  Text is copied out of guest memory at SetText time;
+// no renderer consumes it yet.
+struct EstadoDoStatic {
+  bool ativo = false;
+  std::int16_t rect[4] = {};
+  std::uint32_t propriedades = 0;
+  std::vector<std::uint16_t> titulo;
+  std::vector<std::uint16_t> corpo;
+  std::uint32_t fonte_titulo = 0;
+  std::uint32_t fonte_corpo = 0;
+};
+std::map<std::uint32_t, EstadoDoStatic> g_statics;
+std::uint32_t g_proximo_static = kObjetoStaticInicio;
+std::uint32_t g_vtable_static = 0;
+
+void ReporEstadoStatic() {
+  g_statics.clear();
+  g_proximo_static = kObjetoStaticInicio;
+  g_vtable_static = 0;
+}
+
 // Estado da lista IVectorModel (AEECLSID_VECTORMODEL_1).
 std::vector<std::uint32_t> g_vetor_itens;
 std::uint32_t g_vetor_liberador = 0;
@@ -266,8 +289,19 @@ void ReporEstadoTextCtl() {
   g_texto_ativo = 0;
   g_texto_props = 0;
   g_texto_modo = 0;
+  ReporEstadoStatic();
   g_vetor_itens.clear();
   g_vetor_liberador = 0;
+}
+
+std::uint32_t CriarIStatic(Memoria& mem) {
+  if (g_vtable_static == 0 || g_statics.size() >= kMaximoDeObjetosStatic) return 0;
+  const std::uint32_t objeto = g_proximo_static;
+  g_proximo_static += kPassoDoObjetoStatic;
+  mem.Escrever32(objeto, g_vtable_static);
+  mem.Escrever32(objeto + 4u, 1u);
+  g_statics.emplace(objeto, EstadoDoStatic{});
+  return objeto;
 }
 
 // ---------------------------------------------------------------------------
@@ -653,6 +687,27 @@ void ConstruirClasses(Memoria& mem, const Saidas& saidas, Traco& traco) {
       mem.Ler32(saidas.Endereco(kVtableWeb) + 3u * 4u) != saidas.Endereco(kVtableWeb + 3u)) {
     traco.RegistarFalta(Area::Brew, "web_cablagem_perdida",
                         "IWeb sem objecto ou slot AddOpt cablado");
+  }
+
+  // IStatic has a shared vtable and per-CreateInstance objects.  Do not use
+  // ConstruirObjeto here: it would manufacture a visible singleton object,
+  // which would make state shared before the factory is ever called.
+  g_vtable_static = saidas.Endereco(kVtableStatic);
+  mem.Escrever32(g_vtable_static + 0u * 4u, saidas.Endereco(3));
+  mem.Escrever32(g_vtable_static + 1u * 4u, saidas.Endereco(4));
+  for (std::uint32_t s = 2; s < kSlotsPorVtable; ++s) {
+    mem.Escrever32(g_vtable_static + s * 4u, saidas.Endereco(kVtableStatic + s));
+  }
+  bool static_ok = true;
+  for (std::uint32_t s = 2; s < kSlotsPorVtable; ++s) {
+    if (mem.Ler32(g_vtable_static + s * 4u) != saidas.Endereco(kVtableStatic + s)) {
+      static_ok = false;
+      break;
+    }
+  }
+  if (!static_ok) {
+    traco.RegistarFalta(Area::Brew, "istatic_cablagem_perdida",
+                        "IStatic sem todos os slots da vtable cablados");
   }
   for (std::uint32_t k = 0; k < kQuantasClasses; ++k) {
     const std::uint32_t quantos = kSlotsDaInterface[k];
@@ -2082,9 +2137,122 @@ bool AtenderForceFeedJpeg(ICpu& cpu, Traco& traco, std::uint32_t slot) {
   return false;
 }
 
+// IStatic::SetText receives UTF-16 pointers.  Copy through the terminator so a
+// title/body buffer owned or reused by the caller cannot change the object.
+bool CopiarTextoDoStatic(Memoria& mem, std::uint32_t origem,
+                         std::vector<std::uint16_t>* destino) {
+  destino->clear();
+  if (origem == 0) return true;  // null clears this optional text field
+  constexpr std::uint32_t kMaximoDeUnidades = 4096u;
+  for (std::uint32_t n = 0; n < kMaximoDeUnidades; ++n) {
+    const std::uint32_t p = origem + n * 2u;
+    if (p < origem || !mem.Existe(p) || !mem.Existe(p + 1u)) return false;
+    const std::uint16_t unidade = mem.Ler16(p);
+    destino->push_back(unidade);
+    if (unidade == 0) return true;
+  }
+  return false;
+}
+
+bool AtenderIStatic(ICpu& cpu, Traco& traco, std::uint32_t slot) {
+  Memoria& mem = cpu.Mem();
+  const std::uint32_t objeto = cpu.Get(kR0);
+  const auto it = g_statics.find(objeto);
+  if (it == g_statics.end()) {
+    traco.RegistarFalta(Area::Brew, "IStatic::objecto", "objecto nao criado pelo IStatic");
+    cpu.Set(kR0, kAeeUnsupported);
+    return true;
+  }
+  if (slot == 0 || slot == 1) {
+    std::uint32_t refs = mem.Ler32(objeto + 4u);
+    if (slot == 0) {
+      if (refs != 0xffffffffu) ++refs;
+      mem.Escrever32(objeto + 4u, refs);
+      cpu.Set(kR0, refs);
+      return true;
+    }
+    if (refs != 0) --refs;
+    mem.Escrever32(objeto + 4u, refs);
+    if (refs == 0) g_statics.erase(it);
+    cpu.Set(kR0, refs);
+    return true;
+  }
+  EstadoDoStatic& e = it->second;
+  switch (slot) {
+    case 3:  // boolean Redraw(IStatic*) -- no renderer is claimed here.
+      cpu.Set(kR0, 1u);
+      return true;
+    case 4:  // void SetActive(IStatic*, boolean)
+      e.ativo = cpu.Get(kR1) != 0;
+      return true;
+    case 5:  // boolean IsActive(IStatic*)
+      cpu.Set(kR0, e.ativo ? 1u : 0u);
+      return true;
+    case 6: {  // void SetRect(IStatic*, const AEERect*)
+      const std::uint32_t prc = cpu.Get(kR1);
+      if (prc == 0) {
+        cpu.Set(kR0, kAeeBadParm);
+        return true;
+      }
+      for (std::uint32_t n = 0; n < 4; ++n) {
+        e.rect[n] = static_cast<std::int16_t>(mem.Ler16(prc + n * 2u));
+      }
+      return true;
+    }
+    case 7: {  // void GetRect(IStatic*, AEERect*)
+      const std::uint32_t prc = cpu.Get(kR1);
+      if (prc == 0) {
+        cpu.Set(kR0, kAeeBadParm);
+        return true;
+      }
+      for (std::uint32_t n = 0; n < 4; ++n) {
+        mem.Escrever16(prc + n * 2u, static_cast<std::uint16_t>(e.rect[n]));
+      }
+      return true;
+    }
+    case 8:  // void SetProperties(IStatic*, uint32)
+      e.propriedades = cpu.Get(kR1);
+      return true;
+    case 9:  // uint32 GetProperties(IStatic*)
+      cpu.Set(kR0, e.propriedades);
+      return true;
+    case 11: {  // boolean SetText(this, title, body, title-font, body-font)
+      std::vector<std::uint16_t> titulo, corpo;
+      if (!CopiarTextoDoStatic(mem, cpu.Get(kR1), &titulo) ||
+          !CopiarTextoDoStatic(mem, cpu.Get(kR2), &corpo)) {
+        traco.RegistarFalta(Area::Brew, "IStatic::SetText", "texto UTF-16 nao mapeado ou sem NUL");
+        cpu.Set(kR0, kAeeBadParm);
+        return true;
+      }
+      e.titulo = std::move(titulo);
+      e.corpo = std::move(corpo);
+      e.fonte_titulo = cpu.Get(kR3);
+      e.fonte_corpo = mem.Ler32(cpu.Get(kSP));
+      cpu.Set(kR0, 1u);
+      return true;
+    }
+    default: {
+      char nome[48], detalhe[160];
+      std::snprintf(nome, sizeof(nome), "IStatic::slot%u", slot);
+      std::snprintf(detalhe, sizeof(detalhe),
+                    "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x lr=0x%08x",
+                    objeto, cpu.Get(kR1), cpu.Get(kR2), cpu.Get(kR3), cpu.Get(kLR));
+      traco.RegistarFalta(Area::Brew, nome, detalhe);
+      cpu.Set(kR0, kAeeUnsupported);
+      return true;
+    }
+  }
+}
+
 }  // namespace
 
 bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
+  // IStatic needs its own range: one factory call creates one independent
+  // state record.  It must precede the broad fixed Classe range and IShell
+  // fallback, otherwise its unknown slots acquire another interface name.
+  if (indice >= kVtableStatic && indice < kVtableStatic + kSlotsPorVtable) {
+    return AtenderIStatic(cpu, traco, indice - kVtableStatic);
+  }
   // IWeb tem faixa propria. Nao entra em Classe: a proxima fatia de 32 slots
   // pisaria o IGLES11. So AddOpt (slot 3) foi medido no allstarcards.
   if (indice >= kVtableWeb && indice < kVtableWeb + kWebSlots) {

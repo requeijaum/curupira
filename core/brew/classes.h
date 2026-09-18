@@ -289,6 +289,15 @@ constexpr std::uint32_t kVtableWeb = 41300u;
 constexpr std::uint32_t kWebSlots = 13u;
 constexpr std::uint32_t kObjetoWeb = 0x8F251000u;
 
+// IStatic (AEECLSID_STATIC, 0x0100110a) has one shared vtable but a new guest
+// object for every IShell::CreateInstance.  The object pool is below the PNG
+// pixel band (0x8F300000) and above the other private BREW objects.
+constexpr std::uint32_t kVtableStatic = 41320u;
+constexpr std::uint32_t kStaticSlots = 12u;
+constexpr std::uint32_t kObjetoStaticInicio = 0x8F260000u;
+constexpr std::uint32_t kPassoDoObjetoStatic = 0x100u;
+constexpr std::uint32_t kMaximoDeObjetosStatic = 256u;
+
 // A BANDA DOS PIXELS DESCODIFICADOS. `0x8F300000`: dentro da faixa 0x8F000000 que
 // a bateria inteira ja provou que o corpus nao toca (o comentario do 0x800C0000
 // no topo deste ficheiro), ACIMA do pool das pilhas das threads (0x8F030000 +
@@ -345,6 +354,11 @@ const char* NomeDoSlotDaClasse(std::uint32_t k, std::uint32_t slot);
 std::uint32_t ObjetoDoClsid(std::uint32_t clsid);
 // O objecto da fonte pedida (0 se nao e fonte). Fora da aritmetica das classes.
 std::uint32_t ObjetoDaFonte(std::uint32_t clsid);
+
+// Cria uma instancia IStatic nova.  Zero significa que o pool desta corrida
+// esgotou; o chamador converte-o em AEE_ECLASSNOTSUPPORT, como as outras
+// fabricas sem objecto.  A vtable e preparada por ConstruirClasses.
+std::uint32_t CriarIStatic(Memoria& mem);
 
 // `true` = este slot tem implementacao (e so o `IAppHistory::Top` o tem hoje).
 bool SlotDaClasseImplementado(std::uint32_t k, std::uint32_t slot);

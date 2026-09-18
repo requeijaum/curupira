@@ -712,6 +712,20 @@ class BancadaDoDespacho {
     cpu_.Set(kPC, saidas_.Endereco(indice));
     return despacho_->Correr(cpu_, limite, kPpObjDoTeste);
   }
+  // Execute a method exactly as guest code does: fetch the function pointer
+  // from the object's vtable, then enter the dispatcher at that address.
+  ResultadoFase ChamaMetodo(std::uint32_t objeto, std::uint32_t slot,
+                            std::uint32_t r1 = 0, std::uint32_t r2 = 0,
+                            std::uint32_t r3 = 0, std::uint64_t limite = 1000) {
+    const std::uint32_t vtable = mem_.Ler32(objeto);
+    cpu_.Set(kR0, objeto);
+    cpu_.Set(kR1, r1);
+    cpu_.Set(kR2, r2);
+    cpu_.Set(kR3, r3);
+    cpu_.Set(kLR, kSentinelaDoTeste);
+    cpu_.Set(kPC, mem_.Ler32(vtable + slot * 4u));
+    return despacho_->Correr(cpu_, limite, kPpObjDoTeste);
+  }
   std::size_t Faltas(const std::string& nome) const {
     const auto& f = traco_.ContagemFaltas();
     const auto it = f.find(nome);
@@ -1482,6 +1496,91 @@ TEST(Classes, IWebCriaEAddOptLeOVectorDoStackPelaVtable) {
   b.ChamaSaida(kVtableWeb + 12u, web);
   EXPECT_EQ(b.Cpu().Get(kR0), kAeeUnsupported);
   EXPECT_EQ(b.Faltas("IWeb::slot12"), 1u);
+}
+
+
+// ---------------------------------------------------------------------------
+// IStatic: rocketweb asks the real IShell factory for AEECLSID_STATIC and then
+// calls this exact vtable sequence.  The two creations prove state belongs to
+// each object, not to the CLSID or to the process.
+// ---------------------------------------------------------------------------
+TEST(Classes, IStaticCriaPeloShellECadaObjectoGuardaOSeuEstado) {
+  BancadaDoDespacho b;
+  constexpr std::uint32_t kClsidStatic = 0x0100110au;
+  constexpr std::uint32_t kRectA = 0x80095000u;
+  constexpr std::uint32_t kRectOut = 0x80095100u;
+  constexpr std::uint32_t kTitulo = 0x80095200u;
+  constexpr std::uint32_t kCorpo = 0x80095300u;
+
+  // The ABI is IShell::CreateInstance(shell, clsid, &object), not a direct
+  // constructor.  Two calls must make two independent IStatic instances.
+  b.ChamaSaida(kBaseDoShell + 2, kObjShell, kClsidStatic, kPpObjDoTeste);
+  ASSERT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
+  const std::uint32_t primeiro = b.M().Ler32(kPpObjDoTeste);
+  b.ChamaSaida(kBaseDoShell + 2, kObjShell, kClsidStatic, kCelulaDoTeste);
+  ASSERT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
+  const std::uint32_t segundo = b.M().Ler32(kCelulaDoTeste);
+  ASSERT_NE(primeiro, 0u);
+  ASSERT_NE(segundo, 0u);
+  ASSERT_NE(primeiro, segundo);
+
+  // IBase is live on each allocated object, not a generic refusal.
+  b.ChamaSaida(kVtableStatic + 0u, primeiro);
+  EXPECT_EQ(b.Cpu().Get(kR0), 2u);
+  b.ChamaSaida(kVtableStatic + 1u, primeiro);
+  EXPECT_EQ(b.Cpu().Get(kR0), 1u);
+
+  // The guest reaches methods through [object] + slot*4.  Check the wiring
+  // before using the output indexes below, so this cannot pass with only a
+  // dispatcher-side special case.
+  const std::uint32_t vt = b.M().Ler32(primeiro);
+  EXPECT_EQ(b.M().Ler32(vt + 0u * 4u), b.S().Endereco(3u));
+  EXPECT_EQ(b.M().Ler32(vt + 1u * 4u), b.S().Endereco(4u));
+  EXPECT_EQ(b.M().Ler32(vt + 3u * 4u), b.S().Endereco(kVtableStatic + 3u));
+  EXPECT_EQ(b.M().Ler32(vt + 11u * 4u), b.S().Endereco(kVtableStatic + 11u));
+  b.ChamaMetodo(primeiro, 0u);  // slot 0: AddRef
+  EXPECT_EQ(b.Cpu().Get(kR0), 2u);
+  b.ChamaMetodo(primeiro, 1u);  // slot 1: Release
+  EXPECT_EQ(b.Cpu().Get(kR0), 1u);
+
+  b.ChamaMetodo(primeiro, 3u);  // Redraw -> TRUE
+  EXPECT_EQ(b.Cpu().Get(kR0), 1u);
+  b.ChamaMetodo(primeiro, 4u, 1u);  // SetActive(TRUE)
+  b.ChamaMetodo(primeiro, 5u);      // IsActive
+  EXPECT_EQ(b.Cpu().Get(kR0), 1u);
+  b.ChamaMetodo(segundo, 5u);
+  EXPECT_EQ(b.Cpu().Get(kR0), 0u);
+
+  b.M().Escrever16(kRectA + 0u, static_cast<std::uint16_t>(-7));
+  b.M().Escrever16(kRectA + 2u, 9u);
+  b.M().Escrever16(kRectA + 4u, 111u);
+  b.M().Escrever16(kRectA + 6u, 222u);
+  b.ChamaMetodo(primeiro, 6u, kRectA);       // SetRect
+  b.M().Escrever16(kRectA + 0u, 77u);  // source may change after SetRect
+  b.ChamaMetodo(primeiro, 7u, kRectOut);     // GetRect
+  EXPECT_EQ(b.M().Ler16(kRectOut + 0u), static_cast<std::uint16_t>(-7));
+  EXPECT_EQ(b.M().Ler16(kRectOut + 2u), 9u);
+  EXPECT_EQ(b.M().Ler16(kRectOut + 4u), 111u);
+  EXPECT_EQ(b.M().Ler16(kRectOut + 6u), 222u);
+
+  b.ChamaMetodo(primeiro, 8u, 0x8a00f00du);  // SetProperties
+  b.ChamaMetodo(primeiro, 9u);                // GetProperties
+  EXPECT_EQ(b.Cpu().Get(kR0), 0x8a00f00du);
+  b.ChamaMetodo(segundo, 9u);
+  EXPECT_EQ(b.Cpu().Get(kR0), 0u);
+
+  // SetText(this, UTF-16 title, UTF-16 body, title font, body font).  The
+  // fourth real argument is at [sp]; both strings are deliberately UTF-16.
+  b.M().Escrever16(kTitulo + 0u, 0x0052u); b.M().Escrever16(kTitulo + 2u, 0u);
+  b.M().Escrever16(kCorpo + 0u, 0x00e1u); b.M().Escrever16(kCorpo + 2u, 0u);
+  b.M().Escrever32(b.Cpu().Get(kSP), 0x8f00beefu);
+  b.ChamaMetodo(primeiro, 11u, kTitulo, kCorpo, 0x8f00faceu);
+  EXPECT_EQ(b.Cpu().Get(kR0), 1u);
+  EXPECT_EQ(b.Faltas("IStatic::SetText"), 0u);
+
+  b.ChamaMetodo(primeiro, 2u);  // unknown slot: explicit refusal
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("IStatic::slot2"), 1u);
 }
 
 }  // namespace
