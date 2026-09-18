@@ -716,6 +716,28 @@ inline const char* NomeDeForceFeed(unsigned slot) {
   return slot < 5 ? k[slot] : "slot_fora_da_tabela";
 }
 
+// platform/security/inc/AEEIHashCtx.h
+//   cabeca: INHERIT_IQI = 3 slots de cabeca
+//   4 metodos; slot = 3 + posicao
+constexpr unsigned kHashCtx_AddRef = 0;
+constexpr unsigned kHashCtx_Release = 1;
+constexpr unsigned kHashCtx_QueryInterface = 2;
+constexpr unsigned kHashCtx_Init = 3;
+constexpr unsigned kHashCtx_Update = 4;
+constexpr unsigned kHashCtx_Final = 5;
+constexpr unsigned kHashCtx_SetKey = 6;
+// Quantos slots esta interface TEM, lido do cabecalho. E o limite da
+// cablagem e o do `NomeDeHashCtx` -- uma so constante, para os dois nao
+// poderem divergir.
+constexpr unsigned kHashCtxSlots = 7;
+
+inline const char* NomeDeHashCtx(unsigned slot) {
+  static const char* k[] = {
+      "AddRef", "Release", "QueryInterface", "Init", "Update", "Final", "SetKey",
+  };
+  return slot < 7 ? k[slot] : "slot_fora_da_tabela";
+}
+
 // platform/ui/inc/AEEGraphics.h
 //   cabeca: QINTERFACE + DECLARE_IBASE = 2
 //   42 metodos; slot = 2 + posicao

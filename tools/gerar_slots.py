@@ -104,6 +104,9 @@ INTERFACES = [
     ("ImageDecoder", "platform/media/inc/AEEIImageDecoder.h",
      "#define INHERIT_IImageDecoder("),
     ("ForceFeed", "platform/system/inc/AEEIForceFeed.h",  "#define INHERIT_IForceFeed("),
+    # IHashCtx is IQI (three head slots) plus Init/Update/Final/SetKey.
+    # MD5Ctx is caller-context based: its 88 bytes are owned by the guest.
+    ("HashCtx", "platform/security/inc/AEEIHashCtx.h", "#define INHERIT_IHashCtx("),
     # O `IGraphics` (a interface 2D do BREW 4.0, frente igfx). E da FORMA ANTIGA:
     # `QINTERFACE` + `DECLARE_IBASE`, sem `INHERIT_` -- o `metodos` ja sabe le-la
     # pelo `QINTERFACE(IGraphics)`, como faz com o `ITextCtl`. PORQUE ENTRA AQUI:

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "core/brew/clsids.h"
+#include "core/brew/md5ctx.h"
 // O DESCODIFICADOR PNG (frente imgdec): `core/carga/png.h`, na pasta dos
 // descodificadores de contentor (inflate, pack, bar).
 #include "core/carga/png.h"
@@ -638,6 +639,7 @@ void ConstruirClasses(Memoria& mem, const Saidas& saidas, Traco& traco) {
   // `Start` respondia EALREADY a quem nao tinha iniciado nada.
   ReporEstadoThreads();
   ConstruirIgles(mem, saidas, traco);
+  ConstruirMd5Ctx(mem, saidas, traco);
   for (std::uint32_t k = 0; k < kQuantasClasses; ++k) {
     const std::uint32_t quantos = kSlotsDaInterface[k];
     if (quantos == 0 || quantos > kSlotsDaClasse) {

@@ -16,6 +16,8 @@
 #include "core/brew/clsids.h"
 #include "core/brew/formato.h"
 #include "core/brew/imedia.h"
+#include "core/brew/md5ctx.h"
+#include "tools/clsids.inc"
 // O `Inflar` (RFC1950) dos `.pkg` -- REUSADO, e nao copiado: core/carga e de
 // outro agente, e so se le daqui. O gzip (RFC1952) dos `.bar` e tratado neste
 // ficheiro, por cima dele.
@@ -2889,6 +2891,9 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
           const std::uint32_t out = (n < 4) ? avq.reg[n] : mem_.Ler32(avq.sp + (n - 4) * 4);
           if (out != 0) mem_.Escrever32(out, retornoq);
         }
+      } else if (AtenderMd5Ctx(cpu, idx, traco_)) {
+        // IHashCtx/MD5Ctx: caller-owned 88-byte contexts.  Must precede the
+        // broad IShell fallback, or its slots would be named as IShell slots.
       } else if (AtenderClasse(cpu, idx, traco_)) {
         // AS CLASSES CONHECIDAS (`core/brew/classes.h`). ESTE RAMO VEM ANTES DO
         // `idx >= kBaseDoShell`, e nao e gosto: os indices desta faixa sao 40000+
@@ -2957,6 +2962,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // `Read`/`SetStream` que o allstarcards pede em laco (310 KB).
         else if (iid == kClsidUnzipStream) devolver = kObjUnzip;
         else if (iid == kClsidMemAStream) devolver = kObjMemStream;
+        else if (iid == brew_clsids::kClsid_MD5Ctx) devolver = zb2::brew::kObjetoMd5Ctx;
         // OS DOIS CLSIDs DO Z-WHEEL (frente zclsid): cada um recebe o objecto da
         // SUA interface. Este ramo vem ANTES do dos genericos, e nao e gosto: o
         // `0x01000000` e tambem o `AEECLSID_PRIV` (a base de toda a familia), e um
