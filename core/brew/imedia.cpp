@@ -1,5 +1,6 @@
 #include "core/brew/imedia.h"
 #include "core/audio/wav.h"
+#include "core/audio/duracao.h"
 
 #include <algorithm>
 #include <array>
@@ -777,6 +778,27 @@ std::int32_t Media::DefinirDados(Objeto& o, std::int32_t p1, std::int32_t p2) {
                           std::to_string(o.amostras.size()) + " amostras virtuais");
         traco_.RegistarPressuposto(Area::Audio, "saida_de_audio_do_host_indisponivel",
                                    "WAV descodificado e cronometrado; misturador virtual sem sink de audio");
+        return kAeeSucesso;
+      }
+    }
+    if (const auto tempo = audio::CronometrarFluxo(o.fluxo); tempo.has_value()) {
+      // Sem decoder/sink host, o fluxo ainda recebe uma linha de tempo REAL:
+      // Play/Stop/Seek/DONE respeitam sua duracao em vez de responderem que ja
+      // acabou. A amostra zero e deliberada e declarada no traco abaixo.
+      const std::uint64_t total = std::uint64_t(tempo->milissegundos) * kAmostrasPorMs;
+      if (total > 0 && total <= 32u * 1024u * 1024u) {
+        o.amostras.assign(static_cast<std::size_t>(total), 0);
+        o.tem_dados = true;
+        mem_.Escrever32(o.endereco + kOffObjAmostrasTotal, static_cast<std::uint32_t>(total));
+        mem_.Escrever32(o.endereco + kOffObjPosicao, 0);
+        mem_.Escrever32(o.endereco + kOffObjEstado, static_cast<std::uint32_t>(o.estado));
+        ++pedidos_aceitos_;
+        traco_.Emitir(Area::Audio, Nivel::Informacao, "IMEDIA_CRONOMETRADA",
+                      "'" + nome + "': " + std::to_string(tempo->milissegundos) +
+                          " ms de " + (tempo->tipo == audio::TipoCronometrado::Mp3 ? "MP3" : "MIDI") +
+                          " no relogio virtual");
+        traco_.RegistarPressuposto(Area::Audio, "fluxo_comprimido_sem_saida_de_audio",
+                                   "MP3/MIDI tem duracao/callback real; decoder e sink do host ausentes");
         return kAeeSucesso;
       }
     }

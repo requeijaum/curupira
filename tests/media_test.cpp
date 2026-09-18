@@ -758,14 +758,14 @@ TEST(Media, ONomeDeFicheiroExistenteGuardaOFluxoESemDecodificador) {
   b.Mem().Escrever32(kMediaData + kOffMidiaClsData, kMmdNomeDeFicheiro);
   b.Mem().Escrever32(kMediaData + kOffMidiaPData, kFicheiro);
   b.Mem().Escrever32(kMediaData + kOffMidiaDwSize, 0);
-  // VERMELHO NA BASE: `kAeeNaoSuportado` com o fluxo ao alcance. VERDE quando o
-  // nome existente for lido do VFS e guardado como fluxo opaco (sem
-  // descodificador), com o estado em Pronto e a falta NOMEADA.
+  // MP3 nao vira PCM inventado: a moldura e contada para que Play/DONE usem
+  // tempo virtual real. O fluxo permanece guardado para GetMediaParm futuro.
   EXPECT_EQ(b.DefinirDados(), kAeeSucesso);
   EXPECT_EQ(b.OMedia().EstadoDe(po), kMmEstadoPronto);
   EXPECT_EQ(b.OMedia().TamanhoDoFluxoGuardado(po), static_cast<std::uint32_t>(tamanho_real));
+  EXPECT_GT(b.Mem().Ler32(po + kOffObjAmostrasTotal), 0u);
   const auto& faltas = b.OTraco().ContagemFaltas();
-  EXPECT_GE(faltas.count("IMedia::SetMediaParm(MMD_FILE_NAME)"), 1u);
+  EXPECT_EQ(faltas.count("IMedia::SetMediaParm(MMD_FILE_NAME)"), 0u);
 }
 
 TEST(Media, ONomeDeFicheiroERecusadoEmVozAltaEComOMotivo) {

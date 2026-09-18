@@ -5,6 +5,7 @@
 
 #include "core/audio/misturador.h"
 #include "core/audio/wav.h"
+#include "core/audio/duracao.h"
 
 using zb2::audio::kLimitePcm16;
 using zb2::audio::kVolumeMaximo;
@@ -64,6 +65,28 @@ TEST(Wav, IMAAdpcmUsaATabelaPadraoNoPasso6484) {
   ASSERT_TRUE(som.has_value());
   ASSERT_GE(som->amostras.size(), 2u);
   EXPECT_EQ(som->amostras[1], 7294);
+}
+
+TEST(Cronometragem, Mp3Layer3ContaFramesPelaMoldura) {
+  // MPEG-1 Layer III, 128 kb/s, 44.1 kHz, sem padding: moldura de 417 bytes.
+  std::vector<std::uint8_t> mp3(417, 0);
+  mp3[0] = 0xff; mp3[1] = 0xfb; mp3[2] = 0x90; mp3[3] = 0;
+  const auto t = zb2::audio::CronometrarFluxo(mp3);
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->tipo, zb2::audio::TipoCronometrado::Mp3);
+  EXPECT_EQ(t->milissegundos, 27u);  // ceil(1152 / 44100 s)
+}
+
+TEST(Cronometragem, MidiUsaTempoETicksDoTrack) {
+  const std::vector<std::uint8_t> midi = {
+      'M','T','h','d', 0,0,0,6, 0,0, 0,1, 1,0xe0,
+      'M','T','r','k', 0,0,0,20,
+      0, 0xff,0x51,3, 0x07,0xa1,0x20,  // tempo 500000 us/qn
+      0, 0x90,60,64, 0x83,0x60, 0x80,60,0, 0,0xff,0x2f,0};
+  const auto t = zb2::audio::CronometrarFluxo(midi);
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(t->tipo, zb2::audio::TipoCronometrado::Midi);
+  EXPECT_EQ(t->milissegundos, 500u);
 }
 
 TEST(Misturador, ContaAsAmostrasEAsNaoNulas) {
