@@ -1,10 +1,12 @@
 #include "core/brew/imedia.h"
 #include "core/audio/wav.h"
+#include "core/audio/qcp.h"
 #include "core/audio/duracao.h"
 
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <utility>
 
 namespace zb2::brew {
 
@@ -687,6 +689,38 @@ std::int32_t Media::DefinirDados(Objeto& o, std::int32_t p1, std::int32_t p2) {
       o.tem_dados = false;
       o.estado = kMmEstadoPronto;
       o.posicao = 0;
+      // QCP/PureVoice e a unica classe comprimida que esta frente tem decoder
+      // real. Nao cai no cronometrador de MP3/MIDI: zeros por uma duracao
+      // estimada seriam som inventado. Falha de container/codec fica explicita.
+      if (o.classe == kClsMediaQcp) {
+        auto qcp = audio::DescodificarQcp(o.fluxo);
+        if (qcp.ok()) {
+          const audio::Wav onda{qcp.taxa, qcp.canais, std::move(qcp.amostras)};
+          o.amostras = ReamostrarParaOMisturador(onda);
+          o.tem_dados = !o.amostras.empty();
+          if (o.tem_dados) {
+            mem_.Escrever32(o.endereco + kOffObjAmostrasTotal,
+                            static_cast<std::uint32_t>(o.amostras.size()));
+            mem_.Escrever32(o.endereco + kOffObjPosicao, 0);
+            mem_.Escrever32(o.endereco + kOffObjEstado, static_cast<std::uint32_t>(o.estado));
+            ++pedidos_aceitos_;
+            traco_.Emitir(Area::Audio, Nivel::Informacao, "IMEDIA_QCP",
+                          std::string(audio::NomeDoCodecQcp(qcp.codec)) + " " +
+                              std::to_string(qcp.taxa) + " Hz/" + std::to_string(qcp.canais) +
+                              " canal(is): " + std::to_string(o.amostras.size()) +
+                              " amostras virtuais PCM");
+            traco_.RegistarPressuposto(Area::Audio, "saida_de_audio_do_host_indisponivel",
+                                       "QCP descodificado para PCM; misturador virtual sem sink de audio");
+            return kAeeSucesso;
+          }
+        }
+        mem_.Escrever32(o.endereco + kOffObjAmostrasTotal, 0);
+        mem_.Escrever32(o.endereco + kOffObjPosicao, 0);
+        mem_.Escrever32(o.endereco + kOffObjEstado, static_cast<std::uint32_t>(o.estado));
+        Recusar("IMedia::SetMediaParm(MMD_BUFFER)",
+                std::string("QCP ") + audio::NomeDoCodecQcp(qcp.codec) + ": " + qcp.motivo);
+        return kAeeParametroErrado;
+      }
       if (const auto onda = audio::DescodificarWav(o.fluxo); onda.has_value()) {
         o.amostras = ReamostrarParaOMisturador(*onda);
         o.tem_dados = !o.amostras.empty();

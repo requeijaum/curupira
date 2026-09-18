@@ -2,7 +2,11 @@
 
 #include <array>
 #include <cstdint>
+#include <cstdlib>
+#include <iterator>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -209,6 +213,15 @@ class Bancada {
     mem_.Escrever32(kMediaData + kOffMidiaDwSize, static_cast<std::uint32_t>(amostras.size() * 2));
   }
 
+  void PorFluxo(const std::vector<std::uint8_t>& bytes) {
+    for (std::size_t k = 0; k < bytes.size(); ++k) {
+      mem_.Escrever8(kBuffer + static_cast<std::uint32_t>(k), bytes[k]);
+    }
+    mem_.Escrever32(kMediaData + kOffMidiaClsData, kMmdBuffer);
+    mem_.Escrever32(kMediaData + kOffMidiaPData, kBuffer);
+    mem_.Escrever32(kMediaData + kOffMidiaDwSize, static_cast<std::uint32_t>(bytes.size()));
+  }
+
   std::uint32_t DefinirDados() {
     return Chamar(brew_slots::kMedia_SetMediaParm, po_, kMmParmMediaData, kMediaData, 0);
   }
@@ -340,12 +353,66 @@ class Bancada {
   bool entregar_no_laco_ = true;
 };
 
+std::vector<std::uint8_t> QcpDoChessbotsMontado() {
+  std::string caminho;
+  if (const char* env = std::getenv("ZB2_CHESSBOTS_MOD")) caminho = env;
+  if (caminho.empty()) {
+    caminho = "/home/rafaelfrequiao/projects/zeebo-lab/games/brew/mod/263019/chessbots.mod";
+  }
+  std::ifstream arquivo(caminho, std::ios::binary);
+  if (!arquivo) return {};
+  const std::vector<std::uint8_t> modulo((std::istreambuf_iterator<char>(arquivo)),
+                                         std::istreambuf_iterator<char>());
+  for (std::size_t p = 0; p + 12 <= modulo.size(); ++p) {
+    if (std::memcmp(modulo.data() + p, "RIFF", 4) != 0 ||
+        std::memcmp(modulo.data() + p + 8, "QLCM", 4) != 0) continue;
+    const std::uint32_t tamanho = std::uint32_t(modulo[p + 4]) |
+        (std::uint32_t(modulo[p + 5]) << 8) | (std::uint32_t(modulo[p + 6]) << 16) |
+        (std::uint32_t(modulo[p + 7]) << 24);
+    if (tamanho >= 4 && std::uint64_t(tamanho) + 8 <= modulo.size() - p) {
+      return {modulo.begin() + p, modulo.begin() + p + tamanho + 8};
+    }
+  }
+  return {};
+}
+
 std::vector<std::int16_t> Onda(std::size_t quantas, std::int16_t amplitude) {
   std::vector<std::int16_t> v(quantas);
   for (std::size_t k = 0; k < quantas; ++k) {
     v[k] = ((k % 4) < 2) ? amplitude : static_cast<std::int16_t>(-amplitude);
   }
   return v;
+}
+
+TEST(Media, QcpDoChessbotsPorMmdBufferViraPcmNoMisturador) {
+  // Le directamente o recurso embutido no .mod montado. Nao guarda fixture,
+  // nem chama processo externo: MMD_BUFFER recebe os bytes que o guest daria.
+  const auto qcp = QcpDoChessbotsMontado();
+  if (qcp.empty()) GTEST_SKIP() << "chessbots.mod montado nao encontrado; use ZB2_CHESSBOTS_MOD";
+  Bancada b;
+  const std::uint32_t po = b.CriarMedia(kClsMediaQcp, 0x00100A00u);
+  ASSERT_NE(po, 0u);
+  b.ApontarParaObjeto(po);
+  b.PorFluxo(qcp);
+  ASSERT_EQ(b.DefinirDados(), static_cast<std::uint32_t>(kAeeSucesso));
+  EXPECT_EQ(b.OMedia().EstadoDe(po), kMmEstadoPronto);
+  const std::uint32_t total = b.Mem().Ler32(po + kOffObjAmostrasTotal);
+  ASSERT_GT(total, 0u);
+  b.Play();
+  b.Avancar(std::min<std::uint32_t>(total, 4096));
+  EXPECT_GT(b.OMisturador().MedidaAcumulada().amostras_nao_nulas, 0u);
+  EXPECT_EQ(b.OMedia().PedidosRecusados(), 0u) << b.OMedia().UltimoMotivoDeRecusa();
+}
+
+TEST(Media, QcpMalformadoPorMmdBufferERecusadoComMotivo) {
+  Bancada b;
+  const std::uint32_t po = b.CriarMedia(kClsMediaQcp, 0x00100A00u);
+  ASSERT_NE(po, 0u);
+  b.ApontarParaObjeto(po);
+  b.PorFluxo({'R','I','F','F', 4,0,0,0, 'Q','L','C','M'});
+  EXPECT_EQ(b.DefinirDados(), static_cast<std::uint32_t>(kAeeParametroErrado));
+  EXPECT_EQ(b.Mem().Ler32(po + kOffObjAmostrasTotal), 0u);
+  EXPECT_NE(b.OMedia().UltimoMotivoDeRecusa().find("QCP"), std::string::npos);
 }
 
 // ---------------------------------------------------------------------------
@@ -689,7 +756,7 @@ TEST(Media, PlaySemDadosERecusado) {
 // PAR era o caso silencioso.
 TEST(Media, OBufferWavPcmRecebeAmostrasReais) {
   Bancada b;
-  const std::uint32_t po = b.CriarMedia(0x01005503u /* AEECLSID_MEDIAADPCM */, kPponovo);
+  const std::uint32_t po = b.CriarMedia(0x0100550au /* AEECLSID_MEDIAADPCM */, kPponovo);
   b.ApontarParaObjeto(po);
   const std::vector<std::uint8_t> wav = {
       'R','I','F','F', 38,0,0,0, 'W','A','V','E',
@@ -707,7 +774,7 @@ TEST(Media, OBufferWavPcmRecebeAmostrasReais) {
 
 TEST(Media, OBufferWavImaRecebeAmostrasDescodificadas) {
   Bancada b;
-  const std::uint32_t po = b.CriarMedia(0x01005503u /* AEECLSID_MEDIAADPCM */, kPponovo);
+  const std::uint32_t po = b.CriarMedia(0x0100550au /* AEECLSID_MEDIAADPCM */, kPponovo);
   b.ApontarParaObjeto(po);
   const std::vector<std::uint8_t> wav = {
       'R','I','F','F',45,0,0,0,'W','A','V','E','f','m','t',' ',20,0,0,0,

@@ -79,6 +79,7 @@ add_library(zb2_core STATIC
   core/brew/cheats.cpp
   core/audio/misturador.cpp
   core/audio/wav.cpp
+  core/audio/qcp.cpp
   core/audio/duracao.cpp
   core/video/rasterizador.cpp
   core/video/atitc.cpp
@@ -89,6 +90,11 @@ target_compile_options(zb2_core PRIVATE -Wall -Wextra)
 # importado e evita copiar uma biblioteca ou baixar artefatos num disco apertado.
 find_package(JPEG REQUIRED)
 target_link_libraries(zb2_core PRIVATE JPEG::JPEG)
+# QCP/PureVoice e descodificado em memoria pela API do FFmpeg. PkgConfig entrega
+# includes e as tres bibliotecas ABI que o decoder usa, sem subprocess ou ficheiro temporario.
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(ZB2_FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libavutil)
+target_link_libraries(zb2_core PRIVATE PkgConfig::ZB2_FFMPEG)
 # O SQLite e uma dependencia PRIVADA do motor: o cabecalho dele nao entra num
 # `-I` publico (`core/brew/sql.cpp` inclui-o pelo caminho, `third_party/...`),
 # logo nada fora do motor fica a saber que ha SQLite aqui dentro.

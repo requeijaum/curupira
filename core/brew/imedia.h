@@ -269,6 +269,9 @@ static_assert(kVtableDoMedia + kSlotsPorVtable <= 6000,
 // bytes e o caso normal -- nao um defeito do jogo. MEDIDO no `a3d`: o jogo abre
 // `a3d_sound_bgm_00.mp3`, cria um `AEECLSID_MEDIAMP3` e entrega-lhe o ficheiro
 // inteiro (150352 bytes; a segunda faixa, 85261). Ver `Media::DefinirDados`.
+constexpr std::uint32_t kClsMediaQcp = 0x01005503u;  // AEECLSID_MEDIAQCP
+static_assert(kClsMediaQcp == kClasseMultimidia + 3u,
+              "AEECLSID_MEDIAQCP = AEECLSID_MULTIMEDIA + 3 (AEEClassIDs.h)");
 constexpr std::uint32_t kClsMediaPcm = 0x01005511u;  // AEECLSID_MEDIAPCM
 static_assert(kClsMediaPcm == kClasseMultimidia + 17u,
               "AEECLSID_MEDIAPCM = AEECLSID_MULTIMEDIA + 17 (AEEClassIDs.h)");

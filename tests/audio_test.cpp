@@ -1,10 +1,17 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <cstdlib>
+#include <iterator>
+#include <cstring>
+#include <fstream>
+#include <string>
 #include <vector>
 
 #include "core/audio/misturador.h"
 #include "core/audio/wav.h"
+#include "core/audio/qcp.h"
 #include "core/audio/duracao.h"
 
 using zb2::audio::kLimitePcm16;
@@ -21,6 +28,53 @@ std::vector<std::int16_t> Onda(std::size_t quantas, std::int16_t amplitude) {
     v[k] = ((k % 4) < 2) ? amplitude : static_cast<std::int16_t>(-amplitude);
   }
   return v;
+}
+
+std::vector<std::uint8_t> QcpDoChessbotsMontado() {
+  std::string caminho;
+  if (const char* env = std::getenv("ZB2_CHESSBOTS_MOD")) caminho = env;
+  if (caminho.empty()) {
+    caminho = "/home/rafaelfrequiao/projects/zeebo-lab/games/brew/mod/263019/chessbots.mod";
+  }
+  std::ifstream arquivo(caminho, std::ios::binary);
+  if (!arquivo) return {};
+  const std::vector<std::uint8_t> modulo((std::istreambuf_iterator<char>(arquivo)),
+                                         std::istreambuf_iterator<char>());
+  const std::uint8_t marca[] = {'R','I','F','F', 0,0,0,0, 'Q','L','C','M'};
+  for (std::size_t p = 0; p + sizeof(marca) <= modulo.size(); ++p) {
+    if (std::memcmp(modulo.data() + p, marca, 4) != 0 ||
+        std::memcmp(modulo.data() + p + 8, marca + 8, 4) != 0) continue;
+    const std::uint32_t tamanho = std::uint32_t(modulo[p + 4]) |
+        (std::uint32_t(modulo[p + 5]) << 8) | (std::uint32_t(modulo[p + 6]) << 16) |
+        (std::uint32_t(modulo[p + 7]) << 24);
+    if (tamanho >= 4 && std::uint64_t(tamanho) + 8 <= modulo.size() - p) {
+      return {modulo.begin() + p, modulo.begin() + p + tamanho + 8};
+    }
+  }
+  return {};
+}
+
+TEST(Qcp, ChessbotsMontadoDecodificaQcelpParaPcm) {
+  // Le o recurso embutido no .mod montado. Nao ha fixture copiada, download,
+  // processo externo, nem ficheiro temporario: o decoder recebe estes bytes.
+  const auto bytes = QcpDoChessbotsMontado();
+  if (bytes.empty()) GTEST_SKIP() << "chessbots.mod montado nao encontrado; use ZB2_CHESSBOTS_MOD";
+  const auto som = zb2::audio::DescodificarQcp(bytes);
+  ASSERT_TRUE(som.ok()) << som.motivo;
+  EXPECT_EQ(som.codec, zb2::audio::CodecQcp::Qcelp);
+  EXPECT_EQ(som.taxa, 8000u);
+  EXPECT_EQ(som.canais, 1u);
+  ASSERT_FALSE(som.amostras.empty());
+  EXPECT_NE(std::count_if(som.amostras.begin(), som.amostras.end(),
+                          [](std::int16_t a) { return a != 0; }), 0);
+}
+
+TEST(Qcp, CabecalhoMalformadoDaMotivoSemPcm) {
+  const std::vector<std::uint8_t> bytes = {'R','I','F','F', 4,0,0,0, 'W','A','V','E'};
+  const auto som = zb2::audio::DescodificarQcp(bytes);
+  EXPECT_FALSE(som.ok());
+  EXPECT_FALSE(som.motivo.empty());
+  EXPECT_TRUE(som.amostras.empty());
 }
 
 TEST(Wav, IgnoraSufixoDepoisDoTamanhoDeclaradoNoRiff) {
