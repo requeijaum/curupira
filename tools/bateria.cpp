@@ -790,8 +790,10 @@ Estado Medir(const Titulo& t, const std::string& dir) {
                                 t.pasta + ": mif " + Hex(do_mif.clsid) +
                                     " <> corpus " + Hex(clsid_do_titulo));
     } else {
-      traco.RegistarPressuposto(Area::Carga, "clsid_do_mif",
-                                t.pasta + " confere com o corpus");
+      // Concordancia e evidencia, nao pressuposto: o CLSID que vai para r2
+      // permanece exactamente o mesmo candidato anunciado pelo MIF.
+      traco.Emitir(Area::Carga, Nivel::Informacao, "CLSID_MIF_CONFERE",
+                   t.pasta + ": " + Hex(do_mif.clsid) + " confere com o corpus");
     }
     clsid_do_titulo = do_mif.clsid;
   } else {
