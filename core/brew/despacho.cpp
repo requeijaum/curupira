@@ -17,6 +17,7 @@
 #include "core/brew/formato.h"
 #include "core/brew/imedia.h"
 #include "core/brew/md5ctx.h"
+#include "core/brew/inetmgr.h"
 #include "tools/clsids.inc"
 // O `Inflar` (RFC1950) dos `.pkg` -- REUSADO, e nao copiado: core/carga e de
 // outro agente, e so se le daqui. O gzip (RFC1952) dos `.bar` e tratado neste
@@ -2371,6 +2372,7 @@ void Despacho::InstalarAjudantes(const Saidas& saidas, Endereco tabela) {
   // construcao do sistema, e nao num sitio que a bateria tenha de chamar --
   // `tools/bateria.cpp` e partilhado e esta frente nao o altera.
   ConstruirClasses(mem_, saidas, traco_);
+  ConstruirNetMgr(mem_, saidas, traco_);
 
   // A TELA DO MOTOR DO IGLES11 (frente tela). O `ConstruirIgles` -- chamado
   // por `ConstruirClasses` acima -- RECONSTROI o motor do IGLES11 por corrida
@@ -2992,6 +2994,8 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
       } else if (AtenderMd5Ctx(cpu, idx, traco_)) {
         // IHashCtx/MD5Ctx: caller-owned 88-byte contexts.  Must precede the
         // broad IShell fallback, or its slots would be named as IShell slots.
+      } else if (AtenderNetMgr(cpu, idx, traco_)) {
+        // INetMgr: explicit named refusals; it has no QueryInterface slot.
       } else if (AtenderClasse(cpu, idx, traco_)) {
         // AS CLASSES CONHECIDAS (`core/brew/classes.h`). ESTE RAMO VEM ANTES DO
         // `idx >= kBaseDoShell`, e nao e gosto: os indices desta faixa sao 40000+
@@ -3061,6 +3065,7 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         else if (iid == kClsidUnzipStream) devolver = kObjUnzip;
         else if (iid == kClsidMemAStream) devolver = kObjMemStream;
         else if (iid == brew_clsids::kClsid_MD5Ctx) devolver = zb2::brew::kObjetoMd5Ctx;
+        else if (iid == zb2::brew::kAeeClsidNet) devolver = zb2::brew::kObjetoNetMgr;
         // OS DOIS CLSIDs DO Z-WHEEL (frente zclsid): cada um recebe o objecto da
         // SUA interface. Este ramo vem ANTES do dos genericos, e nao e gosto: o
         // `0x01000000` e tambem o `AEECLSID_PRIV` (a base de toda a familia), e um
