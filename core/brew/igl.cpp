@@ -1803,12 +1803,30 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
       mem_.Escrever32(destino, valor);
       return feito_com(2, "valor do estado do motor escrito na memoria do guest");
     }
-    case kIgl_GetString:
-      // A STRING E UMA AFIRMACAO SOBRE O HARDWARE. Devolver "ATI" ou uma lista de
-      // extensoes que nao foram medidas seria inventar -- e ha um caso medido na
-      // arvore antiga (o `ddragonz` mete o resultado do `eglQueryString` num
-      // `strstr` sem testar o nulo) que torna isto uma armadilha. Recusa-se.
-      return recusa("sem medida do que a maquina responde (glGetString)");
+    case kIgl_GetString: {
+      // `glGetString` descreve A IMPLEMENTACAO actual. Nao fingimos a Adreno do
+      // aparelho: estas strings identificam o Curupira e a lista de extensoes e
+      // vazia porque nao anunciamos uma funcao que o rasterizador nao tenha.
+      // O retorno precisa permanecer legivel pelo guest apos a chamada, por isso
+      // vive num trecho reservado do objecto IGL, abaixo do IEGL (0x800b1000).
+      constexpr std::uint32_t kBaseDasStrings = kObjIgl + 0x200u;
+      const char* texto = nullptr;
+      std::uint32_t destino = 0;
+      switch (a.reg[0]) {
+        case GL_VENDOR:     texto = "Curupira";                     destino = kBaseDasStrings; break;
+        case GL_RENDERER:   texto = "Curupira software rasterizer"; destino = kBaseDasStrings + 0x40u; break;
+        case GL_VERSION:    texto = "OpenGL ES-CM 1.0";             destino = kBaseDasStrings + 0x80u; break;
+        case GL_EXTENSIONS: texto = "";                             destino = kBaseDasStrings + 0xc0u; break;
+        default: return recusa("nome de glGetString nao reconhecido");
+      }
+      for (std::uint32_t i = 0;; ++i) {
+        const std::uint8_t byte = static_cast<std::uint8_t>(texto[i]);
+        mem_.Escrever8(destino + i, byte);
+        if (byte == 0) break;
+      }
+      if (retorno != nullptr) *retorno = destino;
+      return feito_com(1, "string estatica da implementacao escrita no guest");
+    }
     case kIgl_ReadPixels:
       // O framebuffer agora EXISTE (a Tela), mas a `core/brew/tela.h` nao expoe
       // nenhuma leitura de pixel: `Escritos()`, `CoresDistintas()` e

@@ -499,12 +499,25 @@ TEST(RegistoGl, ClearAcumulaODizESemTelaRecusa) {
   EXPECT_EQ(b.igl.Executar(kIgl_Clear, Args(0), nullptr), ResultadoGl::Recusado);
 }
 
-TEST(RegistoGl, GetStringRecusaEmVezDeInventar) {
+TEST(RegistoGl, GetStringDescreveOMotorSemInventarOHardware) {
   Banco b;
-  // A string de vendor/renderer e uma AFIRMACAO SOBRE O HARDWARE. Sem uma
-  // medicao do que a maquina responde, inventa-la seria uma linha de log que nao
-  // pode ser verdadeira (P7).
-  EXPECT_EQ(b.igl.Executar(kIgl_GetString, Args(GL_VENDOR), nullptr), ResultadoGl::Recusado);
+  // Vendor/renderer/version sao definidos pela IMPLEMENTACAO. Eles descrevem o
+  // Curupira, nao fingem a resposta de uma Adreno real. Extensoes vazias tambem
+  // sao uma lista valida: esta arvore nao anuncia capacidade ausente.
+  auto ler = [&](std::uint32_t p) {
+    std::string texto;
+    for (;; ++p) { const std::uint8_t c = b.mem.Ler8(p); if (c == 0) return texto; texto += char(c); }
+  };
+  std::uint32_t ret = 0;
+  EXPECT_EQ(b.igl.Executar(kIgl_GetString, Args(GL_VENDOR), &ret), ResultadoGl::Feito);
+  EXPECT_NE(ret, 0u);
+  EXPECT_EQ(ler(ret), "Curupira");
+  EXPECT_EQ(b.igl.Executar(kIgl_GetString, Args(GL_RENDERER), &ret), ResultadoGl::Feito);
+  EXPECT_EQ(ler(ret), "Curupira software rasterizer");
+  EXPECT_EQ(b.igl.Executar(kIgl_GetString, Args(GL_VERSION), &ret), ResultadoGl::Feito);
+  EXPECT_EQ(ler(ret), "OpenGL ES-CM 1.0");
+  EXPECT_EQ(b.igl.Executar(kIgl_GetString, Args(GL_EXTENSIONS), &ret), ResultadoGl::Feito);
+  EXPECT_EQ(ler(ret), "");
 }
 
 TEST(RegistoGl, GetErrorDevolveZeroEDiLo) {
