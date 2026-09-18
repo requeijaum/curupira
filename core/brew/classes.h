@@ -282,6 +282,13 @@ constexpr std::uint32_t kVtableForceFeedJpeg = 40530u;
 constexpr std::uint32_t kVtableJpegDecoder = 40540u;
 constexpr std::uint32_t kObjetoJpegDecoder = 0x8F010300u;
 
+// IWeb (AEECLSID_Web, 0x01005000): a tabela medida tem 13 slots. Ela fica
+// fora da faixa das classes (40000..40223) e depois do IHashCtx (41200..41206),
+// pois aumentar kQuantasClasses invadiria a vtable do IGLES11 em 40300.
+constexpr std::uint32_t kVtableWeb = 41300u;
+constexpr std::uint32_t kWebSlots = 13u;
+constexpr std::uint32_t kObjetoWeb = 0x8F251000u;
+
 // A BANDA DOS PIXELS DESCODIFICADOS. `0x8F300000`: dentro da faixa 0x8F000000 que
 // a bateria inteira ja provou que o corpus nao toca (o comentario do 0x800C0000
 // no topo deste ficheiro), ACIMA do pool das pilhas das threads (0x8F030000 +

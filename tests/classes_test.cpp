@@ -1435,5 +1435,54 @@ TEST(Classes, JPEGDecoderEUmImageDecoderComForceFeedProprio) {
   EXPECT_EQ(b.M().Ler32(kObjetoForceFeedJpeg), b.S().Endereco(kVtableForceFeedJpeg));
 }
 
+// O allstarcards cria IWeb e monta no stack um vector xOpt terminado por
+// XOPT_END. O guest le a entrada 3 da vtable, logo o teste executa essas
+// leituras em ARM em vez de chamar o handler pelo indice interno.
+TEST(Classes, IWebCriaEAddOptLeOVectorDoStackPelaVtable) {
+  BancadaDoDespacho b;
+  b.M().Escrever32(kCelulaDoTeste, 0xDEADBEEFu);
+  b.ChamaSaida(kBaseDoShell + 2, kObjShell, brew_clsids::kClsid_Web, kCelulaDoTeste);
+  ASSERT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
+  const std::uint32_t web = b.M().Ler32(kCelulaDoTeste);
+  ASSERT_EQ(web, kObjetoWeb);
+  const std::uint32_t vtable = b.M().Ler32(web);
+  ASSERT_EQ(vtable, b.S().Endereco(kVtableWeb));
+  ASSERT_EQ(b.M().Ler32(vtable + 3u * 4u), b.S().Endereco(kVtableWeb + 3u));
+  // A cabeça IBase da faixa própria tem lifecycle, não uma recusa genérica.
+  b.ChamaSaida(kVtableWeb, web);
+  EXPECT_EQ(b.Cpu().Get(kR0), 2u);
+  b.ChamaSaida(kVtableWeb + 1u, web);
+  EXPECT_EQ(b.Cpu().Get(kR0), 1u);
+
+  // sub sp,#24; escreve {CONNECTTIMEOUT,10000,FLAGS,0x21,XOPT_END,0};
+  // r1=sp; ldr ip,[vtable,#12]; bx ip; guarda o retorno em kCelulaDoTeste2.
+  const std::uint32_t codigo[] = {
+      0xe24dd018u, 0xe59f1054u, 0xe58d1000u, 0xe59f1050u, 0xe58d1004u,
+      0xe59f104cu, 0xe58d1008u, 0xe59f1048u, 0xe58d100cu, 0xe59f1044u,
+      0xe58d1010u, 0xe59f1040u, 0xe58d1014u, 0xe1a0100du, 0xe5902000u,
+      0xe592c00cu, 0xe1a0e00fu, 0xe12fff1cu, 0xe5830000u, 0xe28dd018u,
+      0xe59fe004u, 0xe12fff1eu, 0xe1a00000u, kSentinelaDoTeste,
+      0x00020005u, 10000u, 0x00020001u, 0x21u, 0u, 0u,
+  };
+  b.EscreveCodigo(kRotinaDeInicio, codigo, sizeof(codigo) / sizeof(codigo[0]));
+  b.M().Escrever32(kCelulaDoTeste2, 0xDEADBEEFu);
+  b.Cpu().Set(kR0, web);
+  b.Cpu().Set(kR3, kCelulaDoTeste2);
+  b.Cpu().Set(kPC, kRotinaDeInicio);
+  b.Cpu().Set(kLR, kSentinelaDoTeste);
+  EXPECT_EQ(b.D().Correr(b.Cpu(), 1000, kPpObjDoTeste).motivo, "retornou");
+  EXPECT_EQ(b.M().Ler32(kCelulaDoTeste2), kAeeSuccess);
+  EXPECT_EQ(b.Faltas("IWeb::AddOpt"), 0u);
+
+  // Sem backend HTTP: o GetResponse da vtable continua uma recusa e nao chama
+  // callback algum.
+  b.ChamaSaida(kVtableWeb + 11u, web, kCelulaDoTeste, kCelulaDoTeste2, 0x00001000u);
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("IWeb::GetResponse"), 1u);
+  b.ChamaSaida(kVtableWeb + 12u, web);
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeUnsupported);
+  EXPECT_EQ(b.Faltas("IWeb::slot12"), 1u);
+}
+
 }  // namespace
 }  // namespace zb2::brew

@@ -233,6 +233,7 @@ const char* NomeDoSlotDaClasse(std::uint32_t k, std::uint32_t slot) {
 
 std::uint32_t ObjetoDoClsid(std::uint32_t clsid) {
   if (clsid == brew_clsids::kClsid_JPEGDECODER_BREW) return kObjetoJpegDecoder;
+  if (clsid == brew_clsids::kClsid_Web) return kObjetoWeb;
   const std::uint32_t k = IndiceDaClasse(clsid);
   return k < kQuantasClasses ? ObjetoDaClasse(k) : 0;
 }
@@ -643,6 +644,16 @@ void ConstruirClasses(Memoria& mem, const Saidas& saidas, Traco& traco) {
   ReporEstadoThreads();
   ConstruirIgles(mem, saidas, traco);
   ConstruirMd5Ctx(mem, saidas, traco);
+  // IWeb e uma vtable propria: a proxima Classe ocuparia 40320 e pisaria o
+  // IGLES11 (40300..40447). A cabeça e comum: slots 0/1 vao para o ciclo de
+  // vida IBase do despacho; os 11 restantes conservam enderecos distintos.
+  ConstruirObjeto(mem, saidas, kObjetoWeb, saidas.Endereco(kVtableWeb), kWebSlots,
+                  kVtableWeb);
+  if (mem.Ler32(kObjetoWeb) != saidas.Endereco(kVtableWeb) ||
+      mem.Ler32(saidas.Endereco(kVtableWeb) + 3u * 4u) != saidas.Endereco(kVtableWeb + 3u)) {
+    traco.RegistarFalta(Area::Brew, "web_cablagem_perdida",
+                        "IWeb sem objecto ou slot AddOpt cablado");
+  }
   for (std::uint32_t k = 0; k < kQuantasClasses; ++k) {
     const std::uint32_t quantos = kSlotsDaInterface[k];
     if (quantos == 0 || quantos > kSlotsDaClasse) {
@@ -2074,6 +2085,74 @@ bool AtenderForceFeedJpeg(ICpu& cpu, Traco& traco, std::uint32_t slot) {
 }  // namespace
 
 bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
+  // IWeb tem faixa propria. Nao entra em Classe: a proxima fatia de 32 slots
+  // pisaria o IGLES11. So AddOpt (slot 3) foi medido no allstarcards.
+  if (indice >= kVtableWeb && indice < kVtableWeb + kWebSlots) {
+    const std::uint32_t slot = indice - kVtableWeb;
+    static const char* const nomes[kWebSlots] = {
+        "AddRef", "Release", "QueryInterface", "AddOpt", "RemoveOpt", "GetOpt",
+        "slot6", "slot7", "slot8", "slot9", "slot10", "GetResponse", "slot12",
+    };
+    if (slot == 0 || slot == 1) {
+      // IBase: esta vtable fica fora de Classe, portanto nao chega ao ciclo
+      // generico. A contagem pertence ao proprio objeto IWeb.
+      Memoria& mem = cpu.Mem();
+      std::uint32_t refs = mem.Ler32(kObjetoWeb + 4u);
+      if (slot == 0) {
+        if (refs != 0xffffffffu) ++refs;
+      } else if (refs != 0) {
+        --refs;
+      }
+      mem.Escrever32(kObjetoWeb + 4u, refs);
+      cpu.Set(kR0, refs);
+      return true;
+    }
+    if (slot == 3) {
+      // `int AddOpt(IWeb *po, xOpt *apItems)`. xOpt e exactamente dois u32:
+      // nId seguido de pVal. CONNECTTIMEOUT e FLAGS sao XOPT_32BIT, portanto
+      // pVal e o proprio valor de 32 bits, nao um ponteiro para o valor.
+      const std::uint32_t itens = cpu.Get(kR1);
+      Memoria& mem = cpu.Mem();
+      if (itens == 0 || !mem.Existe(itens)) {
+        traco.RegistarFalta(Area::Brew, "IWeb::AddOpt", "vector xOpt nulo ou nao mapeado");
+        cpu.Set(kR0, kAeeBadParm);
+        return true;
+      }
+      constexpr std::uint32_t kWebOptFlags = 0x00020001u;
+      constexpr std::uint32_t kWebOptConnectTimeout = 0x00020005u;
+      constexpr std::uint32_t kMaximosXopts = 16u;
+      for (std::uint32_t k = 0; k < kMaximosXopts; ++k) {
+        const std::uint32_t onde = itens + k * 8u;
+        if (!mem.Existe(onde) || !mem.Existe(onde + 7u)) {
+          traco.RegistarFalta(Area::Brew, "IWeb::AddOpt", "vector xOpt sem XOPT_END mapeado");
+          cpu.Set(kR0, kAeeBadParm);
+          return true;
+        }
+        const std::uint32_t id = mem.Ler32(onde);
+        if (id == 0) {
+          cpu.Set(kR0, kAeeSuccess);
+          return true;
+        }
+        if (id != kWebOptConnectTimeout && id != kWebOptFlags) {
+          char detalhe[96];
+          std::snprintf(detalhe, sizeof(detalhe), "xOpt desconhecido 0x%08x", id);
+          traco.RegistarFalta(Area::Brew, "IWeb::AddOpt", detalhe);
+          cpu.Set(kR0, kAeeUnsupported);
+          return true;
+        }
+      }
+      traco.RegistarFalta(Area::Brew, "IWeb::AddOpt", "vector xOpt sem XOPT_END (limite 16)");
+      cpu.Set(kR0, kAeeBadParm);
+      return true;
+    }
+    char detalhe[160];
+    std::snprintf(detalhe, sizeof(detalhe),
+                  "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x lr=0x%08x",
+                  cpu.Get(kR0), cpu.Get(kR1), cpu.Get(kR2), cpu.Get(kR3), cpu.Get(kLR));
+    traco.RegistarFalta(Area::Brew, std::string("IWeb::") + nomes[slot], detalhe);
+    cpu.Set(kR0, kAeeUnsupported);
+    return true;
+  }
   if (indice >= kVtableJpegDecoder && indice < kVtableJpegDecoder + brew_slots::kImageDecoderSlots)
     return AtenderDecodificadorJpeg(cpu, traco, indice - kVtableJpegDecoder);
   if (indice >= kVtableForceFeedJpeg && indice < kVtableForceFeedJpeg + kForceFeedSlots)
