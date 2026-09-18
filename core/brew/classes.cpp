@@ -14,6 +14,7 @@
 // O DESCODIFICADOR PNG (frente imgdec): `core/carga/png.h`, na pasta dos
 // descodificadores de contentor (inflate, pack, bar).
 #include "core/carga/png.h"
+#include "core/carga/jpeg.h"
 #include "core/brew/ecra.h"
 #include "core/brew/egl.h"   // NomeDoIidDaFamiliaGl + kIidEgl10/11
 #include "core/brew/igl.h"
@@ -231,6 +232,7 @@ const char* NomeDoSlotDaClasse(std::uint32_t k, std::uint32_t slot) {
 }
 
 std::uint32_t ObjetoDoClsid(std::uint32_t clsid) {
+  if (clsid == brew_clsids::kClsid_JPEGDECODER_BREW) return kObjetoJpegDecoder;
   const std::uint32_t k = IndiceDaClasse(clsid);
   return k < kQuantasClasses ? ObjetoDaClasse(k) : 0;
 }
@@ -634,6 +636,7 @@ void ConstruirClasses(Memoria& mem, const Saidas& saidas, Traco& traco) {
   // O DESCODIFICADOR PNG tambem e POR CORRIDA: o fluxo que um titulo escreveu
   // nao pode ser a imagem de outro (o mesmo motivo do `ReporEstadoThreads`).
   ReporEstadoDoPng();
+  ReporEstadoDoJpeg();
   // O ESTADO DAS THREADS TAMBEM E POR CORRIDA. Sem isto, a segunda Bancada de
   // um teste (ou o segundo titulo da bateria) via a thread da primeira: o
   // `Start` respondia EALREADY a quem nao tinha iniciado nada.
@@ -720,6 +723,26 @@ void ConstruirClasses(Memoria& mem, const Saidas& saidas, Traco& traco) {
       traco.RegistarFalta(Area::Brew, "classes_da_brewm_cablagem_perdida",
                           "IForceFeed do descodificador PNG sem vtable cablada");
     }
+  }
+
+  // JPEG tem o mesmo contrato IImageDecoder/IForceFeed do SDK, mas vtables,
+  // objeto e fluxo separados do PNG. Assim dois decoders coexistem sem cruzar
+  // bytes nem referencias.
+  ConstruirObjeto(mem, saidas, kObjetoJpegDecoder, saidas.Endereco(kVtableJpegDecoder),
+                  brew_slots::kImageDecoderSlots, kVtableJpegDecoder);
+  ConstruirObjeto(mem, saidas, kObjetoForceFeedJpeg, saidas.Endereco(kVtableForceFeedJpeg),
+                  kForceFeedSlots, kVtableForceFeedJpeg);
+  {
+    const std::uint32_t vt_dec = saidas.Endereco(kVtableJpegDecoder);
+    const std::uint32_t vt_feed = saidas.Endereco(kVtableForceFeedJpeg);
+    bool ok = mem.Ler32(kObjetoJpegDecoder) == vt_dec &&
+              mem.Ler32(kObjetoForceFeedJpeg) == vt_feed;
+    for (std::uint32_t s = 2; s < brew_slots::kImageDecoderSlots && ok; ++s)
+      ok = mem.Ler32(vt_dec + s * 4) == saidas.Endereco(kVtableJpegDecoder + s);
+    for (std::uint32_t s = 2; s < kForceFeedSlots && ok; ++s)
+      ok = mem.Ler32(vt_feed + s * 4) == saidas.Endereco(kVtableForceFeedJpeg + s);
+    if (!ok) traco.RegistarFalta(Area::Brew, "classes_da_brewm_cablagem_perdida",
+                                 "JPEG IImageDecoder/IForceFeed sem vtables cabladas");
   }
 
   // AS SETE EXTENSOES QUALCOMM (frente qualcomm): CINCO objectos para SETE
@@ -1495,6 +1518,18 @@ void ReporEstadoDoPng() {
 }
 
 namespace {
+std::vector<std::uint8_t> g_jpeg_fluxo;
+zb2::ImagemPng g_jpeg_imagem;
+bool g_jpeg_tem_imagem = false;
+}
+
+void ReporEstadoDoJpeg() {
+  g_jpeg_fluxo.clear();
+  g_jpeg_imagem = zb2::ImagemPng{};
+  g_jpeg_tem_imagem = false;
+}
+
+namespace {
 
 // O BITMAP DO DESCODIFICADOR: um IDIB novo, com o cabecalho PUBLICO escrito
 // campo a campo (`CamposDoIdib`, transcrito de `AEEIDIB.h:42-55`) e os pixels
@@ -1928,9 +1963,121 @@ bool AtenderForceFeed(ICpu& cpu, Traco& traco, std::uint32_t slot) {
   return false;
 }
 
+// JPEG: o formato nao carrega alfa; GetRop portanto e sempre COPY. A busca do
+// SOI nos primeiros 64 bytes aceita AEEResBlob sem tratar qualquer prefixo como
+// imagem e recusa o que nao for JPEG em vez de delegar uma heuristica ao libjpeg.
+bool DescodificarOFluxoJpeg(Traco& traco, std::string* motivo) {
+  if (g_jpeg_tem_imagem) return true;
+  if (g_jpeg_fluxo.empty()) {
+    *motivo = "fluxo vazio: nenhum IForceFeed::Write antes deste pedido";
+    return false;
+  }
+  std::size_t inicio = 0;
+  bool achou = false;
+  const std::size_t limite = std::min<std::size_t>(64u, g_jpeg_fluxo.size());
+  for (std::size_t k = 0; k <= limite; ++k) {
+    if (k + 3u > g_jpeg_fluxo.size()) break;
+    if (g_jpeg_fluxo[k] == 0xffu && g_jpeg_fluxo[k + 1u] == 0xd8u &&
+        g_jpeg_fluxo[k + 2u] == 0xffu) {
+      inicio = k;
+      achou = true;
+      break;
+    }
+  }
+  if (!achou) {
+    *motivo = "fluxo de " + std::to_string(g_jpeg_fluxo.size()) +
+              " bytes sem JPEG SOI nos primeiros 64; primeiros=[" +
+              BytesEmHexCurto(g_jpeg_fluxo.data(), std::min<std::size_t>(8u, g_jpeg_fluxo.size())) + "]";
+    return false;
+  }
+  zb2::ImagemJpeg cru;
+  std::string porque;
+  if (!zb2::DescodificarJpeg(g_jpeg_fluxo.data() + inicio, g_jpeg_fluxo.size() - inicio, &cru, &porque)) {
+    *motivo = "fluxo de " + std::to_string(g_jpeg_fluxo.size()) + " bytes (SOI +" +
+              std::to_string(inicio) + "): " + porque;
+    return false;
+  }
+  g_jpeg_imagem.largura = cru.largura;
+  g_jpeg_imagem.altura = cru.altura;
+  g_jpeg_imagem.tem_alpha = false;
+  g_jpeg_imagem.pixels = std::move(cru.pixels);
+  g_jpeg_tem_imagem = true;
+  traco.Emitir(Area::Brew, Nivel::Depuracao, "JPEG_DESCODIFICADOR",
+               "descodificados " + std::to_string(g_jpeg_fluxo.size()) + " bytes em " +
+                   std::to_string(g_jpeg_imagem.largura) + "x" +
+                   std::to_string(g_jpeg_imagem.altura) + " RGB565 opaco" +
+                   (inicio == 0 ? "" : " (SOI +" + std::to_string(inicio) + ")"));
+  return true;
+}
+
+bool AtenderDecodificadorJpeg(ICpu& cpu, Traco& traco, std::uint32_t slot) {
+  Memoria& mem = cpu.Mem();
+  if (slot == brew_slots::kImageDecoder_AddRef) {
+    const std::uint32_t n = mem.Ler32(kObjetoJpegDecoder + 4) + 1;
+    mem.Escrever32(kObjetoJpegDecoder + 4, n); cpu.Set(kR0, n); return true;
+  }
+  if (slot == brew_slots::kImageDecoder_Release) {
+    const std::uint32_t n = mem.Ler32(kObjetoJpegDecoder + 4);
+    if (n == 0) { traco.RegistarFalta(Area::Brew, "IImageDecoder::Release", "Release JPEG com contagem zero"); cpu.Set(kR0, kAeeUnsupported); return true; }
+    mem.Escrever32(kObjetoJpegDecoder + 4, n - 1); cpu.Set(kR0, n - 1); return true;
+  }
+  if (slot == brew_slots::kImageDecoder_QueryInterface) {
+    const std::uint32_t iid = cpu.Get(kR1), ppo = cpu.Get(kR2);
+    if (ppo == 0) { traco.RegistarFalta(Area::Brew, "IImageDecoder::QueryInterface", "ppObj nulo"); cpu.Set(kR0, kAeeBadParm); return true; }
+    if (iid == kIidImageDecoder) mem.Escrever32(ppo, kObjetoJpegDecoder);
+    else if (iid == kIidForceFeed) mem.Escrever32(ppo, kObjetoForceFeedJpeg);
+    else { mem.Escrever32(ppo, 0); traco.RegistarFalta(Area::Brew, "IImageDecoder::QueryInterface", "iid sem objecto no JPEG"); cpu.Set(kR0, kAeeUnsupported); return true; }
+    cpu.Set(kR0, kAeeSuccess); return true;
+  }
+  if (slot == brew_slots::kImageDecoder_GetBitmap) {
+    const std::uint32_t ppi = cpu.Get(kR1);
+    if (ppi == 0) { traco.RegistarFalta(Area::Brew, "IImageDecoder::GetBitmap", "ppiBitmap nulo"); cpu.Set(kR0, kAeeBadParm); return true; }
+    mem.Escrever32(ppi, 0);
+    std::string motivo;
+    if (!DescodificarOFluxoJpeg(traco, &motivo)) { traco.RegistarFalta(Area::Brew, "IImageDecoder::GetBitmap", motivo); cpu.Set(kR0, kAeeFailed); return true; }
+    std::uint32_t bitmap = 0;
+    if (!CriarDibDoPng(mem, traco, g_jpeg_imagem, &bitmap)) { cpu.Set(kR0, kAeeNoMemory); return true; }
+    mem.Escrever32(ppi, bitmap); cpu.Set(kR0, kAeeSuccess); return true;
+  }
+  if (slot == brew_slots::kImageDecoder_GetRop) { cpu.Set(kR0, kRasterOpCopy); return true; }
+  return false;
+}
+
+bool AtenderForceFeedJpeg(ICpu& cpu, Traco& traco, std::uint32_t slot) {
+  Memoria& mem = cpu.Mem();
+  if (slot == brew_slots::kForceFeed_AddRef) { const std::uint32_t n = mem.Ler32(kObjetoForceFeedJpeg + 4) + 1; mem.Escrever32(kObjetoForceFeedJpeg + 4, n); cpu.Set(kR0, n); return true; }
+  if (slot == brew_slots::kForceFeed_Release) {
+    const std::uint32_t n = mem.Ler32(kObjetoForceFeedJpeg + 4);
+    if (n == 0) { traco.RegistarFalta(Area::Brew, "IForceFeed::Release", "Release JPEG com contagem zero"); cpu.Set(kR0, kAeeUnsupported); return true; }
+    mem.Escrever32(kObjetoForceFeedJpeg + 4, n - 1); cpu.Set(kR0, n - 1); return true;
+  }
+  if (slot == brew_slots::kForceFeed_QueryInterface) {
+    const std::uint32_t iid = cpu.Get(kR1), ppo = cpu.Get(kR2);
+    if (ppo == 0) { traco.RegistarFalta(Area::Brew, "IForceFeed::QueryInterface", "ppObj nulo"); cpu.Set(kR0, kAeeBadParm); return true; }
+    if (iid == kIidForceFeed) mem.Escrever32(ppo, kObjetoForceFeedJpeg);
+    else if (iid == kIidImageDecoder) mem.Escrever32(ppo, kObjetoJpegDecoder);
+    else { mem.Escrever32(ppo, 0); traco.RegistarFalta(Area::Brew, "IForceFeed::QueryInterface", "iid sem objecto no JPEG"); cpu.Set(kR0, kAeeUnsupported); return true; }
+    cpu.Set(kR0, kAeeSuccess); return true;
+  }
+  if (slot == brew_slots::kForceFeed_Write) {
+    const std::uint32_t pbuf = cpu.Get(kR1); const std::int32_t cb = static_cast<std::int32_t>(cpu.Get(kR2));
+    if (pbuf == 0 || cb <= 0) { cpu.Set(kR0, kAeeSuccess); return true; }
+    if (static_cast<std::uint32_t>(cb) > kMaximoDoFluxo - g_jpeg_fluxo.size()) { traco.RegistarFalta(Area::Brew, "IForceFeed::Write", "JPEG excede limite de 4 MiB"); cpu.Set(kR0, kAeeNoMemory); return true; }
+    const std::size_t antes = g_jpeg_fluxo.size(); g_jpeg_fluxo.resize(antes + static_cast<std::size_t>(cb));
+    mem.LerBloco(pbuf, g_jpeg_fluxo.data() + antes, static_cast<std::uint32_t>(cb));
+    g_jpeg_tem_imagem = false; g_jpeg_imagem = zb2::ImagemPng{}; cpu.Set(kR0, kAeeSuccess); return true;
+  }
+  if (slot == brew_slots::kForceFeed_Reset) { ReporEstadoDoJpeg(); return true; }
+  return false;
+}
+
 }  // namespace
 
 bool AtenderClasse(ICpu& cpu, std::uint32_t indice, Traco& traco) {
+  if (indice >= kVtableJpegDecoder && indice < kVtableJpegDecoder + brew_slots::kImageDecoderSlots)
+    return AtenderDecodificadorJpeg(cpu, traco, indice - kVtableJpegDecoder);
+  if (indice >= kVtableForceFeedJpeg && indice < kVtableForceFeedJpeg + kForceFeedSlots)
+    return AtenderForceFeedJpeg(cpu, traco, indice - kVtableForceFeedJpeg);
   // O `IForceFeed` DO DESCODIFICADOR PNG -- a SEGUNDA interface do mesmo objecto,
   // com vtable propria (40520, ver `classes.h`). Este ramo vem ANTES da guarda da
   // faixa das classes porque 40520 esta acima do fim da tabela das sete classes

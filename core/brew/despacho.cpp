@@ -1344,7 +1344,8 @@ bool Despacho::ClasseConhecida(std::uint32_t cls) const {
   // esteve fora desta lista e o `QueryClass` respondia FALSE para ele, em
   // contradicao com o `CreateInstance` que o servia.
   const bool e_o_titulo = (tem_clsid_ && cls == clsid_titulo_);
-  const bool e_classe_servida = (IndiceDaClasse(cls) < kQuantasClasses);
+  const bool e_classe_servida = (IndiceDaClasse(cls) < kQuantasClasses) ||
+                                cls == brew_clsids::kClsid_JPEGDECODER_BREW;
   return cls == kIidDisplay || cls == 0x010127d4u || cls == kIidFileMgr || cls == kIidHeap ||
          cls == kIidSound || cls == kIidGraphics || cls == kIidRootForm ||
          cls == kIidHid || cls == kIidSqlMgr || cls == kClsidMemAStream ||

@@ -275,6 +275,12 @@ static_assert(brew_slots::kForceFeedSlots == 5, "o IForceFeed tem 5 slots (IQI 3
 // para 532 502 leituras recusadas, e com este endereco volta a 532 503. Uma
 // pagina que a corrida ja escreve nao acrescenta nada ao mapa.
 constexpr std::uint32_t kObjetoForceFeed = 0x8F010100u;
+// JPEG usa objecto e vtable distintos do PNG: duas instancias podem coexistir,
+// e um Write num formato nao pode contaminar o fluxo do outro.
+constexpr std::uint32_t kObjetoForceFeedJpeg = 0x8F010200u;
+constexpr std::uint32_t kVtableForceFeedJpeg = 40530u;
+constexpr std::uint32_t kVtableJpegDecoder = 40540u;
+constexpr std::uint32_t kObjetoJpegDecoder = 0x8F010300u;
 
 // A BANDA DOS PIXELS DESCODIFICADOS. `0x8F300000`: dentro da faixa 0x8F000000 que
 // a bateria inteira ja provou que o corpus nao toca (o comentario do 0x800C0000
@@ -358,6 +364,7 @@ void ReporEstadoTextCtl();
 // `ConstruirClasses`, como o `ReporEstadoTextCtl`: sem isto, o fluxo de um titulo
 // seria a imagem do titulo seguinte.
 void ReporEstadoDoPng();
+void ReporEstadoDoJpeg();
 
 // --- O IThread cooperativo ---------------------------------------------------
 //

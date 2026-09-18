@@ -1415,5 +1415,25 @@ TEST(Classes, AFonteServeMetricasERecusaDesenhoComNome) {
   EXPECT_EQ(b.Faltas("IFont::DrawText"), 1u);
 }
 
+TEST(Classes, JPEGDecoderEUmImageDecoderComForceFeedProprio) {
+  BancadaDoDespacho b;
+  const std::uint32_t clsid = brew_clsids::kClsid_JPEGDECODER_BREW;
+  // Zumar para precisamente no CreateInstance. Esta chamada pelo slot real do
+  // IShell garante que o CLSID nao vira apenas uma funcao unitária isolada.
+  b.M().Escrever32(kCelulaDoTeste, 0xDEADBEEFu);
+  b.ChamaSaida(2002, 0x80020000u, clsid, kCelulaDoTeste);
+  ASSERT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
+  const std::uint32_t jpeg = b.M().Ler32(kCelulaDoTeste);
+  ASSERT_EQ(jpeg, kObjetoJpegDecoder);
+  EXPECT_EQ(b.M().Ler32(jpeg), b.S().Endereco(kVtableJpegDecoder));
+
+  b.M().Escrever32(kCelulaDoTeste2, 0u);
+  b.ChamaSaida(kVtableJpegDecoder + brew_slots::kImageDecoder_QueryInterface, jpeg,
+               kIidForceFeed, kCelulaDoTeste2);
+  EXPECT_EQ(b.Cpu().Get(kR0), kAeeSuccess);
+  EXPECT_EQ(b.M().Ler32(kCelulaDoTeste2), kObjetoForceFeedJpeg);
+  EXPECT_EQ(b.M().Ler32(kObjetoForceFeedJpeg), b.S().Endereco(kVtableForceFeedJpeg));
+}
+
 }  // namespace
 }  // namespace zb2::brew

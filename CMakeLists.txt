@@ -50,6 +50,7 @@ add_library(zb2_core STATIC
   core/carga/bar.cpp
   core/carga/inflate.cpp
   core/carga/png.cpp
+  core/carga/jpeg.cpp
   core/carga/pack.cpp
   core/carga/pakz.cpp
   core/carga/aez.cpp
@@ -83,6 +84,10 @@ add_library(zb2_core STATIC
 )
 target_include_directories(zb2_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(zb2_core PRIVATE -Wall -Wextra)
+# JPEG de sistema: decoder real para os recursos BREW. `FindJPEG` entrega o alvo
+# importado e evita copiar uma biblioteca ou baixar artefatos num disco apertado.
+find_package(JPEG REQUIRED)
+target_link_libraries(zb2_core PRIVATE JPEG::JPEG)
 # O SQLite e uma dependencia PRIVADA do motor: o cabecalho dele nao entra num
 # `-I` publico (`core/brew/sql.cpp` inclui-o pelo caminho, `third_party/...`),
 # logo nada fora do motor fica a saber que ha SQLite aqui dentro.
@@ -109,6 +114,7 @@ add_executable(zb2_tests
   tests/fundacao_test.cpp
   tests/cpu_test.cpp
   tests/carga_test.cpp
+  tests/jpeg_test.cpp
   tests/brew_test.cpp
   tests/comparar_test.cpp
   tests/hid_test.cpp
