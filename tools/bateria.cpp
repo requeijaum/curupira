@@ -221,18 +221,9 @@ const GenericIfc kGenericos[] = {
     {0x0106c411u, "IHID"},     {0x0102c4e8u, "ISQLMgr"},
 };
 constexpr std::uint32_t kNGenericos = sizeof(kGenericos) / sizeof(kGenericos[0]);
-// Os slots do IFileMgr, na ordem que `platform/deprecated/inc/AEEFile.h` declara
-// em `INHERIT_IFileMgr`. A ORDEM E A DO SDK, lida campo a campo -- e nao
-// copiada de outro emulador, que foi o erro que a arvore antiga cometeu com os
-// slots do IGLES11.
-enum : std::uint32_t {
-  kFmQueryInterface = 2,  // nome historico; no IShell este slot e o CreateInstance
-  kFmOpenFile = 3,
-  kFmGetInfo = 4,
-  kFmTest = 8,
-  kFmGetFreeSpace = 9,
-  kFmGetLastError = 10,
-};
+// IFileMgr usa SOMENTE os slots gerados de `AEEFile.h`. Esta ferramenta
+// tambem monta a vtable que o titulo le: um deslocamento local aqui faria a
+// bateria executar Test como RmDir e atribuir-lhe a semantica errada.
 constexpr std::uint32_t kSlotDbgPrintf = 0x09c;
 // Os helpers mais basicos. Sao funcoes PURAS, sem estado e sem interface: a
 // semantica vem do C e do SDK, e um teste pode compara-las com a libc do
@@ -884,10 +875,10 @@ Estado Medir(const Titulo& t, const std::string& dir) {
       {zb2::brew::kVtableDisplay, brew_slots::kDisplay_SetDestination, kSlotIdSetDest},
       {zb2::brew::kVtableDisplay, brew_slots::kDisplay_GetDestination, kSlotIdGetDest},
       // IFileMgr
-      {zb2::brew::kVtableFileMgr, kFmTest, kSlotIdFmTest},
-      {zb2::brew::kVtableFileMgr, kFmGetFreeSpace, kSlotIdFmFree},
-      {zb2::brew::kVtableFileMgr, kFmGetLastError, kSlotIdFmLastErr},
-      {zb2::brew::kVtableFileMgr, 7, kSlotIdRmDir},
+      {zb2::brew::kVtableFileMgr, brew_slots::kFileMgr_Test, kSlotIdFmTest},
+      {zb2::brew::kVtableFileMgr, brew_slots::kFileMgr_GetFreeSpace, kSlotIdFmFree},
+      {zb2::brew::kVtableFileMgr, brew_slots::kFileMgr_GetLastError, kSlotIdFmLastErr},
+      {zb2::brew::kVtableFileMgr, brew_slots::kFileMgr_RmDir, kSlotIdRmDir},
       {zb2::brew::kVtableFileMgr, brew_slots::kFileMgr_MkDir, kSlotIdMkDir},
       {zb2::brew::kVtableFileMgr, brew_slots::kFileMgr_Remove, kSlotIdRemove},
       {zb2::brew::kVtableBitmap, 2, kSlotIdBitmapQI},
