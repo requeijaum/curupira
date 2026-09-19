@@ -18,3 +18,7 @@ A vigia apontou PC `0x5c4`. Desmontagem ARM mostra chamada indireta `r1 = [[sl-4
 ## Sonda de leitura de 0x10000048
 
 Com `ZB2_SONDA_PBMP=10000048:1000004c`, a leitura aparece como `0x10000048@0x0000077e`. A instrumentacao temporaria de `Ler32` tambem verificou que `leitor_host` estava vazio, portanto nao era uma saida HLE etiquetada pelo dispatcher. `0x77e` e `bx r3`, retorno Thumb; a leitura ocorre na transicao/retorno com PC ainda associado a esse ponto. O proximo instrumento deve capturar opcode/estado de CPU no acesso para separar fetch, retorno e leitura de dado.
+
+## Opcode na leitura
+
+Sonda temporaria tambem leu a palavra em `pc=0x77e`: `0x4a164718`; a metade baixa `0x4718` e `bx r3`. Portanto o acesso a `0x10000048` acontece na transicao imediatamente apos retorno Thumb, com PC ainda no `bx`, e nao e `ldr` guest. O proximo trabalho deve revisar o contexto de retorno/despacho HLE de callbacks aninhados, nao a leitura do AEECallback.
