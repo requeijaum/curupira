@@ -99,12 +99,22 @@ class Tela {
                               std::size_t quantos);
   std::uint32_t CoresDistintas() const;
   std::uint32_t CoresEm(int x, int y, int w, int h) const;
+  // Le UM pixel RGB565 sem expor o vector. `false` distingue o preto real
+  // de uma coordenada fora da Tela; quem le um rectangulo pode assim recortar
+  // sem inventar que a coordenada invalida era um pixel preto da superficie.
+  bool LerPixel565(int x, int y, std::uint16_t* destino) const {
+    if (destino == nullptr || x < 0 || y < 0 || x >= kLargura || y >= kAltura) return false;
+    *destino = static_cast<std::uint16_t>(pixels_[static_cast<std::size_t>(y) * kLargura + x]);
+    return true;
+  }
+
   // UM pixel, em RGB565. Existe para os testes poderem dizer QUAL a cor que
   // chegou, e nao so quantas cores distintas ha -- a contagem passa verde com a
-  // cor errada no sitio errado.
+  // cor errada no sitio errado. Fora da Tela conserva a leitura preta historica.
   std::uint32_t PixelEm(int x, int y) const {
-    if (x < 0 || y < 0 || x >= kLargura || y >= kAltura) return 0;
-    return pixels_[static_cast<std::size_t>(y) * kLargura + x];
+    std::uint16_t pixel = 0;
+    LerPixel565(x, y, &pixel);
+    return pixel;
   }
 
  private:

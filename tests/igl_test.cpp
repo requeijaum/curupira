@@ -77,6 +77,20 @@ ArgumentosGl Args(std::uint32_t a0 = 0, std::uint32_t a1 = 0, std::uint32_t a2 =
   return a;
 }
 
+
+ResultadoGl PedirReadPixels(Banco& b, int x, int y, int largura, int altura,
+                            std::uint32_t formato, std::uint32_t tipo, std::uint32_t pixels) {
+  constexpr std::uint32_t kPilha = 0x0002F000u;
+  b.mem.Escrever32(kPilha + 0u, formato);
+  b.mem.Escrever32(kPilha + 4u, tipo);
+  b.mem.Escrever32(kPilha + 8u, pixels);
+  return b.igl.Executar(kIgl_ReadPixels,
+                        Args(static_cast<std::uint32_t>(x), static_cast<std::uint32_t>(y),
+                             static_cast<std::uint32_t>(largura), static_cast<std::uint32_t>(altura),
+                             kPilha),
+                        nullptr);
+}
+
 // ---------------------------------------------------------------------------
 // 1. A TABELA DE SLOTS
 // ---------------------------------------------------------------------------
@@ -634,6 +648,75 @@ TEST(RegistoGl, PixelStoreiMantemAlinhamentoValidoQuandoRecusaValor) {
   ASSERT_NE(valor, nullptr);
   EXPECT_EQ((*valor)[0], 2u);
   EXPECT_EQ(b.igl.Executar(kIgl_PixelStorei, Args(0xdead, 2), nullptr), ResultadoGl::Recusado);
+}
+
+// `Tela` e top-down, mas a API GL e bottom-up. O primeiro `uint16_t` do
+// destino tem de ser y, nao a linha que esta visualmente no topo.
+TEST(RegistoGl, ReadPixelsRgb565ViraYEAlineiaCadaLinhaNoBufferDoGuest) {
+  Banco b;
+  Tela tela;
+  b.igl.DefinirTela(&tela);
+  constexpr int kX = 20;
+  // GL y=7 e a linha Tela 472; GL y=8 e a linha Tela 471.
+  const std::uint16_t de_baixo[5] = {0x1001u, 0x1002u, 0x1003u, 0x1004u, 0x1005u};
+  const std::uint16_t de_cima[5] = {0x2001u, 0x2002u, 0x2003u, 0x2004u, 0x2005u};
+  for (int i = 0; i < 5; ++i) {
+    tela.CorAtual(de_baixo[i]);
+    tela.Ponto(kX + i, 472);
+    tela.CorAtual(de_cima[i]);
+    tela.Ponto(kX + i, 471);
+  }
+  // 5 RGB565 = 10 bytes; PACK=8 pede passo 16, e nao os 12 da omissao PACK=4.
+  ASSERT_EQ(b.igl.Executar(kIgl_PixelStorei, Args(GL_PACK_ALIGNMENT, 8), nullptr),
+            ResultadoGl::Feito);
+  constexpr std::uint32_t kDestino = 0x00031000u;
+  for (std::uint32_t i = 0; i < 32; ++i) b.mem.Escrever8(kDestino + i, 0xA5u);
+  ASSERT_EQ(PedirReadPixels(b, kX, 7, 5, 2, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, kDestino),
+            ResultadoGl::Feito);
+  for (int i = 0; i < 5; ++i) {
+    EXPECT_EQ(b.mem.Ler16(kDestino + static_cast<std::uint32_t>(i * 2)), de_baixo[i]);
+    EXPECT_EQ(b.mem.Ler16(kDestino + 16u + static_cast<std::uint32_t>(i * 2)), de_cima[i]);
+  }
+  // O padding e separacao, nao e um sexto pixel que o GL possa escrever.
+  for (std::uint32_t i = 10; i < 16; ++i) EXPECT_EQ(b.mem.Ler8(kDestino + i), 0xA5u);
+}
+
+TEST(RegistoGl, ReadPixelsRecortaNaTelaSemEncolherOBufferPedido) {
+  Banco b;
+  Tela tela;
+  b.igl.DefinirTela(&tela);
+  tela.CorAtual(0x7E0u);
+  tela.Ponto(0, Tela::kAltura - 1);  // GL (0,0).
+  constexpr std::uint32_t kDestino = 0x00032000u;
+  for (std::uint32_t i = 0; i < 8; ++i) b.mem.Escrever8(kDestino + i, 0xA5u);
+  // Rect GL [-1,-1]..[0,0]: a primeira linha fica toda fora; a segunda tem so
+  // o pixel (0,0). Dois RGB565 ocupam exactamente o passo default de 4 bytes.
+  ASSERT_EQ(PedirReadPixels(b, -1, -1, 2, 2, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, kDestino),
+            ResultadoGl::Feito);
+  EXPECT_EQ(b.mem.Ler16(kDestino + 0u), 0u);
+  EXPECT_EQ(b.mem.Ler16(kDestino + 2u), 0u);
+  EXPECT_EQ(b.mem.Ler16(kDestino + 4u), 0u);
+  EXPECT_EQ(b.mem.Ler16(kDestino + 6u), 0x07E0u);
+}
+
+TEST(RegistoGl, ReadPixelsRecusaFormatoTipoEDimensaoNaoSuportadosSemEscrever) {
+  Banco b;
+  Tela tela;
+  b.igl.DefinirTela(&tela);
+  constexpr std::uint32_t kDestino = 0x00033000u;
+  b.mem.Escrever16(kDestino, 0xA5A5u);
+  EXPECT_EQ(PedirReadPixels(b, 0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_SHORT_5_6_5, kDestino),
+            ResultadoGl::Recusado);
+  EXPECT_EQ(b.mem.Ler16(kDestino), 0xA5A5u);
+  EXPECT_EQ(PedirReadPixels(b, 0, 0, -1, 1, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, kDestino),
+            ResultadoGl::Recusado);
+  EXPECT_EQ(b.mem.Ler16(kDestino), 0xA5A5u);
+  // A guarda e ANTES do laco: o pedido nao pode virar milhoes de escritas
+  // pretas so por estar quase todo fora da Tela.
+  EXPECT_EQ(PedirReadPixels(b, 0, 0, 1, Tela::kLargura * Tela::kAltura + 1, GL_RGB,
+                            GL_UNSIGNED_SHORT_5_6_5, kDestino),
+            ResultadoGl::Recusado);
+  EXPECT_EQ(b.mem.Ler16(kDestino), 0xA5A5u);
 }
 
 TEST(RegistoGl, ALarguraDeLinhaDizOQueFazENaoPrometeOLinAlem) {

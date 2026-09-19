@@ -176,10 +176,16 @@ class DestinoTela final : public Superficie {
   int Altura() const override { return tela_ == nullptr ? 0 : zb2::brew::Tela::kAltura; }
   void Escrever(int x, int y, std::uint32_t rgb565) override;
   void Limpar(std::uint32_t rgb565) override;
-  // A LEITURA DO PIXEL E A PROPRIA `Tela` (`Tela::PixelEm`): uma segunda copia
-  // do estado dos pixels seria uma segunda verdade (ver `Ler` na `Superficie`).
+  // A LEITURA DO PIXEL E A PROPRIA `Tela`: uma segunda copia do estado dos
+  // pixels seria uma segunda verdade. A variante booleana deixa ReadPixels
+  // distinguir o limite da superficie de um pixel preto real.
+  bool LerPixel565(int x, int y, std::uint16_t* destino) const {
+    return tela_ != nullptr && tela_->LerPixel565(x, y, destino);
+  }
   std::uint32_t Ler(int x, int y) const override {
-    return tela_ == nullptr ? 0u : tela_->PixelEm(x, y);
+    std::uint16_t pixel = 0;
+    LerPixel565(x, y, &pixel);
+    return pixel;
   }
 
  private:

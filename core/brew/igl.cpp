@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 
 #include "core/brew/interface.h"
 #include "core/video/atitc.h"
@@ -1917,12 +1918,76 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
       if (retorno != nullptr) *retorno = destino;
       return feito_com(1, "string estatica da implementacao escrita no guest");
     }
-    case kIgl_ReadPixels:
-      // O framebuffer agora EXISTE (a Tela), mas a `core/brew/tela.h` nao expoe
-      // nenhuma leitura de pixel: `Escritos()`, `CoresDistintas()` e
-      // `CoresEm(x,y,w,h)` contam, e nao devolvem a cor de um pixel. Ler seria
-      // preciso e ajuda a dizer onde a recusa esta.
-      return recusa("a Tela nao tem leitura de pixel (tela.h nao expoe nenhum `Ler`)");
+    case kIgl_ReadPixels: {
+      // Assinatura: x, y, width, height, format, type, pixels. Os tres ultimos
+      // chegam pela pilha; ler `a.reg[4]` seria ler para la do array e escrever
+      // a fotografia num ponteiro inventado.
+      if (!esp(7)) return recusa("argumentos na pilha sem sp valido");
+      const std::int32_t x = static_cast<std::int32_t>(a.reg[0]);
+      const std::int32_t y = static_cast<std::int32_t>(a.reg[1]);
+      const std::int32_t largura = static_cast<std::int32_t>(a.reg[2]);
+      const std::int32_t altura = static_cast<std::int32_t>(a.reg[3]);
+      const std::uint32_t formato = c.args[4], tipo = c.args[5], pixels = c.args[6];
+      if (largura < 0 || altura < 0) return recusa_com(7, "largura ou altura negativa");
+      if (formato != GL_RGB || tipo != GL_UNSIGNED_SHORT_5_6_5) {
+        return recusa_com(7, "ReadPixels so suporta GL_RGB/GL_UNSIGNED_SHORT_5_6_5");
+      }
+      // Uma leitura vazia nao toca no ponteiro nem precisa de framebuffer, como
+      // no GL. Ainda valida formato/tipo acima: tamanho zero nao torna um enum
+      // desconhecido valido.
+      if (largura == 0 || altura == 0) return feito_com(7, "ReadPixels vazio");
+      if (pixels == 0) return recusa_com(7, "ponteiro de pixels nulo");
+      if (!destino_.Pronto()) return recusa_com(7, "IGL sem Tela ligada para ReadPixels");
+
+      // GL_PACK_ALIGNMENT arredonda CADA LINHA, inclusive quando a imagem cabe
+      // inteira num unico buffer contiguo. A omissao do GL ES e 4; PixelStorei
+      // so entra no mapa depois de ser chamado.
+      std::uint32_t pack = 4;
+      if (const auto* p = Parametro(kIgl_PixelStorei, GL_PACK_ALIGNMENT);
+          p != nullptr && !p->empty()) {
+        pack = (*p)[0];
+      }
+      const std::uint64_t bytes_por_linha = static_cast<std::uint64_t>(largura) * 2u;
+      const std::uint64_t passo =
+          ((bytes_por_linha + static_cast<std::uint64_t>(pack) - 1u) / pack) * pack;
+      const std::uint64_t bytes_escritos =
+          (static_cast<std::uint64_t>(altura) - 1u) * passo + bytes_por_linha;
+      // A Tela e a superficie suportada, logo uma leitura nao pode pedir mais
+      // dados que um framebuffer inteiro. Sem este limite antes do laco, um
+      // GLsizei hostil faria milhares de milhoes de escritas pretas fora dela.
+      constexpr std::uint64_t kMaxBytesDaTela =
+          static_cast<std::uint64_t>(Tela::kLargura) * Tela::kAltura * 2u;
+      if (bytes_escritos > kMaxBytesDaTela) {
+        return recusa_com(7, "ReadPixels maior que o framebuffer suportado");
+      }
+      // A Memoria usa Endereco de 32 bits: nao deixar o ultimo pixel dar a volta
+      // para o endereco baixo do guest.
+      if (static_cast<std::uint64_t>(pixels) + bytes_escritos > (std::uint64_t{1} << 32)) {
+        return recusa_com(7, "buffer de ReadPixels ultrapassa o endereco de 32 bits do guest");
+      }
+
+      // A Tela cresce para BAIXO; GL conta y a partir de BAIXO e poe a linha y
+      // na PRIMEIRA linha do buffer. `LerPixel565` tambem fecha o limite sem
+      // tocar no vector: a parte do rectangulo fora da Tela sai preta, enquanto
+      // o passo e o tamanho pedido pelo guest continuam exactos.
+      for (std::int64_t linha = 0; linha < altura; ++linha) {
+        const std::int64_t fy = static_cast<std::int64_t>(y) + linha;
+        const std::int64_t ty = static_cast<std::int64_t>(Tela::kAltura) - 1 - fy;
+        const std::uint64_t base = static_cast<std::uint64_t>(pixels) +
+                                   static_cast<std::uint64_t>(linha) * passo;
+        for (std::int64_t coluna = 0; coluna < largura; ++coluna) {
+          const std::int64_t tx = static_cast<std::int64_t>(x) + coluna;
+          std::uint16_t cor = 0;
+          if (tx >= std::numeric_limits<int>::min() && tx <= std::numeric_limits<int>::max() &&
+              ty >= std::numeric_limits<int>::min() && ty <= std::numeric_limits<int>::max()) {
+            destino_.LerPixel565(static_cast<int>(tx), static_cast<int>(ty), &cor);
+          }
+          mem_.Escrever16(static_cast<Endereco>(base + static_cast<std::uint64_t>(coluna) * 2u),
+                           cor);
+        }
+      }
+      return feito_com(7, "RGB565 copiado da Tela, linha inferior primeiro e GL_PACK_ALIGNMENT aplicado");
+    }
 
     default:
       return sem();

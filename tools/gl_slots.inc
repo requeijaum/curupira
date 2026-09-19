@@ -172,6 +172,7 @@ constexpr unsigned GL_BYTE = 0x1400u;
 constexpr unsigned GL_UNSIGNED_BYTE = 0x1401u;
 constexpr unsigned GL_SHORT = 0x1402u;
 constexpr unsigned GL_UNSIGNED_SHORT = 0x1403u;
+constexpr unsigned GL_UNSIGNED_SHORT_5_6_5 = 0x8363u;
 constexpr unsigned GL_FIXED = 0x140Cu;
 constexpr unsigned GL_FLOAT = 0x1406u;
 constexpr unsigned GL_CULL_FACE = 0x0B44u;
