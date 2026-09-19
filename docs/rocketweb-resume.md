@@ -10,3 +10,7 @@ O callback de Rocketweb foi medido, nao aceito por suposicao.
 Vigia temporaria `Memoria::Vigiar(0x10000048..0x4c)` durante Rocketweb (`ZB2_VIGIA_RESUME=1`) mediu primeiro escritor `PC=0x000005c4`. O mesmo endereco e `pUser` de timers `pfn=0x00021085` (1000 ms) e `pfn=0x0001d4d5` (1500 ms). Portanto e estado real do applet inicializado cedo, nao dado aleatorio.
 
 Proximo experimento: desmontar o escritor em `0x5c4` e seguir a vtable/ponteiro que produz o salto. Nao reintroduzir Resume generico antes de o callback poder atravessar as chamadas HLE que ele exige.
+
+## Escritor do estado heap
+
+A vigia apontou PC `0x5c4`. Desmontagem ARM mostra chamada indireta `r1 = [[sl-4]+0x68]`, `r0=r5+12`, `bx r1`; o retorno vira estrutura em `r4`. O construtor grava três literais em `[r4+0,+4,+8]`. A escrita em `0x10000048` é portanto atribuída ao PC da chamada host/indireta, não a uma instrução Thumb aleatória. O proximo experimento deve vigiar esses campos e a leitura que usa `0x10000048` como alvo de `bx`.
