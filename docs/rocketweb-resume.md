@@ -22,3 +22,7 @@ Com `ZB2_SONDA_PBMP=10000048:1000004c`, a leitura aparece como `0x10000048@0x000
 ## Opcode na leitura
 
 Sonda temporaria tambem leu a palavra em `pc=0x77e`: `0x4a164718`; a metade baixa `0x4718` e `bx r3`. Portanto o acesso a `0x10000048` acontece na transicao imediatamente apos retorno Thumb, com PC ainda no `bx`, e nao e `ldr` guest. O proximo trabalho deve revisar o contexto de retorno/despacho HLE de callbacks aninhados, nao a leitura do AEECallback.
+
+## Layout de heap medido
+
+Dump temporario no fim de Rocketweb: `0x10000048=0x100001d8`, `+4=0x0109e4e0` (CLSID), `+8=1`, `+12=0x80020000` (IShell). Portanto `0x10000048` e estrutura/descritor de app, nao ponteiro de codigo. O salto para ele durante Resume e uso de dado como destino; proximo experimento deve rastrear qual `ldr`/vtable leva esse campo a `bx`.
