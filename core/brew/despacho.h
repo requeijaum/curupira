@@ -261,6 +261,22 @@ struct ResultadoFase {
   std::string motivo;
 };
 
+// AEEDeviceItems.h / AEEKeySupportType.h. KeySupportType e alinhado a quatro
+// bytes no ARM: AVKType (uint16) de entrada, boolean de saida em +2 e padding.
+constexpr std::uint32_t kAeeDeviceItemKeySupport = 0x1fu;
+constexpr std::uint16_t kAvkA = 0x61u;
+constexpr std::uint32_t kKeySupportTypeBytes = 4u;
+constexpr std::uint32_t kKeySupportTypeSupportedOffset = 2u;
+
+// IShell::RegisterNotify nao recebe callback. Guarda a assinatura para um
+// notificador futuro poder consultar quem se registou, sem executar guest code
+// durante o registo.
+struct RegistoDeNotificacaoDoShell {
+  std::uint32_t classe_notificadora = 0;
+  std::uint32_t classe_de_tipo = 0;
+  std::uint32_t mascara = 0;
+};
+
 class Despacho {
  public:
   Despacho(Memoria& mem, Traco& traco, Alocador& alocador, Vfs& vfs);
@@ -301,6 +317,12 @@ class Despacho {
   // porque um ausente nao se le.** Uma API que devolve um valor plausivel e errado
   // faz o instrumento mentir sem avisar.
   std::uint32_t Textos() const { return textos_; }
+
+  // Registos aceites pelo IShell::RegisterNotify. A chamada so guarda estes
+  // dados; a entrega de uma notificacao pertence ao notificador que a produzir.
+  const std::vector<RegistoDeNotificacaoDoShell>& RegistosDeNotificacaoDoShell() const {
+    return registos_de_notificacao_do_shell_;
+  }
 
   // E VOLTARAM, porque a quarta vez foi a mesma classe de defeito AO CONTRARIO:
   // o motor contava (`++blits_` em `despacho.cpp`, `++updates_`, `++dibs_`) e a
@@ -836,6 +858,13 @@ class Despacho {
     std::vector<std::uint8_t> bytes;
   };
   std::map<std::uint32_t, PreferenciaDoShell> prefs_do_shell_;
+
+  // IShell slot 34. Cada chamada e preservada na ordem em que o titulo a fez.
+  std::vector<RegistoDeNotificacaoDoShell> registos_de_notificacao_do_shell_;
+
+  // IShell slots 44 e 34, separados do laco para a ABI e o estado terem nomes.
+  void AtenderGetDeviceInfoEx(ICpu& cpu);
+  void AtenderRegisterNotify(ICpu& cpu);
 
   // A FRENTE io2: o estado dos objectos IUnzipAStream e IMemAStream, por
   // endereco de objecto. Os objectos nascem no `InstalarAjudantes` (kObjUnzip /

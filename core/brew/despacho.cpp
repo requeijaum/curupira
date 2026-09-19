@@ -2750,6 +2750,51 @@ std::uint32_t Despacho::CriarInstanciaDaExtensao(ICpu& cpu, std::uint32_t shell,
   return 0;
 }
 
+// IShell::GetDeviceInfoEx, AEE_DEVICEITEM_KEY_SUPPORT (31).
+//
+// KeySupportType vem do guest: a chave (uint16) ja esta em [r2+0], e so o
+// boolean em +2 e saida. `*pnSize` mede o OBJECTO inteiro, incluindo o padding
+// ARM: quatro bytes. Como a documentacao permite preenchimento parcial, o byte
+// de saida so e escrito quando a capacidade declarada chega a ele; em todos os
+// casos `*pnSize` sai com os quatro bytes requeridos.
+void Despacho::AtenderGetDeviceInfoEx(ICpu& cpu) {
+  const std::uint32_t buffer = cpu.Get(kR2);
+  const std::uint32_t pn_tamanho = cpu.Get(kR3);
+  if (pn_tamanho == 0) {
+    cpu.Set(kR0, kAeeBadParm);
+    return;
+  }
+
+  if (buffer == 0) {
+    // Consulta de tamanho: pnSize nao tem valor de entrada nesta forma.
+    mem_.Escrever32(pn_tamanho, kKeySupportTypeBytes);
+    cpu.Set(kR0, kAeeSuccess);
+    return;
+  }
+
+  const std::uint32_t capacidade = mem_.Ler32(pn_tamanho);
+  const std::uint16_t tecla = mem_.Ler16(buffer);
+  mem_.Escrever32(pn_tamanho, kKeySupportTypeBytes);
+  if (capacidade > kKeySupportTypeSupportedOffset) {
+    // So AVK_A foi pedido pelo rocketweb. Nao anunciar as outras teclas sem
+    // medida; `false` e a resposta honesta para uma tecla nao conhecida.
+    mem_.Escrever8(buffer + kKeySupportTypeSupportedOffset, tecla == kAvkA ? 1u : 0u);
+  }
+  cpu.Set(kR0, kAeeSuccess);
+}
+
+// IShell::RegisterNotify (slot 34).
+//
+// Os tres argumentos apos `this` ja cabem em r1-r3. A API registra um par de
+// CLSIDs e uma mascara; nao recebe ponteiro de funcao, portanto chamar guest
+// aqui seria fabricar uma notificacao. Preservamos cada registro para o
+// notificador que vier a implementa-lo.
+void Despacho::AtenderRegisterNotify(ICpu& cpu) {
+  registos_de_notificacao_do_shell_.push_back(
+      {cpu.Get(kR1), cpu.Get(kR2), cpu.Get(kR3)});
+  cpu.Set(kR0, kAeeSuccess);
+}
+
 ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp_saida) {
   ResultadoFase resultado;
   // DOIS CONTADORES (item 1 do PLAN, docs/rewrite/PLAN.md):
@@ -3340,6 +3385,15 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         // alocador corromperia o heap silenciosamente.
         (void)recursos_.Libertar(cpu.Get(kR1));
         cpu.Set(kR0, kAeeSuccess);  // método void; a recusa fica no Traco.
+      } else if (idx == kBaseDoShell + brew_slots::kShell_RegisterNotify) {
+        // `int RegisterNotify(IShell*, AEECLSID clsNotify, AEECLSID clsType,
+        //                     uint32 dwMask)`: os tres argumentos estao em r1-r3.
+        // O registo NAO chama guest; RegisterNotify nao recebe callback.
+        AtenderRegisterNotify(cpu);
+      } else if (idx == kBaseDoShell + brew_slots::kShell_GetDeviceInfoEx &&
+                 cpu.Get(kR1) == kAeeDeviceItemKeySupport) {
+        // rocketweb: KeySupportType (AVK_A em +0, boolean em +2).
+        AtenderGetDeviceInfoEx(cpu);
       } else if (idx == kBaseDoShell + brew_slots::kShell_GetDeviceInfoEx) {
         // `int GetDeviceInfoEx(IShell*, AEEDeviceItem, void*, int*)` (AEEIShell.h).
         // *pnSize e in/out: entrada = bytes do buffer, saida = bytes necessarios.

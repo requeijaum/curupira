@@ -2909,4 +2909,70 @@ TEST(EntradaNoDespacho, DisplaySetFontGuardaEDevolveAAnterior) {
   EXPECT_EQ(b.ChamaSaida(kSaidaSetFont, kObjDisplay, 0u, kFonte), 0x8F00C000u);
 }
 
+
+// ===========================================================================
+// ROCKETWEB: a cadeia medida no create e GetDeviceInfoEx(KEY_SUPPORT) seguido
+// de RegisterNotify. A estrutura KeySupportType tem quatro bytes no ARM:
+// `AVKType key` (uint16, entrada) e `boolean supported` no byte +2.
+// ===========================================================================
+TEST(RocketwebShell, GetDeviceInfoExKeySupportRespeitaAbiENSize) {
+  Bancada b;
+  ConstruirOShell(b);
+  constexpr std::uint32_t kBuffer = 0x00218000u, kNSize = 0x00218100u;
+  const std::uint32_t slot = b.EntradaDaVtable(kObjShell, brew_slots::kShell_GetDeviceInfoEx);
+  EXPECT_EQ(slot, b.S().Endereco(kBaseDoShell + brew_slots::kShell_GetDeviceInfoEx));
+
+  // `key` chega do guest; so `supported` e saida. O byte +3 e padding ARM e
+  // nao pertence ao campo boolean.
+  b.Mem().Escrever16(kBuffer, kAvkA);
+  b.Mem().Escrever8(kBuffer + 2, 0xaau);
+  b.Mem().Escrever8(kBuffer + 3, 0xbbu);
+  b.Mem().Escrever32(kNSize, kKeySupportTypeBytes);
+  EXPECT_EQ(b.ChamaEndereco(slot, kObjShell, kAeeDeviceItemKeySupport, kBuffer, kNSize), kAeeSuccess);
+  EXPECT_EQ(b.Mem().Ler16(kBuffer), kAvkA);
+  EXPECT_EQ(b.Mem().Ler8(kBuffer + 2), 1u);
+  EXPECT_EQ(b.Mem().Ler8(kBuffer + 3), 0xbbu);
+  EXPECT_EQ(b.Mem().Ler32(kNSize), kKeySupportTypeBytes);
+
+  // Menos que a estrutura completa nao pode escrever alem da capacidade. A
+  // chamada ainda publica o tamanho requerido, como o contrato do IShell diz.
+  b.Mem().Escrever16(kBuffer, kAvkA);
+  b.Mem().Escrever8(kBuffer + 2, 0xccu);
+  b.Mem().Escrever32(kNSize, 2u);
+  EXPECT_EQ(b.ChamaEndereco(slot, kObjShell, kAeeDeviceItemKeySupport, kBuffer, kNSize), kAeeSuccess);
+  EXPECT_EQ(b.Mem().Ler8(kBuffer + 2), 0xccu);
+  EXPECT_EQ(b.Mem().Ler32(kNSize), kKeySupportTypeBytes);
+
+  // Consulta de tamanho: pBuff pode ser nulo e o tamanho de entrada nao e lido.
+  b.Mem().Escrever32(kNSize, 0xfeedfaceu);
+  EXPECT_EQ(b.ChamaEndereco(slot, kObjShell, kAeeDeviceItemKeySupport, 0, kNSize), kAeeSuccess);
+  EXPECT_EQ(b.Mem().Ler32(kNSize), kKeySupportTypeBytes);
+}
+
+TEST(RocketwebShell, CadeiaGetDeviceInfoExDepoisRegisterNotifySoGuardaORegisto) {
+  Bancada b;
+  ConstruirOShell(b);
+  constexpr std::uint32_t kBuffer = 0x00218200u, kNSize = 0x00218300u;
+  constexpr std::uint32_t kClsNotify = 0x0102a001u;
+  constexpr std::uint32_t kClsType = 0x0102a002u;
+  constexpr std::uint32_t kMask = 0x00000040u;
+  b.Mem().Escrever16(kBuffer, kAvkA);
+  b.Mem().Escrever32(kNSize, kKeySupportTypeBytes);
+  EXPECT_EQ(b.ChamaEndereco(b.EntradaDaVtable(kObjShell, brew_slots::kShell_GetDeviceInfoEx),
+                            kObjShell, kAeeDeviceItemKeySupport, kBuffer, kNSize),
+            kAeeSuccess);
+
+  const std::uint32_t slot = b.EntradaDaVtable(kObjShell, brew_slots::kShell_RegisterNotify);
+  EXPECT_EQ(slot, b.S().Endereco(kBaseDoShell + brew_slots::kShell_RegisterNotify));
+  EXPECT_EQ(b.ChamaEndereco(slot, kObjShell, kClsNotify, kClsType, kMask), kAeeSuccess);
+  ASSERT_EQ(b.D().RegistosDeNotificacaoDoShell().size(), 1u);
+  const auto& reg = b.D().RegistosDeNotificacaoDoShell().front();
+  EXPECT_EQ(reg.classe_notificadora, kClsNotify);
+  EXPECT_EQ(reg.classe_de_tipo, kClsType);
+  EXPECT_EQ(reg.mascara, kMask);
+  // RegisterNotify recebe CLSIDs, nao um ponteiro de callback: o registo nao
+  // executa guest code nem inventa uma notificacao.
+  EXPECT_EQ(b.Cpu().Get(kPC), kSentinela);
+}
+
 }  // namespace zb2::brew
