@@ -334,27 +334,58 @@ TEST(EstadoGl, GenTexturesEscreveOsIdentificadoresNoGuest) {
   EXPECT_EQ(b.igl.Executar(kIgl_GenTextures, Args(0, lista), nullptr), ResultadoGl::Recusado);
 }
 
-TEST(EstadoGl, SegundaUnidadePreservaATexturaBaseEASeuArray) {
+TEST(EstadoGl, SegundaUnidadeTemBindECoordenadasProprios) {
   Banco b;
   constexpr std::uint32_t kTextura1 = 0x84c1u;
   ASSERT_EQ(b.igl.Executar(kIgl_BindTexture, Args(GL_TEXTURE_2D, 7u), nullptr), ResultadoGl::Feito);
   ASSERT_EQ(b.igl.Executar(kIgl_ActiveTexture, Args(kTextura1), nullptr), ResultadoGl::Feito);
-  EXPECT_EQ(b.igl.TexturaActiva(), kTextura1);
-  // A unidade extra e aceita para compatibilidade, mas nao pode trocar a base
-  // que o rasterizador de uma textura realmente amostra.
   ASSERT_EQ(b.igl.Executar(kIgl_BindTexture, Args(GL_TEXTURE_2D, 9u), nullptr), ResultadoGl::Feito);
-  EXPECT_EQ(b.igl.TexturaLigada(), 7u);
-  ASSERT_EQ(b.igl.Executar(kIgl_ActiveTexture, Args(GL_TEXTURE0), nullptr), ResultadoGl::Feito);
-  ASSERT_EQ(b.igl.Executar(kIgl_BindTexture, Args(GL_TEXTURE_2D, 11u), nullptr), ResultadoGl::Feito);
-  EXPECT_EQ(b.igl.TexturaLigada(), 11u);
-  ASSERT_EQ(b.igl.Executar(kIgl_TexCoordPointer, Args(2u, GL_FLOAT, 8u, 0x00101000u), nullptr),
-            ResultadoGl::Feito);
+  EXPECT_EQ(b.igl.TexturaLigada(), 7u);  // observador antigo continua a ser unidade 0
+  EXPECT_EQ(b.igl.TexturaLigadaNaUnidade(kTextura1), 9u);
+  // Upload na unidade 1 escreve a textura ligada nela; antes este ramo devolvia
+  // sucesso e largava os pixels.
+  constexpr std::uint32_t kPilha = 0x00103000u;
+  const std::uint32_t resto[5] = {1u, 0u, GL_RGBA, GL_UNSIGNED_BYTE, 0x00104000u};
+  for (int k = 0; k < 5; ++k) b.mem.Escrever32(kPilha + 4u * k, resto[k]);
+  ArgumentosGl imagem = Args(GL_TEXTURE_2D, 0u, GL_RGBA, 1u);
+  imagem.sp = kPilha;
+  ASSERT_EQ(b.igl.Executar(kIgl_TexImage2D, imagem, nullptr), ResultadoGl::Feito);
+  ASSERT_NE(b.igl.Textura(9u), nullptr);
+  EXPECT_EQ(b.igl.Textura(9u)->ponteiro, 0x00104000u);
+  ASSERT_EQ(b.igl.Executar(kIgl_Enable, Args(GL_TEXTURE_2D), nullptr), ResultadoGl::Feito);
   ASSERT_EQ(b.igl.Executar(kIgl_ClientActiveTexture, Args(kTextura1), nullptr), ResultadoGl::Feito);
+  ASSERT_EQ(b.igl.Executar(kIgl_EnableClientState, Args(GL_TEXTURE_COORD_ARRAY), nullptr),
+            ResultadoGl::Feito);
   ASSERT_EQ(b.igl.Executar(kIgl_TexCoordPointer, Args(2u, GL_FLOAT, 8u, 0x00102000u), nullptr),
             ResultadoGl::Feito);
-  EXPECT_EQ(b.igl.TexturaClienteActiva(), kTextura1);
+  EXPECT_TRUE(b.igl.CoordenadasDeTexturaLigadas(kTextura1));
+  ASSERT_NE(b.igl.CoordenadasDeTextura(kTextura1), nullptr);
+  EXPECT_EQ(b.igl.CoordenadasDeTextura(kTextura1)->ponteiro, 0x00102000u);
+
+  ASSERT_EQ(b.igl.Executar(kIgl_ActiveTexture, Args(GL_TEXTURE0), nullptr), ResultadoGl::Feito);
+  ASSERT_EQ(b.igl.Executar(kIgl_BindTexture, Args(GL_TEXTURE_2D, 11u), nullptr), ResultadoGl::Feito);
+  ASSERT_EQ(b.igl.Executar(kIgl_ClientActiveTexture, Args(GL_TEXTURE0), nullptr), ResultadoGl::Feito);
+  ASSERT_EQ(b.igl.Executar(kIgl_TexCoordPointer, Args(2u, GL_FLOAT, 8u, 0x00101000u), nullptr),
+            ResultadoGl::Feito);
+  EXPECT_EQ(b.igl.TexturaLigada(), 11u);
+  EXPECT_EQ(b.igl.TexturaLigadaNaUnidade(kTextura1), 9u);
   ASSERT_NE(b.igl.Array(GL_TEXTURE_COORD_ARRAY), nullptr);
   EXPECT_EQ(b.igl.Array(GL_TEXTURE_COORD_ARRAY)->ponteiro, 0x00101000u);
+}
+
+TEST(EstadoGl, TexEnvSoAceitaModulateOuReplaceENaoFingeCombine) {
+  Banco b;
+  constexpr std::uint32_t kTextura1 = 0x84c1u;
+  ASSERT_EQ(b.igl.Executar(kIgl_ActiveTexture, Args(kTextura1), nullptr), ResultadoGl::Feito);
+  EXPECT_EQ(b.igl.Executar(kIgl_TexEnvx, Args(kTextureEnv, kTextureEnvMode, kModulate), nullptr),
+            ResultadoGl::Feito);
+  EXPECT_EQ(b.igl.AmbienteDeTextura(kTextura1), kModulate);
+  EXPECT_EQ(b.igl.Executar(kIgl_TexEnvx, Args(kTextureEnv, kTextureEnvMode, kReplace), nullptr),
+            ResultadoGl::Feito);
+  EXPECT_EQ(b.igl.AmbienteDeTextura(kTextura1), kReplace);
+  EXPECT_EQ(b.igl.Executar(kIgl_TexEnvx, Args(kTextureEnv, kTextureEnvMode, kCombine), nullptr),
+            ResultadoGl::Recusado);
+  EXPECT_EQ(b.igl.AmbienteDeTextura(kTextura1), kReplace);
 }
 
 TEST(EstadoGl, TexImage2DRegistraAsDimensoesSemCopiarPixeis) {

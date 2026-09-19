@@ -428,26 +428,32 @@ bool Rasterizador::LerVertice(const EstadoDeRasterizacao& e, std::uint32_t indic
     v->cor = CorIluminada(e, v->olho, v->normal, v->cor);
   }
 
-  // --- as coordenadas de textura ------------------------------------------
-  v->u = 0.0f;
-  v->v = 0.0f;
-  if (e.textura_ligada) {
-    const ArrayDoCliente& at = e.coordenadas_de_textura;
+  // --- as coordenadas de textura, uma fonte por unidade ------------------
+  const bool ligadas[2] = {e.textura_ligada, e.textura1_ligada};
+  const ArrayDoCliente* coordenadas[2] = {&e.coordenadas_de_textura,
+                                           &e.coordenadas_de_textura1};
+  for (int unidade = 0; unidade < 2; ++unidade) {
+    v->u[unidade] = 0.0f;
+    v->v[unidade] = 0.0f;
+    if (!ligadas[unidade]) continue;
+    const ArrayDoCliente& at = *coordenadas[unidade];
     if (!at.ligado) {
-      *motivo = "textura ligada sem array de coordenadas de textura";
+      *motivo = "textura da unidade " + std::to_string(unidade) +
+                " ligada sem array de coordenadas de textura";
       return false;
     }
     const int bt = BytesDoTipo(at.tipo);
     if (bt == 0 || (at.tipo != GL_FLOAT && at.tipo != GL_FIXED)) {
-      *motivo = std::string("array de coordenadas do tipo ") + NomeDoTipo(at.tipo) +
+      *motivo = std::string("array de coordenadas da unidade ") + std::to_string(unidade) +
+                " do tipo " + NomeDoTipo(at.tipo) +
                 ": o rasterizador so le GL_FLOAT e GL_FIXED";
       return false;
     }
     const std::uint32_t passo_t =
         (at.passo != 0) ? at.passo : static_cast<std::uint32_t>(at.tamanho * bt);
     const Endereco base_t = at.ponteiro + passo_t * indice;
-    v->u = LerFloat(mem_, base_t, at.tipo);
-    v->v = LerFloat(mem_, base_t + static_cast<Endereco>(bt), at.tipo);
+    v->u[unidade] = LerFloat(mem_, base_t, at.tipo);
+    v->v[unidade] = LerFloat(mem_, base_t + static_cast<Endereco>(bt), at.tipo);
   }
   return true;
 }
@@ -651,8 +657,10 @@ Rasterizador::Vertice Rasterizador::InterpolarVertice(const Vertice& a, const Ve
   for (int k = 0; k < 4; ++k) {
     v.clip[k] = static_cast<float>(a.clip[k] + (b.clip[k] - a.clip[k]) * t);
   }
-  v.u = static_cast<float>(a.u + (b.u - a.u) * t);
-  v.v = static_cast<float>(a.v + (b.v - a.v) * t);
+  for (int unidade = 0; unidade < 2; ++unidade) {
+    v.u[unidade] = static_cast<float>(a.u[unidade] + (b.u[unidade] - a.u[unidade]) * t);
+    v.v[unidade] = static_cast<float>(a.v[unidade] + (b.v[unidade] - a.v[unidade]) * t);
+  }
   auto canal = [&](std::uint8_t ca, std::uint8_t cb) -> std::uint8_t {
     const double val = static_cast<double>(ca) + (static_cast<double>(cb) - static_cast<double>(ca)) * t;
     return static_cast<std::uint8_t>(std::min(255.0, std::max(0.0, val + 0.5)));
@@ -755,9 +763,8 @@ bool TexturaAmostravel(std::uint32_t formato, std::uint32_t tipo) {
          tipo == GL_UNSIGNED_BYTE;
 }
 
-Rgba Rasterizador::AmostrarTextura(const EstadoDeRasterizacao& e, float u, float v) const {
-  const Textura& t = e.textura;
-  if (!t.existe || t.largura == 0 || t.altura == 0) return e.cor;
+Rgba Rasterizador::AmostrarTextura(const Textura& t, float u, float v) const {
+  if (!t.existe || t.largura == 0 || t.altura == 0) return Rgba{};
   // CLAMP, e nao wrap: a coordenada fora de [0,1] e presa na borda (o ponto 5 do
   // cabecalho). O `floor` e o canto inferior esquerdo da celula de texel.
   int tx = static_cast<int>(std::floor(u * static_cast<float>(t.largura)));
@@ -783,7 +790,31 @@ Rgba Rasterizador::AmostrarTextura(const EstadoDeRasterizacao& e, float u, float
     const std::uint8_t l = mem_.Ler8(base);
     return Rgba{l, l, l, 255};
   }
-  return e.cor;
+  return Rgba{};
+}
+
+Rgba Rasterizador::ComporTexturas(const EstadoDeRasterizacao& e, Rgba cor, float u0, float v0,
+                                  float u1, float v1) const {
+  const auto aplicar = [&](bool ligada, const Textura& textura, std::uint32_t ambiente,
+                           float u, float v) {
+    if (!ligada) return;
+    const Rgba amostra = AmostrarTextura(textura, u, v);
+    if (ambiente == 0x1E01u) {  // GL_REPLACE
+      cor = amostra;
+      return;
+    }
+    // GL_MODULATE: canais normalizados multiplicados e arredondados ao RGBA8
+    // mais proximo. GL_COMBINE nao entra aqui: sem fontes/operandos modelados,
+    // aceita-lo seria anunciar uma equacao que o estado nao consegue representar.
+    const auto modular = [](std::uint8_t a, std::uint8_t b) {
+      return static_cast<std::uint8_t>((static_cast<unsigned>(a) * b + 127u) / 255u);
+    };
+    cor = Rgba{modular(cor.r, amostra.r), modular(cor.g, amostra.g),
+               modular(cor.b, amostra.b), modular(cor.a, amostra.a)};
+  };
+  aplicar(e.textura_ligada, e.textura, e.ambiente_de_textura, u0, v0);
+  aplicar(e.textura1_ligada, e.textura1, e.ambiente_de_textura1, u1, v1);
+  return cor;
 }
 
 void Rasterizador::EscreverPixel(const EstadoDeRasterizacao& e, int x, int y, float profundidade,
@@ -977,11 +1008,11 @@ void Rasterizador::RasterizarTriangulo(const EstadoDeRasterizacao& e, const Vert
         // nada -- duas capacidades ligadas e inertes.
         cor.a = static_cast<std::uint8_t>(std::min(255.0, pwa * a.cor.a + pwb * b.cor.a + pwc * c.cor.a + 0.5));
       }
-      if (e.textura_ligada) {
-        const float u = static_cast<float>(pwa * a.u + pwb * b.u + pwc * c.u);
-        const float v = static_cast<float>(pwa * a.v + pwb * b.v + pwc * c.v);
-        cor = AmostrarTextura(e, u, v);
-      }
+      const float u0 = static_cast<float>(pwa * a.u[0] + pwb * b.u[0] + pwc * c.u[0]);
+      const float v0 = static_cast<float>(pwa * a.v[0] + pwb * b.v[0] + pwc * c.v[0]);
+      const float u1 = static_cast<float>(pwa * a.u[1] + pwb * b.u[1] + pwc * c.u[1]);
+      const float v1 = static_cast<float>(pwa * a.v[1] + pwb * b.v[1] + pwc * c.v[1]);
+      cor = ComporTexturas(e, cor, u0, v0, u1, v1);
       const float z = static_cast<float>(wa * a.z + wb * b.z + wc * c.z);
       EscreverPixel(e, x, y, z, cor);
     }
@@ -1116,19 +1147,16 @@ void Rasterizador::RasterizarSegmento(const EstadoDeRasterizacao& e, const Verti
       cor = Rgba{canal(a.cor.r, b.cor.r), canal(a.cor.g, b.cor.g), canal(a.cor.b, b.cor.b),
                  canal(a.cor.a, b.cor.a)};
     }
-    if (e.textura_ligada) {
-      // A TEXTURA E AMOSTRADA COM A COORDENADA INTERPOLADA AFIM em `t`, e nao
-      // corrigida por perspectiva como nos triangulos: num segmento o `w` varia
-      // ao longo dele, e a correccao exigiria a mesma divisao por `w` que o
-      // `RasterizarTriangulo` faz. Fica dito -- nenhum dos dois titulos desta
-      // demanda (heavyweaponbrew, pbc) desenha linhas com textura ligada, e a
-      // escolha afim e a que nao inventa uma correccao por medir.
-      const float u = static_cast<float>(static_cast<double>(a.u) +
-                                        (static_cast<double>(b.u) - static_cast<double>(a.u)) * t);
-      const float v = static_cast<float>(static_cast<double>(a.v) +
-                                        (static_cast<double>(b.v) - static_cast<double>(a.v)) * t);
-      cor = AmostrarTextura(e, u, v);
-    }
+    // Coordenadas de linhas continuam interpoladas afim. Isto vale para as
+    // duas unidades; a correcao por perspectiva de linhas ainda nao foi medida.
+    const auto interpolar = [&](int unidade, bool u) {
+      const float inicio = u ? a.u[unidade] : a.v[unidade];
+      const float fim = u ? b.u[unidade] : b.v[unidade];
+      return static_cast<float>(static_cast<double>(inicio) +
+                                (static_cast<double>(fim) - static_cast<double>(inicio)) * t);
+    };
+    cor = ComporTexturas(e, cor, interpolar(0, true), interpolar(0, false),
+                         interpolar(1, true), interpolar(1, false));
     // O PIXEL PASSA PELO `EscreverPixel`, QUE JA FAZ o alpha test, o teste de
     // profundidade, a mistura e a mascara de cor contra o pixel que la esta. Nada
     // desta logica e duplicada aqui, e o `z` que lhe chega e o do ponto do
@@ -1198,22 +1226,25 @@ bool Rasterizador::Desenhar(const EstadoDeRasterizacao& estado, const PedidoDeDe
     *motivo = "desenho com zero vertices";
     return false;
   }
-  if (estado.textura_ligada && estado.textura.comprimida &&
-      estado.textura.texels_descodificados == nullptr) {
-    ++recusadas_;
-    *motivo = "textura comprimida: nao ha descodificador (ATITC/ETC) nesta arvore";
-    return false;
-  }
-  if (estado.textura_ligada && estado.textura.existe) {
-    // A MESMA LISTA do `AmostrarTextura` (uma so, em `TexturaAmostravel`): o
-    // `Desenhar` recusa o que ele nao sabe amostrar, e nao desenha com a cor do
-    // vertice em silencio.
-    if (estado.textura.texels_descodificados == nullptr &&
-        !TexturaAmostravel(estado.textura.formato, estado.textura.tipo)) {
+  const bool texturas_ligadas[2] = {estado.textura_ligada, estado.textura1_ligada};
+  const Textura* texturas[2] = {&estado.textura, &estado.textura1};
+  for (int unidade = 0; unidade < 2; ++unidade) {
+    const Textura& textura = *texturas[unidade];
+    if (texturas_ligadas[unidade] && textura.comprimida &&
+        textura.texels_descodificados == nullptr) {
       ++recusadas_;
-      char d[128];
-      std::snprintf(d, sizeof(d), "textura com formato 0x%04x e tipo 0x%04x sem caminho de amostragem",
-                    estado.textura.formato, estado.textura.tipo);
+      *motivo = "textura comprimida da unidade " + std::to_string(unidade) +
+                ": nao ha descodificador (ATITC/ETC) nesta arvore";
+      return false;
+    }
+    if (texturas_ligadas[unidade] && textura.existe &&
+        textura.texels_descodificados == nullptr &&
+        !TexturaAmostravel(textura.formato, textura.tipo)) {
+      ++recusadas_;
+      char d[160];
+      std::snprintf(d, sizeof(d),
+                    "textura da unidade %d com formato 0x%04x e tipo 0x%04x sem caminho de amostragem",
+                    unidade, textura.formato, textura.tipo);
       *motivo = d;
       return false;
     }

@@ -40,3 +40,20 @@ Zeebx usa tabelas ordenadas por cabecalho em `src/brew/aee_slots.rs` e trampoins
 - Curupira: `core/brew/{vfs,arquivo,imedia,igl,classes,despacho}.cpp`, `core/audio/misturador.cpp`, `core/video/atitc.*`, testes e `docs/LEDGER-CURUPIRA.md`.
 
 `docs/LEDGER-CURUPIRA.md` contem secoes historicas que chamam VFS de somente-leitura. Elas antecedem o COW atual e nao descrevem a implementacao corrente.
+
+## Zeebx v0.2.0/v0.2.1: tecnicas novas (leitura em worktree GPL)
+
+A referencia atual e `/home/rafaelfrequiao/projects/zeebx-0.2.1` (`v0.2.1`). Os commits foram lidos para extrair tecnicas, nunca transcritos.
+
+| Tecnica Zeebx | Evidencia | Licao Curupira independente |
+|---|---|---|
+| lote/ring de vertices | `7e845e8`, `src/machine/gl.rs`, `src/machine/buffer*.rs` | Produzir geometria por tick e enviar em lotes pode recuperar quadros sem mudar estado GL; Curupira deve primeiro medir demanda e manter rasterizador determinista. |
+| unidade 1 + `GL_COMBINE` | `e2cb591` | Textura unit 1 isolada nao basta: combinacao deve participar da cor final. TDD deve separar estado por unidade e testar `GL_MODULATE`/combine antes de anunciar efeito visual. |
+| leitura de pixels | `e054e24` | `ReadPixels` precisa ter origem de linha e pack layout que o jogo espera; nao contar pixels como se fosse leitura correta. |
+| scissor/viewport largo | `e91580f`, `09080d1` | Converter y de scissor pela mesma convencao de viewport e preservar proporcao larga; testar coordenadas de borda. |
+| nevoa | `89a445d`, `6d4f43e` | Cor/fator de nevoa sao estado completo RGBA, nao constante parcial. |
+| memoria | `6588d68`, `1df4015` | Dono/teto e `realloc` que conserva bloco antigo no fracasso sao contratos verificaveis; Brainchallenge e candidato de medicao. |
+| `fs:/mod` | `63d77d3` | Mount do modulo deve ser chave virtual controlada, nunca fallback host arbitrario. |
+| input | `84f92a6`, `src/input/sensores.rs` | Ordem de UIDs e sensores precisam ser medidos por evento, nao inferidos por nomes. |
+
+Prioridade Curupira apos v0.2.1: textura unit 1/`GL_COMBINE`, `ReadPixels`, scissor/viewport e memoria de Brainchallenge. Cada uma deve ter TDD, corpus verde e reimplementacao C++ independente.

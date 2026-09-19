@@ -572,8 +572,9 @@ TEST(FrenteIbitmap, OTexEnvxDoIglesRecusaHojeEServeOModoQuandoMapeado) {
   ConstruirIgles(b.Mem(), b.S(), b.Tr());
   auto& cpu = b.Cpu();
   cpu.Set(kR0, kObjetoIgles);
-  cpu.Set(kR1, 0x2300u);  // GL_TEXTURE_ENV_MODE (medido nos 4 titulos)
-  cpu.Set(kR2, 0x2200u);  // GL_MODULATE (medido nos 4 titulos)
+  cpu.Set(kR1, 0x2300u);  // GL_TEXTURE_ENV
+  cpu.Set(kR2, 0x2200u);  // GL_TEXTURE_ENV_MODE
+  cpu.Set(kR3, 0x2100u);  // GL_MODULATE
   ASSERT_TRUE(AtenderClasse(cpu, kVtableIgles + igles_slots::kIgles_TexEnvx, b.Tr()));
   // VERMELHO NA BASE: a recusa generica com nome. VERDE com a linha do mapa
   // `SlotIglesNoIgl(kIgles_TexEnvx) -> kIgl_TexEnvx` em classes.cpp.
@@ -597,7 +598,7 @@ TEST(FrenteIbitmap, OTexEnvfvDoIglesRecusaHojeEServeOModoQuandoMapeado) {
   b.Mem().Escrever32(kParams + 12u, 0u);
   cpu.Set(kR0, kObjetoIgles);
   cpu.Set(kR1, 0x2300u);  // GL_TEXTURE_ENV (medido nos 4 titulos)
-  cpu.Set(kR2, 0x2201u);  // GL_TEXTURE_ENV_MODE (medido nos 4 titulos)
+  cpu.Set(kR2, 0x2200u);  // GL_TEXTURE_ENV_MODE
   cpu.Set(kR3, kParams);
   ASSERT_TRUE(AtenderClasse(cpu, kVtableIgles + igles_slots::kIgles_TexEnvfv, b.Tr()));
   // VERMELHO NA BASE: a recusa generica com nome. VERDE com a linha do mapa

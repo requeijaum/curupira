@@ -288,9 +288,26 @@ constexpr int kModoTexture = 2;
 // titulo ("qual e o maior lado que a maquina aceita?"), e a resposta e a do
 // console.
 constexpr std::uint32_t kTexturaMaxima = 1024;
-// A unidade 1 e isolada: preserva a base, mas ainda nao e composta pelo rasterizador.
 constexpr std::uint32_t GL_MAX_TEXTURE_UNITS = 0x84E2u;
-constexpr std::uint32_t kUnidadesDeTextura = 1u;
+// O aparelho tem duas unidades. Cada uma tem bind, GL_TEXTURE_2D, coordenadas
+// de cliente e ambiente proprios; mudar a unidade activa nunca altera a outra.
+constexpr std::uint32_t kUnidadesDeTextura = 2u;
+constexpr std::uint32_t kTextura0 = 0x84C0u;
+constexpr std::uint32_t kTextura1 = kTextura0 + 1u;
+constexpr std::uint32_t kTextureEnv = 0x2300u;
+constexpr std::uint32_t kTextureEnvMode = 0x2200u;
+constexpr std::uint32_t kModulate = 0x2100u;
+constexpr std::uint32_t kReplace = 0x1E01u;
+constexpr std::uint32_t kCombine = 0x8570u;
+
+struct UnidadeDeTextura {
+  std::uint32_t textura_ligada = 0;
+  bool textura_2d_ligada = false;
+  bool coordenadas_ligadas = false;
+  ArrayDeVertices coordenadas;
+  // Preserva o caminho unit0 anterior ate o guest escolher explicitamente o modo.
+  std::uint32_t ambiente = kReplace;  // GL_TEXTURE_ENV_MODE
+};
 
 struct PilhaDeMatrizes {
   float m[kFundosMax][16];
@@ -333,9 +350,15 @@ class Igl {
   std::uint32_t Cor() const { return cor_; }
   std::uint32_t CorDeLimpeza() const { return cor_limpeza_; }
   std::uint32_t MascaraDeLimpeza() const { return mascara_limpeza_; }
-  std::uint32_t TexturaLigada() const { return textura_ligada_; }
+  // Mantem o observador historico da unidade 0. Os novos acessores tornam a
+  // segunda unidade observavel sem deixar o estado activo decidir a resposta.
+  std::uint32_t TexturaLigada() const { return unidades_[0].textura_ligada; }
+  std::uint32_t TexturaLigadaNaUnidade(std::uint32_t unidade) const;
+  std::uint32_t AmbienteDeTextura(std::uint32_t unidade) const;
   std::uint32_t TexturaActiva() const { return textura_activa_; }
   std::uint32_t TexturaClienteActiva() const { return textura_cliente_activa_; }
+  const ArrayDeVertices* CoordenadasDeTextura(std::uint32_t unidade) const;
+  bool CoordenadasDeTexturaLigadas(std::uint32_t unidade) const;
   std::uint64_t TexturasGeradas() const { return texturas_geradas_; }
   const EstadoDaTextura* Textura(std::uint32_t id) const;
   bool InterruptorLigado(std::uint32_t cap) const;
@@ -416,6 +439,9 @@ class Igl {
   float RealDaMemoria(std::uint32_t endereco) const;        // idem, lido do guest
   void LerMatriz(std::size_t i, const ArgumentosGl& a, float* saida) const;
   PilhaDeMatrizes& PilhaDoModo();
+  static std::size_t IndiceDaUnidade(std::uint32_t unidade);
+  UnidadeDeTextura& UnidadeActiva();
+  const UnidadeDeTextura& UnidadeActiva() const;
 
   Memoria& mem_;
   Traco& traco_;
@@ -486,9 +512,9 @@ class Igl {
   std::map<std::uint32_t, std::uint32_t> interruptores_;
   std::map<std::uint32_t, bool> arrays_de_cliente_;
   std::map<std::uint32_t, ArrayDeVertices> arrays_;
-  std::uint32_t textura_ligada_ = 0;
-  std::uint32_t textura_activa_ = gl_slots::GL_TEXTURE0;
-  std::uint32_t textura_cliente_activa_ = gl_slots::GL_TEXTURE0;
+  UnidadeDeTextura unidades_[kUnidadesDeTextura];
+  std::uint32_t textura_activa_ = kTextura0;
+  std::uint32_t textura_cliente_activa_ = kTextura0;
   std::uint64_t texturas_geradas_ = 0;
   std::map<std::uint32_t, EstadoDaTextura> texturas_;
   std::map<std::uint64_t, std::vector<std::uint32_t>> parametros_;

@@ -35,8 +35,10 @@
 //     porque desenhar 2 px com 1 px seria uma mentira silenciosa. O valor
 //     continua a ficar guardado no `igl.cpp` (o pedido e observavel), e nao
 //     aplicado;
-//   - interpolacao de cor (por vertice) e de coordenadas de textura;
-//   - amostragem da textura ligada (GL_NEAREST, clamp);
+//   - interpolacao de cor (por vertice) e de coordenadas de textura por unidade;
+//   - amostragem de ate duas texturas (GL_NEAREST, clamp), composta em ordem com
+//     GL_MODULATE ou GL_REPLACE; GL_COMBINE fica recusado porque fontes e
+//     operandos ainda nao sao estado modelado;
 //   - teste de profundidade, quando `GL_DEPTH_TEST` esta ligado;
 //   - descarte de faces por orientacao (`glCullFace`/`glFrontFace`).
 //
@@ -253,8 +255,15 @@ struct EstadoDeRasterizacao {
   Rgba cor_de_limpeza = {0, 0, 0, 0};
   std::uint32_t mascara_de_limpeza = 0;
   ArrayDoCliente vertices, cores, coordenadas_de_textura;
+  // Unidade 0 mantem estes nomes para os testes e clientes existentes. Unidade
+  // 1 tem estado proprio; a composicao aplica 0 e depois 1, como o pipeline ES.
   bool textura_ligada = false;
   Textura textura;
+  std::uint32_t ambiente_de_textura = 0x1E01u;  // GL_REPLACE (legado unit0)
+  bool textura1_ligada = false;
+  Textura textura1;
+  ArrayDoCliente coordenadas_de_textura1;
+  std::uint32_t ambiente_de_textura1 = 0x1E01u;  // GL_REPLACE
   bool sombreado_plano = false;
   bool teste_de_profundidade = false;
   bool escrever_profundidade = true;
@@ -435,7 +444,7 @@ class Rasterizador {
     // A NORMAL, ja transformada para o espaco do olho (e normalizada, se o
     // `GL_NORMALIZE` estiver ligado). A omissao do GL e (0, 0, 1).
     float normal[3] = {0.0f, 0.0f, 1.0f};
-    float u = 0, v = 0;
+    float u[2] = {0, 0}, v[2] = {0, 0};
   };
 
   bool LerVertice(const EstadoDeRasterizacao& e, std::uint32_t indice, Vertice* v,
@@ -462,7 +471,9 @@ class Rasterizador {
   // caminho RECUSA com o nome -- nao se inventa o valor de uma normal.
   bool LerNormalDeObjeto(const EstadoDeRasterizacao& e, std::uint32_t indice, float n[3],
                          std::string* motivo) const;
-  Rgba AmostrarTextura(const EstadoDeRasterizacao& e, float u, float v) const;
+  Rgba AmostrarTextura(const Textura& textura, float u, float v) const;
+  Rgba ComporTexturas(const EstadoDeRasterizacao& e, Rgba cor, float u0, float v0,
+                      float u1, float v1) const;
   void PrepararProfundidade();
 
   static Vertice InterpolarVertice(const Vertice& a, const Vertice& b, double t);

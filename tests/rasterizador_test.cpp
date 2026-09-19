@@ -592,6 +592,54 @@ TEST(Rasterizador, ATexturaAmostraOCantoCerto) {
   for (const auto& par : por_cor) EXPECT_EQ(par.second, 16) << "cor 0x" << std::hex << par.first;
 }
 
+TEST(Rasterizador, DuasUnidadesCompoemModulateEReplaceComPixelsExactos) {
+  Memoria mem(nullptr);
+  constexpr Endereco kV = 0x00110000, kUv0 = 0x00111000, kUv1 = 0x00112000;
+  constexpr Endereco kT0 = 0x00113000, kT1 = 0x00114000;
+  // Um triangulo que cobre o pixel (1,1), com coordenadas (0,0) nas duas unidades.
+  PorVertices(mem, kV, {{-1.0f, 1.0f}, {1.0f, 1.0f}, {-1.0f, -1.0f}});
+  for (int k = 0; k < 3; ++k) {
+    EscreverFloat(mem, kUv0 + static_cast<Endereco>(k * 8), 0.0f);
+    EscreverFloat(mem, kUv0 + static_cast<Endereco>(k * 8 + 4), 0.0f);
+    EscreverFloat(mem, kUv1 + static_cast<Endereco>(k * 8), 0.0f);
+    EscreverFloat(mem, kUv1 + static_cast<Endereco>(k * 8 + 4), 0.0f);
+  }
+  const std::uint8_t t0[4] = {128, 255, 128, 255};
+  const std::uint8_t t1[4] = {128, 128, 255, 128};
+  for (int k = 0; k < 4; ++k) {
+    mem.Escrever8(kT0 + static_cast<Endereco>(k), t0[k]);
+    mem.Escrever8(kT1 + static_cast<Endereco>(k), t1[k]);
+  }
+  EstadoDeRasterizacao e = EstadoBase();
+  e.viewport[1] = 0; e.viewport[2] = 8; e.viewport[3] = 8;
+  e.vertices = {true, 3, GL_FLOAT, 12, kV};
+  e.cor = {128, 128, 128, 128};
+  e.textura_ligada = e.textura1_ligada = true;
+  e.textura = {true, false, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, kT0, nullptr};
+  e.textura1 = {true, false, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, kT1, nullptr};
+  e.coordenadas_de_textura = {true, 2, GL_FLOAT, 8, kUv0};
+  e.coordenadas_de_textura1 = {true, 2, GL_FLOAT, 8, kUv1};
+  PedidoDeDesenho p; p.primitiva = GL_TRIANGLES; p.quantos = 3;
+
+  // 128*128/255 arredonda para 64: cor*(t0)*(t1) = (32,64,64), RGB565 0x2208.
+  e.ambiente_de_textura = 0x2100u;   // GL_MODULATE
+  e.ambiente_de_textura1 = 0x2100u;  // GL_MODULATE
+  Gravador modulado;
+  modulado.largura = modulado.altura = 8;
+  Rasterizador r0(mem, modulado);
+  std::string motivo;
+  ASSERT_TRUE(r0.Desenhar(e, p, &motivo)) << motivo;
+  EXPECT_TRUE(modulado.SoEstePixel(1, 1, 0x2208u));
+
+  // A segunda unidade roda depois da primeira: GL_REPLACE descarta o acumulado.
+  e.ambiente_de_textura1 = 0x1E01u;  // GL_REPLACE
+  Gravador substituido;
+  substituido.largura = substituido.altura = 8;
+  Rasterizador r1(mem, substituido);
+  ASSERT_TRUE(r1.Desenhar(e, p, &motivo)) << motivo;
+  EXPECT_TRUE(substituido.SoEstePixel(1, 1, 0x841Fu));  // texel unit1 em RGB565
+}
+
 TEST(Rasterizador, TexturaComFormatoSemCaminhoRecusaComONome) {
   Memoria mem(nullptr);
   Gravador g;
