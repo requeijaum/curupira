@@ -126,6 +126,12 @@ constexpr std::uint32_t GL_ONE_MINUS_DST_ALPHA = 0x0305u;
 constexpr std::uint32_t GL_DST_COLOR = 0x0306u;
 constexpr std::uint32_t GL_ONE_MINUS_DST_COLOR = 0x0307u;
 
+// OS MODOS DA NEVOA: o `gles_1_1/gl.h` tem GL_EXP (0x0800), GL_EXP2 (0x0801)
+// e GL_LINEAR (0x2601, que esta no `.inc` gerado). O GL_FOG_MODE chega
+// INTEIRO mesmo na forma `x` (a enum e o numero, nao um ponto fixo).
+constexpr std::uint32_t GL_EXP_FOG = 0x0800u;
+constexpr std::uint32_t GL_EXP2_FOG = 0x0801u;
+
 // --- a aritmetica da cor em [0,1] -------------------------------------------
 //
 // A MISTURA do GL e uma soma de produtos ponderados, e a ponderacao e um
@@ -1013,6 +1019,40 @@ void Rasterizador::RasterizarTriangulo(const EstadoDeRasterizacao& e, const Vert
       const float u1 = static_cast<float>(pwa * a.u[1] + pwb * b.u[1] + pwc * c.u[1]);
       const float v1 = static_cast<float>(pwa * a.v[1] + pwb * b.v[1] + pwc * c.v[1]);
       cor = ComporTexturas(e, cor, u0, v0, u1, v1);
+      // A NEVOA, depois da textura e antes do alpha test (EscreverPixel),
+      // mexendo so no RGB como o OpenGL ES 1.x manda.
+      if (e.nevoa_ligada) {
+        // O FATOR: interpolacao de `olho[2]` (z em coordenadas de olho) com os
+        // mesmos pesos corrigidos por perspectiva da cor e da textura, e a conta
+        // por `|z|` como o OpenGL permite.
+        const float z_olho = static_cast<float>(
+            pwa * a.olho[2] + pwb * b.olho[2] + pwc * c.olho[2]);
+        const float dist = std::abs(z_olho);
+        float f;
+        if (e.modo_da_nevoa == GL_LINEAR) {
+          if (dist <= e.inicio_da_nevoa) {
+            f = 1.0f;
+          } else if (dist >= e.fim_da_nevoa) {
+            f = 0.0f;
+          } else {
+            f = (e.fim_da_nevoa - dist) / (e.fim_da_nevoa - e.inicio_da_nevoa);
+          }
+        } else if (e.modo_da_nevoa == GL_EXP2_FOG) {
+          const float d = e.densidade_da_nevoa * dist;
+          f = std::exp(-(d * d));
+        } else {  // GL_EXP (omissao)
+          f = std::exp(-e.densidade_da_nevoa * dist);
+        }
+        cor.r = static_cast<std::uint8_t>(
+            std::min(255.0, static_cast<double>(cor.r) * f +
+                                e.cor_da_nevoa[0] * 255.0 * (1.0 - f) + 0.5));
+        cor.g = static_cast<std::uint8_t>(
+            std::min(255.0, static_cast<double>(cor.g) * f +
+                                e.cor_da_nevoa[1] * 255.0 * (1.0 - f) + 0.5));
+        cor.b = static_cast<std::uint8_t>(
+            std::min(255.0, static_cast<double>(cor.b) * f +
+                                e.cor_da_nevoa[2] * 255.0 * (1.0 - f) + 0.5));
+      }
       const float z = static_cast<float>(wa * a.z + wb * b.z + wc * c.z);
       EscreverPixel(e, x, y, z, cor);
     }
@@ -1157,6 +1197,39 @@ void Rasterizador::RasterizarSegmento(const EstadoDeRasterizacao& e, const Verti
     };
     cor = ComporTexturas(e, cor, interpolar(0, true), interpolar(0, false),
                          interpolar(1, true), interpolar(1, false));
+    // A NEVOA NO SEGMENTO, igual ao triangulo: depois da textura, antes do
+    // alpha test. O `z_olho` e interpolado linearmente (sem correccao de
+    // perspectiva, como o resto do segmento).
+    if (e.nevoa_ligada) {
+      const float z_olho = static_cast<float>(
+          static_cast<double>(a.olho[2]) +
+          (static_cast<double>(b.olho[2]) - static_cast<double>(a.olho[2])) * t);
+      const float dist = std::abs(z_olho);
+      float f;
+      if (e.modo_da_nevoa == GL_LINEAR) {
+        if (dist <= e.inicio_da_nevoa) {
+          f = 1.0f;
+        } else if (dist >= e.fim_da_nevoa) {
+          f = 0.0f;
+        } else {
+          f = (e.fim_da_nevoa - dist) / (e.fim_da_nevoa - e.inicio_da_nevoa);
+        }
+      } else if (e.modo_da_nevoa == GL_EXP2_FOG) {
+        const float d = e.densidade_da_nevoa * dist;
+        f = std::exp(-(d * d));
+      } else {  // GL_EXP
+        f = std::exp(-e.densidade_da_nevoa * dist);
+      }
+      cor.r = static_cast<std::uint8_t>(
+          std::min(255.0, static_cast<double>(cor.r) * f +
+                              e.cor_da_nevoa[0] * 255.0 * (1.0 - f) + 0.5));
+      cor.g = static_cast<std::uint8_t>(
+          std::min(255.0, static_cast<double>(cor.g) * f +
+                              e.cor_da_nevoa[1] * 255.0 * (1.0 - f) + 0.5));
+      cor.b = static_cast<std::uint8_t>(
+          std::min(255.0, static_cast<double>(cor.b) * f +
+                              e.cor_da_nevoa[2] * 255.0 * (1.0 - f) + 0.5));
+    }
     // O PIXEL PASSA PELO `EscreverPixel`, QUE JA FAZ o alpha test, o teste de
     // profundidade, a mistura e a mascara de cor contra o pixel que la esta. Nada
     // desta logica e duplicada aqui, e o `z` que lhe chega e o do ponto do

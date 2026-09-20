@@ -828,17 +828,18 @@ TEST(Rasterizador, CapacidadeLigadaSemCaminhoEntraNasFaltasUmaVezSo) {
   b.igl.DefinirTela(&b.tela);
   constexpr Endereco kV = 0x00100000;
   b.PrepararTriangulo(kV);
-  // A CAPACIDADE DESTE TESTE PASSOU A SER O `GL_FOG`: ele continua por fazer,
-  // e um teste que continuasse a ligar o `GL_BLEND` passaria a provar o
+  // A CAPACIDADE DESTE TESTE PASSOU A SER O `GL_DITHER`: o `GL_FOG` saiu
+  // da lista por_fazer porque o rasterizador passou a aplicar a nevoa.
+  // Um teste que continuasse a ligar o `GL_BLEND` passaria a provar o
   // contrario do que diz -- a lista `por_fazer` do `igl.cpp` ja nao tem o
   // blending, porque o rasterizador passou a misturar (frente rast2).
-  EXPECT_EQ(b.Ch(kIgl_Enable, GL_FOG), zb2::brew::ResultadoGl::Feito);
+  EXPECT_EQ(b.Ch(kIgl_Enable, GL_DITHER), zb2::brew::ResultadoGl::Feito);
   EXPECT_EQ(b.Ch(kIgl_DrawArrays, GL_TRIANGLES, 0, 3), zb2::brew::ResultadoGl::Feito);
   EXPECT_EQ(b.Ch(kIgl_DrawArrays, GL_TRIANGLES, 0, 3), zb2::brew::ResultadoGl::Feito);
   // UMA VEZ, e nao uma por desenho: um titulo de 60 quadros escreveria a mesma
-  // linha 60 vezes. Mas UMA vez, e nao zero: a nevoa nao existe, e isso tem de
+  // linha 60 vezes. Mas UMA vez, e nao zero: o dithering nao existe, e isso tem de
   // aparecer.
-  EXPECT_EQ(b.traco.ContagemFaltas().at("nevoa_de_GL_sem_rasterizador"), 1u);
+  EXPECT_EQ(b.traco.ContagemFaltas().at("dithering_sem_rasterizador"), 1u);
   // E o desenho ACONTECE na mesma: a cor sai opaca no lugar de nada.
   EXPECT_EQ(b.tela.Escritos(), 12u);
 }
@@ -1462,7 +1463,8 @@ TEST(Rasterizador, OQueSeImplementouSaiuDaTabelaDasFaltas) {
   constexpr Endereco kV = 0x00100000;
   b.PrepararTriangulo(kV);
   for (const std::uint32_t cap : {GL_BLEND, GL_ALPHA_TEST, GL_LIGHTING, GL_NORMALIZE,
-                                  kGlRescaleNormal, 0x0B57u /* GL_COLOR_MATERIAL */}) {
+                                  kGlRescaleNormal, 0x0B57u /* GL_COLOR_MATERIAL */,
+                                  GL_FOG}) {
     EXPECT_EQ(b.Ch(kIgl_Enable, cap), zb2::brew::ResultadoGl::Feito) << "cap 0x" << std::hex << cap;
   }
   b.Ch(kIgl_ColorMask, 1, 1, 1, 1);
@@ -1471,7 +1473,8 @@ TEST(Rasterizador, OQueSeImplementouSaiuDaTabelaDasFaltas) {
        {"blending_de_GL_sem_rasterizador", "alpha_test_de_GL_sem_rasterizador",
         "iluminacao_de_GL_sem_rasterizador", "normalizacao_de_normais_sem_rasterizador",
         "rescaling_de_normais_sem_iluminacao", "cor_do_material_sem_iluminacao",
-        "glColorMask_de_GL_sem_rasterizador"}) {
+        "glColorMask_de_GL_sem_rasterizador",
+        "nevoa_de_GL_sem_rasterizador"}) {
     EXPECT_EQ(b.Faltas(nome), 0u) << nome;
   }
   // E O DESENHO CONTINUA A ACONTECER (com a luz ligada e sem normais definidas,
@@ -1858,6 +1861,167 @@ TEST(Rasterizador, OAmbienteDoModeloDaCablagemEntraNaCorIluminada) {
 
 
 
+
+// ---------------------------------------------------------------------------
+// 11. A NEVOA (GL_FOG): depois da textura, antes do alpha test, so no RGB
+// ---------------------------------------------------------------------------
+//
+// DEMANDA MEDIDA: o Resident Evil 4 do zeebx pedia nevoa linear e perdia o
+// verde e o azul porque a cor da nevoa so tinha UM componente (v0.2.1).
+// No Curupira o GL_FOG saiu da lista `por_fazer` do `igl.cpp`: a nevoa
+// e aplicada agora contra o fragmento, e o alpha test descarta depois.
+
+// Constantes que o `.inc` gerado nao tem (cabecalho gles_1_1/gl.h):
+constexpr std::uint32_t kGlFogModeTeste = 0x0B65u;    // gl.h:192
+constexpr std::uint32_t kGlFogColorTeste = 0x0B66u;   // gl.h:193
+constexpr std::uint32_t kGlFogDensityTeste = 0x0B62u;  // gl.h:189
+constexpr std::uint32_t kGlFogStartTeste = 0x0B63u;    // gl.h:190
+constexpr std::uint32_t kGlFogEndTeste = 0x0B64u;      // gl.h:191
+constexpr std::uint32_t kGlLinearTeste = 0x2601u;       // gl_slots.inc
+
+TEST(Rasterizador, ANevoaLinearMudaACorDoFragmentoParaACorDaNevoa) {
+  Memoria mem(nullptr);
+  Gravador g;
+  Rasterizador r(mem, g);
+  EstadoDeRasterizacao e = EstadoBase();  // janela (0,0,8,8), vermelho opaco
+
+  // A MODELVIEW TRANSLADADA para (0,0,-0.8): vertices com z=0 ficam em
+  // olho[2] = -0.8, e |z_olho| = 0.8. Com identidade na projecao,
+  // clip[2]+clip[3] = -0.8+1 = 0.2 >= 0, e o triangulo nao e descartado
+  // pelo plano proximo.
+  for (int k = 0; k < 16; ++k) e.modelview[k] = 0.0f;
+  e.modelview[0] = 1.0f;
+  e.modelview[5] = 1.0f;
+  e.modelview[10] = 1.0f;
+  e.modelview[15] = 1.0f;
+  e.modelview[14] = -0.8f;  // translacao em z (coluna 3, linha 2)
+
+  // O TRIANGULO DE SEIS PIXELS, em z = 0:
+  //   A = (-1, 0.75, 0)  B = (-1, 0, 0)  C = (0, 0, 0)
+  constexpr Endereco kV = 0x00100000;
+  PorVertices(mem, kV, {{-1.0f, 0.75f}, {-1.0f, 0.0f}, {0.0f, 0.0f}});
+  e.vertices = {true, 3, GL_FLOAT, 12, kV};
+
+  // NEVOA LINEAR com inicio=0, fim=1.6: para dist=0.8, f = (1.6-0.8)/(1.6-0) = 0.5.
+  e.nevoa_ligada = true;
+  e.modo_da_nevoa = kGlLinearTeste;
+  e.cor_da_nevoa[0] = 0.0f;   // vermelho zero
+  e.cor_da_nevoa[1] = 0.0f;   // verde zero
+  e.cor_da_nevoa[2] = 1.0f;   // azul
+  e.inicio_da_nevoa = 0.0f;
+  e.fim_da_nevoa = 1.6f;
+
+  PedidoDeDesenho p;
+  p.primitiva = GL_TRIANGLES;
+  p.quantos = 3;
+  std::string motivo;
+  ASSERT_TRUE(r.Desenhar(e, p, &motivo)) << motivo;
+
+  // A CONTA: C = Cf * f + Cc * (1-f), com f=0.5.
+  //   R = 255 * 0.5 + 0   * 0.5 = 127.5 -> 128 -> 16 -> 0x8000
+  //   G = 0   * 0.5 + 0   * 0.5 = 0
+  //   B = 0   * 0.5 + 255 * 0.5 = 127.5 -> 128 -> 16 -> 0x0010
+  // 565: 0x8000 | 0x0000 | 0x0010 = 0x8010
+  // SEM NEVOA os seis seriam 0xF800 (vermelho opaco).
+  EXPECT_EQ(g.escritas.size(), 6u);
+  EXPECT_EQ(g.pixels.at({0, 1}), 0x8010u);
+  EXPECT_EQ(g.pixels.at({0, 2}), 0x8010u);
+  EXPECT_EQ(g.pixels.at({2, 3}), 0x8010u);
+
+  // E A NEVOA DESLIGADA NAO MUDA A COR: o mesmo desenho sem o interruptor
+  // da 0xF800 (vermelho) nos seis.
+  Gravador g2;
+  Rasterizador r2(mem, g2);
+  EstadoDeRasterizacao sem = e;
+  sem.nevoa_ligada = false;
+  ASSERT_TRUE(r2.Desenhar(sem, p, &motivo)) << motivo;
+  EXPECT_EQ(g2.pixels.at({0, 1}), 0xF800u);
+  EXPECT_EQ(g2.escritas.size(), 6u);
+}
+
+TEST(Rasterizador, ANevoaComQuatroComponentesNaoPerdeOVerdeEAzul) {
+  // A CORRECAO QUE O ZEEBX FEZ NA v0.2.1: a cor da nevoa tem QUATRO
+  // componentes, e guardar so o primeiro (R) perdia o G e o B. Aqui com
+  // nevoa VERDE (0,1,0), f=0 (total), o fragmento fica todo verde.
+  Memoria mem(nullptr);
+  Gravador g;
+  Rasterizador r(mem, g);
+  EstadoDeRasterizacao e = EstadoBase();
+  for (int k = 0; k < 16; ++k) e.modelview[k] = 0.0f;
+  e.modelview[0] = 1.0f;
+  e.modelview[5] = 1.0f;
+  e.modelview[10] = 1.0f;
+  e.modelview[15] = 1.0f;
+  e.modelview[14] = -0.5f;
+  constexpr Endereco kV = 0x00100000;
+  PorVertices(mem, kV, {{-1.0f, 0.75f}, {-1.0f, 0.0f}, {0.0f, 0.0f}});
+  e.vertices = {true, 3, GL_FLOAT, 12, kV};
+  // f = 0 (distancia >= fim). Com dist=0.5 e fim=0.5, f = dist >= fim -> 0.
+  e.nevoa_ligada = true;
+  e.modo_da_nevoa = kGlLinearTeste;
+  e.cor_da_nevoa[0] = 0.0f;    // R = 0
+  e.cor_da_nevoa[1] = 1.0f;    // G = 255
+  e.cor_da_nevoa[2] = 0.0f;    // B = 0
+  e.cor_da_nevoa[3] = 1.0f;    // alfa = 1 (preservado, mas nao afecta RGB)
+  e.inicio_da_nevoa = 0.0f;
+  e.fim_da_nevoa = 0.5f;       // dist=0.5 >= 0.5  -> f = 0
+  PedidoDeDesenho p;
+  p.primitiva = GL_TRIANGLES;
+  p.quantos = 3;
+  std::string motivo;
+  ASSERT_TRUE(r.Desenhar(e, p, &motivo)) << motivo;
+  // O CANAL VERDE A 255: 255 >> 2 = 63 -> 0x07E0
+  // Os outros canais a zero. Verde puro sem perda de G ou B.
+  EXPECT_EQ(g.pixels.at({0, 1}), 0x07E0u);
+  EXPECT_EQ(g.pixels.at({0, 2}), 0x07E0u);
+  EXPECT_EQ(g.pixels.at({2, 3}), 0x07E0u);
+  EXPECT_EQ(g.escritas.size(), 6u);
+}
+
+TEST(Rasterizador, ANevoaChegaPelaCablagemDoIglesSemFalta) {
+  Bancada b;
+  b.igl.DefinirTela(&b.tela);
+
+  // NEVOA SEM INTERRUPTOR (GL_FOG desligado): o triangulo sai VERMELHO.
+  constexpr Endereco kV = 0x00100000;
+  b.PrepararTriangulo(kV);
+  EXPECT_EQ(b.Ch(kIgl_DrawArrays, GL_TRIANGLES, 0, 3),
+            zb2::brew::ResultadoGl::Feito);
+
+  // NEVOA LIGADA. Com distancia |z_olho| = 0 (modelview identidade, vertices
+  // em z=0) e LINEAR com inicio=0, fim=0.0001, o fator f = 0 (dist >= fim).
+  // A cor do fragmento e a da nevoa, BRANCA (1,1,1), e nao vermelha.
+  ASSERT_EQ(b.Ch(kIgl_Enable, GL_FOG), zb2::brew::ResultadoGl::Feito);
+  constexpr std::uint32_t kParam = 0x00094A80u;
+  // GL_FOG_MODE e GL_LINEAR: escreve o enum CRU.
+  b.mem.Escrever32(kParam, static_cast<std::uint32_t>(0x2601u));
+  ASSERT_EQ(b.Ch(kIgl_Fogxv, kGlFogModeTeste, kParam),
+            zb2::brew::ResultadoGl::Feito);
+  // GL_FOG_START = 0
+  b.mem.Escrever32(kParam, 0u);
+  ASSERT_EQ(b.Ch(kIgl_Fogxv, kGlFogStartTeste, kParam),
+            zb2::brew::ResultadoGl::Feito);
+  // GL_FOG_END = 0.0001 (dist=0 >= 0.0001 -> f=0)
+  b.mem.Escrever32(kParam, Fixo(0.0001f));
+  ASSERT_EQ(b.Ch(kIgl_Fogxv, kGlFogEndTeste, kParam),
+            zb2::brew::ResultadoGl::Feito);
+  // GL_FOG_COLOR com 4 componentes BRANCO (1,1,1,1)
+  const std::uint32_t cor_valores[4] = {
+      Fixo(1.0f), Fixo(1.0f), Fixo(1.0f), Fixo(1.0f)};
+  for (int k = 0; k < 4; ++k)
+    b.mem.Escrever32(kParam + 4u * k, cor_valores[k]);
+  ASSERT_EQ(b.Ch(kIgl_Fogxv, kGlFogColorTeste, kParam),
+            zb2::brew::ResultadoGl::Feito);
+
+  // O MESMO TRIANGULO OUTRA VEZ, com nevoa ligada.
+  b.PrepararTriangulo(kV);
+  EXPECT_EQ(b.Ch(kIgl_DrawArrays, GL_TRIANGLES, 0, 3),
+            zb2::brew::ResultadoGl::Feito);
+
+  // A NEVOA SAIU DA LISTA DAS FALTAS: o `glEnable(GL_FOG)` nao gera
+  // a falta `nevoa_de_GL_sem_rasterizador`.
+  EXPECT_EQ(b.Faltas("nevoa_de_GL_sem_rasterizador"), 0u);
+}
 
 }  // namespace
 }  // namespace zb2::video

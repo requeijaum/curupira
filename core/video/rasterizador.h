@@ -383,6 +383,17 @@ struct EstadoDeRasterizacao {
   // `GL_LIGHTING` e NUNCA chamam o `glNormalPointer` nem o `glNormal3x`).
   ArrayDoCliente normais;
 
+  // --- A NEVOA (GL_FOG) ----------------------------------------------------
+  // A nevoa do OpenGL ES 1.x: depois da textura, antes do alpha test, so no
+  // RGB. O fator usa `|z_olho|` (distancia em coordenadas de olho). As omissoes
+  // sao as do GL: GL_EXP, cor preta, densidade 1.
+  bool nevoa_ligada = false;
+  std::uint32_t modo_da_nevoa = 0x0B65u;  // GL_EXP (gles_1_1/gl.h:191)
+  float cor_da_nevoa[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+  float inicio_da_nevoa = 0.0f;
+  float fim_da_nevoa = 1.0f;
+  float densidade_da_nevoa = 1.0f;
+
   // As capacidades que os titulos LIGARAM e que este rasterizador nao faz (o
   // ponto 3 do topo). Cada nome entra uma vez no traco: e o oposto do stub mudo
   // do `glCullFace`, que descartou 86 377 chamadas sem deixar rasto.

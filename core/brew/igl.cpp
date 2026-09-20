@@ -133,6 +133,14 @@ constexpr std::uint32_t GL_RESCALE_NORMAL = 0x803Au;
 constexpr std::uint32_t GL_COLOR_MATERIAL = 0x0B57u;
 constexpr std::uint32_t GL_COLOR_LOGIC_OP = 0x0BF2u;
 constexpr std::uint32_t GL_STENCIL_TEST = 0x0B90u;
+// e mais, de gles_1_1/gl.h:189-193: os parametros do `glFog*`. O `.inc`
+// gerado de `gles_1_0/gl.h` nao os tem, e a mesma justificativa do
+// `GL_RESCALE_NORMAL` acima vale para eles.
+constexpr std::uint32_t GL_FOG_DENSITY = 0x0B62u;  // gl.h:189
+constexpr std::uint32_t GL_FOG_START = 0x0B63u;    // gl.h:190
+constexpr std::uint32_t GL_FOG_END = 0x0B64u;      // gl.h:191
+constexpr std::uint32_t GL_FOG_MODE = 0x0B65u;     // gl.h:192
+constexpr std::uint32_t GL_FOG_COLOR = 0x0B66u;    // gl.h:193
 constexpr std::uint32_t GL_POINT_SMOOTH = 0x0B10u;
 constexpr std::uint32_t GL_LINE_SMOOTH = 0x0B20u;
 constexpr std::uint32_t GL_MULTISAMPLE = 0x809Du;
@@ -649,7 +657,36 @@ video::EstadoDeRasterizacao Igl::MontarEstado() const {
   // cruas: um mapa que ninguem decodifica e indistinguivel de um pedido perdido
   // (P2). Sem nenhum pedido fica a omissao do GL que o retrato ja tem.
   for (int k = 0; k < 4; ++k) e.ambiente_da_cena[k] = ambiente_da_cena_[k];
+
+  // --- A NEVOA ------------------------------------------------------------
   //
+  // O GL_FOG e lido dos parametros guardados pelo `kIgl_Fogx`/`kIgl_Fogxv`.
+  // O modo chega INTEIRO mesmo na forma `x` (e uma enumeracao, nao um ponto
+  // fixo). A cor tem QUATRO componentes. A densidade, o inicio e o fim sao
+  // GLfixed se vieram pela forma `x` (e `RealDoFixo` os le), e palavras cruas
+  // do guest se vieram pela forma `fv` (o `kIgl_Fogxv` nao as converte).
+  e.nevoa_ligada = InterruptorLigado(GL_FOG);
+  if (e.nevoa_ligada) {
+    const auto fog = [&](std::uint32_t pname) -> const std::vector<std::uint32_t>* {
+      const auto* v = Parametro(kIgl_Fogx, pname);
+      if (v == nullptr) v = Parametro(kIgl_Fogxv, pname);
+      return v;
+    };
+    const std::vector<std::uint32_t>* modo = fog(GL_FOG_MODE);
+    if (modo != nullptr && !modo->empty()) e.modo_da_nevoa = (*modo)[0];
+    const std::vector<std::uint32_t>* cor = fog(GL_FOG_COLOR);
+    if (cor != nullptr && cor->size() >= 4) {
+      for (int k = 0; k < 4; ++k) e.cor_da_nevoa[k] = RealDoFixo((*cor)[k]);
+    }
+    const auto valor = [&](std::uint32_t pname, float* destino) {
+      const auto* v = fog(pname);
+      if (v != nullptr && !v->empty()) *destino = RealDoFixo((*v)[0]);
+    };
+    valor(GL_FOG_DENSITY, &e.densidade_da_nevoa);
+    valor(GL_FOG_START, &e.inicio_da_nevoa);
+    valor(GL_FOG_END, &e.fim_da_nevoa);
+  }
+
   // AS VARIANTES `x`/`xv` DE LUZ E MATERIAL (`glLightxv`, `glMaterialxv`) NAO
   // ALIMENTAM ESTE RETRATO, e isso fica dito: elas guardam palavras CRUAS do
   // guest num mapa diferente, e nenhum dos titulos medidos deste corpus as
@@ -672,7 +709,6 @@ video::EstadoDeRasterizacao Igl::MontarEstado() const {
   // recusa-la por "capacidade desconhecida", que e uma mentira sobre o
   // cabecalho do SDK, ou aceita-la sem mais, que e o stub mudo.
   const struct { std::uint32_t cap; const char* nome; } por_fazer[] = {
-      {GL_FOG, "nevoa_de_GL_sem_rasterizador"},
       {GL_POLYGON_OFFSET_FILL, "polygon_offset_sem_rasterizador"},
       {GL_DITHER, "dithering_sem_rasterizador"},
       // O STENCIL: o pedido MEDIDO 9x nos nove titulos TTD
