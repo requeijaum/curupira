@@ -165,6 +165,31 @@ constexpr std::uint32_t kEvtflgAsync = 0x0002u;
 constexpr std::uint64_t kLimiteDoEvento = 4000000ull;
 // A base do modulo. MEDIDA: ver `tests/mod_base_test.cpp` e o `bateria.cpp`.
 constexpr std::uint32_t kBase = 0x00000000u;
+
+// A veneira ARMCC ROPI que realoca e depois ZERA a propria lista. Os valores
+// sao as instrucoes, nao os campos [4..16] do modulo: esses campos pertencem
+// ao titulo e mudam com o tamanho da imagem. Esta forma e a das familias
+// `cninja`/`cnk2`/`game`; so ela sofre a destruicao `[0x9c] += 0x9c` ao entrar
+// de novo depois de a lista ter sido zerada.
+bool EhVeneiraRopiQueZeraALista(const Memoria& mem) {
+  struct Palavra { std::uint32_t offset; std::uint32_t valor; };
+  static constexpr Palavra kAssinatura[] = {
+      {0x00u, 0xea000003u}, {0x14u, 0xe92d00f0u}, {0x18u, 0xe24f4020u},
+      {0x1cu, 0xe284509cu}, {0x20u, 0xe5143008u}, {0x24u, 0xe5053008u},
+      {0x28u, 0xe5143004u}, {0x2cu, 0xe5053004u}, {0x30u, 0xe51f3034u},
+      {0x34u, 0xe0833005u}, {0x38u, 0xe51f4038u}, {0x3cu, 0xe0844005u},
+      {0x44u, 0xb4936004u}, {0x48u, 0xb7967005u}, {0x4cu, 0xb0877005u},
+      {0x50u, 0xb7867005u}, {0x54u, 0xbafffff9u}, {0x58u, 0xe51f305cu},
+      {0x60u, 0xe51f4060u}, {0x64u, 0xe51f6060u}, {0x68u, 0xe1540006u},
+      {0x70u, 0xe0844005u}, {0x78u, 0xe1530004u}, {0x7cu, 0xb4836004u},
+      {0x80u, 0xbafffffcu}, {0x84u, 0xe51f307cu}, {0x8cu, 0xe8bd00f0u},
+      {0x90u, 0xe12fff13u},
+  };
+  for (const Palavra p : kAssinatura) {
+    if (mem.Ler32(p.offset) != p.valor) return false;
+  }
+  return true;
+}
 constexpr int kOrcamentoSegundos = 25;
 // Quanto a MIDIA anda por milissegundo do relogio virtual. O valor e o do modulo
 // de midia (`Media::kAmostrasPorMs`, 22 = 22050/1000 truncado); escreve-se por
@@ -5430,26 +5455,33 @@ ResultadoFase Despacho::Correr(ICpu& cpu, std::uint64_t limite, std::uint32_t pp
         ant = v;
       }
     }
-    // PROPOSTA (frente ropi2), NAO APLICADA NA ENTREGA.
-    //
-    // A SEGUNDA ENTRADA NO MODULO E UMA SENTENCA DE MORTE para os 6 titulos da
-    // familia A (`cninja`, `karnovr`, `spinmast`, `strhoop`, `supbtime`,
-    // `wizdfire`), e hoje ela nao se ve em lado nenhum: o registo do titulo diz
-    // apenas `saiu_do_modulo_para_0xfe3bc25c`. MEDIDO no `cninja` real: a
-    // primeira entrada em 0 e a do sistema (lr = sentinela, r2 = 0x90000); a
-    // SEGUNDA vem de DENTRO da thread (sp = 0x8f033e60, lr = 0x00011014, r0 = 0)
-    // e a veneira da ROPI volta a correr sobre a lista JA ZERADA -- 82 475
-    // iteracoes de `[0x9c] += 0x9c`, que destroem a primeira instrucao do
-    // proprio modulo (`0x0a8ef06e` = `beq 0xfe3bc1c0`, e o PC de saida do
-    // titulo e `0xfe3bc25c` = o alvo mais 0x9c). Ver
-    // `tests/carga_test.cpp`, `CargaRopi.ASegundaPassagemDaVeneiraDestroiAEntradaDoModulo`.
+    // Toda reentrada na base continua registada: o rasto do FIFA (`pc=0`,
+    // `r0=0x10001800`) e evidencia de um despacho virtual partido, ainda que o
+    // cabecalho BREW dele NAO seja a veneira abaixo. A barreira muda apenas a
+    // forma ARMCC ROPI que consome e zera a lista de realocacao; nela uma segunda
+    // execucao soma 0x9c sobre a primeira instrucao milhares de vezes.
     if (pc == faixa_base_) {
       const bool ja = entrada_ja_correu_;
       entrada_ja_correu_ = true;
-      if (ja) traco_.Emitir(Area::Brew, Nivel::Erro, "ENTRADA_DO_MODULO_REPETIDA",
-                    "pc=0x" + Hex(pc) + " lr=0x" + Hex(cpu.Get(kLR)) + " r0=0x" +
-                        Hex(cpu.Get(kR0)) + " sp=0x" + Hex(cpu.Get(kSP)) +
-                        " -- a veneira da ROPI vai correr outra vez sobre a lista zerada");
+      if (ja) {
+        const std::uint32_t lr = cpu.Get(kLR);
+        const bool veneira_ropi =
+            pc == 0 && faixa_base_ == 0 && EhVeneiraRopiQueZeraALista(mem_);
+        traco_.Emitir(Area::Brew, Nivel::Erro, "ENTRADA_DO_MODULO_REPETIDA",
+                      "pc=0x" + Hex(pc) + " lr=0x" + Hex(lr) + " r0=0x" +
+                          Hex(cpu.Get(kR0)) + " sp=0x" + Hex(cpu.Get(kSP)) +
+                          (veneira_ropi
+                               ? " -- retornou AEE_SUCCESS sem reexecutar a veneira ROPI"
+                               : " -- entrada repetida fora da veneira ROPI"));
+        if (veneira_ropi) {
+          // A entrada do modulo devolve AEE_SUCCESS em r0. `Bx`, em vez de
+          // escrever PC directamente, tambem repoe o modo Thumb quando o
+          // chamador deixou esse bit no LR.
+          cpu.Set(kR0, static_cast<std::uint32_t>(kAeeSuccess));
+          cpu.Bx(lr);
+          continue;
+        }
+      }
     }
     if (std::getenv("ZB2_SONDA_ZERO") != nullptr) {
       static bool ja = false;

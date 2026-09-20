@@ -897,9 +897,9 @@ class Despacho {
   bool tem_clsid_ = false;
   std::uint32_t faixa_base_ = 0;
   std::uint32_t faixa_fim_ = 0;
-  // PROPOSTA (frente ropi2): o modulo ja arrancou uma vez nesta corrida. Serve
-  // para a SEGUNDA entrada em `base` deixar de ser invisivel -- ver o ramo
-  // `ENTRADA_DO_MODULO_REPETIDA` em `despacho.cpp`.
+  // O modulo ja alcancou a entrada nesta corrida. Mantem visiveis todas as
+  // reentradas; o despacho bloqueia somente a assinatura da veneira ROPI que
+  // zera a propria lista de realocacao.
   bool entrada_ja_correu_ = false;
 };
 

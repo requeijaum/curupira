@@ -2976,3 +2976,110 @@ TEST(RocketwebShell, CadeiaGetDeviceInfoExDepoisRegisterNotifySoGuardaORegisto) 
 }
 
 }  // namespace zb2::brew
+
+
+namespace zb2::brew {
+namespace {
+
+struct BancadaRopi {
+  Tempo tempo;
+  Traco traco{"teste_ropi", &tempo};
+  DestinoMemoria destino;
+  Memoria mem{&traco};
+  Vfs vfs;
+  Alocador al{mem, 0x80200000u, 0x00100000u, &traco};
+  Despacho despacho{mem, traco, al, vfs};
+  ArmInterpreter cpu{mem, &traco};
+
+  BancadaRopi() {
+    traco.JuntarDestino(&destino);
+    cpu.Repor(0, 0x80080000u);
+  }
+};
+
+// A segunda visita a zero nao e uma segunda carga: no FIFA ela vem de um
+// despacho virtual com o objecto ja corrompido (`r0=0x10001800`). A entrada
+// original ja publicou a vtable; voltar a executar o prologo com `r1=0` apaga
+// essa vtable. O desvio tem de fazer o que a ABI faria ao retornar: r0 recebe
+// AEE_SUCCESS e `bx lr` conserva tanto o endereco quanto o modo Thumb.
+TEST(EntradaRopi, SegundaEntradaBaseZeroDoFifaNaoReexecutaOVeneer) {
+  BancadaRopi b;
+  constexpr std::uint32_t kObjeto = 0x10001800u;
+  constexpr std::uint32_t kVtable = 0x10001900u;
+  constexpr std::uint32_t kSentinelaRopi = 0xfffffff0u;
+
+  // O cabecalho e a veneira ARMCC reais: uma lista com um sitio em 0xac e
+  // `loop B` que a zera. A entrada em 0x9c publica a vtable e retorna sucesso.
+  // O valor de r0 e o que o FIFA tinha quando voltou indevidamente a PC zero.
+  constexpr std::uint32_t kVeneira[] = {
+      0xe92d00f0u, 0xe24f4020u, 0xe284509cu, 0xe5143008u, 0xe5053008u,
+      0xe5143004u, 0xe5053004u, 0xe51f3034u, 0xe0833005u, 0xe51f4038u,
+      0xe0844005u, 0xe1530004u, 0xb4936004u, 0xb7967005u, 0xb0877005u,
+      0xb7867005u, 0xbafffff9u, 0xe51f305cu, 0xe0833005u, 0xe51f4060u,
+      0xe51f6060u, 0xe1540006u, 0xc1a04006u, 0xe0844005u, 0xe3a06000u,
+      0xe1530004u, 0xb4836004u, 0xbafffffcu, 0xe51f307cu, 0xe0833005u,
+      0xe8bd00f0u, 0xe12fff13u,
+  };
+  b.mem.Escrever32(0x00, 0xea000003u);  // b 0x14
+  b.mem.Escrever32(0x04, 0x10u);        // lista: 0xac..0xb0
+  b.mem.Escrever32(0x08, 0x14u);
+  b.mem.Escrever32(0x0c, 0x14u);        // loop B tambem para em 0xb0
+  b.mem.Escrever32(0x10, 0u);           // entrada: 0x9c
+  for (std::size_t i = 0; i < sizeof(kVeneira) / sizeof(kVeneira[0]); ++i)
+    b.mem.Escrever32(0x14u + static_cast<std::uint32_t>(i * 4u), kVeneira[i]);
+  b.mem.Escrever32(0x9c, 0xe5801000u);  // str r1,[r0]
+  b.mem.Escrever32(0xa0, 0xe3a00000u);  // mov r0,#0
+  b.mem.Escrever32(0xa4, 0xe12fff1eu);  // bx lr
+  b.mem.Escrever32(0xac, 0x20u);        // sitio que o loop B zera
+  b.mem.Escrever32(0xbc, 0u);           // alvo do sitio, realocado na primeira vez
+  b.despacho.DefinirFaixaDoModulo(0, 0x300u);
+
+  b.cpu.Set(kR0, kObjeto);
+  b.cpu.Set(kR1, kVtable);
+  b.cpu.Set(kLR, kSentinelaRopi);
+  b.cpu.Set(kPC, 0);
+  EXPECT_EQ(b.despacho.Correr(b.cpu, 128, 0).motivo, "retornou");
+  ASSERT_EQ(b.mem.Ler32(kObjeto), kVtable) << "a primeira entrada continua valida";
+
+  // Caller Thumb: a barreira nao pode apenas escrever PC=LR. Ela tem de fazer
+  // `bx lr`; o pequeno retorno Thumb abaixo so chega a sentinela com CPSR.T.
+  b.mem.Escrever16(0x220, 0x4b00u);  // ldr r3,[pc,#0] -> 0x224
+  b.mem.Escrever16(0x222, 0x4718u);  // bx r3
+  b.mem.Escrever32(0x224, kSentinelaRopi);
+  b.cpu.Set(kR0, kObjeto);
+  b.cpu.Set(kR1, 0);
+  b.cpu.Set(kLR, 0x221u);
+  b.cpu.Set(kPC, 0);
+  EXPECT_EQ(b.despacho.Correr(b.cpu, 128, 0).motivo, "retornou");
+  EXPECT_EQ(b.cpu.Get(kR0), static_cast<std::uint32_t>(kAeeSuccess));
+  EXPECT_EQ(b.mem.Ler32(kObjeto), kVtable)
+      << "a segunda entrada nao pode apagar a vtable publicada pela primeira";
+  EXPECT_EQ(b.destino.QuantosComNome("ENTRADA_DO_MODULO_REPETIDA"), 1u)
+      << "a barreira deixa evidencia da chamada errada";
+}
+
+TEST(EntradaRopi, NaoBloqueiaOutraEntradaLegitimaNaBaseZero) {
+  BancadaRopi b;
+  constexpr std::uint32_t kObjeto = 0x10001800u;
+  constexpr std::uint32_t kSentinelaRopi = 0xfffffff0u;
+  // Parece a entrada BREW normal do FIFA no ponto que interessa aqui: nao e a
+  // veneira que consome uma lista de realocacao. Duas chamadas continuam validas.
+  b.mem.Escrever32(0x00, 0xe5801000u);  // str r1,[r0]
+  b.mem.Escrever32(0x04, 0xe3a00000u);  // mov r0,#0
+  b.mem.Escrever32(0x08, 0xe12fff1eu);  // bx lr
+  b.despacho.DefinirFaixaDoModulo(0, 0x100u);
+
+  for (const std::uint32_t valor : {0x11111111u, 0x22222222u}) {
+    b.cpu.Set(kR0, kObjeto);
+    b.cpu.Set(kR1, valor);
+    b.cpu.Set(kLR, kSentinelaRopi);
+    b.cpu.Set(kPC, 0);
+    EXPECT_EQ(b.despacho.Correr(b.cpu, 32, 0).motivo, "retornou");
+    EXPECT_EQ(b.mem.Ler32(kObjeto), valor);
+  }
+  EXPECT_EQ(b.destino.QuantosComNome("ENTRADA_DO_MODULO_REPETIDA"), 1u)
+      << "a entrada normal continua observavel, mas nao e bloqueada";
+}
+
+}  // namespace
+}  // namespace zb2::brew
