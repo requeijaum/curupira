@@ -57,3 +57,30 @@ A referencia atual e `/home/rafaelfrequiao/projects/zeebx-0.2.1` (`v0.2.1`). Os 
 | input | `84f92a6`, `src/input/sensores.rs` | Ordem de UIDs e sensores precisam ser medidos por evento, nao inferidos por nomes. |
 
 Prioridade Curupira apos v0.2.1: textura unit 1/`GL_COMBINE`, `ReadPixels`, scissor/viewport e memoria de Brainchallenge. Cada uma deve ter TDD, corpus verde e reimplementacao C++ independente.
+
+## Revisao datada: Zeebx v0.2.1 e PR #14 (2026-09-20)
+
+Fonte lida: worktree `/home/rafaelfrequiao/projects/zeebx-emu` em `v0.2.1` / `6c74975`; PR GitHub #14 aberto, autor `J0aoSiqueira`, atualizado em 2026-09-20. O diff do PR e documentacao (`COMPATIBILIDADE.md`, `README.md`), nao codigo de emulacao. Ele declara 46/61 compativeis, 8/61 com ressalvas e 7/61 incompativeis. Esses percentuais nao sao comparaveis diretamente ao corpus Curupira de 62: conjuntos, criterios e horizonte de teste diferem.
+
+Cruzamento com o corpus Curupira:
+
+| Relato Zeebx | Curupira corpus | Leitura tecnica |
+|---|---|---|
+| Brain Challenge: problema visual/Focus Bolas | `brainchallenge` (274804) | Heap falho real em depuracao; nao atribuir automaticamente a renderer. |
+| FIFA 09: nomes HUD | `fifa09` (274803) | framebuffer tem uma cor; candidato a texto/composicao, sem prova de API ausente. |
+| Heavy Weapon: cores | `heavyweaponbrew` (278200) | candidato a composicao/cor, requer cena medida. |
+| Bad Dudes / Heavy Barrel: entrada | `baddudes` (279888), `hbarrel` (279889) | ordem de UIDs e mapeamento de input devem ser medidos independentemente. |
+| Peggle: graficos/musica/cores | `peggle` (278962) | candidato a audio/render; nao inferir do status. |
+| RE4 fog | `bio4_brew` (276675) | fog e estado RGBA/fator; falta de corpus atual nao prova suporte visual completo. |
+| Need for Speed Carbon | `nfs` (276121) | titulo relacionado no corpus, variante exata nao confirmada. |
+| Rolima / Jetboard | `Rolimaz` (276809), `JetBoardz` (278283) | input e timing candidatos, manter trace por titulo. |
+| Tork and Kral | `torkandkral` (280463) | presente; cores/pixels medidos. |
+| Super Mario 64 port | ausente | nao esta no corpus Curupira. |
+
+Tres experimentos Curupira ordenados por impacto/verificabilidade:
+
+1. **Textura unit1/composicao** — implementada independentemente (`c703a59`): unit0/unit1, MODULATE/REPLACE; `GL_COMBINE` continua recusado ate contrato de operandos.
+2. **glReadPixels/scissor** — ReadPixels real implementado (`896e5ba`); scissor/viewport ja tinha testes de conversao de y. Medir Brainchallenge/FIFA em cena que os exercite.
+3. **Memoria Brainchallenge** — rastrear a origem nula antes de `0x42d3c`; heap/memset nao sao corrigidos por clamp, conforme `docs/brainchallenge-heap.md`.
+
+A licenca permanece limite duro: ideias e contratos HLE podem orientar TDD C++ independente; nenhum codigo GPL-2.0-only de Zeebx e copiado.
