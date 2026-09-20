@@ -11,3 +11,7 @@ O caller `0x42e50` chama `0x42d3c` e passa o retorno em `r0` a `0x111a0`; no cas
 ## Cadeia HLE apos falha
 
 Sonda de `0x42d0c` mostrou `r3=0xf0001780`, que mapeia para `kSlotIdMemset=1504`. O wrapper `0x1e318` faz malloc e tail-call para memset. Com tamanho corrupto, malloc devolve zero e o guest chama `memset(0,0,0xe58d3000)`, retornando ao parser nulo. A causa continua antes do malloc: `0x42d3c` recebe/propaga origem nula.
+
+## Retorno de 0x42d3c
+
+Sonda no epilogo `0x42e42` mediu no caso falho: `r0=0`, `r1=0`, `r4=0`, `r5=0xe58d3000`, `r6=0xffffffc0`, `lr=0x1e33b`. `r5` vem do helper `0x4667c` e propaga opcode lido da origem nula; o parser retorna nulo, mas o caller `0x42e50` nao testa esse retorno antes de `0x111a0`.
