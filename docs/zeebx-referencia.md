@@ -84,3 +84,7 @@ Tres experimentos Curupira ordenados por impacto/verificabilidade:
 3. **Memoria Brainchallenge** — rastrear a origem nula antes de `0x42d3c`; heap/memset nao sao corrigidos por clamp, conforme `docs/brainchallenge-heap.md`.
 
 A licenca permanece limite duro: ideias e contratos HLE podem orientar TDD C++ independente; nenhum codigo GPL-2.0-only de Zeebx e copiado.
+
+### Trace Tectoy / GL_COMBINE avancado
+
+Embora `tectoy.mod` contenha literais SOURCE2/OPERAND2/RGB_SCALE, corrida canônica com `ZB2_QUADROS=3000`, START e trace nao fez chamadas TexEnv/Combine, escreveu zero pixels e reteve uma cor. Isso e evidencia negativa: nao ampliar Combine por literal estatico; o proximo trace deve entrar em cena GL real.
