@@ -387,19 +387,48 @@ TEST(EstadoGl, SegundaUnidadeTemBindECoordenadasProprios) {
   EXPECT_EQ(b.igl.Array(GL_TEXTURE_COORD_ARRAY)->ponteiro, 0x00101000u);
 }
 
-TEST(EstadoGl, TexEnvSoAceitaModulateOuReplaceENaoFingeCombine) {
+TEST(EstadoGl, TexEnvGuardaCombineRgbBasicoSoNaUnidade1) {
   Banco b;
   constexpr std::uint32_t kTextura1 = 0x84c1u;
   ASSERT_EQ(b.igl.Executar(kIgl_ActiveTexture, Args(kTextura1), nullptr), ResultadoGl::Feito);
-  EXPECT_EQ(b.igl.Executar(kIgl_TexEnvx, Args(kTextureEnv, kTextureEnvMode, kModulate), nullptr),
+  EXPECT_EQ(b.igl.Executar(kIgl_TexEnvx, Args(kTextureEnv, kTextureEnvMode, kCombine), nullptr),
             ResultadoGl::Feito);
-  EXPECT_EQ(b.igl.AmbienteDeTextura(kTextura1), kModulate);
-  EXPECT_EQ(b.igl.Executar(kIgl_TexEnvx, Args(kTextureEnv, kTextureEnvMode, kReplace), nullptr),
+  EXPECT_EQ(b.igl.AmbienteDeTextura(kTextura1), kCombine);
+  EXPECT_EQ(b.igl.Executar(kIgl_TexEnvx, Args(kTextureEnv, kCombineRgb, kAdd), nullptr),
             ResultadoGl::Feito);
-  EXPECT_EQ(b.igl.AmbienteDeTextura(kTextura1), kReplace);
+  EXPECT_EQ(b.igl.CombineRgb(kTextura1), kAdd);
+  EXPECT_EQ(b.igl.Executar(kIgl_TexEnvx, Args(kTextureEnv, kSource0Rgb, kPrevious), nullptr),
+            ResultadoGl::Feito);
+  EXPECT_EQ(b.igl.Source0Rgb(kTextura1), kPrevious);
+  constexpr std::uint32_t kVet = 0x00040000u;
+  b.mem.Escrever32(kVet, kTexture);
+  EXPECT_EQ(b.igl.Executar(kIgl_TexEnvxv, Args(kTextureEnv, kSource1Rgb, kVet), nullptr),
+            ResultadoGl::Feito);
+  EXPECT_EQ(b.igl.Source1Rgb(kTextura1), kTexture);
+  EXPECT_EQ(b.igl.Executar(kIgl_TexEnvx,
+                           Args(kTextureEnv, kOperand0Rgb, kOneMinusSrcColor), nullptr),
+            ResultadoGl::Feito);
+  EXPECT_EQ(b.igl.Operand0Rgb(kTextura1), kOneMinusSrcColor);
+  EXPECT_EQ(b.igl.Executar(kIgl_TexEnvx, Args(kTextureEnv, kOperand1Rgb, kSrcColor), nullptr),
+            ResultadoGl::Feito);
+  EXPECT_EQ(b.igl.Operand1Rgb(kTextura1), kSrcColor);
+
+  // Alpha, source2, scales and other combine functions stay named refusals.
+  EXPECT_EQ(b.igl.Executar(kIgl_TexEnvx, Args(kTextureEnv, kCombineAlpha, kModulate), nullptr),
+            ResultadoGl::Recusado);
+  EXPECT_EQ(b.igl.Executar(kIgl_TexEnvx, Args(kTextureEnv, kSource2Rgb, kTexture), nullptr),
+            ResultadoGl::Recusado);
+  EXPECT_EQ(b.igl.Executar(kIgl_TexEnvx, Args(kTextureEnv, kRgbScale, 2u), nullptr),
+            ResultadoGl::Recusado);
+  EXPECT_EQ(b.igl.Executar(kIgl_TexEnvx, Args(kTextureEnv, kCombineRgb, kSubtract), nullptr),
+            ResultadoGl::Recusado);
+  EXPECT_EQ(b.igl.CombineRgb(kTextura1), kAdd);
+
+  // Combine is deliberately unit1-only. Unit0 keeps its legacy paths.
+  ASSERT_EQ(b.igl.Executar(kIgl_ActiveTexture, Args(GL_TEXTURE0), nullptr), ResultadoGl::Feito);
   EXPECT_EQ(b.igl.Executar(kIgl_TexEnvx, Args(kTextureEnv, kTextureEnvMode, kCombine), nullptr),
             ResultadoGl::Recusado);
-  EXPECT_EQ(b.igl.AmbienteDeTextura(kTextura1), kReplace);
+  EXPECT_EQ(b.igl.AmbienteDeTextura(GL_TEXTURE0), kReplace);
 }
 
 TEST(EstadoGl, TexImage2DRegistraAsDimensoesSemCopiarPixeis) {

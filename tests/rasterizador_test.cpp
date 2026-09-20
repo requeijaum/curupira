@@ -640,6 +640,65 @@ TEST(Rasterizador, DuasUnidadesCompoemModulateEReplaceComPixelsExactos) {
   EXPECT_TRUE(substituido.SoEstePixel(1, 1, 0x841Fu));  // texel unit1 em RGB565
 }
 
+TEST(Rasterizador, CombineRgbDaUnidade1AplicaFontesOperandosEFuncoesBasicas) {
+  Memoria mem(nullptr);
+  constexpr Endereco kV = 0x00115000, kUv1 = 0x00116000, kT1 = 0x00117000;
+  PorVertices(mem, kV, {{-1.0f, 1.0f}, {1.0f, 1.0f}, {-1.0f, -1.0f}});
+  for (int k = 0; k < 3; ++k) {
+    EscreverFloat(mem, kUv1 + static_cast<Endereco>(k * 8), 0.0f);
+    EscreverFloat(mem, kUv1 + static_cast<Endereco>(k * 8 + 4), 0.0f);
+  }
+  const std::uint8_t texel[4] = {128, 64, 255, 128};
+  for (int k = 0; k < 4; ++k) mem.Escrever8(kT1 + static_cast<Endereco>(k), texel[k]);
+
+  EstadoDeRasterizacao e = EstadoBase();
+  e.viewport[1] = 0; e.viewport[2] = 8; e.viewport[3] = 8;
+  e.vertices = {true, 3, GL_FLOAT, 12, kV};
+  e.cor = {64, 128, 192, 200};  // GL_PREVIOUS da unidade 1
+  e.textura1_ligada = true;
+  e.textura1 = {true, false, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, kT1, nullptr};
+  e.coordenadas_de_textura1 = {true, 2, GL_FLOAT, 8, kUv1};
+  e.ambiente_de_textura1 = 0x8570u;  // GL_COMBINE
+  e.source0_rgb1 = 0x1702u;          // GL_TEXTURE
+  e.source1_rgb1 = 0x8578u;          // GL_PREVIOUS
+  e.operand0_rgb1 = 0x0300u;         // GL_SRC_COLOR
+  e.operand1_rgb1 = 0x0300u;
+  PedidoDeDesenho p; p.primitiva = GL_TRIANGLES; p.quantos = 3;
+  std::string motivo;
+
+  e.combine_rgb1 = 0x1E01u;  // GL_REPLACE, source0 = texture
+  Gravador replace;
+  replace.largura = replace.altura = 8;
+  Rasterizador rr(mem, replace);
+  ASSERT_TRUE(rr.Desenhar(e, p, &motivo)) << motivo;
+  EXPECT_TRUE(replace.SoEstePixel(1, 1, 0x821Fu));  // (128,64,255)
+
+  e.combine_rgb1 = 0x2100u;  // GL_MODULATE: texture * previous = (32,32,192)
+  Gravador modulate;
+  modulate.largura = modulate.altura = 8;
+  Rasterizador rm(mem, modulate);
+  ASSERT_TRUE(rm.Desenhar(e, p, &motivo)) << motivo;
+  EXPECT_TRUE(modulate.SoEstePixel(1, 1, 0x2118u));
+
+  e.combine_rgb1 = 0x0104u;  // GL_ADD, saturado: texture + (1 - previous)
+  e.operand1_rgb1 = 0x0301u; // GL_ONE_MINUS_SRC_COLOR
+  Gravador add;
+  add.largura = add.altura = 8;
+  Rasterizador ra(mem, add);
+  ASSERT_TRUE(ra.Desenhar(e, p, &motivo)) << motivo;
+  EXPECT_TRUE(add.SoEstePixel(1, 1, 0xFDFFu));  // (255,191,255)
+
+  // SOURCE0 e SOURCE1 nao sao apenas aceites: GL_REPLACE consome SOURCE0.
+  e.combine_rgb1 = 0x1E01u;
+  e.source0_rgb1 = 0x8578u;  // GL_PREVIOUS
+  e.operand0_rgb1 = 0x0301u;
+  Gravador previous;
+  previous.largura = previous.altura = 8;
+  Rasterizador rp(mem, previous);
+  ASSERT_TRUE(rp.Desenhar(e, p, &motivo)) << motivo;
+  EXPECT_TRUE(previous.SoEstePixel(1, 1, 0xBBE7u));  // 1 - (64,128,192)
+}
+
 TEST(Rasterizador, TexturaComFormatoSemCaminhoRecusaComONome) {
   Memoria mem(nullptr);
   Gravador g;

@@ -270,6 +270,13 @@ struct EstadoDeRasterizacao {
   Textura textura1;
   ArrayDoCliente coordenadas_de_textura1;
   std::uint32_t ambiente_de_textura1 = 0x1E01u;  // GL_REPLACE
+  // O GL_COMBINE desta etapa e deliberadamente so RGB na unidade 1. Alpha
+  // continua o modulador legado; TexEnv recusa os pnames de alpha, source2 e escala.
+  std::uint32_t combine_rgb1 = 0x2100u;   // GL_MODULATE
+  std::uint32_t source0_rgb1 = 0x1702u;   // GL_TEXTURE
+  std::uint32_t source1_rgb1 = 0x8578u;   // GL_PREVIOUS
+  std::uint32_t operand0_rgb1 = 0x0300u;  // GL_SRC_COLOR
+  std::uint32_t operand1_rgb1 = 0x0300u;  // GL_SRC_COLOR
   bool sombreado_plano = false;
   bool teste_de_profundidade = false;
   bool escrever_profundidade = true;

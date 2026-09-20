@@ -298,7 +298,29 @@ constexpr std::uint32_t kTextureEnv = 0x2300u;
 constexpr std::uint32_t kTextureEnvMode = 0x2200u;
 constexpr std::uint32_t kModulate = 0x2100u;
 constexpr std::uint32_t kReplace = 0x1E01u;
+constexpr std::uint32_t kAdd = 0x0104u;
 constexpr std::uint32_t kCombine = 0x8570u;
+constexpr std::uint32_t kCombineRgb = 0x8571u;
+constexpr std::uint32_t kCombineAlpha = 0x8572u;
+constexpr std::uint32_t kRgbScale = 0x8573u;
+constexpr std::uint32_t kAlphaScale = 0x0D1Cu;
+constexpr std::uint32_t kPrevious = 0x8578u;
+constexpr std::uint32_t kSource0Rgb = 0x8580u;
+constexpr std::uint32_t kSource1Rgb = 0x8581u;
+constexpr std::uint32_t kSource2Rgb = 0x8582u;
+constexpr std::uint32_t kSource0Alpha = 0x8588u;
+constexpr std::uint32_t kSource1Alpha = 0x8589u;
+constexpr std::uint32_t kSource2Alpha = 0x858Au;
+constexpr std::uint32_t kOperand0Rgb = 0x8590u;
+constexpr std::uint32_t kOperand1Rgb = 0x8591u;
+constexpr std::uint32_t kOperand2Rgb = 0x8592u;
+constexpr std::uint32_t kOperand0Alpha = 0x8598u;
+constexpr std::uint32_t kOperand1Alpha = 0x8599u;
+constexpr std::uint32_t kOperand2Alpha = 0x859Au;
+constexpr std::uint32_t kTexture = 0x1702u;
+constexpr std::uint32_t kSrcColor = 0x0300u;
+constexpr std::uint32_t kOneMinusSrcColor = 0x0301u;
+constexpr std::uint32_t kSubtract = 0x84E7u;
 
 struct UnidadeDeTextura {
   std::uint32_t textura_ligada = 0;
@@ -307,6 +329,13 @@ struct UnidadeDeTextura {
   ArrayDeVertices coordenadas;
   // Preserva o caminho unit0 anterior ate o guest escolher explicitamente o modo.
   std::uint32_t ambiente = kReplace;  // GL_TEXTURE_ENV_MODE
+  // Subconjunto RGB de GL_COMBINE. A equacao de alpha, source2, scales e as
+  // restantes funcoes ficam recusadas no TexEnv, em vez de parecerem aceites.
+  std::uint32_t combine_rgb = kModulate;
+  std::uint32_t source0_rgb = kTexture;
+  std::uint32_t source1_rgb = kPrevious;
+  std::uint32_t operand0_rgb = kSrcColor;
+  std::uint32_t operand1_rgb = kSrcColor;
 };
 
 struct PilhaDeMatrizes {
@@ -355,6 +384,11 @@ class Igl {
   std::uint32_t TexturaLigada() const { return unidades_[0].textura_ligada; }
   std::uint32_t TexturaLigadaNaUnidade(std::uint32_t unidade) const;
   std::uint32_t AmbienteDeTextura(std::uint32_t unidade) const;
+  std::uint32_t CombineRgb(std::uint32_t unidade) const;
+  std::uint32_t Source0Rgb(std::uint32_t unidade) const;
+  std::uint32_t Source1Rgb(std::uint32_t unidade) const;
+  std::uint32_t Operand0Rgb(std::uint32_t unidade) const;
+  std::uint32_t Operand1Rgb(std::uint32_t unidade) const;
   std::uint32_t TexturaActiva() const { return textura_activa_; }
   std::uint32_t TexturaClienteActiva() const { return textura_cliente_activa_; }
   const ArrayDeVertices* CoordenadasDeTextura(std::uint32_t unidade) const;

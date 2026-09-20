@@ -524,6 +524,13 @@ video::EstadoDeRasterizacao Igl::MontarEstado() const {
                                   video::ArrayDoCliente* coordenadas, std::uint32_t* ambiente) {
     const UnidadeDeTextura& u = unidades_[unidade];
     *ambiente = u.ambiente;
+    if (unidade == 1) {
+      e.combine_rgb1 = u.combine_rgb;
+      e.source0_rgb1 = u.source0_rgb;
+      e.source1_rgb1 = u.source1_rgb;
+      e.operand0_rgb1 = u.operand0_rgb;
+      e.operand1_rgb1 = u.operand1_rgb;
+    }
     if (u.coordenadas.definido) {
       coordenadas->tamanho = u.coordenadas.tamanho;
       coordenadas->tipo = u.coordenadas.tipo;
@@ -845,6 +852,31 @@ std::uint32_t Igl::AmbienteDeTextura(std::uint32_t unidade) const {
   return unidades_[IndiceDaUnidade(unidade)].ambiente;
 }
 
+std::uint32_t Igl::CombineRgb(std::uint32_t unidade) const {
+  if (unidade < kTextura0 || unidade >= kTextura0 + kUnidadesDeTextura) return 0;
+  return unidades_[IndiceDaUnidade(unidade)].combine_rgb;
+}
+
+std::uint32_t Igl::Source0Rgb(std::uint32_t unidade) const {
+  if (unidade < kTextura0 || unidade >= kTextura0 + kUnidadesDeTextura) return 0;
+  return unidades_[IndiceDaUnidade(unidade)].source0_rgb;
+}
+
+std::uint32_t Igl::Source1Rgb(std::uint32_t unidade) const {
+  if (unidade < kTextura0 || unidade >= kTextura0 + kUnidadesDeTextura) return 0;
+  return unidades_[IndiceDaUnidade(unidade)].source1_rgb;
+}
+
+std::uint32_t Igl::Operand0Rgb(std::uint32_t unidade) const {
+  if (unidade < kTextura0 || unidade >= kTextura0 + kUnidadesDeTextura) return 0;
+  return unidades_[IndiceDaUnidade(unidade)].operand0_rgb;
+}
+
+std::uint32_t Igl::Operand1Rgb(std::uint32_t unidade) const {
+  if (unidade < kTextura0 || unidade >= kTextura0 + kUnidadesDeTextura) return 0;
+  return unidades_[IndiceDaUnidade(unidade)].operand1_rgb;
+}
+
 const ArrayDeVertices* Igl::CoordenadasDeTextura(std::uint32_t unidade) const {
   if (unidade < kTextura0 || unidade >= kTextura0 + kUnidadesDeTextura) return nullptr;
   const ArrayDeVertices& a = unidades_[IndiceDaUnidade(unidade)].coordenadas;
@@ -1004,6 +1036,78 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
     NaoTem(c);
     Registar(c);
     return ResultadoGl::NaoImplementado;
+  };
+
+  // Subconjunto medido de GL_COMBINE: apenas RGB na unidade 1. Manter esta
+  // tabela curta e recusar o resto e importante: GL_COMBINE inclui uma equacao
+  // de alpha separada, source2, escalas e mais funcoes, que esta arvore ainda
+  // nao transporta ate ao rasterizador.
+  const auto tex_env = [&](std::uint32_t alvo, std::uint32_t pname, std::uint32_t valor) {
+    if (alvo != kTextureEnv) return recusa("TexEnvx so serve GL_TEXTURE_ENV");
+    UnidadeDeTextura& unidade = UnidadeActiva();
+    if (pname == kTextureEnvMode) {
+      if (valor == kModulate || valor == kReplace) {
+        unidade.ambiente = valor;
+        return feito_com(3, "modo de ambiente guardado na unidade activa");
+      }
+      if (valor == kCombine) {
+        if (textura_activa_ != kTextura1) {
+          return recusa("GL_COMBINE RGB desta etapa so e rasterizado na unidade 1");
+        }
+        unidade.ambiente = valor;
+        return feito_com(3, "GL_COMBINE RGB guardado na unidade 1");
+      }
+      return recusa("modo de ambiente de textura diferente de GL_MODULATE/GL_REPLACE/GL_COMBINE");
+    }
+    if (textura_activa_ != kTextura1) {
+      return recusa("pname de GL_COMBINE RGB so e modelado na unidade 1");
+    }
+    switch (pname) {
+      case kCombineRgb:
+        if (valor != kReplace && valor != kModulate && valor != kAdd) {
+          return recusa("GL_COMBINE_RGB so modela GL_REPLACE/GL_MODULATE/GL_ADD");
+        }
+        unidade.combine_rgb = valor;
+        return feito_com(3, "GL_COMBINE_RGB guardado na unidade 1");
+      case kSource0Rgb:
+      case kSource1Rgb:
+        if (valor != kTexture && valor != kPrevious) {
+          return recusa("GL_SOURCE0_RGB/GL_SOURCE1_RGB so modela GL_TEXTURE/GL_PREVIOUS");
+        }
+        if (pname == kSource0Rgb) {
+          unidade.source0_rgb = valor;
+        } else {
+          unidade.source1_rgb = valor;
+        }
+        return feito_com(3, "fonte RGB de GL_COMBINE guardada na unidade 1");
+      case kOperand0Rgb:
+      case kOperand1Rgb:
+        if (valor != kSrcColor && valor != kOneMinusSrcColor) {
+          return recusa("GL_OPERAND0_RGB/GL_OPERAND1_RGB so modela GL_SRC_COLOR/GL_ONE_MINUS_SRC_COLOR");
+        }
+        if (pname == kOperand0Rgb) {
+          unidade.operand0_rgb = valor;
+        } else {
+          unidade.operand1_rgb = valor;
+        }
+        return feito_com(3, "operando RGB de GL_COMBINE guardado na unidade 1");
+      case kCombineAlpha:
+      case kSource0Alpha:
+      case kSource1Alpha:
+      case kSource2Alpha:
+      case kOperand0Alpha:
+      case kOperand1Alpha:
+      case kOperand2Alpha:
+      case kAlphaScale:
+        return recusa("GL_COMBINE alpha nao e modelado nesta etapa");
+      case kSource2Rgb:
+      case kOperand2Rgb:
+        return recusa("GL_COMBINE source2 nao e modelado nesta etapa");
+      case kRgbScale:
+        return recusa("GL_RGB_SCALE nao e modelado nesta etapa");
+      default:
+        return recusa("pname de GL_TEXTURE_ENV fora do subconjunto GL_COMBINE RGB");
+    }
   };
 
   switch (slot) {
@@ -1675,33 +1779,11 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
                     pname);
       return recusa(det);
     }
-    case kIgl_TexEnvx: {
-      if (a.reg[0] != kTextureEnv || a.reg[1] != kTextureEnvMode) {
-        return recusa("TexEnvx so serve GL_TEXTURE_ENV / GL_TEXTURE_ENV_MODE");
-      }
-      if (a.reg[2] == kCombine) {
-        return recusa("GL_COMBINE pede fontes e operandos que este estado ainda nao modela");
-      }
-      if (a.reg[2] != kModulate && a.reg[2] != kReplace) {
-        return recusa("modo de ambiente de textura diferente de GL_MODULATE/GL_REPLACE");
-      }
-      UnidadeActiva().ambiente = a.reg[2];
-      return feito_com(3, "modo de ambiente guardado na unidade activa");
-    }
-    case kIgl_TexEnvxv: {
-      if (a.reg[0] != kTextureEnv || a.reg[1] != kTextureEnvMode || a.reg[2] == 0) {
-        return recusa("TexEnvxv so serve GL_TEXTURE_ENV / GL_TEXTURE_ENV_MODE com vector valido");
-      }
-      const std::uint32_t modo = mem_.Ler32(a.reg[2]);
-      if (modo == kCombine) {
-        return recusa("GL_COMBINE pede fontes e operandos que este estado ainda nao modela");
-      }
-      if (modo != kModulate && modo != kReplace) {
-        return recusa("modo de ambiente de textura diferente de GL_MODULATE/GL_REPLACE");
-      }
-      UnidadeActiva().ambiente = modo;
-      return feito_com(3, "modo de ambiente guardado na unidade activa");
-    }
+    case kIgl_TexEnvx:
+      return tex_env(a.reg[0], a.reg[1], a.reg[2]);
+    case kIgl_TexEnvxv:
+      if (a.reg[2] == 0) return recusa("TexEnvxv pede vector de parametros valido");
+      return tex_env(a.reg[0], a.reg[1], mem_.Ler32(a.reg[2]));
     case kIgl_Fogx:
     case kIgl_Lightx:
     case kIgl_Materialx:

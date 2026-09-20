@@ -801,25 +801,58 @@ Rgba Rasterizador::AmostrarTextura(const Textura& t, float u, float v) const {
 
 Rgba Rasterizador::ComporTexturas(const EstadoDeRasterizacao& e, Rgba cor, float u0, float v0,
                                   float u1, float v1) const {
+  const auto modular = [](std::uint8_t a, std::uint8_t b) {
+    return static_cast<std::uint8_t>((static_cast<unsigned>(a) * b + 127u) / 255u);
+  };
   const auto aplicar = [&](bool ligada, const Textura& textura, std::uint32_t ambiente,
-                           float u, float v) {
+                           float u, float v, bool combinar_rgb, std::uint32_t funcao,
+                           std::uint32_t fonte0, std::uint32_t fonte1, std::uint32_t operando0,
+                           std::uint32_t operando1) {
     if (!ligada) return;
     const Rgba amostra = AmostrarTextura(textura, u, v);
     if (ambiente == 0x1E01u) {  // GL_REPLACE
       cor = amostra;
       return;
     }
+    if (ambiente == 0x8570u && combinar_rgb) {  // GL_COMBINE, apenas unit1/RGB
+      const Rgba anterior = cor;  // GL_PREVIOUS e a entrada da unidade 1.
+      const auto fonte = [&](std::uint32_t qual) {
+        return qual == 0x1702u ? amostra : anterior;  // GL_TEXTURE : GL_PREVIOUS
+      };
+      const auto operar = [](Rgba valor, std::uint32_t operando) {
+        if (operando == 0x0301u) {  // GL_ONE_MINUS_SRC_COLOR
+          valor.r = static_cast<std::uint8_t>(255u - valor.r);
+          valor.g = static_cast<std::uint8_t>(255u - valor.g);
+          valor.b = static_cast<std::uint8_t>(255u - valor.b);
+        }
+        return valor;  // GL_SRC_COLOR
+      };
+      const Rgba a = operar(fonte(fonte0), operando0);
+      const Rgba b = operar(fonte(fonte1), operando1);
+      if (funcao == 0x1E01u) {  // GL_REPLACE
+        cor.r = a.r; cor.g = a.g; cor.b = a.b;
+      } else if (funcao == 0x2100u) {  // GL_MODULATE
+        cor.r = modular(a.r, b.r); cor.g = modular(a.g, b.g); cor.b = modular(a.b, b.b);
+      } else {  // GL_ADD; Igl rejects all other functions before this snapshot.
+        cor.r = static_cast<std::uint8_t>(std::min(255u, static_cast<unsigned>(a.r) + b.r));
+        cor.g = static_cast<std::uint8_t>(std::min(255u, static_cast<unsigned>(a.g) + b.g));
+        cor.b = static_cast<std::uint8_t>(std::min(255u, static_cast<unsigned>(a.b) + b.b));
+      }
+      // O caminho alpha de GL_COMBINE ainda nao existe. O valor por omissao
+      // (modulate de alpha) fica aqui, e qualquer pname alpha e recusado no IGL.
+      cor.a = modular(anterior.a, amostra.a);
+      return;
+    }
     // GL_MODULATE: canais normalizados multiplicados e arredondados ao RGBA8
-    // mais proximo. GL_COMBINE nao entra aqui: sem fontes/operandos modelados,
-    // aceita-lo seria anunciar uma equacao que o estado nao consegue representar.
-    const auto modular = [](std::uint8_t a, std::uint8_t b) {
-      return static_cast<std::uint8_t>((static_cast<unsigned>(a) * b + 127u) / 255u);
-    };
+    // mais proximo.
     cor = Rgba{modular(cor.r, amostra.r), modular(cor.g, amostra.g),
                modular(cor.b, amostra.b), modular(cor.a, amostra.a)};
   };
-  aplicar(e.textura_ligada, e.textura, e.ambiente_de_textura, u0, v0);
-  aplicar(e.textura1_ligada, e.textura1, e.ambiente_de_textura1, u1, v1);
+  aplicar(e.textura_ligada, e.textura, e.ambiente_de_textura, u0, v0,
+          false, 0, 0, 0, 0, 0);
+  aplicar(e.textura1_ligada, e.textura1, e.ambiente_de_textura1, u1, v1,
+          true, e.combine_rgb1, e.source0_rgb1, e.source1_rgb1,
+          e.operand0_rgb1, e.operand1_rgb1);
   return cor;
 }
 
