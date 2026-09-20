@@ -207,6 +207,14 @@ class Egl {
   // O texto que ficou na memoria do guest para uma das strings servidas.
   std::string StringServida(std::uint32_t indice) const;
 
+  // RESOLVE UM NOME DE FUNCAO GL PARA UM ENDERECO DE TRAMPOLIM DO IGL.
+  // Devolve o endereco do trampolim (na faixa de saidas do IGL) quando o nome
+  // existe na tabela do IGL, ou 0 quando nao existe. O nome e SEM o sufixo ARB
+  // ou OES (o `eglGetProcAddress` tira-o antes de chamar esta funcao).
+  // E publico porque o teste o chama directamente: um ponteiro de funcao que
+  // o teste nao pode construir so (P1).
+  std::uint32_t ResolverGlProc(const std::string& nome) const;
+
  private:
   ResultadoEgl Recusar(const std::string& motivo, std::uint32_t erro, ChamadaEgl& c);
   ResultadoEgl NaoTem(ChamadaEgl& c);
@@ -224,6 +232,7 @@ class Egl {
   Memoria& mem_;
   Traco& traco_;
   std::uint32_t objeto_ = 0, vtable_ = 0;
+  Saidas saidas_;
 
   bool iniciado_ = false;
   std::uint32_t erro_ = gl_slots::EGL_SUCCESS;

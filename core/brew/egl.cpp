@@ -198,6 +198,7 @@ const char* NomeDoAtributoEgl(std::uint32_t atributo) {
 Egl::Egl(Memoria& mem, Traco& traco) : mem_(mem), traco_(traco) {}
 
 std::uint32_t Egl::Instalar(const Saidas& saidas) {
+  saidas_ = saidas;
   objeto_ = kObjIegl;
   vtable_ = saidas.Endereco(kVtableIegl);
   ConstruirObjeto(mem_, saidas, objeto_, vtable_, kIeglSlots, kVtableIegl);
@@ -292,6 +293,36 @@ std::string Egl::StringServida(std::uint32_t indice) const {
 }
 
 // --- registo -----------------------------------------------------------------
+
+std::uint32_t Egl::ResolverGlProc(const std::string& nome) const {
+  // O NOME, COM O PREFIXO `gl` -- e como a tabela do IGL os guarda
+  // (`tools/gl_slots.inc`, `NomeIgl`: "glBindTexture", "glDrawArrays", ...).
+  if (nome.size() < 3 || nome[0] != 'g' || nome[1] != 'l') return 0;
+  // O TRAMPOLIM DO SLOT E UM PONTEIRO DE FUNCAO C, SEM `this`: a faixa de saidas
+  // do IGL (a `kIgl_*` de `AEEGL.h`) usa essa convencao, e e ela que um nome
+  // vindo pela `eglGetProcAddress` tem de devolver. Um `this` na frente faria a
+  // funcao ler os argumentos deslocados -- o defeito do zeebx v0.2.1 que esta
+  // funcao existe para nao repetir (ver o GetProcAddress abaixo).
+  for (std::uint32_t slot = 0; slot < kIglSlots; ++slot) {
+    if (nome == NomeIgl(slot)) return saidas_.Endereco(kVtableIgl + slot);
+  }
+  // AS VARIANTES DOS CINCO SLOTS INTERNOS DO IGLES11 (o `kIgl_*` por cima dos 80
+  // da vtable). O nome que o jogo pede e o do GL (`glLightfv`, `glOrthof`,
+  // `glAlphaFunc`, `glColor4f`, `glMaterialfv` -- `igl.h` linha 135 a 170), e o
+  // slot do motor e o `kIglSlots + n`.
+  const struct {
+    const char* nome;
+    std::uint32_t slot;
+  } internos[] = {
+      {"glLightfv", kIgl_Lightfv},      {"glMaterialfv", kIgl_Materialfv},
+      {"glOrthof", kIgl_Orthof},        {"glAlphaFunc", kIgl_AlphaFunc},
+      {"glColor4f", kIgl_Color4f},
+  };
+  for (const auto& e : internos) {
+    if (nome == e.nome) return saidas_.Endereco(kVtableIgl + e.slot);
+  }
+  return 0;
+}
 
 ResultadoEgl Egl::Recusar(const std::string& motivo, std::uint32_t erro, ChamadaEgl& c) {
   c.motivo = motivo;
@@ -582,14 +613,50 @@ ResultadoEgl Egl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint3
       return ResultadoGl::Recusado;
     }
     case kIegl_GetProcAddress: {
-      // ZERO E A RESPOSTA CERTA, e nao uma recusa: o EGL define que um nome
-      // desconhecido devolve nulo, e as extensoes sao mesmo zero. O PEDIDO FICA
-      // REGISTADO com o nome que o jogo pediu -- e assim que se aprende o que os
-      // titulos procuram, em vez de "algo devolveu nulo".
+      // O `eglGetProcAddress` DA SPEC RETORNA UM PONTEIRO DE FUNCAO, E ELE
+      // CHAMA-SE NA CONVENCAO ANTIGA (SEM `this`): o trampolim do IGL legado
+      // (`NomeIgl`, os 80 slots de `AEEGL.h` + os 5 internos) serve directamente.
+      //
+      // O NOME COM SUFIXO ARB ou OES procura pela raiz: e o que o motor QX do
+      // SDK faz (`glBindBufferARB`, `glGenBuffersOES`) e o que o zeebx aprendeu
+      // a servir (`aee_slots.rs:811-815`: os buffer helpers estao na GL_LEGACY
+      // sem sufixo, e o GetProcAddress tira o sufixo antes de procurar).
+      //
+      // SEM ARGUMENTOS DESLOCADOS (o fix do zeebx v0.2.1, patch-notes item 11):
+      // a tabela do IGL NAO TEM `this`, e o trampolim que volta aqui NAO o tem.
+      // Usar a tabela do IGLES11 (que tem `this`) deslocaria todos os argumentos
+      // reais por um -- e o `glGenBuffers(1, &nome)` escreveria fora da memoria.
       const std::uint32_t pnome = a.reg[0];
       std::string nome;
       if (pnome != 0) mem_.LerCadeia(pnome, &nome, 128);
-      return feito_com(1, 0, "EGL_NO_PROC para \"" + nome + "\": nenhuma extensao implementada");
+      std::uint32_t proc = 0;
+      std::string razao;
+      auto tentar = [&](const std::string& n) {
+        proc = ResolverGlProc(n);
+        if (proc != 0) razao = n;
+        return proc != 0;
+      };
+      if (!tentar(nome)) {
+        // SUFIXOS `ARB` e `OES`: o nome vem com o sufixo -- "glBindBufferARB" --
+        // e o GL_LEGACY do zeebx guarda a raiz sem ele ("glBindBuffer").
+        // Tentar `OES` primeiro porque ha nomes como "glDrawTexsOES" onde o
+        // "OES" e parte integrante do nome definido na extensao e a raiz so
+        // com "glDrawTexs" nao existe. Nesse caso o `OES` falha e ARB tambem.
+        const std::string sufixos[] = {"OES", "ARB"};
+        for (const auto& suf : sufixos) {
+          if (nome.size() > suf.size() &&
+              nome.compare(nome.size() - suf.size(), suf.size(), suf) == 0) {
+            const std::string raiz = nome.substr(0, nome.size() - suf.size());
+            if (tentar(raiz)) break;
+          }
+        }
+      }
+      if (proc != 0) {
+        return feito_com(1, proc, "IGL_LEGACY_PROC \\\"" + razao + "\\\" slot " +
+                         std::to_string((proc - saidas_.base) / saidas_.passo - kVtableIgl) +
+                         ": ponteiro para a faixa legada (sem `this`)");
+      }
+      return feito_com(1, 0, "EGL_NO_PROC para \\\"" + nome + "\\\": sem implementacao neste emulador");
     }
 
     // --- configs -----------------------------------------------------------

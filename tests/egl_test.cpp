@@ -614,11 +614,84 @@ TEST(CicloDoEgl, OGetProcAddressDevolveZeroERegistaOPedido) {
   b.mem.Escrever8(nome + 14, 0);
   std::uint32_t r = 0xDEADBEEFu;
   EXPECT_EQ(b.egl.Executar(kIegl_GetProcAddress, Args(nome), &r), ResultadoGl::Feito);
-  EXPECT_EQ(r, 0u) << "zero e a resposta certa: nenhuma extensao implementada";
+  EXPECT_EQ(r, 0u) << "glMapBuffer nao esta na tabela do IGL: zero e a resposta certa";
   // O PEDIDO FICA REGISTADO COM NOME -- e assim que se aprende o que os titulos
   // procuram, em vez de "algo devolveu nulo".
   ASSERT_FALSE(b.egl.Ultimas().empty());
   EXPECT_NE(b.egl.Ultimas().back().motivo.find("glMapBufferOES"), std::string::npos);
+}
+
+TEST(CicloDoEgl, OGetProcAddressResolveNomesConhecidos) {
+  Banco b;
+  std::uint32_t r = 0;
+  // NOME CONHECIDO: glBindTexture (slot 5) deve voltar um endereco valido
+  const std::uint32_t nome_addr = 0x00091000u;
+  const char* pedido = "glBindTexture";
+  for (std::uint32_t k = 0; k < 14; ++k) b.mem.Escrever8(nome_addr + k, static_cast<std::uint8_t>(pedido[k]));
+  b.mem.Escrever8(nome_addr + 14, 0);
+  EXPECT_EQ(b.egl.Executar(kIegl_GetProcAddress, Args(nome_addr), &r), ResultadoGl::Feito);
+  EXPECT_NE(r, 0u) << "glBindTexture existe na tabela do IGL (slot 5)";
+  EXPECT_NE(r, 0xF0000000u) << "o endereco corresponde ao slot 5, nao ao 0";
+  // O slot 5 esta em saidas.Endereco(kVtableIgl + 5) = 0xF0000000u + (30000+5)*4
+  const std::uint32_t esperado = b.saidas.Endereco(kVtableIgl + kIgl_BindTexture);
+  EXPECT_EQ(r, esperado) << "o endereco deve ser o trampolim do slot 5";
+}
+
+TEST(CicloDoEgl, OGetProcAddressTiraSufixoARB) {
+  Banco b;
+  std::uint32_t r = 0;
+  // "glBindTextureARB" sem ARB -> "glBindTexture" (slot 5) -> encontra
+  const std::uint32_t nome_addr = 0x00092000u;
+  const char* pedido = "glBindTextureARB";
+  for (std::uint32_t k = 0; k < 18; ++k) b.mem.Escrever8(nome_addr + k, static_cast<std::uint8_t>(pedido[k]));
+  b.mem.Escrever8(nome_addr + 18, 0);
+  EXPECT_EQ(b.egl.Executar(kIegl_GetProcAddress, Args(nome_addr), &r), ResultadoGl::Feito);
+  EXPECT_NE(r, 0u) << "glBindTextureARB resolve para glBindTexture (slot 5)";
+  EXPECT_EQ(r, b.saidas.Endereco(kVtableIgl + kIgl_BindTexture));
+}
+
+TEST(CicloDoEgl, OGetProcAddressTiraSufixoOES) {
+  Banco b;
+  std::uint32_t r = 0;
+  // "glDrawElementsOES" sem OES -> "glDrawElements" (slot 27)
+  const std::uint32_t nome_addr = 0x00093000u;
+  const char* pedido = "glDrawElementsOES";
+  for (std::uint32_t k = 0; k < 18; ++k) b.mem.Escrever8(nome_addr + k, static_cast<std::uint8_t>(pedido[k]));
+  b.mem.Escrever8(nome_addr + 18, 0);
+  EXPECT_EQ(b.egl.Executar(kIegl_GetProcAddress, Args(nome_addr), &r), ResultadoGl::Feito);
+  EXPECT_NE(r, 0u) << "glDrawElementsOES resolve para glDrawElements (slot 27)";
+  EXPECT_EQ(r, b.saidas.Endereco(kVtableIgl + kIgl_DrawElements));
+}
+
+TEST(CicloDoEgl, OGetProcAddressResolveOsSlotsInternos) {
+  Banco b;
+  std::uint32_t r = 0;
+  // Os 5 slots internos (kIgl_Lightfv, etc.) tambem sao resolvidos
+  const std::uint32_t nome_addr = 0x00094000u;
+  const char* pedido = "glLightfv";
+  for (std::uint32_t k = 0; k < 10; ++k) b.mem.Escrever8(nome_addr + k, static_cast<std::uint8_t>(pedido[k]));
+  b.mem.Escrever8(nome_addr + 10, 0);
+  EXPECT_EQ(b.egl.Executar(kIegl_GetProcAddress, Args(nome_addr), &r), ResultadoGl::Feito);
+  EXPECT_NE(r, 0u) << "glLightfv existe como slot interno";
+  EXPECT_EQ(r, b.saidas.Endereco(kVtableIgl + kIgl_Lightfv));
+}
+
+TEST(CicloDoEgl, OResolverGlProcDevolveZeroParaNomeInvalido) {
+  Banco b;
+  EXPECT_EQ(b.egl.ResolverGlProc("glNaoExiste"), 0u);
+  EXPECT_EQ(b.egl.ResolverGlProc("nao_comeca_com_gl"), 0u);
+  EXPECT_EQ(b.egl.ResolverGlProc(""), 0u);
+  EXPECT_EQ(b.egl.ResolverGlProc("x"), 0u);
+}
+
+TEST(CicloDoEgl, OResolverGlProcDevolveEnderecoParaNomesConhecidos) {
+  Banco b;
+  const std::uint32_t esperado_tex = b.saidas.Endereco(kVtableIgl + kIgl_BindTexture);
+  const std::uint32_t esperado_light = b.saidas.Endereco(kVtableIgl + kIgl_Lightfv);
+  EXPECT_EQ(b.egl.ResolverGlProc("glBindTexture"), esperado_tex);
+  EXPECT_EQ(b.egl.ResolverGlProc("glLightfv"), esperado_light);
+  EXPECT_EQ(b.egl.ResolverGlProc("glAlphaFunc"), b.saidas.Endereco(kVtableIgl + kIgl_AlphaFunc));
+  EXPECT_EQ(b.egl.ResolverGlProc("glDrawArrays"), b.saidas.Endereco(kVtableIgl + kIgl_DrawArrays));
 }
 
 TEST(CicloDoEgl, OPixmapServeComoHandleEPbufferECopyBuffersRecusam) {
