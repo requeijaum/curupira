@@ -15,3 +15,7 @@ Sonda de `0x42d0c` mostrou `r3=0xf0001780`, que mapeia para `kSlotIdMemset=1504`
 ## Retorno de 0x42d3c
 
 Sonda no epilogo `0x42e42` mediu no caso falho: `r0=0`, `r1=0`, `r4=0`, `r5=0xe58d3000`, `r6=0xffffffc0`, `lr=0x1e33b`. `r5` vem do helper `0x4667c` e propaga opcode lido da origem nula; o parser retorna nulo, mas o caller `0x42e50` nao testa esse retorno antes de `0x111a0`.
+
+## ABI de memset confirmada
+
+Sonda temporaria no `kSlotIdMemset=1504` mostrou chamadas normais, por exemplo `memset(0x10008cb8,0,0x28a4)`, e a unica falha como `memset(0,0,0xe58d3000)` com `lr=0x1e33b`. Portanto a ponte HLE recebe ABI correta; o ponteiro nulo/tamanho opcode ja existem no guest antes da chamada. Proximo experimento deve rastrear produtor de `r1=0` na entrada de `0x42d3c`.
