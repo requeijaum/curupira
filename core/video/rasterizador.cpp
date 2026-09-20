@@ -766,37 +766,71 @@ bool CaixaEmTela(const EstadoDeRasterizacao& e, int largura, int altura, int* x0
 
 bool TexturaAmostravel(std::uint32_t formato, std::uint32_t tipo) {
   return (formato == GL_RGBA || formato == GL_RGB || formato == GL_LUMINANCE) &&
-         tipo == GL_UNSIGNED_BYTE;
+         (tipo == GL_UNSIGNED_BYTE || (formato == GL_RGB && tipo == GL_UNSIGNED_SHORT_5_6_5));
 }
 
 Rgba Rasterizador::AmostrarTextura(const Textura& t, float u, float v) const {
   if (!t.existe || t.largura == 0 || t.altura == 0) return Rgba{};
-  // CLAMP, e nao wrap: a coordenada fora de [0,1] e presa na borda (o ponto 5 do
-  // cabecalho). O `floor` e o canto inferior esquerdo da celula de texel.
-  int tx = static_cast<int>(std::floor(u * static_cast<float>(t.largura)));
-  int ty = static_cast<int>(std::floor(v * static_cast<float>(t.altura)));
-  tx = std::min(static_cast<int>(t.largura) - 1, std::max(0, tx));
-  ty = std::min(static_cast<int>(t.altura) - 1, std::max(0, ty));
-  const std::size_t indice = static_cast<std::size_t>(ty) * t.largura + tx;
-  if (t.texels_descodificados != nullptr && indice < t.texels_descodificados->size()) {
-    return (*t.texels_descodificados)[indice];
+
+  // NEAREST e LINEAR leem exactamente os mesmos bytes (inclusive RGB565).
+  const auto texel = [&](int x, int y) {
+    x = std::min(static_cast<int>(t.largura) - 1, std::max(0, x));
+    y = std::min(static_cast<int>(t.altura) - 1, std::max(0, y));
+    const std::size_t indice = static_cast<std::size_t>(y) * t.largura + x;
+    if (t.texels_descodificados != nullptr && indice < t.texels_descodificados->size()) {
+      return (*t.texels_descodificados)[indice];
+    }
+    if (t.formato == GL_RGBA && t.tipo == GL_UNSIGNED_BYTE) {
+      const Endereco p = t.ponteiro + static_cast<Endereco>(indice * 4u);
+      return Rgba{mem_.Ler8(p), mem_.Ler8(p + 1), mem_.Ler8(p + 2), mem_.Ler8(p + 3)};
+    }
+    if (t.formato == GL_RGB && t.tipo == GL_UNSIGNED_BYTE) {
+      const Endereco p = t.ponteiro + static_cast<Endereco>(indice * 3u);
+      return Rgba{mem_.Ler8(p), mem_.Ler8(p + 1), mem_.Ler8(p + 2), 255};
+    }
+    if (t.formato == GL_RGB && t.tipo == GL_UNSIGNED_SHORT_5_6_5) {
+      const std::uint16_t c = mem_.Ler16(t.ponteiro + static_cast<Endereco>(indice * 2u));
+      return Rgba{static_cast<std::uint8_t>((((c >> 11) & 31u) * 255u + 15u) / 31u),
+                  static_cast<std::uint8_t>((((c >> 5) & 63u) * 255u + 31u) / 63u),
+                  static_cast<std::uint8_t>(((c & 31u) * 255u + 15u) / 31u), 255};
+    }
+    if (t.formato == GL_LUMINANCE && t.tipo == GL_UNSIGNED_BYTE) {
+      const std::uint8_t l = mem_.Ler8(t.ponteiro + static_cast<Endereco>(indice));
+      return Rgba{l, l, l, 255};
+    }
+    return Rgba{};
+  };
+
+  if (!t.filtro_linear) {
+    return texel(static_cast<int>(std::floor(u * static_cast<float>(t.largura))),
+                 static_cast<int>(std::floor(v * static_cast<float>(t.altura))));
   }
-  const Endereco base = t.ponteiro + static_cast<Endereco>(indice);
-  if (t.formato == GL_RGBA && t.tipo == GL_UNSIGNED_BYTE) {
-    const Endereco p = t.ponteiro + static_cast<Endereco>(
-                                         (ty * static_cast<int>(t.largura) + tx) * 4);
-    return Rgba{mem_.Ler8(p), mem_.Ler8(p + 1), mem_.Ler8(p + 2), mem_.Ler8(p + 3)};
-  }
-  if (t.formato == GL_RGB && t.tipo == GL_UNSIGNED_BYTE) {
-    const Endereco p = t.ponteiro + static_cast<Endereco>(
-                                         (ty * static_cast<int>(t.largura) + tx) * 3);
-    return Rgba{mem_.Ler8(p), mem_.Ler8(p + 1), mem_.Ler8(p + 2), 255};
-  }
-  if (t.formato == GL_LUMINANCE && t.tipo == GL_UNSIGNED_BYTE) {
-    const std::uint8_t l = mem_.Ler8(base);
-    return Rgba{l, l, l, 255};
-  }
-  return Rgba{};
+
+  // GL_LINEAR mede coordenadas nos centros (`u*largura - 1/2`). As quatro
+  // leituras prendem-se individualmente na borda. Pesos e mistura sao 16.16,
+  // para o arredondamento ser fixo, independente da FPU hospedeira.
+  const auto eixo = [](float coord, std::uint32_t tamanho, int* baixo, std::uint32_t* peso) {
+    const double p = static_cast<double>(coord) * tamanho - 0.5;
+    const double piso = std::floor(p);
+    *baixo = static_cast<int>(piso);
+    const auto w = static_cast<std::int64_t>(std::floor((p - piso) * 65536.0));
+    *peso = static_cast<std::uint32_t>(std::max<std::int64_t>(0, std::min<std::int64_t>(65535, w)));
+  };
+  int x0 = 0, y0 = 0;
+  std::uint32_t fx = 0, fy = 0;
+  eixo(u, t.largura, &x0, &fx);
+  eixo(v, t.altura, &y0, &fy);
+  const Rgba a = texel(x0, y0), b = texel(x0 + 1, y0);
+  const Rgba c = texel(x0, y0 + 1), d = texel(x0 + 1, y0 + 1);
+  const auto misturar = [](std::uint8_t p, std::uint8_t q, std::uint32_t w) {
+    return static_cast<std::uint8_t>((static_cast<std::uint64_t>(p) * (65536u - w) +
+                                      static_cast<std::uint64_t>(q) * w + 32768u) >> 16);
+  };
+  const auto canal = [&](std::uint8_t aa, std::uint8_t bb, std::uint8_t cc, std::uint8_t dd) {
+    return misturar(misturar(aa, bb, fx), misturar(cc, dd, fx), fy);
+  };
+  return Rgba{canal(a.r, b.r, c.r, d.r), canal(a.g, b.g, c.g, d.g),
+              canal(a.b, b.b, c.b, d.b), canal(a.a, b.a, c.a, d.a)};
 }
 
 Rgba Rasterizador::ComporTexturas(const EstadoDeRasterizacao& e, Rgba cor, float u0, float v0,

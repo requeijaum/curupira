@@ -36,8 +36,9 @@
 //     continua a ficar guardado no `igl.cpp` (o pedido e observavel), e nao
 //     aplicado;
 //   - interpolacao de cor (por vertice) e de coordenadas de textura por unidade;
-//   - amostragem de ate duas texturas (GL_NEAREST, clamp), composta em ordem com
-//     GL_MODULATE ou GL_REPLACE; GL_COMBINE fica recusado porque fontes e
+//   - amostragem de ate duas texturas (GL_NEAREST por omissao e GL_LINEAR para
+//     RGBA8/RGB565 base 2D, clamp), composta em ordem com GL_MODULATE ou
+//     GL_REPLACE; GL_COMBINE fica recusado porque fontes e
 //     operandos ainda nao sao estado modelado;
 //   - teste de profundidade, quando `GL_DEPTH_TEST` esta ligado;
 //   - descarte de faces por orientacao (`glCullFace`/`glFrontFace`).
@@ -238,6 +239,9 @@ struct Textura {
   // Textura comprimida ja decodificada, de posse do host. Texturas comuns
   // continuam lendo o ponteiro do guest para preservar sua semantica atual.
   std::shared_ptr<const std::vector<Rgba>> texels_descodificados;
+  // `true` so quando o retrato do IGL confirmou GL_LINEAR num formato que este
+  // rasterizador sabe filtrar. A omissao do GL ES e GL_NEAREST.
+  bool filtro_linear = false;
 };
 
 // O estado do pipeline NO INSTANTE do desenho. E um retrato, e nao uma

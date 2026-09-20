@@ -224,6 +224,11 @@ struct EstadoDaTextura {
   // escrito no topo de `core/video/rasterizador.h`, com a consequencia.
   std::uint32_t ponteiro = 0;
   std::uint32_t uploade = 0;
+  // A omissao desta implementacao e NEAREST (inclusive MIN), para preservar o
+  // rasterizador existente sem inventar mipmaps que ele nao tem.
+  std::uint32_t filtro_minimo = gl_slots::GL_NEAREST;
+  std::uint32_t filtro_magnificacao = gl_slots::GL_NEAREST;
+  bool filtro_anisotropico = false;
   bool comprimida = false;
   // ATITC e descodificado no upload: o snapshot do rasterizador conserva estes
   // texels mesmo que o guest reutilize o buffer comprimido.

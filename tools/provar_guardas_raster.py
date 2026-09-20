@@ -28,6 +28,7 @@ O QUE ESTAS VIOLACOES PROVAM, uma a uma:
   V20 a ponta final ABERTA de um segmento (o vertice partilhado escreve um pixel, e nao dois)
   V21 a largura de linha > 1 recusa o desenho (e nao desenha 1 px a fingir 2)
   V22 a largura de linha chega ao rasterizador pela cablagem (`Igl::MontarEstado`)
+  V23 GL_LINEAR nao volta a GL_NEAREST em silencio
 
 Uso: python3 tools/provar_guardas_raster.py <raiz_da_arvore>
 """
@@ -45,8 +46,8 @@ VIOLACOES = [
      "Rasterizador.ArestaPartilhadaNaoEscreveDuasVezesNemDeixaFenda"),
     ("V2 o y deixa de ser invertido (a orientacao do ecra muda)",
      "core/video/rasterizador.cpp",
-     "  v->y = static_cast<float>(vy + (1.0 - y_ndc) * vh * 0.5);",
-     "  v->y = static_cast<float>(vy + (y_ndc + 1.0) * vh * 0.5);",
+     "  v->y = static_cast<float>(vy_topo + (1.0 - y_ndc) * vh * 0.5);",
+     "  v->y = static_cast<float>(vy_topo + (y_ndc + 1.0) * vh * 0.5);",
      "Rasterizador.TrianguloConhecidoDaExactamenteSeisPixels:Rasterizador.ODesenhoEscreveNaTelaQueABateriaLe"),
     ("V3 os pesos da cor interpolada trocam de aresta",
      "core/video/rasterizador.cpp",
@@ -62,10 +63,10 @@ VIOLACOES = [
      "  if (e.teste_de_profundidade && profundidade_.size() > indice) {",
      "  if (false && profundidade_.size() > indice) {",
      "Rasterizador.OTesteDeProfundidadeDecideQuemFica"),
-    ("V5 a coordenada de textura amostrada passa a ser a outra",
+    ("V5 a coordenada de textura NEAREST passa a ser a outra",
      "core/video/rasterizador.cpp",
-     "  int tx = static_cast<int>(std::floor(u * static_cast<float>(t.largura)));",
-     "  int tx = static_cast<int>(std::floor(v * static_cast<float>(t.largura)));",
+     "    return texel(static_cast<int>(std::floor(u * static_cast<float>(t.largura))),",
+     "    return texel(static_cast<int>(std::floor(v * static_cast<float>(t.largura))),",
      "Rasterizador.ATexturaAmostraOCantoCerto"),
     ("V6 o descarte de faces deixa de acontecer",
      "core/video/rasterizador.cpp",
@@ -131,8 +132,8 @@ VIOLACOES = [
      "Rasterizador.ALuzChegaAoMotorPelaCablagemEAPosicaoVaiParaOEspacoDoOlho"),
     ("V18 a tabela `por_fazer` volta a dizer que falta o que ja se faz",
      "core/brew/igl.cpp",
-     """      {GL_FOG, "nevoa_de_GL_sem_rasterizador"},""",
-     """      {GL_FOG, "nevoa_de_GL_sem_rasterizador"},
+     """      {GL_DITHER, "dithering_sem_rasterizador"},""",
+     """      {GL_DITHER, "dithering_sem_rasterizador"},
       {GL_BLEND, "blending_de_GL_sem_rasterizador"},""",
      "Rasterizador.OQueSeImplementouSaiuDaTabelaDasFaltas"),
     ("V19 o recorte do plano proximo do SEGMENTO deixa de acontecer",
@@ -155,6 +156,11 @@ VIOLACOES = [
      "    e.largura_de_linha = RealDoFixo((*largura)[0]);",
      "    e.largura_de_linha = 1.0f;",
      "Rasterizador.AsLinhasChegamATelaPelaCablagemDoIglEALarguraEGuardada"),
+    ("V23 GL_LINEAR volta a amostrar NEAREST",
+     "core/video/rasterizador.cpp",
+     "  if (!t.filtro_linear) {",
+     "  if (true) {",
+     "Rasterizador.TexturaLinearRGB565Interpola2x2EPrendeNasBordas"),
 ]
 
 

@@ -2852,16 +2852,9 @@ TEST(FrenteTextura, AReservaDeTexturaServeOSDesenhoENaoORecusa) {
   EXPECT_EQ(tela.CoresEm(0, 0, 8, 8), 4u) << "a textura reservada e depois preenchida nao foi amostrada";
 }
 
-// O FILTRO LINEAR E SERVIDO COMO NEAREST, E ISSO FICA DECLARADO.
-//
-// Precedente do stencil (`OClearStencilGuardaOValorEDeclaraQueNaoHaBuffer`):
-// capacidade que esta arvore nao tem vira PRESSUPOSTO com nome e razao, e nao
-// falta. O rasterizador amostra o texel mais proximo; um titulo que peca
-// GL_LINEAR desenha por inteiro com diferenca sub-texel -- nao ha ausencia
-// para recusar, ha uma aproximacao para declarar. MEDIDO em 7 titulos
-// (`Rolimaz`, `AirRacez`, `gof`, `Bajaz`, `Boiaz`, `pbc`, `tekken2`), 1 pedido
-// cada: com a falta, a lista de demanda escondia os pedidos reais deles.
-TEST(FrenteIgl9, FiltroLinearEServidoComoNearestEDeclarado) {
+// Os titulos pedem GL_LINEAR nos dois filtros. So sai a ressalva depois de
+// uma textura ligada sem caminho: definir o estado por si so nao e uma amostra.
+TEST(FrenteIgl9, FiltroLinearDoTituloERealmenteAmostradoSemPressuposto) {
   BancoClasses b;
   Tela tela;
   ASSERT_NE(EstadoDoIgles11(), nullptr);
@@ -2886,7 +2879,10 @@ TEST(FrenteIgl9, FiltroLinearEServidoComoNearestEDeclarado) {
   }
   for (std::uint32_t k = 0; k < 6u; ++k) b.mem.Escrever16(kI + 2u * k, idx[k]);
 
-  // O titulo pede LINEAR nos dois filtros (e o que os 7 fazem).
+  // O filtro e estado do objecto ligado. Os titulos fazem este bind antes de
+  // configurar a textura; fazer o contrario esconderia esse contrato no teste.
+  ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_BindTexture, GL_TEXTURE_2D, 5u),
+            kAeeSuccess);
   ASSERT_EQ(PedirNaTabelaDoIgles(b, igles_slots::kIgles_TexParameterx, GL_TEXTURE_2D,
                                  GL_TEXTURE_MIN_FILTER, GL_LINEAR),
             kAeeSuccess);
@@ -2917,12 +2913,14 @@ TEST(FrenteIgl9, FiltroLinearEServidoComoNearestEDeclarado) {
             kAeeSuccess)
       << b.Detalhe("IGLES11::DrawElements");
   EXPECT_GT(tela.Escritos(), 0u) << "o desenho com filtro LINEAR tem de escrever pixels";
-  // Sem falta (era `filtro_de_textura_alem_de_GL_NEAREST`), com pressuposto nomeado.
+  // Pixel interior: GL_LINEAR mistura, enquanto NEAREST daria um dos quatro
+  // cantos. A conversao final para RGB565 e a mesma da bancada do rasterizador.
+  std::uint16_t pixel = 0;
+  ASSERT_TRUE(tela.LerPixel565(3, 3, &pixel));
+  EXPECT_EQ(pixel, 0x7B13u);
   EXPECT_EQ(b.Faltas("filtro_de_textura_alem_de_GL_NEAREST"), 0u);
   const auto& p = b.traco.ContagemPressupostos();
-  const auto it = p.find("filtro_de_textura_alem_de_GL_NEAREST");
-  ASSERT_NE(it, p.end()) << "o filtro LINEAR tem de ficar DECLARADO como NEAREST";
-  EXPECT_EQ(it->second, 1u) << "um pressuposto por corrida, nao um por desenho";
+  EXPECT_EQ(p.find("filtro_de_textura_alem_de_GL_NEAREST"), p.end());
 }
 
 TEST(FrenteIgl9, TexCoordPointerComPonteiroNuloAceiteParaDesvinculacao) {

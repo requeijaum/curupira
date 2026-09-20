@@ -592,6 +592,57 @@ TEST(Rasterizador, ATexturaAmostraOCantoCerto) {
   for (const auto& par : por_cor) EXPECT_EQ(par.second, 16) << "cor 0x" << std::hex << par.first;
 }
 
+
+// GL_LINEAR usa os centros dos texels, fixa os pesos em 16.16 e prende cada
+// vizinho na borda. RGB565 e intencional: a frente nao pode passar verde so no
+// caminho RGBA que os testes antigos ja cobriam.
+TEST(Rasterizador, TexturaLinearRGB565Interpola2x2EPrendeNasBordas) {
+  Memoria mem(nullptr);
+  Gravador g;
+  g.largura = 8;
+  g.altura = 8;
+  Rasterizador r(mem, g);
+  EstadoDeRasterizacao e = EstadoBase();
+  e.viewport[1] = 0;
+
+  constexpr Endereco kV = 0x00107000, kT = 0x00108000, kUV = 0x00109000;
+  const std::uint16_t texels[4] = {0xF800u, 0x07E0u, 0x001Fu, 0xFFFFu};
+  for (std::size_t k = 0; k < 4; ++k) mem.Escrever16(kT + static_cast<Endereco>(2 * k), texels[k]);
+  PorVertices(mem, kV, {{-1.0f, 1.0f}, {1.0f, 1.0f}, {1.0f, -1.0f},
+                        {-1.0f, 1.0f}, {1.0f, -1.0f}, {-1.0f, -1.0f}});
+  const std::vector<std::pair<float, float>> uv = {
+      {0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 1.0f}};
+  for (std::size_t k = 0; k < uv.size(); ++k) {
+    EscreverFloat(mem, kUV + static_cast<Endereco>(8 * k), uv[k].first);
+    EscreverFloat(mem, kUV + static_cast<Endereco>(8 * k + 4), uv[k].second);
+  }
+  e.vertices = {true, 3, GL_FLOAT, 12, kV};
+  e.textura_ligada = true;
+  e.textura.existe = true;
+  e.textura.largura = e.textura.altura = 2;
+  e.textura.formato = GL_RGB;
+  e.textura.tipo = GL_UNSIGNED_SHORT_5_6_5;
+  e.textura.ponteiro = kT;
+  e.textura.filtro_linear = true;
+  e.coordenadas_de_textura = {true, 2, GL_FLOAT, 8, kUV};
+
+  PedidoDeDesenho p;
+  p.primitiva = GL_TRIANGLES;
+  p.quantos = 6;
+  std::string motivo;
+  ASSERT_TRUE(r.Desenhar(e, p, &motivo)) << motivo;
+
+  // Cantos: `u*w-.5` sai da textura, mas os dois vizinhos prendem no mesmo texel.
+  EXPECT_TRUE(g.SoEstePixel(0, 0, 0xF800u));
+  EXPECT_TRUE(g.SoEstePixel(7, 0, 0x07E0u));
+  EXPECT_TRUE(g.SoEstePixel(0, 7, 0x001Fu));
+  EXPECT_TRUE(g.SoEstePixel(7, 7, 0xFFFFu));
+  // Pixel interior: os pesos 16.16 produzem RGB (135,96,99), cuja escrita
+  // RGB565 por truncagem e 0x830C. Este valor apanha as DUAS misturas e o
+  // arredondamento fixo; NEAREST daria um dos cantos.
+  EXPECT_TRUE(g.SoEstePixel(3, 3, 0x830Cu));
+}
+
 TEST(Rasterizador, DuasUnidadesCompoemModulateEReplaceComPixelsExactos) {
   Memoria mem(nullptr);
   constexpr Endereco kV = 0x00110000, kUv0 = 0x00111000, kUv1 = 0x00112000;

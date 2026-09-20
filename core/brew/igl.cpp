@@ -224,6 +224,10 @@ constexpr std::uint32_t GL_SPOT_CUTOFF = 0x1206u;
 constexpr std::uint32_t GL_CONSTANT_ATTENUATION = 0x1207u;
 constexpr std::uint32_t GL_LINEAR_ATTENUATION = 0x1208u;
 constexpr std::uint32_t GL_QUADRATIC_ATTENUATION = 0x1209u;
+// BREW MP SDK 7.12.5, platform/ui/inc/gles/glext.h:245. Nao entra no `.inc`
+// gerado porque e extensao, mas um pedido activo nao pode desaparecer mudo.
+constexpr std::uint32_t GL_TEXTURE_MAX_ANISOTROPY_EXT = 0x84FEu;
+constexpr std::uint32_t kAnisotropiaUmaEmFixo = 0x00010000u;
 constexpr std::uint32_t GL_EMISSION = 0x1600u;
 constexpr std::uint32_t GL_SHININESS = 0x1601u;
 constexpr std::uint32_t GL_AMBIENT_AND_DIFFUSE = 0x1602u;
@@ -473,8 +477,9 @@ std::uint32_t Igl::Instalar(const Saidas& saidas) {
   // O que fica escrito e o que o rasterizador faz, e o que ficou de fora -- com o
   // ficheiro onde a lista completa esta.
   traco_.Emitir(Area::Video, Nivel::Informacao, "RASTERIZADOR",
-                "TRIANGLES/STRIP/FAN, cor por vertice, textura GL_NEAREST, teste de "
-                "profundidade e descarte de faces; AFIM e sem blending/stencil/mipmaps "
+                "TRIANGLES/STRIP/FAN, cor por vertice, textura GL_NEAREST/GL_LINEAR "
+                "(RGBA8/RGB565 base), teste de profundidade e descarte de faces; AFIM e "
+                "sem blending/stencil/mipmaps "
                 "(lista completa no topo de core/video/rasterizador.h). Escreve na Tela "
                 "quando o despacho a liga (Igl::DefinirTela)");
   traco_.Emitir(Area::Video, Nivel::Informacao, "IGL_INSTALADO",
@@ -562,6 +567,25 @@ video::EstadoDeRasterizacao Igl::MontarEstado() const {
     destino->tipo = t->tipo;
     destino->ponteiro = t->ponteiro;
     destino->texels_descodificados = t->texels_descodificados;
+
+    // LINEAR e servido so para os dois formatos que esta frente mediu. Um
+    // pedido guardado que nao chega a uma textura ligada nao cria ressalva:
+    // ainda nao houve amostragem para aproximar. Mipmap, anisotropia ou outro
+    // enum continua explicitamente declarado, em vez de cair em NEAREST.
+    const bool min_conhecido = t->filtro_minimo == GL_NEAREST || t->filtro_minimo == GL_LINEAR;
+    const bool mag_conhecido = t->filtro_magnificacao == GL_NEAREST ||
+                              t->filtro_magnificacao == GL_LINEAR;
+    const bool pediu_linear = t->filtro_minimo == GL_LINEAR ||
+                              t->filtro_magnificacao == GL_LINEAR;
+    const bool formato_linear =
+        (t->formato_do_pixel == GL_RGBA && t->tipo == GL_UNSIGNED_BYTE) ||
+        (t->formato_do_pixel == GL_RGB && t->tipo == GL_UNSIGNED_SHORT_5_6_5);
+    if (!min_conhecido || !mag_conhecido || t->filtro_anisotropico ||
+        (pediu_linear && !formato_linear)) {
+      e.capacidades_por_fazer.push_back("filtro_de_textura_alem_de_GL_NEAREST");
+    } else {
+      destino->filtro_linear = pediu_linear;
+    }
   };
   montar_textura(0, &e.textura_ligada, &e.textura, &e.coordenadas_de_textura,
                  &e.ambiente_de_textura);
@@ -738,15 +762,8 @@ video::EstadoDeRasterizacao Igl::MontarEstado() const {
   // pixel que ja esta la (`EscreverPixel`), e por isso um titulo que proiba um
   // canal ja nao precisa de ser avisado de que o pedido dele nao vale nada.
 
-  // O FILTRO DA TEXTURA. O rasterizador amostra sempre o texel mais proximo; um
-  // titulo que peca GL_LINEAR fica com essa diferenca escrita, e nao silenciosa.
-  for (const std::uint32_t pname : {GL_TEXTURE_MIN_FILTER, GL_TEXTURE_MAG_FILTER}) {
-    const std::vector<std::uint32_t>* v = Parametro(kIgl_TexParameterx, pname);
-    if (v != nullptr && !v->empty() && (*v)[0] != GL_NEAREST) {
-      e.capacidades_por_fazer.push_back("filtro_de_textura_alem_de_GL_NEAREST");
-      break;
-    }
-  }
+  // Os filtros vao no retrato de cada textura acima: e la que se sabe se um
+  // GL_LINEAR foi de facto ligado a uma amostragem deste desenho.
   return e;
 }
 
@@ -755,14 +772,12 @@ void Igl::RegistarRessalvas(const video::EstadoDeRasterizacao& e) {
     if (recusas_.find(nome) != recusas_.end()) continue;
     recusas_[nome] = 1;
     if (nome == "filtro_de_textura_alem_de_GL_NEAREST") {
-      // Precedente do stencil: capacidade que esta arvore nao tem vira
-      // PRESSUPOSTO com nome e razao, e nao falta. O rasterizador amostra o
-      // texel mais proximo; um titulo que peca GL_LINEAR desenha por inteiro
-      // com diferenca sub-texel -- nao ha ausencia para recusar, ha uma
-      // aproximacao para declarar. MEDIDO em 7 titulos, 1 pedido cada.
+      // GL_LINEAR base RGBA8/RGB565 e servido pelo rasterizador. Este nome agora
+      // so chega aqui para mipmap, anisotropia ou outro enum sem caminho: fica
+      // declarado como aproximacao, nunca escondido sob GL_NEAREST.
       traco_.RegistarPressuposto(Area::Video, nome,
-                                 "filtro LINEAR pedido; rasterizador amostra NEAREST "
-                                 "(texel mais proximo). Titulo desenha por inteiro.");
+                                 "filtro de textura sem caminho de amostragem; "
+                                 "rasterizador usa GL_NEAREST.");
       continue;
     }
     traco_.RegistarFalta(Area::Video, nome,
@@ -1484,6 +1499,14 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
     case kIgl_TexParameterx: {
       if (a.reg[0] != GL_TEXTURE_2D) return recusa("alvo diferente de GL_TEXTURE_2D");
       parametros_[ChaveDeParametro(slot, a.reg[1])] = {a.reg[2]};
+      // Filtros pertencem ao objecto ligado, nao a uma variavel global do IGL.
+      // O mapa acima continua como retrato observavel da ultima chamada.
+      EstadoDaTextura& t = texturas_[UnidadeActiva().textura_ligada];
+      if (a.reg[1] == GL_TEXTURE_MIN_FILTER) t.filtro_minimo = a.reg[2];
+      if (a.reg[1] == GL_TEXTURE_MAG_FILTER) t.filtro_magnificacao = a.reg[2];
+      if (a.reg[1] == GL_TEXTURE_MAX_ANISOTROPY_EXT) {
+        t.filtro_anisotropico = a.reg[2] > kAnisotropiaUmaEmFixo;
+      }
       return feito(3);
     }
     case kIgl_TexImage2D: {
@@ -1494,6 +1517,7 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
       const std::uint32_t alvo = a.reg[0], formato = a.reg[2];
       const std::uint32_t larg = Arg(3, a), alt = Arg(4, a);
       if (alvo != GL_TEXTURE_2D) return recusa("alvo diferente de GL_TEXTURE_2D");
+      if (a.reg[1] != 0) return recusa("mipmap diferente do nivel base nao e suportado");
       if (larg == 0 || alt == 0) return recusa("textura com largura ou altura zero");
       if (larg > 4096 || alt > 4096) return recusa("textura maior do que o maximo suportado");
       EstadoDaTextura& t = texturas_[UnidadeActiva().textura_ligada];
@@ -1521,6 +1545,8 @@ ResultadoGl Igl::Executar(std::uint32_t slot, const ArgumentosGl& a, std::uint32
     }
     case kIgl_TexSubImage2D: {
       if (!esp(9)) return recusa("argumentos na pilha sem sp valido");
+      if (a.reg[0] != GL_TEXTURE_2D) return recusa("alvo diferente de GL_TEXTURE_2D");
+      if (a.reg[1] != 0) return recusa("mipmap diferente do nivel base nao e suportado");
       if (UnidadeActiva().textura_ligada == 0) return recusa("sem textura ligada");
       // Os argumentos sao (alvo, nivel, x, y, larg, alt, formato, tipo, pixels).
       // Guarda-se o ponteiro tal como veio: a amostragem le os texels dessa
